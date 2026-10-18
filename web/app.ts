@@ -41,10 +41,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return overlay && (overlay.covered.has(step.id) || step.commits.some(id => overlay.covered.has(id)));
   }
   function applyReadMarks() {
-    steps = serverSteps.flatMap(step => {
+    const next = serverSteps.flatMap(step => {
       const docs = step.docs.filter(doc => docKinds(doc).length > 0 && !pendingReadCovers(doc.kind + ":" + doc.id, step));
       return docs.length ? [{ ...step, docs }] : [];
     });
+    // An unread list that came back as it was stays the same array: the stop list kept for it (allFreshStops) is not made again.
+    if (!sameValue(steps, next)) steps = next;
     // The unread steps are not an input of the board's rules.
     invalidateView();
   }
@@ -228,51 +230,70 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function plain(s: unknown) { return String(s == null ? "" : s).replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*`]/g, ""); }
   function day(iso: string | undefined) { return iso ? String(iso).slice(0, 16).replace("T", " ") : ""; }
 
-  // Rendering indexes adapt the shared rules' ids into page view objects. Two caches: `memo` holds what a draw reads and
+  // Rendering indexes adapt the shared rules' ids into page view objects. Three caches: `memo` holds what a draw reads and
   // follows the view too (selection, folds, filters, the unread steps), so every draw starts it empty; `dataMemo` holds what
-  // depends on the board's data alone and is dropped only when the data or the minute changes.
+  // depends on the board's data alone and is dropped when the data or the minute changes; `kept` holds what depends only on the
+  // rules' structure (who owns whom, who waits on whom, which items are open work, which hold an ask or an open card) and on
+  // ids, never on an item's text, log or title, so it outlives a write that reused the rules (`invalidate`).
   let memo: Record<string, unknown> = {};
   let dataMemo: Record<string, unknown> = {};
+  let kept: Record<string, unknown> = {};
   // The browser tests count these (test/e2e/press-n.e2e.ts): a performance mark each time the page draws, builds the
   // board's rules again, derives them from scratch (with the reason, rebuiltBecause in src/rules.ts) or counts every item's
   // filters again. The mark is cleared at once, so a page left open for days piles up nothing; an observer in the test has
   // seen it.
   function countEvent(name: string, detail?: string) { performance.mark(name, detail === undefined ? undefined : { detail }); performance.clearMarks(name); }
-  // The data changed (a snapshot, a live change, a minute that moves the rules): the board's rules are built again, and both
-  // caches go. `previous`, the rules before a live change with what it changed, lets them keep what the change cannot reach;
-  // without it every item's filters are counted again too.
+  // The data changed (a snapshot, a live change, a minute that moves the rules): the board's rules are built again, and the
+  // view and data caches go. `previous`, the rules before a live change with what it changed, lets them keep what the change
+  // cannot reach; without it every item's filters are counted again too. The structural cache goes with the rules built from
+  // scratch, and when a changed item's head differs (the head places the item's cards, which orders the stops); a write that
+  // reused the rules left its structure as it was.
   function invalidate(previous?: PreviousRules) {
     countEvent("board:rules"); memo = {}; dataMemo = {};
     const s = snapshot;
     derived = rules(s, Date.now(), { activity: () => activityCache.activity(s), ...(previous ? { previous } : {}) });
     const why = rebuiltBecause(derived);
     if (why !== null) countEvent("board:rules-full", why);
+    const reused = previous !== undefined && why === null && previous.changed.every(d => d.kind === "message" || previous.rules.item(d.id)?.head === s.items[d.id]?.head);
+    if (!reused) { kept = {}; countEvent("board:structure", why ?? (previous ? "head" : "no previous")); }
     if (!previous) filterRecount = null;
   }
   // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
   function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
   function dataCached<T>(name: string, make: () => T): T { return name in dataMemo ? dataMemo[name] as T : (dataMemo[name] = make()) as T; }
-  // What the views look items, their owned items and cards up by: from the data alone.
-  function dataIndex() {
-    return dataCached("index", () => {
-      const byId = new Map(state.items.map(i => [i.id, i]));
-      const children = new Map<string, ViewItem[]>();
-      for (const id of ["", ...byId.keys()]) children.set(id, (id ? derived.children(id) : derived.areas()).map(k => byId.get(k)!).filter(Boolean));
-      return { byId, children, decById: new Map(state.decisions.map(d => [d.id, d])) };
-    });
+  function keptCached<T>(name: string, make: () => T): T { return name in kept ? kept[name] as T : (kept[name] = make()) as T; }
+  // A structural value that also reads `key` (the unread steps, the kinds picked): made again when the key is another one.
+  function keptFor<T>(name: string, keys: readonly unknown[], make: () => T): T {
+    const was = kept[name] as { keys: readonly unknown[]; value: T } | undefined;
+    if (was && was.keys.every((k, i) => k === keys[i])) return was.value;
+    const value = make(); kept[name] = { keys, value };
+    return value;
   }
+  // What the views look items and cards up by: from the data alone.
   function index() {
-    return cached("index", () => {
-      // A draft being sent shows as sent, which is the view's.
+    return dataCached("index", () => ({ byId: new Map(state.items.map(i => [i.id, i])), decById: new Map(state.decisions.map(d => [d.id, d])) }));
+  }
+  // The ids of the items an item owns (the top items for ""), in the rules' order: structural, so kept.
+  function childIds(id: string): readonly string[] { return keptCached("children:" + id, () => id ? derived.children(id) : derived.areas()); }
+  function childrenOf(id: string): ViewItem[] {
+    return dataCached("children:" + id, () => { const byId = index().byId; return childIds(id).map(k => byId.get(k)!).filter(Boolean); });
+  }
+  // The comments of each target. They change only with a note, so a write of an item keeps them (structural); a draft being sent
+  // shows as sent, which is the view's and is put on when the list is read.
+  function notesBase() {
+    return keptCached("notesBy", () => {
       const notesBy = new Map<string, ViewNote[]>();
-      state.notes.forEach(n => { const list = notesBy.get(n.target) || []; list.push(n.state === "draft" && sendPending(n) ? {...n,state:"sent"} : n); notesBy.set(n.target, list); });
-      return { ...dataIndex(), notesBy };
+      state.notes.forEach(n => { const list = notesBy.get(n.target) || []; list.push(n); notesBy.set(n.target, list); });
+      return notesBy;
     });
   }
   function up(it: ViewItem) { return derived.parentOf(it.id) || ""; }
   function upItem(it: ViewItem) { return index().byId.get(derived.parentOf(it.id) || "") || null; }
-  function notesOf(key: string) { return index().notesBy.get(key) || []; }
+  function notesOf(key: string): ViewNote[] {
+    const list = notesBase().get(key) || [];
+    return sentNotes.size || sendingDrafts.size ? list.map((n): ViewNote => n.state === "draft" && sendPending(n) ? {...n,state:"sent"} : n) : list;
+  }
   function headOf(it: ViewItem) { return it.head || ""; }
   function logOf(it: ViewItem) { return it.log.slice().sort((a,b) => a.at.localeCompare(b.at)); }
   function latestOf(it: ViewItem) { return [it.updated, ...it.log.map(e => e.at), ...notesOf("it:" + it.id).filter(n => n.reply).map(n => n.repliedAt || n.sentAt || n.at)].sort().at(-1)!; }
@@ -280,17 +301,17 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function isCancelled(it: ViewItem) { return statusOf(it) === "cancelled"; }
   function leavesOf(it: ViewItem) { return state.items.filter(i => derived.isStatusLeaf(i.id) && (i.id === it.id || derived.ancestors(i.id).includes(it.id))); }
   function openWorkAncestors() {
-    return dataCached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
+    return keptCached("openWorkAncestors", () => new Set(state.items.filter(it => derived.isOpenWork(it.id)).flatMap(it => derived.ancestors(it.id))));
   }
   // Closed owners remain a path to open work, including through other closed owners. A done or cancelled item also
   // shows, dimmed, while it or anything under it holds content the owner has not read (owner, 2026-10-14), so n and the
   // new-content counts only reach rows on screen and the news of a completion is not lost; once read, it hides again.
   function freshPath() {
-    return cached("freshPath", () => new Set(allFreshStops().filter(st => st.kinds.some(fon) && st.item && index().byId.has(st.item)).flatMap(st => [st.item!, ...derived.ancestors(st.item!)])));
+    return keptFor("freshPath", [steps, freshSel.join()], () => new Set(allFreshStops().filter(st => st.kinds.some(fon) && st.item && index().byId.has(st.item)).flatMap(st => [st.item!, ...derived.ancestors(st.item!)])));
   }
   function shownForFresh(it: ViewItem) { return ended(it) && !openWorkAncestors().has(it.id) && freshPath().has(it.id); }
   function visible(it: ViewItem) { return !ended(it) || openWorkAncestors().has(it.id) || freshPath().has(it.id); }
-  function kids(id: string, all = false) { return (index().children.get(id || "") || []).filter(i => all || visible(i)); }
+  function kids(id: string, all = false) { return childrenOf(id || "").filter(i => all || visible(i)); }
   function openQ(q: string) { return snapshot.decisions[q]?.status === "open"; }
   function askPending(it: ViewItem) { return derived.askPending(it.id); }
   function sendingChoice(id:string) { return sendingDrafts.has(draftKey("q:"+id,"choice")) || notesOf("q:"+id).some(n => n.kind === "choice" && sentNotes.has(n.id)); }
@@ -300,14 +321,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function lineOf(it: ViewItem) { return index().byId.get(derived.lineOf(it.id))!; }
   function groupOf(it: ViewItem) { return derived.groupOf(it.id); }
   function isLeaf(it: ViewItem) { return derived.isLeaf(it.id); }
-  function waitedBy() { return dataCached("waitedBy", () => new Map(state.items.map(i => [i.id, derived.dependents(i.id).map(d => index().byId.get(d.id)!)]))); }
+  // The items that wait on an item, by id: structural, so kept.
+  function waiterIds(id: string): readonly string[] { return keptCached("waiters:" + id, () => derived.dependents(id).map(d => d.id)); }
+  function waitedBy(id: string): ViewItem[] { return waiterIds(id).map(w => index().byId.get(w)!); }
   function depEntries(it: ViewItem) { return derived.depsOf(it.id); }
   function openDeps(it: ViewItem) { return depEntries(it).filter(e => e.open).flatMap(e => {
     const id = e.kind === "item" ? e.id : snapshot.decisions[e.id]?.item;
     const target = id ? index().byId.get(id) : undefined;
     return target ? [target] : [];
   }); }
-  function openWaiters(it: ViewItem) { return (waitedBy().get(it.id) || []).filter(w => !ended(w)); }
+  function openWaiters(it: ViewItem) { return waitedBy(it.id).filter(w => !ended(w)); }
   function outDeps(it: ViewItem) { return openDeps(it).filter(d => !derived.ancestors(d.id).includes(it.id)); }
   function outWaiters(it: ViewItem) { return openWaiters(it).filter(w => !derived.ancestors(it.id).includes(w.id)); }
   function checksOf(it: ViewItem) { return derived.checks(it.id); }
@@ -469,7 +492,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // For each item, how many waiting and new stops lie below it; recomputed once per render.
   let below: {fresh: Record<string,number>} = {fresh:{}};
   function countBelow() {
-    const byId = new Map(state.items.map(i => [i.id, i]));
+    const byId = index().byId;
     const tally = <T extends {item: string | null}>(list: T[], into: Record<string,number>, weight: (x: T) => number) => list.forEach(x => { const it = x.item && byId.get(x.item); if (it) ancestors(it).forEach(a => { into[a.id] = (into[a.id] || 0) + weight(x); }); });
     below = { fresh: {} };
     const freshItems = [...new Set(freshStops().map(st => st.item && snapshot.items[st.item] ? st.item : null).filter((id): id is string => !!id))];
@@ -477,25 +500,45 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // Top-level items, in their project group's order (the order of the group's first item), then their own order.
   function tops() { return derived.areas(id => passes(index().byId.get(id)!)).map(id => index().byId.get(id)!); }
-  function boardOrder() { return dataCached("boardOrder", boardOrderNow); }
-  function boardOrderNow() {
-    const out: ViewItem[] = [];
-    const walk = (list: ViewItem[]) => list.forEach(i => { out.push(i); walk(kids(i.id,true)); });
-    const roots=derived.areas().map(id => index().byId.get(id)!);
-    const groups=[...new Set([...snapshot.board.projects.map(g => g.name),...roots.map(groupOf)])];
+  // The items in the order the tree lists them, as ids (structural, so kept), and the first place of each.
+  function boardOrder(): readonly string[] { return keptCached("boardOrder", boardOrderNow); }
+  function boardPlace(): ReadonlyMap<string, number> {
+    return keptCached("boardPlace", () => { const place = new Map<string, number>(); boardOrder().forEach((id, k) => { if (!place.has(id)) place.set(id, k); }); return place; });
+  }
+  function boardOrderNow(): string[] {
+    const out: string[] = [];
+    const walk = (list: readonly string[]) => list.forEach(id => { out.push(id); walk(childIds(id)); });
+    const roots=childIds(""), rootItems=roots.map(id => index().byId.get(id)!);
+    const groups=[...new Set([...snapshot.board.projects.map(g => g.name),...rootItems.map(groupOf)])];
     for (const group of groups) {
-      const items=roots.filter(it => groupOf(it) === group);
-      walk([...items.filter(it => !neededElsewhere(it)),...items.filter(neededElsewhere)]);
+      const items=rootItems.filter(it => groupOf(it) === group);
+      walk([...items.filter(it => !neededElsewhere(it)),...items.filter(neededElsewhere)].map(it => it.id));
     }
     return out;
   }
   // The stops 下一条 walks: each item's ask, then each open decision in the order the item's body shows them, in board order.
-  function stops() { return cached("stops", stopsNow); }
-  function stopsNow() {
-    const out: Array<{id:string;item:string|null}> = [];
-    boardOrder().forEach(i => { if (askPending(i)) out.push({ id: "ask-" + i.id, item: i.id }); cardOrder(i.id).map(id => index().decById.get(id)!).filter(d => d.status === "open" && waitsQ(d)).forEach(d => out.push({ id: "q-" + d.id, item: i.id })); });
+  // What waits on the owner is structural and kept; a card whose choice is being sent is the view's, and goes out when read.
+  function stops() { return cached("stops", () => {
+    const sending = (st: {id:string}) => st.id.startsWith("q-") && sendingChoice(st.id.slice(2));
+    const out = stopsBase().filter(st => !sending(st));
     // Blocking waits come first, so 阻塞 and the arrow keys walk them before the decision cards that block nothing.
     return [...out.filter(blockingStop), ...out.filter(st => !blockingStop(st))];
+  }); }
+  function stopsBase() {
+    return keptCached("stops", () => {
+      countEvent("board:stops");
+      // Only an item with a pending ask or an open card has a stop: the candidates come from the decisions and the asks, not from every item.
+      const place = boardPlace(), candidates = new Set<string>();
+      for (const d of state.decisions) if (d.status === "open" && d.item) candidates.add(d.item);
+      for (const it of state.items) if (it.ask) candidates.add(it.id);
+      const out: Array<{id:string;item:string|null}> = [];
+      [...candidates].filter(id => place.has(id)).sort((a, b) => place.get(a)! - place.get(b)!).forEach(id => {
+        const it = index().byId.get(id)!;
+        if (askPending(it)) out.push({ id: "ask-" + id, item: id });
+        cardOrder(id).map(card => index().decById.get(card)!).filter(d => d.status === "open" && derived.cardWaiting(d.id)).forEach(d => out.push({ id: "q-" + d.id, item: id }));
+      });
+      return out;
+    });
   }
   // An ask always blocks; a card blocks when it names the work it stops (its blocks).
   function blockingStop(st: {id:string}) { return st.id.startsWith("ask-") || derived.cardBlocking(st.id.slice(2)); }
@@ -516,7 +559,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // own item or card. Stops follow the page from top to bottom: an item, then its comments, then each of its cards and
   // that card's comments; what the page does not place comes last, in commit order. Closed items remain stops even
   // while their tree nodes are hidden. A document read leaves it unread in history.
-  function allFreshStops() { return cached("allFreshStops", freshStopsNow); }
+  // The stop list reads the unread steps and where the board places each item, never the view, so it is kept: a write that left the
+  // structure as it was and brought no new unread step does not make it again.
+  function allFreshStops() { return keptFor("allFreshStops", [steps], freshStopsNow); }
   // n and every new-content count follow the left tree as shown: a stop counts only when its item, and every item above
   // it, passes the project's filters; unfiltered, every item holding new content is shown (see visible).
   function treeShown(id: string) { const it = index().byId.get(id); return !!it && passes(it) && ancestors(it).every(passes); }
@@ -537,8 +582,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function freshShown(i: ViewItem) { return freshIndex().touching.has("it:" + i.id); }
   function freshStopsNow(): FreshStop[] {
-    const place = new Map<string, number>();
-    boardOrder().forEach((it, k) => { if (!place.has(it.id)) place.set(it.id, k); });
+    countEvent("board:fresh-stops");
+    const place = boardPlace();
     const merged = new Map<string, FreshStop>();
     steps.forEach((step, k) => step.docs.forEach(d => {
       const key = d.kind + ":" + d.id, seen = merged.get(key);
@@ -764,7 +809,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!selectedItem) return null;
     const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
     if (landed === selectedItem) return null;
-    const row = boardOrder().findIndex(it => it.id === selectedItem);
+    const row = boardPlace().get(selectedItem) ?? -1;
     return row < 0 ? null : row;
   }
   function goNextFresh() {
@@ -948,7 +993,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
     // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
     // last stop above it, wrapping around at the list's ends.
-    const order = new Map<string, number>(); boardOrder().forEach((it, i) => { if (!order.has(it.id)) order.set(it.id, i); });
+    const order = boardPlace();
     const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
     const row = home && order.has(home) ? order.get(home)! : -1;
     const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
@@ -1632,6 +1677,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (!sending) note.textContent = sendMessage || (n ? "待发：" + (n - ex - ok - ch - dn) + " 条评论、" + ex + " 个解释请求、" + ok + " 个同意、" + ch + " 个选择、" + dn + " 个完成，看完一起发。" : waiting ? waiting + " 条已发送，等 Claude 处理。" : "条目右边：「详细解释」一点就加入待发，「评论」写意见；看完在这里一起发。");
   }
 
+  // How many items are in each status: structural, so a write that reused the rules keeps it.
+  function statusCounts() {
+    return keptCached("statusCounts", () => {
+      const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, idle: 0, todo: 0, done: 0, cancelled: 0 };
+      state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
+      return n;
+    });
+  }
   function renderHeader() {
     const m: Partial<Board> = state.meta || {};
     if (state.meta) get("goal").innerHTML = inline(m.goal || "");
@@ -1702,8 +1755,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       saveManual(); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : []));
     }));
 
-    const n: Record<string,number> = { wip: 0, blocked: 0, paused: 0, idle: 0, todo: 0, done: 0, cancelled: 0 };
-    state.items.forEach(i => { const st = statusOf(i); if (st !== undefined && n[st] != null) n[st]++; });
+    const n = statusCounts();
     ([["wip", "进行中", "--bar-wip"], ["blocked", "卡住", "--bar-block"], ["paused", "暂停", "--bar-cancel"], ["idle", "停滞", "--bar-idle"], ["todo", "未开始", "--bar-todo"], ["done", "完成", "--bar-done"], ["cancelled", "取消", "--bar-cancel"]] as Array<[string,string,string]>)
       .filter(([k]) => (k !== "cancelled" && k !== "blocked" && k !== "paused") || n[k])
       .forEach(([k, label, bar]) => stats.appendChild(el("span", null, '<span class="dot" style="background:var(' + bar + ')"></span>' + label + " " + n[k])));
@@ -2340,7 +2392,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // A row in progress or idle carries its plan's share done as a band behind it (docs/design.md, How the page shows a plan).
     if (share > 0) { const band = el("span", "progress-band"); band.style.setProperty("--p", String(share)); row.appendChild(band); }
     // A parent counts its leaves by status at the right of its row; cancelled ones are left out.
-    if ((index().children.get(it.id) || []).length) {
+    if (childIds(it.id).length) {
       const n: Record<string,number> = {};
       leavesOf(it).filter(l => l !== it && !isCancelled(l)).forEach(l => { const k = statusOf(l); if (k !== undefined) n[k] = (n[k] || 0) + 1; });
       const cs = el("span", "counts");
@@ -2412,7 +2464,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return li;
   }
   // A top-level item that an open item of another project depends on directly: it is listed after the project's own.
-  function neededElsewhere(t: ViewItem) { return waitedBy().get(t.id)!.some(w => !ended(w) && groupOf(w) !== groupOf(t)); }
+  function neededElsewhere(t: ViewItem) { return waitedBy(t.id).some(w => !ended(w) && groupOf(w) !== groupOf(t)); }
   function projectGroups() {
     const groups: Array<{name:string;items:ViewItem[]}> = snapshot.board.projects.map(p => ({name:p.name,items:[]}));
     tops().forEach(t => { const name = t.group || ""; let group = groups.find(g => g.name === name); if (!group) { group = {name,items:[]}; groups.push(group); } group.items.push(t); });
