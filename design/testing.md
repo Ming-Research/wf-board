@@ -3,6 +3,5 @@ Decision: The board is tested in four layers: rules, store and server tests; the
 Rejected:
 - The fake DOM alone: rejected because it computes no CSS or real layout and its fixtures hold few real shapes.
 - Fixtures copied from the real board: rejected because real board data never enters this repository.
-
 - Every page check in the browser: rejected because each check starts a browser, builds a board and reloads the page, which put the page, agent list and message checks at 272 seconds of the browser job's 806 seconds, and a DOM library answers the checks that need no layout.
 - happy-dom instead of jsdom: rejected because its gain was small in the prototype (1.59 seconds against 1.95 seconds for 144 tree-row clicks) and the style checks are written against jsdom's stylesheet objects.
