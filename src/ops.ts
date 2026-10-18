@@ -11,6 +11,8 @@ import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
+import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
+import type { LiveRole } from "./live.ts";
 
 export class OpError extends Error {}
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
@@ -36,6 +38,11 @@ export interface Ops {
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
   /** The runner's report on the work on an item (docs/design.md, section 5, Runner reports): replaces the item's `runner`, stamps `since` and `at`, and writes nothing when the report changes nothing. */
   reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
+  /**
+   * The runner's beat for a turn it is running (docs/design.md, section 7, The live view of a turn): the same writers as `reportState`,
+   * kept in the options' `live` store and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
+   */
+  reportLive(a: { author: string; session?: string; access?: Access; id: string; role: LiveRole; turn: number; turnSeconds: number; idleSeconds?: number; action?: string }): Promise<string>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
@@ -68,7 +75,7 @@ export interface Ops {
 }
 /** `sessions`: the sessions of the long-lived credentials, which a message may go to besides the architect and the sessions
  * with an open dispatch (docs/design.md, Messages); none when the board runs without a credentials file. */
-export interface OpsOptions { sessions?: () => Iterable<string> }
+export interface OpsOptions { sessions?: () => Iterable<string>; /** Where `reportLive` keeps its beats; a store of its own when none is given. */ live?: LiveStore }
 
 // Shared across Ops instances: validation and multi-document writes are one
 // operation. Store.commit still checks revisions against other store callers.
@@ -274,6 +281,7 @@ function updateParts(a: { title?: string; head?: string; links?: unknown; data?:
 const REPEAT_MS = 60_000;
 
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), options: OpsOptions = {}): Ops {
+  const live = options.live ?? new LiveStore();
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   /** The version of the document that carried `rev`, read back from its history; none when `rev` never existed or the history is more than a request may read. */
@@ -355,16 +363,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       else if (put.kind === "glossary" && put.id !== project) throw new OpError(`glossary ${put.id}: a ${role} credential writes only its own project's glossary (${project})`);
     }
   }
+  /** What every write asks of its call before it reads anything: the table for a credential's role, the text of every field, the removed names, the session and the author. */
+  function checkWriter(a: Writer, parts: readonly Part[]): void {
+    mayWrite(a, parts);
+    nonempty(a);
+    if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
+    for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
+    if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
+    if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
+    if (RETIRED_AUTHORS.includes(a.author)) throw new OpError(`author ${a.author}: this identity is retired; write as ${ARCHITECT} (session ${ARCHITECT_SESSION}), which does the process and keeps the rules`);
+  }
   function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       const partList = typeof parts === "string" ? [parts] : parts;
-      mayWrite(a, partList);
-      nonempty(a);
-      if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
-      for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
-      if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
-      if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
-      if (RETIRED_AUTHORS.includes(a.author)) throw new OpError(`author ${a.author}: this identity is retired; write as ${ARCHITECT} (session ${ARCHITECT_SESSION}), which does the process and keeps the rules`);
+      checkWriter(a, partList);
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
@@ -712,6 +724,24 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (before !== undefined && isDeepStrictEqual({ ...next, at: before.at }, before)) return it;
       return { ...it, updated: at, runner: next };
     }, false, ` ${a.state}`),
+    reportLive: async a => {
+      checkWriter(a, ["item.runner"]);
+      onlyProcessOrRunnerWithoutCredential(a, "report a turn's live state");
+      const it = ownedItem(store.snapshot(), a.id, a);
+      if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
+      if (!LIVE_ROLES.includes(a.role)) throw new OpError(`role: give ${LIVE_ROLES.join(" or ")}`);
+      const whole = (value: unknown, field: string, min: number): number => {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) throw new OpError(`${field}: give a whole number, ${min} or more`);
+        return value;
+      };
+      const turn = whole(a.turn, "turn", 1), turnSeconds = whole(a.turnSeconds, "turnSeconds", 0), idleSeconds = a.idleSeconds === undefined ? undefined : whole(a.idleSeconds, "idleSeconds", 0);
+      // The action is one line, like a report's note: a reporter's line breaks become spaces rather than a refusal.
+      const action = a.action?.replace(/\s+/g, " ").trim();
+      if (action !== undefined && [...action].length > LIVE_ACTION_MAX) throw new OpError(`action: give one line of at most ${LIVE_ACTION_MAX} characters`);
+      const at = now(), back = (seconds: number) => new Date(Date.parse(at) - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      live.put({ role: a.role, item: a.id, turn, turnStartedAt: back(turnSeconds), ...(idleSeconds === undefined ? {} : { lastActionAt: back(idleSeconds) }), ...(action === undefined ? {} : { action }), at });
+      return `live ${a.role} ${a.id} turn ${turn} · kept in memory only, no commit`;
+    },
     setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];

@@ -9,6 +9,7 @@ import { ownerOps } from "./owner-ops.ts";
 import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
+import { LiveStore } from "./live.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghToken, restSource } from "./ci-source.ts";
@@ -38,7 +39,9 @@ async function main() {
   // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
   const credentialFile = new CredentialFile(defaultCredentialsPath());
   // A message may go to the session of any long-lived credential (docs/design.md, Messages).
-  const op = ops(store, undefined, { sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
+  // The runner's beats for the turns running now live in the daemon's memory only (docs/design.md, section 7, The live view of a turn).
+  const live = new LiveStore();
+  const op = ops(store, undefined, { live, sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The pushes to each agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
   // The marks of the liveness checks are kept too, so a silence already asked is not asked again.
   const wake = new Wake({ dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
@@ -51,7 +54,7 @@ async function main() {
   // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
   const credentials = new Credentials(credentialFile);
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
