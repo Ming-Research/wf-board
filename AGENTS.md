@@ -127,14 +127,16 @@ matches what the artifact board offered.
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
   three on every main-line merge (`npm test` as 8 shards at once), and on a pull
-  request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
-  pushes in between are checked by a temporary `tmp-*.yml` workflow that runs what
+  request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`,
+  with `-f browser=true` to include the browser tests); pushes in between are
+  checked by a temporary `tmp-*.yml` workflow that runs what
   the change touches (design section 11, Fast checks while writing). When a test
   file is added, renamed or becomes much slower, bring `test/shard-costs.json` up
   to date from the per-file table in the shards' summaries; the time gate names a
   shard that runs over 1.5 times the others.
 - `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it with the full CI. It needs a Playwright browser and
+  CI's `e2e` job runs it on a main-line push, nightly, and in a run started by hand
+  with `browser` set. It needs a Playwright browser and
   is never run on the owner's Mac.
 - Three test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
