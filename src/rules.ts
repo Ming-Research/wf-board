@@ -4,7 +4,7 @@ import { liveDispatches } from "./agents.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Project, Snapshot, Status } from "./model.ts";
 import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
-/** Project list order is page order; only the PM and the architect may place a project after another. */
+/** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
   if (!mayRunProcess(who)) throw new Error(`after: only ${PROCESS_WRITERS} may reorder projects`);
   if (after === name) throw new Error("after: a project cannot follow itself");
@@ -304,12 +304,6 @@ export function isReviewStep(row: PlanRow): boolean { return "text" in row && ro
 /** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
  * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
 export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
-/** The text of the item's review step while it is in progress: the engineer's request for a review. Undefined when the item has no
- * such step or it is not in progress. */
-export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
-  const step = item?.plan.find(isReviewStep);
-  return step && "text" in step && step.state === "doing" ? step.text : undefined;
-}
 /**
  * The big steps of an engineer's plan, in the order of the flow, with the name the left tree shows for each. The ids and names are
  * fixed by the engineer rules (The plan's stages); `review` is not one of them, since this version has no review.

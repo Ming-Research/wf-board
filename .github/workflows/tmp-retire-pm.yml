@@ -19,4 +19,4 @@ jobs:
       - run: npm run check
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test test/retire-pm.test.ts test/ops-roles.test.ts test/difficulty.test.ts test/mcp.test.ts test/move-project.test.ts test/ops.test.ts
+      - run: node --test test/retire-pm.test.ts test/ops-roles.test.ts test/difficulty.test.ts test/mcp.test.ts test/move-project.test.ts test/ops.test.ts test/access.test.ts test/backup-push.test.ts test/budget.test.ts test/candidates.test.ts test/deploy.test.ts test/dispatch.test.ts test/http.test.ts test/liveness.test.ts test/messages.test.ts test/migrate-priority.test.ts test/runner-report.test.ts test/slow-ops.test.ts test/tags.test.ts test/wake-agents.test.ts test/wake.test.ts test/watch.test.ts test/whole-view.test.ts test/dom/whole.test.ts

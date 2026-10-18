@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { agentSocket, board, author, later, server, wakeSocket } from "./helpers.ts";
+import { agentSocket, board, author, later, server } from "./helpers.ts";
 import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -238,7 +238,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
 const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
-  const star = await wakeSocket(t, url);
+  const star = await agentSocket(t, url, "架构师");
   const checked: string[] = [], shared = store.derived.rules.bind(store.derived);
   t.mock.method(store.derived, "rules", (s: Parameters<typeof shared>[0], now?: number) => {
     const r = shared(s, now);
@@ -272,8 +272,8 @@ test("an owner notice reaches each open page as an owner event, and a page that 
   const controller = new AbortController(); t.after(() => controller.abort());
   const response = await fetch(url + "/api/events", { signal: controller.signal });
   const reader = response.body!.getReader(); await reader.read();
-  wake.tell("PM 一小时没响应", "最早没回执的是 #3", { kind: "item", key: "a" });
+  wake.tell("架构师 一小时没响应", "最早没送到的是 #3", { kind: "item", key: "a" });
   const chunk = await reader.read(); const text = new TextDecoder().decode(chunk.value);
   assert.match(text, /^event: owner\n/, "the first event after connecting is the notice told after it");
-  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "PM 一小时没响应", message: "最早没回执的是 #3", target: { kind: "item", key: "a" } });
+  assert.deepEqual(JSON.parse(text.match(/data: (.+)/)![1]!), { title: "架构师 一小时没响应", message: "最早没送到的是 #3", target: { kind: "item", key: "a" } });
 });

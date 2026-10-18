@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { agentSocket, asArchitect, board, later, server, wakeSocket } from "./helpers.ts";
+import { agentSocket, asArchitect, board, later, server } from "./helpers.ts";
 import { MESSAGE_TEXT_LIMIT } from "../src/model.ts";
 import { OpError, ops } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
@@ -61,7 +61,7 @@ test("a message is one commit that adds it to its day's file, kept across a rest
 test("a message to a name the board cannot reach, or one that is too long, not one line or about no item, is refused and writes nothing", async t => {
   const { store, op } = await board(t);
   const head = store.snapshot().head;
-  await assert.rejects(op.sendMessage({ ...eng, to: "nobody", text: "看 a" }), refusedWith(/^to nobody: no session the board can reach has that name; send to one of: 架构师, PM$/));
+  await assert.rejects(op.sendMessage({ ...eng, to: "nobody", text: "看 a" }), refusedWith(/^to nobody: no session the board can reach has that name; send to one of: 架构师$/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "长".repeat(MESSAGE_TEXT_LIMIT + 1) }), refusedWith(/^text: 151 characters, at most 150; a message is only a doorbell: write the content on the item/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "第一行\n第二行" }), refusedWith(/^text: write one line/));
   await assert.rejects(op.sendMessage({ ...eng, to: "架构师", text: "  " }), refusedWith(/^input\.text: provide nonempty text/));
@@ -83,14 +83,15 @@ test("a message goes to the architect, to a session with an open dispatch of any
   for (const to of ["架构师", "观察者", "资源管理", "b-review"]) await op.sendMessage({ ...eng, to, text: "看 b" });
   assert.deepEqual(Object.values(store.snapshot().messages!).flatMap(day => day.messages).map(m => m.to).sort(), ["b-review", "架构师", "观察者", "资源管理"].sort());
   await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1, rounds: 1 });
-  await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, PM, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
+  await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
+  await assert.rejects(op.sendMessage({ ...eng, to: "PM", text: "看 b" }), refusedWith(/^to PM: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "the retired PM is reached no more");
 });
 
-test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the architect's own stream and one to the PM to the PM's", async t => {
+test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the architect's own stream", async t => {
   const wake = new Wake({ now: () => Date.parse(later) });
   const { url, store, op } = await server(t, { wake });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
-  const pm = await wakeSocket(t, url), architect = await agentSocket(t, url, "架构师");
+  const architect = await agentSocket(t, url, "架构师");
   // No process is connected: the message waits in the stream.
   const first = await op.sendMessage({ ...asArchitect, to: "b-worker", text: "先看 a 的卡", item: "a" });
   await until(() => wake.hasAgent("b-worker") && wake.agent("b-worker").latest() === 1, "the first message's push");
@@ -108,16 +109,10 @@ test("a message waits in its recipient's stream until a board call or its socket
   socket.socket.send(JSON.stringify({ ack: 2 })); await socket.sync();
   assert.deepEqual((await agentSocket(t, url, "b-worker")).events(), []);
   assert.equal(await tool(t, store, op, wake, "projects", { session: "b-worker" }), plain);
-  // To the architect: its own agent stream, and neither the PM's nor another agent's.
+  // To the architect: its own agent stream, and not another agent's.
   await op.sendMessage({ ...eng, to: "架构师", text: "b 好了", item: "b" });
   await until(() => architect.frames.some(f => f.event === "message"), "the message to the architect");
   assert.deepEqual(architect.events().filter(f => f.event === "message").map(f => [f.from, f.to, f.text]), [["b-worker", "架构师", "b 好了"]]);
-  assert.deepEqual(pm.events(), [], "the PM's stream does not carry it");
-  // To the PM: the PM's own stream.
-  await op.sendMessage({ ...eng, to: "PM", text: "b 的审查好了", item: "b" });
-  await until(() => pm.frames.some(f => f.event === "message"), "the message to the PM");
-  assert.deepEqual(pm.events().map(f => [f.from, f.to, f.text]), [["b-worker", "PM", "b 的审查好了"]]);
-  assert.equal(architect.events().length, 1, "and the architect's stream does not carry that");
   assert.equal(wake.agent("b-worker").latest(), 2);
 });
 
@@ -131,7 +126,7 @@ test("send_message sends as the call's session; messages lists them newest first
   await send("eng-b", { to: "观察者", text: "规则有个问题，见 b 的日志", item: "b" });
   clock = "2026-10-11T02:20:00Z";
   await send("eng-a", { to: "观察者", text: "没事了" });
-  assert.match(await send("eng-a", { to: "nobody", text: "x" }), /^to nobody: no session the board can reach has that name; send to one of: 架构师, PM, 观察者$/);
+  assert.match(await send("eng-a", { to: "nobody", text: "x" }), /^to nobody: no session the board can reach has that name; send to one of: 架构师, 观察者$/);
   const list = (filters?: Record<string, unknown>) => tool(t, store, op, undefined, "messages", filters ? { filters } : {});
   assert.equal(await list(), [
     "2026-10-11T02:20:00Z · eng-a（Whitefoot）→ 观察者：没事了",

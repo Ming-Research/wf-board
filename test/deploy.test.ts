@@ -17,7 +17,7 @@ import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { agentSocket, asArchitect, author, server, wakeSocket } from "./helpers.ts";
+import { agentSocket, asArchitect, author, server } from "./helpers.ts";
 import { fakeSsh } from "./fake-ssh.ts";
 
 const BRANCH = "main";
@@ -775,7 +775,8 @@ esac
 test("scripts/deploy.ts: a fetch that never answers is killed at its cap with its ssh, tried three times, and the remote counts as unreachable", async t => {
   const r = await repos(t);
   const { url, port } = await server(t);
-  const star = await wakeSocket(t, url);
+  // No item is held, so the failure goes to the architect's stream.
+  const star = await agentSocket(t, url, "架构师");
   const ssh = await fakeSsh(t);
   await ssh.set("stall");
   sh(r.checkout, "remote", "set-url", "origin", ssh.url(r.origin));

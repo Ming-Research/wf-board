@@ -10,7 +10,8 @@ import { Wake } from "../src/wake.ts";
 import { GithubWatch, decide, mergeRows, mergedRows, pushKey, watchedPulls } from "../src/watch.ts";
 import { ghSource, parseResponse, queryText, summarize } from "../src/github.ts";
 import type { Checks, Gh, GithubSource, PullState, RepoState } from "../src/github.ts";
-import { asArchitect, server, wakeSocket } from "./helpers.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
+import { agentSocket, asArchitect, server } from "./helpers.ts";
 
 // --- GitHub's answer -------------------------------------------------------------------------------------------------------------
 // The shapes below are those of `gh api graphql` with the query from queryText, read from a live answer for a private repository.
@@ -113,29 +114,17 @@ test("a cancelled run is neither red nor green, GitHub's roll-up state is not wh
   assert.deepEqual(more(run("test", "FAILURE")), { state: "failure", failed: ["test"] });
 });
 
-test("an answer for a PR with a cancelled run is read as green, not red; a PR without checks, as GitHub gives a PR with a merge conflict, is not green; only a red one is told", async t => {
-  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
+test("an answer for a PR with a cancelled run is read as green, not red; a PR without checks, as GitHub gives a PR with a merge conflict, is not green", () => {
   const text = (...nodes: object[]) => answer({ main: null, pullRequests: { pageInfo: { hasNextPage: false }, nodes } });
-  const events = (state: RepoState) => decide(s, r, [state]).map(p => [p.event, p.fields.number]);
-  const cancelled = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "SUCCESS"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")))));
-  assert.equal(cancelled.pulls[0]!.checks.state, "success", "the roll-up says failure, the checks say green");
-  assert.deepEqual(events(cancelled), [], "and a green PR is told nothing: its engineer merges it");
-  const red = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "FAILURE"), run("e2e", "CANCELLED")))));
-  assert.deepEqual(events(red), [["pr-red", 23]]);
-  const only = parseResponse(WB, text(prNode(23, {}, rollup("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")))));
-  assert.equal(only.pulls[0]!.checks.state, "pending", "cancelled and not yet replaced: neither red nor green");
-  assert.deepEqual(events(only), []);
-  const none = parseResponse(WB, text(prNode(23, {}, null)));
-  assert.equal(none.pulls[0]!.checks.state, "none", "no check found is not green");
-  assert.deepEqual(events(none), []);
-  const gates = parseResponse(WB, text(prNode(23, {}, rollup("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL")))));
-  assert.equal(gates.pulls[0]!.checks.state, "none", "only skipped gates (the push checks not there yet) is not green");
-  assert.deepEqual(events(gates), []);
+  const checks = (node: object) => parseResponse(WB, text(node)).pulls[0]!.checks;
+  assert.equal(checks(prNode(23, {}, rollup("FAILURE", run("test", "SUCCESS"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")))).state, "success", "the roll-up says failure, the checks say green");
+  assert.deepEqual(checks(prNode(23, {}, rollup("FAILURE", run("test", "FAILURE"), run("e2e", "CANCELLED")))), { state: "failure", failed: ["test"] });
+  assert.equal(checks(prNode(23, {}, rollup("FAILURE", run("test", "CANCELLED"), run("e2e", "CANCELLED")))).state, "pending", "cancelled and not yet replaced: neither red nor green");
+  assert.equal(checks(prNode(23, {}, null)).state, "none", "no check found is not green");
+  assert.equal(checks(prNode(23, {}, rollup("SUCCESS", run("gate", "SKIPPED"), run("lint", "NEUTRAL")))).state, "none", "only skipped gates (the push checks not there yet) is not green");
   // A PR with a merge conflict gets no pull_request run; what is left on its newest commit (a push run, or nothing) says nothing red.
-  const conflicting = parseResponse(WB, text(prNode(23, { mergeable: "CONFLICTING" }, rollup("SUCCESS", run("test", "SUCCESS")))));
-  assert.deepEqual(events(conflicting), [], "green checks of a PR that cannot merge");
-  const conflictingNone = parseResponse(WB, text(prNode(23, { mergeable: "CONFLICTING" }, null)));
-  assert.deepEqual(events(conflictingNone), []);
+  assert.equal(checks(prNode(23, { mergeable: "CONFLICTING" }, rollup("SUCCESS", run("test", "SUCCESS")))).state, "success");
+  assert.equal(checks(prNode(23, { mergeable: "CONFLICTING" }, null)).state, "none");
 });
 
 test("the query names the main line by branch or by default, and one alias per PR number", () => {
@@ -266,30 +255,27 @@ test("a merge row is an open item's step that says 合入 and names a PR its ite
 
 // --- What to tell ------------------------------------------------------------------------------------------------------------------
 
-test("a red PR an open item names is told with those items; a red main line with the item that delivers its newest commit; drafts, conflicts, green, pending and no checks never; unnamed PRs only as orphans", async t => {
-  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
+test("a red main line is told with the item that delivers its newest commit; no PR is told, red, draft, conflicting, named or not", async t => {
+  const { store } = await fixture(t), s = store.snapshot();
   const states = [repoState(WB, {
     main: { branch: "claude/first-board", commit: "m1", subject: "Merge pull request #23 from Ming-Research/watch", checks: { state: "failure", failed: ["e2e"] } },
     pulls: [
       pull(23), pull(24, { draft: true }), pull(25, { checks: { state: "failure", failed: ["test"] } }), pull(26, { mergeable: "CONFLICTING" }),
-      pull(27), pull(29, { checks: { state: "pending", failed: [] } }), pull(32, { checks: { state: "none", failed: [] } }), pull(99), pull(100),
-      pull(31, { draft: true, checks: { state: "failure", failed: ["test"] } }),
+      pull(27), pull(29, { checks: { state: "pending", failed: [] } }), pull(32, { checks: { state: "none", failed: [] } }), pull(99), pull(100, { draft: true }),
+      pull(101, { checks: { state: "failure", failed: ["test"] } }), pull(31, { draft: true, checks: { state: "failure", failed: ["test"] } }),
     ],
   }), repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", subject: "Add a thing", checks: green }, pulls: [pull(5, { base: "main" })] })];
-  // Unnamed PRs are told as orphans, tested below; here the red and main line pushes.
-  const pushes = decide(s, r, states).filter(p => p.event !== "pr-orphan");
-  assert.deepEqual(pushes.map(p => [p.event, p.fields.number ?? p.fields.branch]), [["main-red", "claude/first-board"], ["pr-red", 25]], "a green PR, a ready one, is told nothing; #27 has no repository in the item's text, and #99 sits outside the section");
-  const [main, red] = pushes;
-  assert.deepEqual(main!.fields, { repo: WB, project: "wf-board", branch: "claude/first-board", commit: "m1", failed: ["e2e"], url: `https://github.com/${WB}/commit/m1`, item: "watch", pr: 23 }, "the commit's subject names #23, which the item watch's 改动 section names");
-  assert.deepEqual(red!.fields, { repo: WB, number: 25, project: "wf-board", title: "PR 25", commit: "c25", url: `https://github.com/${WB}/pull/25`, failed: ["test"], items: [{ item: "second", title: "Second", project: "wf-board" }] });
-  assert.deepEqual(pushes.map(p => p.key), [`main-red ${WB} claude/first-board m1`, `pr-red ${WB}#25 c25`]);
+  const pushes = decide(s, states);
+  assert.deepEqual(pushes.map(p => [p.event, p.fields.branch]), [["main-red", "claude/first-board"]], "a red PR, named (#25) or not (#101), and an unnamed one (#99, #100) are told to no one: an engineer watches its own PR's checks and the architect's patrol finds the PR no item names");
+  assert.deepEqual(pushes[0]!.fields, { repo: WB, project: "wf-board", branch: "claude/first-board", commit: "m1", failed: ["e2e"], url: `https://github.com/${WB}/commit/m1`, item: "watch", pr: 23 }, "the commit's subject names #23, which the item watch's 改动 section names");
+  assert.deepEqual(pushes.map(p => p.key), [`main-red ${WB} claude/first-board m1`]);
 });
 
 test("a red main line names the item that delivers the pull request its newest commit names: a held one first, a done one too, none when the subject names none", async t => {
   const { store, op, author } = await fixture(t);
   const red = (subject: string) => repoState(WB, { main: { branch: "claude/first-board", commit: "m1", subject, checks: { state: "failure", failed: ["e2e"] } } });
   let subject = "Merge pull request #23 from Ming-Research/watch";
-  const told = () => { const s = store.snapshot(); return decide(s, rules(s), [red(subject)]).find(p => p.event === "main-red")!.fields; };
+  const told = () => { const s = store.snapshot(); return decide(s, [red(subject)]).find(p => p.event === "main-red")!.fields; };
   assert.deepEqual([told().item, told().pr], ["watch", 23]);
   subject = "Add a thing (#25)";
   assert.deepEqual([told().item, told().pr], ["second", 25], "a squash commit names its pull request in parentheses");
@@ -304,49 +290,10 @@ test("a red main line names the item that delivers the pull request its newest c
   assert.equal(told().item, "second", "no session holds either: the first in the board's item order (second comes before bold)");
   await op.dispatchStart({ ...asArchitect, id: "bold", role: "工程师", level: 2, model: "Sonnet", agent: "bold-worker", agentId: "agent-bold" });
   assert.equal(told().item, "bold", "the item a session holds");
-  // The item may be done already: its session stays until the PM finishes it.
+  // The item may be done already: its session stays until its dispatch is closed.
   await op.setPlan({ author, id: "bold", rows: [{ id: "accept", accept: true, text: "验收通过", state: "done" }] });
   assert.equal(rules(store.snapshot()).statusOf("bold"), "done");
   assert.equal(told().item, "bold");
-});
-
-test("an open PR no open item names is told as an orphan, drafts too, once per PR; the PRs an open item names are not", async t => {
-  const { store } = await fixture(t), s = store.snapshot(), r = rules(s);
-  // #24 is a draft an open item names: it is told nothing, not even as an orphan.
-  const pushes = decide(s, r, [repoState(WB, { pulls: [pull(23), pull(24, { draft: true }), pull(99), pull(100, { draft: true }), pull(101, { checks: { state: "failure", failed: ["test"] } })] })]);
-  assert.deepEqual(pushes.map(p => [p.event, p.fields.number]), [["pr-orphan", 99], ["pr-orphan", 100], ["pr-orphan", 101]], "a red unnamed PR is an orphan, not a pr-red; a named draft is no orphan; a named green one is told nothing");
-  const [orphan, draft] = pushes;
-  assert.deepEqual(orphan!.fields, { repo: WB, number: 99, project: "wf-board", title: "PR 99", url: `https://github.com/${WB}/pull/99`, draft: false });
-  assert.equal(draft!.fields.draft, true, "a draft is told too: its checks are the engineer's, its being open is not");
-  assert.equal(orphan!.key, `pr-orphan ${WB}#99`);
-  assert.equal(pushKey("pr-orphan", { repo: WB, number: 99, commit: "c1" }), pushKey("pr-orphan", { repo: WB, number: 99, commit: "c2" }), "once per PR, whatever commit it has");
-  assert.notEqual(pushKey("pr-orphan", { repo: WB, number: 99 }), pushKey("pr-red", { repo: WB, number: 99, commit: "c99" }));
-});
-
-test("an unnamed PR is told as an orphan only once it is ten minutes old", async t => {
-  const { store } = await fixture(t), s = store.snapshot(), r = rules(s), now = Date.parse("2026-10-16T12:00:00Z");
-  const young = pull(99, { createdAt: "2026-10-16T11:59:00Z" }), old = pull(98, { createdAt: "2026-10-16T11:49:00Z" });
-  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], now), [], "one minute old: the engineer has not written its 改动 section yet");
-  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [old] })], now).map(p => p.fields.number), [98], "eleven minutes old, still named by no open item: told");
-  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], Date.parse("2026-10-16T12:08:59Z")), [], "not yet at nine minutes fifty-nine seconds");
-  assert.deepEqual(decide(s, r, [repoState(WB, { pulls: [young] })], Date.parse("2026-10-16T12:09:00Z")).map(p => p.fields.number), [99], "at ten minutes it is told");
-});
-
-test("an unnamed PR that an open item names before it is ten minutes old is never told", async t => {
-  const { store, op } = await fixture(t);
-  let clock = Date.parse("2026-10-16T12:00:00Z");
-  const github = fake({ [WB]: repoState(WB, { pulls: [pull(99, { createdAt: "2026-10-16T11:58:00Z" })] }) });
-  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source, now: () => clock });
-  await watch.poll();
-  assert.equal(wake.latest(), 0, "two minutes old and unnamed: not told yet");
-  const second = store.snapshot().items.second!;
-  await op.updateItem({ author: "wf-board", id: "second", rev: second.rev, head: "## 改动\n\nMing-Research/wf-board#99", reason: "name the PR" });
-  clock = Date.parse("2026-10-16T12:05:00Z");
-  await watch.poll();
-  clock = Date.parse("2026-10-16T12:20:00Z");
-  await watch.poll();
-  // Named, with green checks, it is told nothing; it is never told as an orphan.
-  assert.deepEqual(wake.since(0).frames.map(f => f.event), [], "named before it aged: never an orphan at any later look");
 });
 
 test("a merge row is done when GitHub reports merged every PR that counts for it, and not before", async t => {
@@ -365,12 +312,12 @@ test("a merge row is done when GitHub reports merged every PR that counts for it
   assert.deepEqual(done([]), [], "a repository that could not be asked finishes nothing");
 });
 
-test("a push is the same push again for the same commit only", () => {
-  assert.equal(pushKey("pr-red", { repo: "a/b", number: 1, commit: "x" }), pushKey("pr-red", { repo: "a/b", number: 1, commit: "x", title: "other" }));
-  assert.notEqual(pushKey("pr-red", { repo: "a/b", number: 1, commit: "x" }), pushKey("pr-red", { repo: "a/b", number: 1, commit: "y" }));
-  assert.notEqual(pushKey("pr-red", { repo: "a/b", number: 1, commit: "x" }), pushKey("main-red", { repo: "a/b", branch: "main", commit: "x" }));
-  assert.equal(pushKey("pr-ready", { repo: "a/b", number: 1, commit: "x" }), undefined, "a pull request that can merge is no push");
-  assert.equal(pushKey("note", { repo: "a/b" }), undefined);
+test("a push is the same push again for the same commit only, and only a red main line is one", () => {
+  const red = (commit: string, branch = "main") => ({ repo: "a/b", branch, commit });
+  assert.equal(pushKey("main-red", red("x")), pushKey("main-red", { ...red("x"), failed: ["other"] }));
+  assert.notEqual(pushKey("main-red", red("x")), pushKey("main-red", red("y")));
+  assert.notEqual(pushKey("main-red", red("x")), pushKey("main-red", red("x", "release")));
+  for (const event of ["pr-red", "pr-orphan", "pr-ready", "note"]) assert.equal(pushKey(event, { repo: "a/b", number: 1, commit: "x" }), undefined, `${event} is no push of the watch`);
 });
 
 // --- The watch ---------------------------------------------------------------------------------------------------------------------
@@ -392,73 +339,39 @@ test("a look queries every configured repository once, with its main line branch
   ], "a project without a repo is not asked, and without a mainline the default branch is read");
 });
 
-test("a red PR is told once per head commit: not again at the next look, not after a restart, again for a new commit; a green one never", async t => {
-  const { store, op } = await fixture(t), red = (commit: string) => pull(23, { commit, checks: { state: "failure", failed: ["test"] } });
-  const github = fake({ [WB]: repoState(WB, { pulls: [red("c23")] }) });
-  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source });
+test("no PR is told at any look: red, draft, pending, green or named by no item; the checks of one are its engineer's", async t => {
+  const { store, op } = await fixture(t), red = { state: "failure" as const, failed: ["test"] };
+  const github = fake({ [WB]: repoState(WB, { pulls: [pull(23, { commit: "c23", checks: red }), pull(24, { draft: true, checks: red }), pull(25, { checks: { state: "pending", failed: [] } }), pull(26), pull(99, { checks: red }), pull(100, { draft: true })] }) });
+  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source, now: () => Date.parse("2026-10-16T12:00:00Z") });
   await watch.poll(); await watch.poll();
-  assert.deepEqual(wake.since(0).frames.map(f => [f.n, f.event, f.number, f.commit]), [[1, "pr-red", 23, "c23"]]);
-  await new GithubWatch({ store, ops: op, wake, github: github.source }).poll();
-  assert.equal(wake.latest(), 1, "a watch started over the same kept events knows what was told");
-  github.states[WB] = repoState(WB, { pulls: [red("c23b")] });
+  github.states[WB] = repoState(WB, { pulls: [pull(23, { commit: "c23b", checks: red })] });
   await watch.poll();
-  assert.deepEqual(wake.since(1).frames.map(f => [f.n, f.event, f.commit, f.failed]), [[2, "pr-red", "c23b", ["test"]]]);
-  github.states[WB] = repoState(WB, { pulls: [pull(23, { commit: "c23c" })] });
-  await watch.poll();
-  assert.equal(wake.latest(), 2, "green on a new commit: nothing to tell, the engineer merges it");
+  assert.deepEqual(wake.kept(), [], "nothing for a red PR a 改动 section names (#23), for a draft, for pending checks, for a green one, or for a PR no item names (#99, #100), however many looks and commits");
 });
 
-test("a PR that is still a draft, or whose checks are still running, tells nothing; when it turns red it is told", async t => {
-  const { store, op } = await fixture(t), github = fake({ [WB]: repoState(WB, { pulls: [pull(23, { draft: true })] }) });
-  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source });
-  await watch.poll();
-  github.states[WB] = repoState(WB, { pulls: [pull(23, { draft: true, checks: { state: "failure", failed: ["test"] } })] });
-  await watch.poll();
-  github.states[WB] = repoState(WB, { pulls: [pull(23, { checks: { state: "pending", failed: [] } })] });
-  await watch.poll();
-  github.states[WB] = repoState(WB, { pulls: [pull(23)] });
-  await watch.poll();
-  assert.equal(wake.latest(), 0, "no push for a draft, red or green, nor for pending checks, nor for a green one that can merge");
-  github.states[WB] = repoState(WB, { pulls: [pull(23, { checks: { state: "failure", failed: ["test"] } })] });
-  await watch.poll();
-  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["pr-red"]);
-});
-
-test("a red main line is told once per commit", async t => {
+test("a red main line is told to the architect once per commit: not at the next look, not after a restart, again for a new commit", async t => {
   const { store, op } = await fixture(t), red = (commit: string) => repoState(WB, { main: { branch: "claude/first-board", commit, subject: "", checks: { state: "failure", failed: ["test"] } } });
   const github = fake({ [WB]: red("m1") }), wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source });
+  const told = () => wake.agent(ARCHITECT_SESSION).since(0).frames.map(f => [f.event, f.commit]);
   await watch.poll(); await watch.poll();
+  assert.deepEqual(told(), [["main-red", "m1"]], "no item delivers the commit and nothing holds it: the architect's stream");
+  await new GithubWatch({ store, ops: op, wake, github: github.source }).poll();
+  assert.equal(told().length, 1, "a watch started over the same kept events knows what was told");
   github.states[WB] = red("m2"); await watch.poll();
-  assert.deepEqual(wake.since(0).frames.map(f => [f.event, f.commit]), [["main-red", "m1"], ["main-red", "m2"]]);
+  assert.deepEqual(told(), [["main-red", "m1"], ["main-red", "m2"]]);
 });
 
-test("the first look at a repository tells nothing of the unnamed PRs already open; later ones are told, and a restart keeps what was left untold", async t => {
-  const { store, op } = await fixture(t), stateFile = await stateDir(t);
-  let clock = Date.parse("2026-10-16T12:00:00Z");
-  const old = (number: number) => pull(number, { createdAt: "2026-10-01T00:00:00Z" });
-  const github = fake({ [WB]: repoState(WB, { pulls: [old(90), old(91), pull(92, { draft: true, createdAt: "2026-10-01T00:00:00Z" })] }) });
-  const wake = new Wake(), start = () => new GithubWatch({ store, ops: op, wake, github: github.source, now: () => clock, stateFile });
-  const watch = start();
+test("a red main line goes to the session holding the item that delivered it, and to the architect when none holds it", async t => {
+  const { store, op } = await fixture(t);
+  const github = fake({ [WB]: repoState(WB, { main: { branch: "claude/first-board", commit: "m1", subject: "Merge pull request #23 from Ming-Research/watch", checks: { state: "failure", failed: ["test"] } } }) });
+  const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source });
+  wake.routeBy(item => item === "watch" ? "watch-worker" : undefined);
   await watch.poll();
-  assert.equal(wake.latest(), 0, "three old unnamed PRs at the first look: the backlog of a time when PRs were not named, not news");
-  // A PR that opens after the first look, and is still unnamed ten minutes on, is told as before.
-  github.states[WB] = repoState(WB, { pulls: [old(90), old(91), pull(92, { draft: true, createdAt: "2026-10-01T00:00:00Z" }), pull(93, { createdAt: "2026-10-16T12:01:00Z" })] });
-  clock = Date.parse("2026-10-16T12:05:00Z"); await watch.poll();
-  assert.equal(wake.latest(), 0, "four minutes old");
-  clock = Date.parse("2026-10-16T12:20:00Z"); await watch.poll();
-  assert.deepEqual(wake.since(0).frames.map(f => [f.event, f.number]), [["pr-orphan", 93]]);
-  // A restart: the left-untold PRs stay untold (they are in the state file, not in the kept events), the told one is not told again.
-  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).baseline.sort(), [`pr-orphan ${WB}#90`, `pr-orphan ${WB}#91`, `pr-orphan ${WB}#92`]);
-  const again = start();
-  await again.poll();
-  assert.equal(wake.latest(), 1);
-  // One that closes is forgotten, and a repository looked at for the first time later gets the same treatment.
-  github.states[WB] = repoState(WB, { pulls: [old(90), pull(93, { createdAt: "2026-10-16T12:01:00Z" })] });
-  await again.poll();
-  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).baseline, [`pr-orphan ${WB}#90`], "only what is still open stays in the file");
-  github.states["Ming-Research/Whitefoot"] = repoState("Ming-Research/Whitefoot", { pulls: [old(70)] });
-  await again.poll();
-  assert.deepEqual(wake.since(1).frames.map(f => [f.event, f.number]), [["pr-orphan", 70]], "Whitefoot was looked at before, with no PRs: its first look is over, so #70 is news");
+  assert.deepEqual(wake.agent("watch-worker").since(0).frames.map(f => [f.event, f.item, f.commit]), [["main-red", "watch", "m1"]]);
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).since(0).frames, [], "the holder has it, so the architect does not");
+  github.states[WB] = repoState(WB, { main: { branch: "claude/first-board", commit: "m2", subject: "Update the readme", checks: { state: "failure", failed: ["test"] } } });
+  await watch.poll();
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).since(0).frames.map(f => [f.event, f.item, f.commit]), [["main-red", null, "m2"]], "a commit no item delivered goes to the architect");
 });
 
 test("a merged PR marks its merge row done, writes the item's log under the board's own session, and does not write again", async t => {
@@ -494,11 +407,11 @@ test("a merged PR whose row cannot be written is tried again at the next look", 
 });
 
 test("a repository that fails is reported in the status and the others still go on; the report clears with the next good look", async t => {
-  const { store, op } = await fixture(t), github = fake({ [WB]: new Error("gh failed"), "Ming-Research/Whitefoot": repoState("Ming-Research/Whitefoot", { pulls: [pull(5, { checks: { state: "failure", failed: ["test"] } })] }) });
+  const { store, op } = await fixture(t), github = fake({ [WB]: new Error("gh failed"), "Ming-Research/Whitefoot": repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", subject: "", checks: { state: "failure", failed: ["test"] } } }) });
   const wake = new Wake(), watch = new GithubWatch({ store, ops: op, wake, github: github.source, now: () => Date.parse("2026-10-16T02:00:00Z") });
   await quiet(() => watch.poll());
   assert.deepEqual(watch.status(), { polledAt: "2026-10-16T02:00:00.000Z", problems: { [WB]: "gh failed" } });
-  assert.deepEqual(wake.since(0).frames.map(f => f.repo), ["Ming-Research/Whitefoot"], "the other repository was read");
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).since(0).frames.map(f => f.repo), ["Ming-Research/Whitefoot"], "the other repository was read");
   github.states[WB] = repoState(WB, { truncated: true });
   await quiet(() => watch.poll());
   assert.match(watch.status().problems[WB]!, /more open PRs than one look reads/);
@@ -536,12 +449,17 @@ test("a look records its time, and a watch started over that file waits out the 
   const watch = (now: number, file = stateFile) => new GithubWatch({ store, ops: op, wake: new Wake(), github: fake().source, now: () => now, everyMs: every, stateFile: file });
   assert.equal(watch(at).nextDelayMs(), 0, "no look known: look at once");
   await watch(at).poll();
-  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { polledAt: "2026-10-16T02:00:00.000Z", looked: ["ming-research/wf-board", "ming-research/whitefoot", "mbbill/agents_config"], baseline: [] });
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { polledAt: "2026-10-16T02:00:00.000Z" }, "the time of the look and nothing else");
   assert.equal(watch(at + 120_000).nextDelayMs(), 180_000, "two minutes after the last look, three are left");
   assert.equal(watch(at + every).nextDelayMs(), 0);
   assert.equal(watch(at + 2 * every).nextDelayMs(), 0, "overdue: at once");
   assert.equal(watch(at - 60_000).nextDelayMs(), every, "a clock that went back waits one interval, not more");
   assert.equal(watch(at + 120_000).status().polledAt, "2026-10-16T02:00:00.000Z");
+  // A file of the older kind, which also kept the repositories looked at and the open PRs of the first look, is read for the time alone.
+  await writeFile(stateFile, JSON.stringify({ polledAt: "2026-10-16T02:00:00.000Z", looked: ["ming-research/wf-board"], baseline: [`pr-orphan ${WB}#90`] }));
+  assert.equal(watch(at + 120_000).nextDelayMs(), 180_000, "the older file gives the time of the last look");
+  await watch(at + every).poll();
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { polledAt: "2026-10-16T02:05:00.000Z" }, "and the next look writes the time alone");
   await writeFile(stateFile, "not json");
   assert.equal(watch(at).nextDelayMs(), 0, "a file that cannot be read costs one early look");
   await writeFile(stateFile, JSON.stringify({ polledAt: "yesterday" }));
@@ -608,19 +526,16 @@ test("a merge row is marked done with its log in one commit, and only if it is s
   await assert.rejects(op.markMerged({ author: "Whitefoot", session: "看板", id: "watch", row: "merge", merged: [{ repo: WB, number: 23 }], log: "x" }), /belongs to project wf-board/);
 });
 
-test("the watch runs inside the server: a red PR reaches a wake client and /health reports the look", async t => {
+test("the watch runs inside the server: a red main line reaches the architect's stream and /health reports the look", async t => {
   const wake = new Wake(), github = fake();
   let watch: GithubWatch | undefined;
-  const { api, url, store, op } = await server(t, { wake, watch: fx => (watch = new GithubWatch({ store: fx.store, ops: fx.op, wake, github: github.source })) });
+  const { api, url } = await server(t, { wake, watch: fx => (watch = new GithubWatch({ store: fx.store, ops: fx.op, wake, github: github.source })) });
   const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(done(), "timed out"); };
   await until(() => watch!.status().polledAt !== undefined);
-  // The fixture's Whitefoot items are in a repository this watch is not asked for; name PR 7 of it in a 改动 section.
-  const a = store.snapshot().items.a!;
-  await op.updateItem({ author: "Whitefoot", id: "a", rev: a.rev, head: "背景\n\n## 改动\n\nMing-Research/Whitefoot#7", reason: "name the PR" });
-  github.states["Ming-Research/Whitefoot"] = repoState("Ming-Research/Whitefoot", { pulls: [pull(7, { base: "main", checks: { state: "failure", failed: ["test"] } })] });
-  const socket = await wakeSocket(t, url, 0);
+  github.states["Ming-Research/Whitefoot"] = repoState("Ming-Research/Whitefoot", { main: { branch: "main", commit: "w1", subject: "", checks: { state: "failure", failed: ["test"] } } });
+  const socket = await agentSocket(t, url, ARCHITECT_SESSION);
   await watch!.poll(); await socket.sync();
-  assert.deepEqual(socket.events().map(f => [f.event, f.repo, f.number, f.commit]), [["pr-red", "Ming-Research/Whitefoot", 7, "c7"]]);
+  assert.deepEqual(socket.events().map(f => [f.event, f.repo, f.branch, f.commit]), [["main-red", "Ming-Research/Whitefoot", "main", "w1"]]);
   const health = await api("/health", undefined, "GET");
   assert.equal(health.status, 200);
   assert.ok((health.data as { github: { polledAt: string } }).github.polledAt, "the look is shown");

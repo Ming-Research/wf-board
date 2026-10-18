@@ -15,7 +15,6 @@ import { BackupPush } from "../src/backup-push.ts";
 import { SlowOps } from "../src/slow-ops.ts";
 import { decide } from "../src/watch.ts";
 import type { PullState, RepoState } from "../src/github.ts";
-import { rules } from "../src/rules.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z"), MIN = 60_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -153,15 +152,15 @@ test("the look at GitHub tells only a red main line: not a red pull request, not
     // PR 5 is named by item a and red; PR 6 is named by no item and old.
     pulls: [pull(5, { checks: { state: "failure", failed: ["test"] } }), pull(6)],
   };
-  assert.deepEqual(decide(s, rules(s), [state], Date.parse("2026-10-16T12:00:00Z")).map(p => p.event), ["main-red"]);
+  assert.deepEqual(decide(s, [state]).map(p => p.event), ["main-red"]);
 });
 
 test("the owner is told once that the architect's oldest push has waited too long, and never of a PM", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let clock = T0;
   const told: string[] = [];
-  // The limit of the architect's stream; the option was named for the receipts of the PM's stream, which shared it.
-  const wake = new Wake({ now: () => clock, receiptLimitMs: 10 * MIN });
+  // The limit of the architect's stream.
+  const wake = new Wake({ now: () => clock, overdueMs: 10 * MIN });
   wake.onTell(notice => told.push(notice.title));
   await server(t, { now: () => clock, checkIntervalMs: 1000, wake, architectTimedWakeMs: 1e12 });
   wake.push("backup-behind", { commits: 1, lastSuccess: null, reason: null });
