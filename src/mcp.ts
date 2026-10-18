@@ -279,7 +279,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
         const notes = [...fixed.notes, ...(note ? [note] : [])];
         // The PM's or the architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
-        if (credential?.ok ? answersPushes({ role: credential.who.access.role }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
+        if (credential?.ok ? answersPushes({ role: credential.who.access.role, session: credential.who.session }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
         // Another agent's call (the architect's too) is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
         const caller = credential?.ok ? (isPMCall({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !isPMCall({ session: args.session }) ? args.session.trim() : undefined;
         if (caller) wake?.liveness.see(caller);

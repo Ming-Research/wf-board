@@ -1,0 +1,69 @@
+name: tmp-architect-turn
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-architect-turn-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts test/liveness.test.ts test/dispatch.test.ts test/stateless.test.ts test/tags.test.ts test/move-project.test.ts test/access.test.ts test/runner-report.test.ts test/mcp.test.ts
+  # The new and changed tests must fail on the source without the change (the whole of src/ as on main) and on
+  # each of the one-line mistakes that would give the turns the architect's pushes.
+  witness:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: src as on main
+            tests: test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts
+            mutate: |
+              git checkout origin/main -- src
+          - name: the turns' name answers the PM's stream
+            tests: test/wake.test.ts
+            mutate: |
+              sed -i 's/isPMSession(call.session) || isArchitectSession(call.session)/isPMSession(call.session) || isArchitectName(call.session)/' src/model.ts
+          - name: the architect's role answers the PM's stream under any session
+            tests: test/wake.test.ts
+            mutate: |
+              sed -i 's/call.role === ARCHITECT_ROLE && isArchitectSession(call.session)/call.role === ARCHITECT_ROLE/' src/model.ts
+          - name: the turns are carried the architect's pushes
+            tests: test/wake-agents.test.ts
+            mutate: |
+              perl -0pi -e 's/(footer\(name: string\): string \{\n\s+const stream = this\.agents\.get\()name\)/$1name === "架构师轮次" ? ARCHITECT_SESSION : name)/' src/wake.ts
+          - name: the architect's timed wake leaves out the turns' writes
+            tests: test/wake.test.ts
+            mutate: |
+              sed -i 's/changedSince(store, s, r, since, started, isArchitectSession)/changedSince(store, s, r, since, started, session => isArchitectSession(session) || session === "架构师轮次")/' src/timed-wake.ts
+    name: witness (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Apply the mistake
+        run: |
+          ${{ matrix.mutate }}
+          git diff --stat
+          test -n "$(git diff --name-only; git diff --cached --name-only)"
+      - name: The tests must fail
+        run: |
+          if node --test ${{ matrix.tests }} > witness.log 2>&1; then echo "the tests passed on the mistaken source"; exit 1; fi
+          grep -E "not ok|✖|^# (pass|fail)" witness.log | head -40

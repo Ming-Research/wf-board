@@ -303,6 +303,15 @@ test("an agent's tool call (the architect's too) carries its undelivered pushes 
   const pm: Resolved = { ok: true, who: { author: "PM", session: PM_SESSION, access: { role: "PM", project: "PM", roots: [] } } };
   assert.equal(await call({ session: "eng" }, pm), plain, "a PM credential is the PM's, whatever session the call names");
   assert.equal(wake.agent(PM_SESSION).deliveredUpTo(), 0);
+  // The architect's turns write as the architect but are not the conversation the pushes are for: what is pushed to 「架构师」 waits for it.
+  const owedToConversation = wake.agent(ARCHITECT_SESSION).push("item-done", done("c6", "p"));
+  assert.equal(await call({ session: "架构师轮次" }), plain, "a call from the turns' session carries nothing of the architect's");
+  assert.equal(await call({ session: " 架构师轮次 " }), plain, "spaces around the name change nothing");
+  const turn: Resolved = { ok: true, who: { author: "Architect", session: "架构师轮次", access: { role: "架构师", project: "Architect", roots: [] } } };
+  assert.equal(await call({ session: ARCHITECT_SESSION }, turn), plain, "the architect's role under the turns' session is the turns': whatever session the call names, the conversation's pushes stay");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 2, "and none of it was recorded as delivered");
+  assert.equal(await call({ session: ARCHITECT_SESSION }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(owedToConversation)}`, "the conversation's next call carries it");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 3);
 });
 
 test("an item becoming done tells the session holding each open item that waits on it, once, and nobody else", async t => {

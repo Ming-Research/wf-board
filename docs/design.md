@@ -1802,7 +1802,7 @@ coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-PM's or the architect's session (`PM`, `架构师`) is also a receipt for the PM's wake stream, and any
+PM's or the architect's session (`PM`, `架构师`; not `架构师轮次`, below) is also a receipt for the PM's wake stream, and any
 session's call but the PM's, the architect's included, carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
@@ -2133,7 +2133,7 @@ replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
-the session `架构师`, and the PM author `PM` writing from the session `PM`
+the session `架构师` or `架构师轮次`, and the PM author `PM` writing from the session `PM`
 (section 9). Both may write any project's items, cards and note replies, and so may
 the observer's credential (section 9); every other writer only its own project's. Some operations are reserved for the process, which the PM does and the architect may do too, and every other writer
 is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
@@ -3125,6 +3125,28 @@ stream the architect's calls answer without having been shown them; pushing each
 streams, because two receipts for one note leave it unclear who handled it; the PM forwarding the
 notes, because it would have to judge which are about content, and that judgment is the architect's.
 
+**The architect's turns.** When an engineer stops to ask the architect, the runner starts a turn
+of the architect (`claude -p` with the architect's turn rules) to answer on the engineer's item.
+It writes as author `Architect` from the session `架构师轮次` (`ARCHITECT_TURN_SESSION` in
+`src/model.ts`), not from `架构师`, which belongs to the conversation the owner talks to: a turn
+under that name would be carried the conversation's pushes by its first tool result and mark
+them delivered. The rights and the pushes go by different tests. The rights (section 9) are
+the architect's for either name (`isArchitect`, `isArchitectName`); the pushes go by the
+conversation's name alone (`isArchitectSession`): the stream under `架构师` is carried
+only in a tool result of that session, a turn's call is no receipt for the PM's stream (over a
+credential, `answersPushes` reads the role and the session together, so the architect's role
+under `架构师轮次` does not answer it), and the architect's timed wake leaves out only
+what the session `架构师` wrote, so a turn's writes are listed there: the conversation did not
+make them. Decision: one more session name with the architect's rights and none of its pushes.
+Rejected: a role of its own for the turns with a narrower access table, because a turn does
+the architect's whole work (answering, cards, pauses, new items, ratings, the architect's
+journal) so the narrower table is the architect's or breaks the next time a part is added, and
+a credential guards against a wrong name, not against impersonation; the turns writing as
+`架构师` and the board finding another way to keep the pushes, because it needs a name or a
+credential to tell the turns apart, which is this decision with an extra layer; the runner
+writing the answers itself, because it would translate every judgment write of the architect
+and need the architect's rights itself.
+
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
 no-receipt alert. Each notice goes to every open board page, as an `owner`
@@ -3431,7 +3453,7 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师`); this applies to items, their cards and owner-note
+the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师` or `架构师轮次`); this applies to items, their cards and owner-note
 replies or closures. Only the PM and the architect create items in any project; an
 engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
@@ -3450,8 +3472,10 @@ authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
-`架构师` (`isArchitect` in `src/model.ts`), and the PM's is author `PM`
-writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both names
+`架构师` or `架构师轮次` (`isArchitect` in `src/model.ts`; the second is the name of the
+turns the runner starts to answer an engineer, section 8, The architect's turns, and has the
+rights without the pushes), and the PM's is author `PM`
+writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both author names
 are needed because each author name is also a project: `Architect` is the
 project of the agents_config repository, `PM` the project of the PM's own
 records (it has no repository), and an engineer who does an item there writes as
@@ -3535,21 +3559,24 @@ the writer from it.
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
-  - A *long-lived credential* belongs to the architect (`架构师`), the PM (`PM`), the observer (`观察者`) or the
+  - A *long-lived credential* belongs to the architect (`架构师`, or `架构师轮次` for the turns the runner
+    starts), the PM (`PM`), the observer (`观察者`) or the
     resource agent (`资源管理`): session name, role, project and, for the resource agent, the
     records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
     `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session names `架构师` and `PM`** are the architect's and the PM's alone: without a
-  credential the board takes author `Architect` writing from `架构师` for the architect, and
+- **The session names `架构师`, `架构师轮次` and `PM`** are the architect's and the PM's alone: without a
+  credential the board takes author `Architect` writing from `架构师` or `架构师轮次` for the architect, and
   author `PM` writing from `PM` for the PM (section 6), and skips the process checks for them. A
-  file entry of another role under either name is refused, so is an entry of the architect's role
+  file entry of another role under any of the names is refused, so is an entry of the architect's role
   under another name or in another project than `Architect`, an entry of the PM's role under another
-  name or in another project than `PM`, and so is `dispatch_start` for an agent of either name
-  (spaces around it are ignored, as everywhere the board compares it). With a credential, a
-  write is the architect's or the PM's when the credential's role is, whatever names it carries.
+  name or in another project than `PM`, and so is `dispatch_start` for an agent of any of the names
+  (spaces around it are ignored, as everywhere the board compares it). The conversation's credential
+  and the turns' credential are two entries side by side. With a credential, a
+  write is the architect's or the PM's when the credential's role is, whatever names it carries; what
+  the role's session name still decides is the pushes (section 8, The architect's turns).
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads

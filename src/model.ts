@@ -434,8 +434,10 @@ export type Project = z.infer<typeof Project>;
 
 /** The author name of the architect: the project of the agents_config repository, a configured project like any other. */
 export const ARCHITECT = "Architect";
-/** The session name the architect writes from (docs/design.md, section 9). */
+/** The session name the architect writes from, the conversation the owner talks to; the architect's pushes are for it (docs/design.md, section 9). */
 export const ARCHITECT_SESSION = "架构师";
+/** The session name of the turns the runner starts to answer an engineer: the architect's write rights and none of the architect's pushes (docs/design.md, section 9). */
+export const ARCHITECT_TURN_SESSION = "架构师轮次";
 /** The author name of the PM: a project of its own, with no repository, that holds the PM's records; a configured project like any other. */
 export const PM_AUTHOR = "PM";
 /** The session name the PM writes from, as author `PM`. */
@@ -451,14 +453,15 @@ export const PM_WRITER = `${PM_AUTHOR} with session ${PM_SESSION}`;
 export const PROCESS_WRITERS = `${PM_WRITER} or ${ARCHITECT_WRITER}`;
 type Writer = { author: string; session?: string; access?: { role: string } };
 /**
- * Whether a write speaks for the architect: author `Architect` from the session 「架构师」. Only such a write may do what the board
- * reserves for the architect alone (the journal, the tag vocabulary; ops `onlyArchitect`). An engineer who works in the Architect
- * project writes as author `Architect` from another session and is then an ordinary project author. A write over a credential is
- * the architect's when the credential's role is, whatever names it carries (src/credentials.ts); the names of a write without one
- * are not authenticated: that stops misuse, not impersonation.
+ * Whether a write speaks for the architect: author `Architect` from the session 「架构师」 or 「架构师轮次」 (`isArchitectName`). Only
+ * such a write may do what the board reserves for the architect alone (the journal, the tag vocabulary; ops `onlyArchitect`). An
+ * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary project
+ * author. A write over a credential is the architect's when the credential's role is, whatever names it carries (src/credentials.ts);
+ * the names of a write without one are not authenticated: that stops misuse, not impersonation. The rights do not carry the pushes:
+ * those go by `isArchitectSession` alone.
  */
 export const isArchitect = (who: Writer): boolean =>
-  who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectSession(who.session);
+  who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectName(who.session);
 /** Whether a write speaks for the PM: author `PM` from the session 「PM」, or a credential of role `PM`, by the same rule. */
 export const isPM = (who: Writer): boolean =>
   who.access ? who.access.role === PM_ROLE : who.author === PM_AUTHOR && isPMSession(who.session);
@@ -468,13 +471,15 @@ export const isPM = (who: Writer): boolean =>
  * architect, which keeps every right it had.
  */
 export const mayRunProcess = (who: Writer): boolean => isArchitect(who) || isPM(who);
-/** Whether a session name is the architect's, ignoring spaces around it: the one comparison the permission rule and the wake stream's receipt share. */
+/** Whether a session name is the architect's conversation, ignoring spaces around it: the one that receives the architect's pushes, whose calls answer the PM's stream and whose own writes the architect's timed wake leaves out. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
+/** Whether a session name is one the architect writes from, ignoring spaces around it: the conversation or the runner's turns. The permission rule and the credential file's checks use it; the pushes use `isArchitectSession`. */
+export const isArchitectName = (session: string | undefined): boolean => isArchitectSession(session) || session?.trim() === ARCHITECT_TURN_SESSION;
 /** Whether a session name is the PM's, ignoring spaces around it. */
 export const isPMSession = (session: string | undefined): boolean => session?.trim() === PM_SESSION;
-/** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of either's role. */
-export const answersPushes = (call: { role: string } | { session?: string }): boolean =>
-  "role" in call ? call.role === PM_ROLE || call.role === ARCHITECT_ROLE : isPMSession(call.session) || isArchitectSession(call.session);
+/** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of the PM's role or of the architect's role under the architect's session; the runner's turns (`ARCHITECT_TURN_SESSION`) never do. */
+export const answersPushes = (call: { role: string; session: string } | { session?: string }): boolean =>
+  "role" in call ? call.role === PM_ROLE || (call.role === ARCHITECT_ROLE && isArchitectSession(call.session)) : isPMSession(call.session) || isArchitectSession(call.session);
 /** Whether a call is the PM's: from its session, or over a credential of its role. A tool result carries no pushes to it (docs/design.md, The wake streams). */
 export const isPMCall = (call: { role: string } | { session?: string }): boolean =>
   "role" in call ? call.role === PM_ROLE : isPMSession(call.session);

@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, Key, LONG_LIVED_ROLES, PM_AUTHOR, PM_ROLE, PM_SESSION } from "./model.ts";
+import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_TURN_SESSION, Key, LONG_LIVED_ROLES, PM_AUTHOR, PM_ROLE, PM_SESSION, isArchitectName } from "./model.ts";
 import type { Access, Item, Snapshot } from "./model.ts";
 
 /**
@@ -38,9 +38,9 @@ export const LongLived = z.object({
   roots: z.array(Key).default([]),
   hash: Hash,
 }).strict()
-  .refine(c => c.role !== ARCHITECT_ROLE || (c.project === ARCHITECT && c.session === ARCHITECT_SESSION), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION}`)
-  // Author Architect from this session is what the board takes for the architect (model isArchitect); no other role writes under it.
-  .refine(c => c.role === ARCHITECT_ROLE || c.session !== ARCHITECT_SESSION, `the session name ${ARCHITECT_SESSION} is the architect's alone`)
+  .refine(c => c.role !== ARCHITECT_ROLE || (c.project === ARCHITECT && isArchitectName(c.session)), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION} or ${ARCHITECT_TURN_SESSION}`)
+  // Author Architect from either of these sessions is what the board takes for the architect (model isArchitect); no other role writes under them.
+  .refine(c => c.role === ARCHITECT_ROLE || !isArchitectName(c.session), `the session names ${ARCHITECT_SESSION} and ${ARCHITECT_TURN_SESSION} are the architect's alone`)
   // The PM writes as author PM, the project of its own, from the session PM (model isPM), on the same terms.
   .refine(c => c.role !== PM_ROLE || (c.project === PM_AUTHOR && c.session === PM_SESSION), `the PM's credential is project ${PM_AUTHOR}, session ${PM_SESSION}`)
   .refine(c => c.role === PM_ROLE || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`);

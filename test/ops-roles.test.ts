@@ -263,6 +263,45 @@ test("Architect from another session writes only the Architect project's items, 
   assert.equal((await store.log({ limit: 1 }))[0]!.session, "架构师", "the commit records the trimmed session");
 });
 
+test("the architect's turns (author Architect, session 架构师轮次) write as the architect does, and a near miss or another author does not", async t => {
+  const { store, op, dir } = await board(t, { sharedProjects: true });
+  const turn = { author: architect, session: "架构师轮次" };
+  const lastCommit = async () => (await store.log({ limit: 1 }))[0]!;
+  const mine = async (call: () => Promise<Result>) => { await call(); const commit = await lastCommit(); assert.deepEqual([commit.author, commit.session], [architect, "架构师轮次"], "the commit names Architect and the turn's session"); };
+  // What the engineer's question needs: an answer on its item, a card, a pause, a new item and its rating.
+  await mine(() => op.appendLog({ ...turn, id: "a", text: "Answer to the engineer" }));
+  assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: "Answer to the engineer" });
+  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card", item: "a", question: "Choose?", options: [opt("A"), opt("B"), opt("C", true)] }));
+  await mine(() => op.withdrawCard({ ...turn, key: "turn-card", log: "Asked twice" }));
+  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card-2", item: "a", question: "Choose again?", options: [opt("A"), opt("B"), opt("C", true)] }));
+  await mine(() => op.ruleCard({ ...turn, key: "turn-card-2", choice: "C" }));
+  await mine(() => op.setPause({ ...turn, id: "b", paused: true, reason: "Owner chose to wait" }));
+  await mine(() => op.createItem({ ...turn, key: "made-by-turn", group: "Firn", title: "Made for Firn", accept: "Pass" }));
+  await mine(() => op.setDifficulty({ ...turn, id: "made-by-turn", difficulty: 3, reason: "Turn rates" }));
+  await mine(() => op.updateItem({ ...turn, id: "made-by-turn", rev: store.snapshot().items["made-by-turn"]!.rev, title: "Retitled by the turn" }));
+  await mine(() => op.setStatus({ ...turn, id: "made-by-turn", status: "cancelled", log: "Not needed" }));
+  await mine(() => op.replyNote({ ...turn, id: "note-1", reply: "Answer" }));
+  // What the board reserves for the architect alone: the tag vocabulary, another project's repository.
+  await mine(() => op.setTag({ ...turn, name: "新标签", meaning: "测试用" }));
+  await mine(() => op.updateProject({ ...turn, name: "Whitefoot", repo: "Org/Changed" }));
+  assert.equal(store.snapshot().items["made-by-turn"]!.group, "Firn", "the new item belongs to the project named by group");
+  for (const id of ["a", "b"]) assert.equal(store.snapshot().items[id]!.group, author, "the turn's writes never move an item to another project");
+  await op.appendLog({ ...turn, session: "  架构师轮次  ", id: "a", text: "Padded" });
+  assert.equal((await lastCommit()).session, "架构师轮次", "spaces around the name are ignored and the commit records the trimmed session");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+  // The same names that fail for the conversation's session fail here: a near miss, another author, the PM.
+  const before = store.snapshot(), count = (await store.log()).length;
+  const only = (what: string) => rx`^author: only ${what === "change the tag vocabulary" ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
+  for (const who of [{ author: architect, session: "架构师轮次x" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架构师 轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }, { author: "PM", session: "架构师轮次" }]) {
+    await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), only("create items"));
+    await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), only("pause or resume an item"));
+    await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), only("change the tag vocabulary"));
+    if (who.author !== author) await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), /item a belongs to project Whitefoot/);
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+});
+
 test("a cancelled item turns into a record only by Architect, so a project cannot reopen it through record mode", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   for (const [key, group] of [["dropped", author], ["dropped-own", architect]] as const) {
