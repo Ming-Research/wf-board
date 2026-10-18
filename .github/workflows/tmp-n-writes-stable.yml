@@ -1,0 +1,19 @@
+name: tmp-n-writes-stable
+# Temporary quick check for the item n-writes-stable while writing; deleted before the full CI.
+on:
+  push:
+    branches: [n-writes-stable]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/rules-reuse.test.ts test/derived.test.ts test/rules.test.ts test/rules-oracle.test.ts test/web.test.ts
