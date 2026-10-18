@@ -155,7 +155,8 @@ test("draft notes validate targets and choices, delete only drafts, send atomica
   const sent = await own.send();
   assert.deepEqual(sent.sent, [{ id: a.id, target: "it:a", kind: "approve", project: "Whitefoot" }, { id: b.id, target: "q:choice", kind: "choice", project: "Whitefoot" }, { id: c.id, target: "it:other", kind: "explain", project: "Firn" }]);
   assert.equal((await store.log()).length, before + 1);
-  for (const { id } of sent.sent) { assert.equal(store.snapshot().notes[id]!.state, "sent"); assert.equal(store.snapshot().notes[id]!.sentAt, later); }
+  // The plain pick rules its card in this commit and is handled by that; the others wait for a reply.
+  for (const { id } of sent.sent) { assert.equal(store.snapshot().notes[id]!.state, id === b.id ? "done" : "sent"); assert.equal(store.snapshot().notes[id]!.sentAt, later); }
   await assert.rejects(own.deleteNote({ id: a.id }), /Only draft/);
   await op.replyNote({ author, id: a.id, reply: "recorded" });
   await assert.rejects(own.deleteNote({ id: a.id }), /Only draft/);
