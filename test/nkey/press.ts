@@ -263,10 +263,12 @@ export class Press {
 }
 
 /** Presses n in `win` until it has landed on `wanted` other items (a press inside the item shown does not count). `events` gives press
- * k its change event. `progress` says how many have landed, for a test that sets the time of answers per landing. */
-export async function landings(win: Press, wanted: number, events?: readonly string[], progress?: { landed: number }): Promise<Landing[]> {
+ * k its change event. `progress` says how many have landed, for a test that sets the time of answers per landing, and may end the walk
+ * early with `done`. */
+export async function landings(win: Press, wanted: number, events?: readonly string[], progress?: { landed: number; done?: () => boolean }): Promise<Landing[]> {
   const out: Landing[] = [];
-  for (let presses = 0; out.length < wanted && presses < 8 * wanted; presses++) {
+  for (let presses = 0; out.length < wanted && !progress?.done?.() && presses < 8 * wanted; presses++) {
+    if (events && win.presses >= events.length) throw new Error(`the walk made ${win.presses} presses and there are only ${events.length} change events for them`);
     const was = win.selected(), r = await win.press(events?.[win.presses]);
     if (r.item !== null && r.item !== was) out.push({ item: r.item, busy: r.busy, ...r.counted });
     if (progress) progress.landed = out.length;
@@ -280,6 +282,7 @@ export async function pairedLandings(wins: readonly Press[], wanted: number, eve
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
   for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
+    if (events && wins[0]!.presses >= events.length) throw new Error(`the walk made ${wins[0]!.presses} presses and there are only ${events.length} change events for them`);
     const rot = presses % wins.length, order = [...wins.slice(rot), ...wins.slice(0, rot)];
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
@@ -320,15 +323,18 @@ export function samePage(a: { script: string; html: string }, b: { script: strin
 /** Pairs measured per round, the pairs thrown away at the start of a round while the page warms up, and the rounds at most. */
 export const PAIRS = 30, WARMUP = 2, ROUNDS = 3;
 
-export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press> }
+/** `versus`: the window this one is judged against, `base` unless given (a page made slower on purpose is judged against the page it was made from). */
+export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press>; versus?: string }
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
   /** Busy times of the measured pairs of all rounds, per window. */
   busy: Record<string, number[]>;
   rounds: number;
-  /** Per window other than `base`: its ratio to `base` over the pairs; `twin` is the noise of this run. */
+  /** Per window other than `base`: its ratio to the window it is judged against (`base` unless it says otherwise) over the pairs; `twin` is the noise of this run. */
   ratios: Record<string, Interval>;
+  /** The window each ratio is against. */
+  versus: Record<string, string>;
   /** `sound`: the twin's interval holds 1 within `floor`; per window other than base and twin the verdict. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
@@ -352,9 +358,10 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
       first ??= lands;
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
     } finally { await scope.close(); }
-    ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[windows[0]!.label]!)]));
+    ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
     sound = twinIsSound(ratios.twin!, floor);
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
-  return { first: first!, busy, rounds, ratios, sound, verdicts, misses };
+  const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
+  return { first: first!, busy, rounds, ratios, versus, sound, verdicts, misses };
 }
