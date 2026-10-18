@@ -13,15 +13,16 @@ export interface Target {
   num?: number;
 }
 
-/** The targets whose title contains the query, ignoring case; an empty query matches them all. Input order is kept.
- * A number query ("812" or "#812") puts the item or card holding that short number first, then the title matches. */
-export function findTargets<T extends Pick<Target, "title" | "num">>(targets: readonly T[], query: string): T[] {
+/** The targets whose title or key contains the query, ignoring case; an empty query matches them all. Input order is kept.
+ * A target whose key is the query comes first, and so does the one holding the short number a number query ("812" or
+ * "#812") names; the other matches follow. */
+export function findTargets<T extends Pick<Target, "key" | "title" | "num">>(targets: readonly T[], query: string): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return targets.slice();
-  const titled = targets.filter(t => t.title.toLowerCase().includes(q)), num = numRef(q);
-  if (num === undefined) return titled;
-  const exact = targets.filter(t => t.num === num);
-  return [...exact, ...titled.filter(t => !exact.includes(t))];
+  const num = numRef(q);
+  const exact = targets.filter(t => t.key.toLowerCase() === q || (num !== undefined && t.num === num));
+  const found = targets.filter(t => t.title.toLowerCase().includes(q) || t.key.toLowerCase().includes(q));
+  return [...exact, ...found.filter(t => !exact.includes(t))];
 }
 
 export function refToken(kind: Target["kind"], key: string): string { return "[[" + (kind === "item" ? "it" : "q") + ":" + key + "]]"; }

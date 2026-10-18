@@ -71,3 +71,26 @@ test("a number query puts the item or card holding that number first, then title
   assert.deepEqual(findTargets(numbered, "方案").map(t => t.key), ["q"], "other queries keep the title search");
   assert.deepEqual(refQuery("见 #812", 6), { start: 2, query: "812" }, "the # popup hands the digits to findTargets");
 });
+
+test("a key matches like a title: a case-insensitive substring, and a key equal to the query comes first", () => {
+  const keyed = [
+    { kind: "item" as const, key: "item-lifecycle-2", title: "第二版生命周期" },
+    { kind: "card" as const, key: "q", title: "如何显示？" },
+    { kind: "item" as const, key: "item-lifecycle", title: "条目的生命周期" },
+    { kind: "item" as const, key: "other", title: "提到 item-lifecycle 的条目" },
+  ];
+  assert.deepEqual(findTargets(keyed, "item-lifecycle").map(t => t.key), ["item-lifecycle", "item-lifecycle-2", "other"], "the exact key on top, then the other matches in board order");
+  assert.deepEqual(findTargets(keyed, " ITEM-Lifecycle ").map(t => t.key), ["item-lifecycle", "item-lifecycle-2", "other"], "case and surrounding spaces do not matter");
+  assert.deepEqual(findTargets(keyed, "lifecycle-2").map(t => t.key), ["item-lifecycle-2"], "a part of a key matches");
+  assert.deepEqual(findTargets(keyed, "生命周期").map(t => t.key), ["item-lifecycle-2", "item-lifecycle"], "a title query still finds by title, in board order");
+  assert.deepEqual(findTargets(keyed, "nothing-like-it").map(t => t.key), []);
+});
+
+test("a number query and a key query share the exact-first rule", () => {
+  const mixed = [
+    { kind: "item" as const, key: "plan-8", title: "第八个计划", num: 5 },
+    { kind: "item" as const, key: "b", title: "编号是八", num: 8 },
+    { kind: "item" as const, key: "8", title: "代号是八", num: 9 },
+  ];
+  assert.deepEqual(findTargets(mixed, "8").map(t => t.key), ["b", "8", "plan-8"], "the number holder and the exact key come first in board order, a key containing the digit after them");
+});

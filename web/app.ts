@@ -1275,7 +1275,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const ref = link.getAttribute("data-ref") ?? "";
     jumpTo(ref.startsWith("it:") ? "item" : "card", ref.slice(ref.indexOf(":") + 1));
   }, true);
-  // "/" searches every item and decision card by title; up and down choose a row, Enter or a click goes there, Esc closes.
+  // "/" searches every item and decision card by title, short number or key; up and down choose a row, Enter or a click goes there, Esc closes.
   let searchBox: HTMLElement | null = null;
   function closeSearch() { searchBox?.remove(); searchBox = null; }
   function openSearch() {
@@ -1283,7 +1283,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const box = el("div", "searchbox"), list = el("div", "search-list");
     box.id = "search"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "搜索条目和决策卡");
     const input = document.createElement("input");
-    input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题或编号"; input.setAttribute("aria-label", "搜索条目和决策卡的标题或编号");
+    input.type = "text"; input.id = "search-input"; input.placeholder = "搜索条目和决策卡的标题、编号或代号"; input.setAttribute("aria-label", "搜索条目和决策卡的标题、编号或代号");
     box.appendChild(input); box.appendChild(list);
     const found = targetList(list, t => { closeSearch(); jumpTo(t.kind, t.key); }, "searchrow");
     const update = () => {

@@ -2343,9 +2343,9 @@ If a later change joins a pending read's step, that combined step waits for
 the server's read result to separate its later unread changes.
 
 In a comment, typing `#` opens a small popup of the items and decision cards
-whose title contains the text typed after it (ignoring case; up to eight
-shown). When the text is a number, the item or card holding that number
-comes first, then titles containing those digits. Up and down choose, Enter or a click writes a reference token over
+whose title or key contains the text typed after it (ignoring case; up to eight
+shown). A key equal to the text comes first, and so does the item or card holding that
+number when the text is a number; the other matches follow in board order. Up and down choose, Enter or a click writes a reference token over
 `#…`, and Esc closes only the popup. A `#` glued to a word before it, as in
 `Repo#341`, starts nothing. The token is `[[it:<key>]]` for an item and
 `[[q:<key>]]` for a decision card: the prefix is there because an item and a
@@ -2363,9 +2363,9 @@ or goes, and any item, decision card, note or the board goal refers to it, the
 page renders again.
 
 `/` anywhere except while typing in a text field opens a search box over every
-item and decision card by title, matched as in the popup (ignoring case,
+item and decision card by title or key, matched as in the popup (ignoring case,
 substring, any language; `812` or `#812` puts that number's item or card
-first), done and cancelled ones included. A row shows the
+first, and so does a key equal to the text), done and cancelled ones included. A row shows the
 status, the title, the project and the owner item (a card's holding item). Up
 and down choose, Enter or a click goes there as for a reference, and Esc or a
 click outside closes it.

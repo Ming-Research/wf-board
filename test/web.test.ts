@@ -3105,6 +3105,15 @@ test("typing # in a comment lists the matching items and cards; Enter inserts th
   assert.deepEqual(noteCalls(p).map(c => c.body), [{ target: "it:child", text: "见 [[it:shipped]]", kind: "comment" }], "the stored text keeps the key, not the title");
 });
 
+test("# popup: a key finds the item and Enter inserts the token with that key", async () => {
+  const { p, ta, type, titles } = await composer();
+  await type("见 #shipped"); assert.deepEqual(titles(), ["已交付 Alpha"], "a key that is not in the title finds the item");
+  await type("见 #DROPPED"); assert.deepEqual(titles(), ["取消的 Beta"], "case does not matter");
+  await type("见 #pped"); assert.deepEqual(titles(), ["已交付 Alpha", "取消的 Beta"], "a part of a key matches, in board order");
+  await type("见 #shipped"); p.key("Enter", ta);
+  assert.equal(ta.value, "见 [[it:shipped]]");
+});
+
 test("# popup: Chinese search finds a card, arrows wrap, a click inserts, Esc closes only the popup", async () => {
   const { p, ta, type, pop, options, titles } = await composer();
   await type("#显示"); assert.deepEqual(titles(), ["如何显示？"]);
@@ -3194,6 +3203,20 @@ test("/ opens a search over every item and card by title, done and cancelled one
   p.key("/", input()); assert.equal(p.all().filter(e => e.id === "search").length, 1, "/ typed in the field is text, and opens no second box");
   p.key("Escape", input()); assert.equal(box(), null, "Esc closes it");
   p.key("/"); assert.ok(box()); p.press(1, 1, false); assert.equal(box(), null, "a press outside closes it");
+});
+
+test("/ also finds an item by its key, ignoring case, and the field says what it searches", async () => {
+  const p = await page(linked(), []);
+  const input = () => p.document.getElementById("search-input")!, rows = () => p.all().filter(e => classes(e).includes("searchrow"));
+  const type = async (text: string) => { input().value = text; await input().handlers.get("input")![0]!({}); };
+  p.key("/");
+  assert.match((input() as Element & { placeholder: string }).placeholder, /标题、编号或代号/, "the placeholder names the key");
+  await type("shipped"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha"], "a key that is not in the title finds the item");
+  await type("DROPPED"); assert.deepEqual(rows().map(rowTitle), ["取消的 Beta"], "case does not matter");
+  await type("pped"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha", "取消的 Beta"], "a part of a key matches, in board order");
+  p.key("Enter", input()); await p.flush();
+  assert.ok(detailItem(p, "shipped"), "choosing the row shows the item the key names");
+  p.key("/"); await type("alpha"); assert.deepEqual(rows().map(rowTitle), ["已交付 Alpha"], "a title query finds as before");
 });
 
 test("a search jump remembers where the reader was, so Back returns, as after a reference click", async () => {
