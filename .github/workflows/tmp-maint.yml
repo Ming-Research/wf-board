@@ -1,0 +1,69 @@
+name: tmp-maint
+# Temporary (item e2e-git-tmp-flake): delete before the last full CI, which fails while this file exists.
+# `quick` runs the type check and the test files the change touches; `falsify` breaks one part of the change at a time and
+# lists the tests that fail, so that every new check is seen to fail for the condition it protects.
+on:
+  push:
+    branches: [data-repo-own-gc]
+concurrency:
+  group: tmp-maint-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: git --version
+      - run: npm run check
+      - run: node --test --test-reporter=spec test/maintenance.test.ts
+      - run: node --test --test-reporter=spec test/board-gen.test.ts
+      - run: node --test --test-reporter=spec test/store.test.ts test/shutdown.test.ts test/push.test.ts test/startup-cache.test.ts
+  falsify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [f1-old-git-flags, f2-no-queue-call, f3-no-backlog, f4-threshold-one, f5-no-merge, f6-stop-noop, f7-count-kept, f8-outside-queue, f9-no-graph, f10-no-repack]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: break one part
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          case "$NAME" in
+            f1-old-git-flags) sed -i 's|const NO_GIT_MAINTENANCE = \["-c", "gc.auto=0", "-c", "maintenance.auto=false"\];|const NO_GIT_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];|' src/store.ts ;;
+            f2-no-queue-call) sed -i 's|^    void this.queueMaintenance();$|    // mutated away|' src/store.ts ;;
+            f3-no-backlog) sed -i 's|store.pending = Math.floor((await store.repoCounts()).loose / LOOSE_OBJECTS_PER_COMMIT);|store.pending = 0;|' src/store.ts ;;
+            f4-threshold-one) sed -i 's|this.pending < this.maintenanceEvery|this.pending < 1|' src/store.ts ;;
+            f5-no-merge) sed -i 's|const MERGE_ABOVE_PACKS = 8;|const MERGE_ABOVE_PACKS = 1000;|' src/store.ts ;;
+            f6-stop-noop) sed -i 's|stopMaintenance(): void { this.maintenanceStopped = true; }|stopMaintenance(): void {}|' src/store.ts ;;
+            f7-count-kept) sed -i 's|^    this.pending -= commits;$|    // mutated away|' src/store.ts ;;
+            f8-outside-queue) sed -i 's|this.enqueue(() => this.maintain())|this.maintain()|' src/store.ts ;;
+            f9-no-graph) sed -i 's|await this.git(\["commit-graph"|await 0 \&\& this.git(["commit-graph"|' src/store.ts ;;
+            f10-no-repack) sed -i 's|await this.git(\["repack", "-d", "-l", "--write-midx", "-q"\]);|// mutated away|' src/store.ts ;;
+          esac
+          git diff --stat
+          if git diff --quiet src/store.ts; then echo "the mutation did not apply"; exit 1; fi
+      - name: tests that should fail
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          files="test/maintenance.test.ts"
+          case "$NAME" in f1-old-git-flags|f8-outside-queue) files="$files test/board-gen.test.ts" ;; esac
+          set +e
+          node --test --test-reporter=spec $files > out.txt 2>&1
+          echo "exit code $?"
+          { echo "### $NAME"; grep -E '^\s*✖ ' out.txt | sort -u; } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -nE 'AssertionError|Expected|actual|expected' out.txt | head -20

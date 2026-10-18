@@ -29,6 +29,13 @@ import type { StartupStep } from "./log.ts";
 import { Budget, BudgetError, STARTUP_LIMITS, REQUEST_LIMITS, allowRange, currentBudget, withBudget } from "./budget.ts";
 import { ReadCache } from "./read-cache.ts";
 
+/** What `Store.open` takes. `maintenance`: `every` is the commits between maintenance steps (a test passes a small one), `log`
+ * receives the line of each step (the service log by default). */
+export interface OpenOptions {
+  init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; clearPriority?: boolean;
+  startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean;
+  maintenance?: { every?: number; log?: (line: string) => void };
+}
 export type DocKind = "item" | "decision" | "note" | "glossary" | "message";
 export interface Put { kind: DocKind; id: string; doc: unknown; expectRev: number | null }
 export interface Del { kind: DocKind; id: string; expectRev: number }
@@ -51,9 +58,19 @@ const ids: Record<DocKind, z.ZodType<string>> = { item: Key, decision: Key, note
 /** The documents of one kind in a snapshot; a snapshot built outside the store may have no messages. */
 const docsOf = (s: Snapshot, kind: DocKind): Record<string, Doc> => (s[collections[kind]] ?? {}) as Record<string, Doc>;
 const run = promisify(execFile);
-/** git's automatic maintenance runs in the foreground of the command that triggers it. Left in the background, its repack
- * deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
-const FOREGROUND_MAINTENANCE = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"];
+/** git never starts maintenance of its own: the board runs it as a task of its write queue (docs/design.md, Maintenance). A git
+ * process that repacked by itself would write the data repository outside the queue, and the repack git starts after a large
+ * commit deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
+const NO_GIT_MAINTENANCE = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+/** Commits between two maintenance steps. The size of a step follows this number alone: on a hosted runner a step of 100 commits
+ * took 240 to 299 ms at the median and 753 ms at most, against the 3 s a write may wait (item data-repo-gc-timing-study). */
+export const MAINTENANCE_EVERY = 100;
+/** About 4 loose objects remain from each commit on the live board (4.14 measured): this turns the loose objects an open finds
+ * into the commits that wait for a step. */
+const LOOSE_OBJECTS_PER_COMMIT = 4;
+/** With more packs than this before a step, the step also merges the small packs, in batches of `MERGE_BATCH`. */
+const MERGE_ABOVE_PACKS = 8;
+const MERGE_BATCH = "16m";
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
@@ -343,6 +360,13 @@ export class Store {
   private requireBudget = false;
   /** Reports the time of each startup step; a no-op after `open` unless the caller gave `startup`. */
   private lap: (step: string, detail?: string) => void = () => {};
+  /** Commits since the last maintenance step; `open` starts it from the loose objects the repository holds (docs/design.md, Maintenance). */
+  private pending = 0;
+  private maintenanceEvery = MAINTENANCE_EVERY;
+  private maintenanceLog: (line: string) => void = line => console.info(line);
+  /** The step that is queued or running, so a commit queues no second one. */
+  private maintenanceTask?: Promise<void>;
+  private maintenanceStopped = false;
   /** Rules shared by every reader of a snapshot, and the activity index kept across writes. */
   readonly derived = new DerivedCache();
 
@@ -355,7 +379,7 @@ export class Store {
 
   private async git(args: string[], author?: string): Promise<string> {
     const slug = author?.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-    const result = await run("git", [...FOREGROUND_MAINTENANCE, ...args], {
+    const result = await run("git", [...NO_GIT_MAINTENANCE, ...args], {
       cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
         ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
@@ -382,11 +406,11 @@ export class Store {
   /** `startup` is told how long each step of the start took (docs/design.md, Running). The start reads history under a
    * budget of its own (`STARTUP_LIMITS`). `requireBudget`: from then on a read of history that runs under no budget fails
    * (docs/design.md, section 4, Request budgets); the daemon sets it, and tests leave it off unless they test the budget. */
-  static open(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; clearPriority?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean } = {}): Promise<Store> {
+  static open(dir: string, opts: OpenOptions = {}): Promise<Store> {
     return withBudget(new Budget("start", STARTUP_LIMITS), () => Store.start(dir, opts));
   }
 
-  private static async start(dir: string, opts: { init?: boolean; board?: z.input<typeof Board>; planConversionHead?: string; clearArchitectLevel?: boolean; clearPriority?: boolean; startup?: StartupStep; cacheDelayMs?: number; requireBudget?: boolean }): Promise<Store> {
+  private static async start(dir: string, opts: OpenOptions): Promise<Store> {
     dir = resolve(dir);
     const lap = stopwatch(opts.startup);
     let entries: string[];
@@ -471,7 +495,7 @@ export class Store {
       const raw = await readPlanData(dir).finally(() => lap("read documents again", retired ? "a document has a retired format's shape" : "a document did not load"));
       if (raw.legacy || raw.hasArchives) {
         await Store.convertRetired(dir, raw, opts.planConversionHead);
-        return Store.start(dir, { startup: opts.startup, cacheDelayMs: opts.cacheDelayMs, requireBudget: opts.requireBudget });
+        return Store.start(dir, { startup: opts.startup, cacheDelayMs: opts.cacheDelayMs, requireBudget: opts.requireBudget, maintenance: opts.maintenance });
       }
     }
     if (invalid.length || !board) throw new ValidationError(invalid);
@@ -481,6 +505,11 @@ export class Store {
     store.lap = lap;
     store.requireBudget = opts.requireBudget ?? false;
     if (opts.cacheDelayMs !== undefined) store.cacheDelayMs = opts.cacheDelayMs;
+    if (opts.maintenance?.every !== undefined) {
+      if (!Number.isInteger(opts.maintenance.every) || opts.maintenance.every < 1) throw new Error("maintenance.every must be a positive integer");
+      store.maintenanceEvery = opts.maintenance.every;
+    }
+    if (opts.maintenance?.log) store.maintenanceLog = opts.maintenance.log;
     if (numbers) { store.nextNum = numbers.next; store.numbersInHead = true; }
     // Refuse to adopt staged/uncommitted board edits as the committed snapshot.
     const dirty = await store.git(["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries", "messages"]);
@@ -492,6 +521,8 @@ export class Store {
     store.ownerInHead = persistedOwner !== null;
     store.ownerFileExists = ownerFileExists;
     lap("check board", "numbers, git status, HEAD, owner state");
+    // The commits waiting for a maintenance step, told by the loose objects they left; the commits below add to it.
+    store.pending = Math.floor((await store.repoCounts()).loose / LOOSE_OBJECTS_PER_COMMIT);
     await store.numberExisting();
     lap("number documents");
     if (clearing.length) {
@@ -503,6 +534,10 @@ export class Store {
       lap("clear the retired priority", `${clearingPriority.length} items`);
     }
     await store.loadActivity();
+    // A backlog is maintained before the daemon listens, so no request waits for it.
+    const backlog = store.pending, step = store.queueMaintenance();
+    if (step) await step;
+    lap("maintenance", step ? `one step for a backlog of ${backlog} commits` : `a backlog of ${backlog} commits, below ${store.maintenanceEvery}`);
     return store;
   }
 
@@ -1079,6 +1114,8 @@ export class Store {
     if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
     this.state = next;
     this.scheduleCacheWrite();
+    this.pending += 1;
+    void this.queueMaintenance();
     if (numbersChanged) { this.nextNum = nextNum; this.numbersInHead = true; }
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }
     // An observer cannot turn a committed transaction into an apparent failure.
@@ -1114,6 +1151,49 @@ export class Store {
       return (await this.apply({ author, message: "Save owner reading state" }, true)).commit;
     });
   }
+
+  /** The loose objects, the packs and the disk they take (KB) in the data repository, as `git count-objects -v` reads them. */
+  private async repoCounts(): Promise<{ loose: number; packs: number; kb: number }> {
+    const out = await this.git(["count-objects", "-v"]);
+    const field = (name: string) => Number(out.match(new RegExp(`^${name}: (\\d+)$`, "m"))?.[1] ?? 0);
+    return { loose: field("count"), packs: field("packs"), kb: field("size") + field("size-pack") };
+  }
+
+  /** Queues a maintenance step when `maintenanceEvery` commits are waiting for one and none is queued; the promise ends with the
+   * step. A step is a task of the write queue, so it runs when the writes before it are done and holds the writes after it. */
+  private queueMaintenance(): Promise<void> | undefined {
+    if (this.maintenanceTask) return this.maintenanceTask;
+    if (this.maintenanceStopped || this.pending < this.maintenanceEvery) return undefined;
+    const task = this.enqueue(() => this.maintain()).finally(() => { this.maintenanceTask = undefined; });
+    this.maintenanceTask = task;
+    return task;
+  }
+
+  /** One maintenance step (docs/design.md, Maintenance): the loose objects into a pack, the commit-graph, and, with more than
+   * `MERGE_ABOVE_PACKS` packs, the small packs merged in batches. It never rejects: a step that fails is logged, and the next try
+   * comes after `maintenanceEvery` more commits. */
+  private async maintain(): Promise<void> {
+    if (this.maintenanceStopped) return;
+    const commits = this.pending, started = performance.now(), took = () => Math.round(performance.now() - started);
+    try {
+      const packsBefore = (await this.repoCounts()).packs;
+      await this.git(["repack", "-d", "-l", "--write-midx", "-q"]);
+      await this.git(["commit-graph", "write", "--split", "--reachable", "--no-progress"]);
+      if (packsBefore > MERGE_ABOVE_PACKS) {
+        await this.git(["multi-pack-index", "expire", "--no-progress"]);
+        await this.git(["multi-pack-index", "repack", `--batch-size=${MERGE_BATCH}`, "--no-progress"]);
+      }
+      const after = await this.repoCounts();
+      this.maintenanceLog(`maintenance ${commits} commits ${took()} ms ${after.packs} packs ${(after.kb / 1024).toFixed(1)} MB`);
+    } catch (error) {
+      console.error(`maintenance of ${commits} commits failed after ${took()} ms; the next try is after ${this.maintenanceEvery} more commits`, error instanceof Error ? error.message : String(error));
+    }
+    this.pending -= commits;
+  }
+
+  /** From now on no step is queued and a queued one does nothing; the one that is running ends. For the shutdown, which then commits
+   * the owner's reading state without waiting for a step that has not started. */
+  stopMaintenance(): void { this.maintenanceStopped = true; }
 
   /** The path of a file in the data directory that belongs to the daemon and not to the board (the wake log), with git told to
    * leave it out, so it is never committed and never makes the working tree look dirty. */
