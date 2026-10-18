@@ -20,7 +20,7 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git against them; its push runs beside the write queue, not in it.
+  runs git against them; its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
 - `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the

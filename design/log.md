@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Run the data repository's maintenance as a task of the write queue
+
+Nodes: storage
+
+Summary: The first version let git's own maintenance run in the foreground of the commit that triggers it, which removed the race between a background repack and the next write but held one write for 5.7 seconds on the live repository, over the three-second line. The board now turns git's maintenance off and runs a step of its own after every 100 commits as a task of the write queue, with a backlog maintained before the daemon listens; a step packs the loose objects, writes a commit-graph and merges the small packs in batches. The three choices (when, how many commits, what a step does) are the owner's rulings on the study's cards, with the measurements in docs/design.md, section Maintenance.
+
 ## 2026-10-18 Keep the page's rules across log writes and count the writes in the press-n test
 
 Nodes: storage/write-path/page-rules-reuse, testing/press-n
