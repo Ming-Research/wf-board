@@ -1,0 +1,33 @@
+name: tmp-nkey-changed
+# TEMPORARY (item ci-script-nkey): the time parts of the n-key lane on a page that differs from its base, so the candidate window runs too. Removed before the pull request is ready.
+on:
+  push:
+    branches: [ci-script-nkey]
+jobs:
+  nkey:
+    name: nkey ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: time-quiet-changed, file: time-quiet }
+          - { name: time-writing-changed, file: time-writing }
+          - { name: time-quiet-changed-2, file: time-quiet }
+          - { name: time-writing-changed-2, file: time-writing }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Select the base page
+        run: |
+          base=$(git rev-parse 253c9b5~1)
+          echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$base"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.file }}.nkey.ts
