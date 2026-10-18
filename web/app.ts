@@ -1835,8 +1835,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // The whole view (docs/design.md, section 6, The whole view): every open work item by what is being done about it, drawn from the
   // function the architect's tool reads, so the two agree. Each kind lists the rows the tool's default answer lists and opens to more.
-  let wholeOpen = true;
-  try { wholeOpen = localStorage.getItem("board-whole") !== "closed"; } catch (e) {}
+  // Folded to its heading until the reader opens it: opened, the block is a screen tall and would push the agent list and the tree down.
+  let wholeOpen = false;
+  try { wholeOpen = localStorage.getItem("board-whole") === "open"; } catch (e) {}
   const wholeAll = new Set<Bucket>();
   let wholeSignature = "";
   function wholeViewNow() { return cached("wholeView", () => wholeView(snapshot, derived, Date.now())); }

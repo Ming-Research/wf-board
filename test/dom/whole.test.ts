@@ -48,7 +48,7 @@ function kindRows(bp: DomPage, bucket: Bucket): string[] {
 const same = (a: { remaining: number; kind: Record<Bucket, number> }) => ({ remaining: a.remaining, kind: Object.fromEntries(BUCKETS.map(b => [b, a.kind[b] ?? 0])) });
 
 test("the block counts what the tool counts, and a kind lists the rows the tool's default answer lists", async t => {
-  const board = await startBoard(t), bp = await DomPage.open(t, board), read = await counts(board, t);
+  const board = await startBoard(t), bp = await DomPage.open(t, board, { storage: { "board-whole": "open" } }), read = await counts(board, t);
   assert.equal(bp.visible(bp.$("#whole")), true, "the board has open work, so the block is drawn");
   const expected = await read();
   assert.ok(expected.remaining > 0 && expected.kind.unattended > BUCKET_ROWS.unattended, "the generated board gives the cap something to cut");
@@ -66,7 +66,7 @@ test("a runner report moves its item into the block's kind as soon as the board 
   const board = await startBoard(t);
   // The runner writes as the PM, a project of the real board that the generated board does not have.
   await ops(board.store).createProject({ ...asPM, name: "PM" });
-  const bp = await DomPage.open(t, board), read = await counts(board, t);
+  const bp = await DomPage.open(t, board, { storage: { "board-whole": "open" } }), read = await counts(board, t);
   const s = board.store.snapshot(), now = Date.now(), view = wholeView(s, rules(s, now), now);
   const target = view.rows.find(x => x.bucket === "unattended")!;
   assert.ok(target, "the generated board has an item nobody holds");
@@ -87,10 +87,20 @@ test("a runner report moves its item into the block's kind as soon as the board 
   assert.deepEqual(bp.errors, []);
 });
 
-test("the block folds to its heading and the choice is kept, and a kind opens to more rows and closes again", async t => {
+test("the block is folded to its heading until it is opened and the choice is kept, and a kind opens to more rows and closes again", async t => {
   const board = await startBoard(t), bp = await DomPage.open(t, board), read = await counts(board, t);
-  const total = (await read()).kind.unattended;
+  const expected = await read(), total = expected.kind.unattended;
   assert.ok(total > BUCKET_ROWS.unattended);
+  // A page nobody has opened the block on draws only the heading, which still counts the work left and what needs a person.
+  const toggle = () => bp.$("#whole .whole-toggle")!;
+  assert.equal(toggle().getAttribute("aria-expanded"), "false");
+  assert.equal(bp.$$("#whole .whole-kind").length, 0, "folded: no kind is drawn");
+  assert.equal(toggle().textContent, `▸ 全貌 · 没做完 ${expected.remaining} 件` + (expected.kind.overdue ? ` · 等太久 ${expected.kind.overdue}` : "") + (expected.kind.unattended ? ` · 没人管 ${expected.kind.unattended}` : ""));
+  bp.click(toggle(), "the heading of the block");
+  await bp.settle();
+  assert.equal(toggle().getAttribute("aria-expanded"), "true");
+  assert.equal(bp.win.localStorage.getItem("board-whole"), "open");
+  assert.deepEqual(same(blockCounts(bp)), same(expected), "opened: the kinds the tool counts");
   const more = () => bp.$<HTMLButtonElement>('#whole .whole-more[data-kind="unattended"]');
   assert.match(more()!.textContent!, new RegExp(`还有 ${total - BUCKET_ROWS.unattended} 件`));
   bp.click(more(), "the button that lists more");
@@ -100,16 +110,13 @@ test("the block folds to its heading and the choice is kept, and a kind opens to
   bp.click(more(), "the button that lists fewer");
   await bp.settle();
   assert.equal(kindRows(bp, "unattended").length, BUCKET_ROWS.unattended, "closed again");
-  bp.click(bp.$("#whole .whole-toggle"), "the heading of the block");
+  bp.click(toggle(), "the heading of the block");
   await bp.settle();
-  assert.equal(bp.$$("#whole .whole-kind").length, 0, "folded: no kind is drawn");
-  assert.equal(bp.$("#whole .whole-toggle")!.getAttribute("aria-expanded"), "false");
-  assert.match(bp.$("#whole .whole-toggle")!.textContent!, /^▸ 全貌 · 没做完 \d+ 件/, "the heading still counts");
+  assert.equal(bp.$$("#whole .whole-kind").length, 0, "folded again");
   assert.equal(bp.win.localStorage.getItem("board-whole"), "closed");
+  await bp.reset({ "board-whole": "open" });
+  assert.equal(bp.$$("#whole .whole-kind").length > 0, true, "a page opened later keeps the block open");
   await bp.reset({ "board-whole": "closed" });
-  assert.equal(bp.$$("#whole .whole-kind").length, 0, "a page opened later keeps the block folded");
-  bp.click(bp.$("#whole .whole-toggle"), "the heading of the block");
-  await bp.settle();
-  assert.equal(bp.$$("#whole .whole-kind").length > 0, true, "and opens it again");
+  assert.equal(bp.$$("#whole .whole-kind").length, 0, "and keeps it folded");
   assert.deepEqual(bp.errors, []);
 });

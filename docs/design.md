@@ -2669,8 +2669,11 @@ same five kinds, counts and rows as the architect's `whole_view` (section 6, The
 because the page calls the same `wholeView` function, bundled like `src/agents.ts`.
 
 - *The heading* is a button: `▾ 全貌 · 没做完 N 件`, with the counts of 等太久 and 没人管 when
-  they are not zero. It folds the block and the choice is kept in the browser
-  (`localStorage` `board-whole`, open by default). The block is hidden when nothing is open.
+  they are not zero. It opens and folds the block, and the choice is kept in the browser
+  (`localStorage` `board-whole`). The block is folded until the reader opens it, because
+  opened it is a screen tall (up to 36 rows) and would push the agent list and the tree down: with
+  it open by default, the browser test of the agent list, which expects the list near the top,
+  failed. The block is hidden when nothing is open.
 - *A kind* lists the rows the tool's default answer lists, and a button at its foot opens it
   to 40 rows and closes it again. A row shows the item's title (a click selects it in the tree),
   its project, what it does or waits for, how long and, for a runner's report, the time, turns and
