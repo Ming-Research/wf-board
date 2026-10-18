@@ -787,7 +787,7 @@ test("write_card keeps what the row after the card waited for when a record row 
   // A record row is no step: the acceptance row follows "one", the last step before the record row, not the record row.
   await store.commit({ author: "Fixture", message: "Seed a record", puts: [{ kind: "item", id: "rec", expectRev: null, doc: { title: "记录", group: author, record: true, plan: [], updated: at } }] });
   await op.setPlan({ author, id: "a", rows: [
-    { id: "one", text: "One", state: "todo" }, { id: "rec", item: "rec", own: false, after: [] }, { id: "accept", accept: true, text: "独立验收通过", state: "todo" },
+    { id: "one", text: "One", state: "todo" }, { item: "rec", own: false, after: [] }, { id: "accept", accept: true, text: "独立验收通过", state: "todo" },
   ] });
   const args = { confidence: conf, author, key: "mid", item: "a", question: "Where?", blocks: "The work stops", options: [opt("Here")] };
   await op.writeCard(args);
