@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Show the architect and the owner the whole board's open work in five kinds
+
+Nodes: items, mcp/whole-view
+
+Summary: The architect had no one call that said which open work is being done, which waits and for what, which is set aside on purpose, and which nobody holds, and the owner's page had no such view. The runner's state is now a field of the item, written by the PM and the architect only and never news to the owner, and the open work is put into five kinds (waiting too long, nobody's, being worked on, waiting, set aside) by one function that the `whole_view` tool prints and the page draws, with a bounded answer and the time limits in one provisional object. The grounds and the refused alternatives are in the two nodes; the derivations are in docs/design.md, section 5, Runner reports, section 6, The whole view, and section 7, The whole view.
+
 ## 2026-10-18 Check the page's diagrams in the DOM layer against a stand-in library
 
 Nodes: testing

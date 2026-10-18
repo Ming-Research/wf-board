@@ -53,6 +53,10 @@ matches what the artifact board offered.
 - `src/candidates.ts`: the items an engineer could be started on and the working engineers of the two pools, read from the
   whole board (the `candidates` tool): the board lists and holds no limit, the PM compares the count with the owner's
   numbers, the architect chooses (design section 6, The candidates read).
+- `src/whole-view.ts`: the whole view: every open work item in one of five kinds (waiting too long, nobody's, being worked
+  on, waiting, set aside) by the runner's report on it (`item.runner`, written by `report_state`), a live engineer session
+  and the plan, in one function that the `whole_view` tool prints and the page draws (design section 6, The whole view;
+  section 5, Runner reports). Imported by the server and bundled into the page.
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.

@@ -200,7 +200,52 @@ export const Dispatch = z.object({
 }).refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
 export type Dispatch = z.infer<typeof Dispatch>;
 
-export const Link = z.object({ label: z.string().min(1), url: z.url() }).strict();
+/**
+ * What the runner (the resident program that runs the engineers' turns) last reported about the work on an item: one report that
+ * each new report replaces, kept on the item (docs/design.md, section 5, Runner reports). The states are the ones the runner's
+ * turns end in (`ci`, `ask`, `items`, `run`, `ready`, `done`) with `running` for a turn in progress and `exception` for work it has
+ * stopped and wants looked at. `since` and `at` are stamped by the server, never given by the reporter.
+ */
+export const RUNNER_STATES = ["running", "ci", "ask", "items", "run", "ready", "exception", "done"] as const;
+export type RunnerState = (typeof RUNNER_STATES)[number];
+/** Whom an `ask` waits on. */
+export const RUNNER_ASKS = ["owner", "architect"] as const;
+/** The most characters of the one-line note a report carries. */
+export const RUNNER_NOTE_MAX = 120;
+const RunnerNote = z.string().min(1).max(RUNNER_NOTE_MAX).refine(text => !!text.trim() && !/[\r\n]/.test(text), "Give one nonempty line");
+/** What a report must say about what the work waits on, by its state: the one place the rule lives, for the schema and the write. */
+export function runnerReportProblem(r: { state: RunnerState; to?: string | undefined; cards?: readonly string[] | undefined; items?: readonly string[] | undefined }): string | undefined {
+  if (r.state === "ask") {
+    if (r.to === undefined) return "to: a report of state ask says whom the work asks, owner or architect";
+    if (r.to === "owner" && !r.cards?.length) return "cards: an ask to the owner names the cards the work waits for";
+    if (r.to === "architect" && r.cards?.length) return "cards: only an ask to the owner names cards";
+  } else if (r.to !== undefined || r.cards !== undefined) return "to, cards: only a report of state ask carries them";
+  if (r.state === "items") { if (!r.items?.length) return "items: a report of state items names the items the work waits for"; }
+  else if (r.items !== undefined) return "items: only a report of state items carries them";
+  return undefined;
+}
+export const RunnerReport = z.object({
+  state: z.enum(RUNNER_STATES),
+  /** When the work entered this state; moves when the state or what it waits on changes, not when a report repeats it. */
+  since: Time,
+  /** The latest report that changed anything. */
+  at: Time,
+  /** When the work began: given by the reporter on its first report or taken from that report's time, and kept. */
+  started: Time,
+  to: z.enum(RUNNER_ASKS).optional(),
+  cards: z.array(Key).min(1).optional(),
+  items: z.array(Key).min(1).optional(),
+  note: RunnerNote.optional(),
+  /** Rounds run on the work so far, and what they cost in US dollars: cumulative figures the reporter keeps. */
+  turns: Count.optional(),
+  cost: Cost.optional(),
+}).strict().superRefine((r, ctx) => {
+  const problem = runnerReportProblem(r);
+  if (problem) ctx.addIssue(problem);
+}).refine(r => Date.parse(r.started) <= Date.parse(r.since) && Date.parse(r.since) <= Date.parse(r.at), "started, since and at must not run backwards");
+export type RunnerReport = z.infer<typeof RunnerReport>;
+
+export const Link =z.object({ label: z.string().min(1), url: z.url() }).strict();
 export type Link = z.infer<typeof Link>;
 
 /** What the owner must do. `url`: where the owner does it (a pull request to merge). `chat`: only the owner's word in chat counts. */
@@ -244,6 +289,8 @@ export const Item = z.object({
   links: z.array(Link).default([]),
   /** The agent sessions started on this item, oldest first; like the log, historical detail the owner is never told is new. */
   dispatches: z.array(Dispatch).refine(list => new Set(list.map(d => d.agentId)).size === list.length, "Dispatch agentIds must be unique").optional(),
+  /** The runner's latest report on the work; like the log and the dispatches, historical detail the owner is never told is new. */
+  runner: RunnerReport.optional(),
   ask: Ask.optional(),
   created: Time.optional(),
   updated: Time,
@@ -251,6 +298,7 @@ export const Item = z.object({
 }).strict().refine(it => !it.record || it.status === undefined, "A record has no status")
   .refine(it => !it.record || it.paused === undefined, "A record cannot be paused")
   .refine(it => !it.record || it.difficulty === undefined, "A record has no difficulty")
+  .refine(it => !it.record || it.runner === undefined, "A record has no runner report")
   .refine(it => {
     const count = it.plan.filter(row => "accept" in row && row.accept).length;
     return it.record ? count === 0 : count >= 1;
@@ -447,14 +495,14 @@ export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, PM_ROLE, "观察者", "资源�
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
   "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.order",
-  "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row",
+  "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row", "item.runner",
   "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
 ] as const;
 export type Part = (typeof PARTS)[number];
 /** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. `below`: the same without the items the credential names: the writer has been handed those and does not rewrite the hand-off. `own`: no item at all, only a document of the writer's own (a message it sends). */
 export type Scope = "board" | "subtree" | "below" | "own";
-/** What the board reserves for the PM and the architect (ops `onlyProcess`), and starting a dispatch: the process. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
-const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "dispatch.start", "dispatch.finish"];
+/** What the board reserves for the PM and the architect (ops `onlyProcess`), starting a dispatch and the runner's report on an item: the process. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
+const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 /** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating a project. No role has the merge row. */
 const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];

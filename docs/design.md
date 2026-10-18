@@ -746,6 +746,36 @@ log:
     (item, what was judged and why, how the misjudgment showed, what it should
     have been). They are a different record and stay written by hand in the
     calibration item's log.
+- **Runner reports.** An open work item may carry `runner`, the state the runner (the
+  program that starts and follows the engineers' turns) last reported for the work on it:
+  `state` (`running`, `ci`, `ask`, `items`, `run`, `ready`, `exception` or `done`), `since`
+  (when the work entered that state), `at` (when the report last changed anything), `started`
+  (when the work began) and, as the state needs, `to` (`owner` or `architect`) and `cards` of
+  an ask, `items` of a wait for other items, and optionally `note` (one line of at most 120
+  characters), `turns` and `cost` (US dollars to three decimals, rounded as dispatch cost
+  is). `report_state` writes it and refuses what the state does not carry (`runnerReportProblem`
+  in `src/model.ts` words each refusal). The names and the eight states were agreed with the
+  runner's engineer (item `runner-mvp`); the board sets `since` and `at` from its own clock so
+  the runner's clock decides nothing. Decisions:
+  - Stored as one field of the item, replaced by each report, not as a new document kind and
+    not as an entry of the log: a report is the current state and the whole view reads it
+    for every open item at once, while a log entry per turn would grow the item without bound
+    and a document kind of its own would change the store's reads and writes, the snapshot,
+    the events and the page, as for dispatch records above. The cost is one short block in the
+    item file. Rejected: a log entry per report; a document kind of its own.
+  - `since` moves only when the state, the party asked, the cards or the items waited for
+    change: a report that repeats the state (a new turn, a new cost figure) moves `at` and
+    leaves `since`, so how long an item has waited is read from `since` while the board holds
+    no heartbeat. A report identical in every field writes no commit at all (the store skips an
+    unchanged document), so a runner that reports at every turn start and end adds one commit
+    for a change, not one for a call.
+  - Historical detail, like the log and the dispatches: `withoutHistoricalDetail` drops
+    `runner` before any owner-facing comparison, so a report is never news to the owner.
+    The page shows no report of its own; the whole view (section 7) draws what it says.
+  - Only the PM and the architect write it (`item.runner`, section 9): the runner is part of the
+    PM's process and reports with the PM's credential, so the part is one of the process parts
+    and no engineer, reviewer or observer credential carries it.
+  - A record has no runner report: it has no work to report on.
 - **Projects.** Every item stores its project in `group`; an item's project
   changes only through `move_item_project`, which moves the item and everything it owns
   together (section 6), and ownership never crosses projects, so the stored field and
@@ -1828,6 +1858,7 @@ instructions within the limit and free of rule text.
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
+| `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog, in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -1934,6 +1965,50 @@ and the board pushes nothing from it.
   The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
   of the live board's shape it stays under 1500 characters and shorter than the todo lists of
   `brief`. The character counts were not measured again after the limits went.
+
+**The whole view.** `whole_view` answers in one call what the board's open work is doing, so the
+architect no longer assembles it from `overview`, `list` and `candidates`, and the owner's
+page draws the same result (section 7). `wholeView` in `src/whole-view.ts` is the one function:
+it reads the items, the live dispatches and the runner reports once, and the tool prints it
+(`wholeViewText`) without choosing or writing anything.
+
+- *Which items.* Every open work item that is not in a backlog (a record's owned items are
+  counted apart: they are not started on purpose) and that is not a container: a parent with
+  open sub-items is its sub-items' business, unless a runner report or a live engineer
+  session is on the parent itself.
+- *The five kinds, in the order the answer lists them.* One item is in exactly one:
+  1. 等太久 (`overdue`): it has stayed in its state past that state's limit, or the runner
+     reported `exception`.
+  2. 没人管 (`unattended`): no report, no live engineer session and it waits on nothing the
+     plan can name: either half done (`做了一半：done/total 行`) or not begun (`没开始`).
+  3. 在做 (`working`): the runner reports `running`, or an engineer session is live (an open
+     dispatch started within the window `src/agents.ts` uses for alive).
+  4. 在等 (`waiting`): the runner reports any other state within its limit, or the plan makes
+     the item blocked (it waits on an open item, a card or the owner's approval).
+  5. 搁着 (`parked`): the item is paused, by itself or by an item above it. One row for each pause, naming
+     the item that carries the marker and how many open items stand under it.
+  The report decides before a session does, and a session before the plan, because the report is
+  the freshest word about what the work is doing.
+- *Limits.* `WAIT_LIMITS_MS` in `src/whole-view.ts` is the one place: `running` 5 hours, `ci` 90
+  minutes, an ask to the owner 12 hours, to the architect 1 hour, `items` 24 hours, `run`
+  (the 14900K) 4 hours, `ready` 1 hour, `done` 30 minutes, `exception` 0, and 72 hours for a
+  wait read only from the plan, counted from the item's last change. They are
+  provisional starting values, not measured; real data will say which are wrong, and the numbers
+  change in that one object. A report's `since` counts, so a limit applies to how long the state
+  has held, not to how recently the runner called.
+- *Order within a kind.* Overdue: the most overrun first. Unattended: half done before not
+  begun, the longest untouched first among the half done, `compareCandidates` among the rest.
+  The others: the longest in the state first.
+- *Answer.* A line of totals (remaining work, then the count of each kind, then the backlog), then
+  each kind that has rows with at most `BUCKET_ROWS` of them (8, 8, 8, 8 and 4 for the pauses)
+  and a line counting the rest, then what each project has left. `bucket` lists one kind with up
+  to `EXPANDED_ROWS` (40) rows and `project` narrows every count and row to one project. A row
+  is one line: key, project, title cut at 24 characters, what it does or waits for, how long,
+  the limit when overdue, and what a runner says it spent (time, turns, cost).
+  `test/whole-view.test.ts` checks, on an in-memory board of the live board's shape (1603
+  items), that the answer comes back in under 2000 milliseconds and in at most 6000
+  characters, and that every open item is counted once. The measured values go in the item's
+  acceptance rows, from the CI log.
 
 ### Lean replies
 
@@ -2091,6 +2166,7 @@ author `总管` is refused by every tool.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
+| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the PM and the architect (`item.runner`); not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -2585,6 +2661,26 @@ level, and whether that someone is working, waiting or has gone quiet.
   shows changed (its inputs are compared). The minute timer that re-derives
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
+
+### The whole view
+
+Above the agent list, a block of the open work by what is being done about it: the
+same five kinds, counts and rows as the architect's `whole_view` (section 6, The whole view),
+because the page calls the same `wholeView` function, bundled like `src/agents.ts`.
+
+- *The heading* is a button: `▾ 全貌 · 没做完 N 件`, with the counts of 等太久 and 没人管 when
+  they are not zero. It folds the block and the choice is kept in the browser
+  (`localStorage` `board-whole`, open by default). The block is hidden when nothing is open.
+- *A kind* lists the rows the tool's default answer lists, and a button at its foot opens it
+  to 40 rows and closes it again. A row shows the item's title (a click selects it in the tree),
+  its project, what it does or waits for, how long and, for a runner's report, the time, turns and
+  cost it has taken. Each pause is one row with the number of items under it and its reason.
+- *Time.* The page's one-minute timer redraws the block, and the ages shown are part of what
+  decides a redraw, so a page left open shows 「3 小时」 become 「3 小时 1 分」.
+- *Not shown.* Items in a backlog and items that a parent's sub-items cover, as in the tool.
+- Test layers: `test/dom/whole.test.ts` compares the block's counts with the tool's first line
+  on a generated board, runs a report through the server and watches the item move kind,
+  and folds and opens the block and a kind.
 
 ### Messages list
 
@@ -3474,10 +3570,11 @@ the writer from it.
   - The PM has every part but the ones only the architect has: `project.create`,
     `tag-vocab`, `journal` and `item.merge-row`. It writes items of any project, and
     does the process: creating, rating, retitling, cancelling, pausing and moving items,
-    the page order, and starting or ending a dispatch.
+    the page order, starting or ending a dispatch, and reporting the runner's state
+    (`item.runner`, section 5, Runner reports).
   - The observer has every part but the ones only the architect and the PM have:
     `project.create`, `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`,
-    `item.cancel`, `item.pause`, `item.move-project` and starting or ending a dispatch (an engineer has
+    `item.cancel`, `item.pause`, `item.move-project`, `item.runner` and starting or ending a dispatch (an engineer has
     `item.create` inside its subtree and `item.difficulty` below its root). It writes items of
     any project, recorded under its credential's project and session.
   - The resource agent writes the log of any item and ends dispatches; it writes the head

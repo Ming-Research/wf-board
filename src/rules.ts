@@ -62,8 +62,8 @@ export function mergeRowDone(counted: readonly string[], merged: ReadonlySet<str
   return counted.length > 0 && counted.every(key => merged.has(key));
 }
 
-/** The one rule that log entries and dispatch records never count as owner-unread: owner-facing item comparisons drop them first. */
-export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches"> { const { log: _log, dispatches: _dispatches, ...rest } = doc as T & { log?: unknown; dispatches?: unknown }; return rest; }
+/** The one rule that log entries, dispatch records and the runner's report never count as owner-unread: owner-facing item comparisons drop them first. */
+export function withoutHistoricalDetail<T extends object>(doc: T): Omit<T, "log" | "dispatches" | "runner"> { const { log: _log, dispatches: _dispatches, runner: _runner, ...rest } = doc as T & { log?: unknown; dispatches?: unknown; runner?: unknown }; return rest; }
 /** The owner reads a first rating (an item's difficulty from none to a level) as bookkeeping, not news: rating hundreds of
  * items would show each of them new for one added label. So is the migration that cleared the retired level 「架构师做」
  * (from that level to none), which touched a dozen items for one removed label. Changing a level that exists is news.

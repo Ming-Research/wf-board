@@ -31,6 +31,7 @@
   "test/dom/page-plan.test.ts": 23.1,
   "test/dom/page-tree.test.ts": 31.6,
   "test/dom/styles.test.ts": 27.5,
+  "test/dom/whole.test.ts": 6.0,
   "test/dom/witnesses-1.test.ts": 20.0,
   "test/dom/witnesses-2.test.ts": 25.6,
   "test/find.test.ts": 0.3,
@@ -66,6 +67,7 @@
   "test/rules-reuse-c.test.ts": 28.6,
   "test/rules-reuse-guards.test.ts": 12.8,
   "test/rules.test.ts": 0.6,
+  "test/runner-report.test.ts": 3.0,
   "test/session.test.ts": 1.7,
   "test/shutdown.test.ts": 19.7,
   "test/slow-ops.test.ts": 4.7,
@@ -79,5 +81,6 @@
   "test/wake-agents.test.ts": 5.0,
   "test/wake.test.ts": 5.4,
   "test/watch.test.ts": 9.4,
-  "test/web.test.ts": 16.4
+  "test/web.test.ts": 16.4,
+  "test/whole-view.test.ts": 6.0
 }

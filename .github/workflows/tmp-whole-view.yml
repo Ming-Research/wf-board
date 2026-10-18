@@ -1,0 +1,35 @@
+name: tmp-whole-view
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-whole-view-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/runner-report.test.ts
+      - run: node --test test/whole-view.test.ts
+      - run: node --test test/access.test.ts
+      - run: node --test test/mcp.test.ts
+      - run: node --test test/lean.test.ts
+      - run: node --test test/credentials.test.ts
+      - run: node --test test/dispatch.test.ts
+      - run: node --test test/web.test.ts
+      - run: node --test test/dom/whole.test.ts
+      - run: node --test test/dom/agents.test.ts
+      - run: node --test test/ci-time-gate.test.ts
+      - run: make design-lint
