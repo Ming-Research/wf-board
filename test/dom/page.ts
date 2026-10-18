@@ -180,7 +180,7 @@ export class DomPage {
     // A reader who prefers reduced motion: the page then moves at once instead of gliding.
     win.matchMedia = (query: string) => {
       const matches = /prefers-reduced-motion:\s*reduce/.test(query) || (/prefers-color-scheme:\s*dark/.test(query) && this.options.scheme === "dark");
-      return { matches, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} };
+      return { matches, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} } as unknown as MediaQueryList;
     };
     win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
     win.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -242,8 +242,8 @@ export class DomPage {
     for (let e: Element | null = el; e; e = e.parentElement) {
       const display = this.styles.value(e, "display");
       if (display === "none" || (display === undefined && (e as HTMLElement).hidden)) return false;
-      const parent = e.parentElement;
-      if (parent instanceof this.win.HTMLDetailsElement && !parent.open && e !== parent.querySelector(":scope > summary")) return false;
+      const parent: Element | null = e.parentElement;
+      if (parent instanceof this.win.HTMLDetailsElement && !(parent as HTMLDetailsElement).open && e !== parent.querySelector(":scope > summary")) return false;
     }
     return true;
   }
