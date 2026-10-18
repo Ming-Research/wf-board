@@ -8,6 +8,18 @@ Nodes: responsibility/identities, wake/architect-stream
 
 Summary: The owner runs several architect sessions at once (the conversation, one that tidies old projects, one that works as the observer), but the board gave the architect's write rights to two names only, so an auxiliary session either took the conversation's pushes by writing under its name or wrote as an ordinary project author that cannot create items in other projects, retitle or write the architect's log. The rights now go to every session name that starts with the architect's name (spaces around it ignored), the pushes, the receipt for the PM's stream and the exclusion of the architect's own writes from its timed wake stay with the exact name, and a credential of another role under such a name and a dispatch for one are refused. The grounds and the refused alternatives are in the identities node; the derivation is in docs/design.md, section 8, The architect's sessions, and section 9.
 
+## 2026-10-18 Close a plain pick's note in the commit that rules its card
+
+Nodes: cards, wake/routing
+
+Summary: A pick the owner sent on the page ruled its card at once, but its note, which says only which option was chosen, stayed `sent`, so the architect closed it by hand and the runner started an engineer turn to read it. The commit that rules the card now also writes that note `done` when it says nothing but the option; a pick with the owner's words, or one sent after its card was ruled otherwise, stays `sent`. The note push no longer carries a plain pick, so `card-ruled` goes to the session holding the card's item and, when nobody holds it, to the architect for a pick sent on the page. The grounds and the refused alternatives are in the two nodes; the derivation is in docs/design.md, section 5, Decision cards, Ruling, and section 8, A card ruled.
+
+## 2026-10-18 Hold the jump to the next unread change in Node, against the base page
+
+Nodes: testing/press-n
+
+Summary: The checks of the jump to the next unread change ran in headless Chromium, held a fixed 0.2 second median and 0.3 second 90th percentile that failed on slow runners, and took most of the browser job. They now run the real page in jsdom in Node with the server's answers recorded once and replayed: the counts (draws, rebuilds of the rules, filter counts, markup written, elements made, each with a page that has the protected part taken out) hold on any machine, and the time is the page of the commit over the page of its base in interleaved pairs with a twin of the base as the control, red only when the interval lies wholly on the slower side and the twin shows the run's noise. The absolute 0.2 seconds no longer fails a pull request; the grounds and the numbers are in the research record.
+
 ## 2026-10-18 Draw the page's diagrams compact
 
 Nodes: page/diagrams/layout

@@ -1723,7 +1723,19 @@ where the design reaches it.
 - **Ruling.** The owner's pick on the page is recorded by the board itself:
   sending a choice note sets `status: ruled`, `choice` and `ruledAt` (the send
   time) on the open card in the same commit, so no session has to rule it
-  afterwards and a pick can no longer sit sent but unrecorded. `rule_card(key,
+  afterwards and a pick can no longer sit sent but unrecorded. The ruling also
+  handles the pick's own note when it says nothing but the option (`isPlainPick`
+  in `src/rules.ts`: the text the page writes, "选 A", or no text): the commit
+  writes that note `done`, with no reply, so it never waits as `sent`, no push
+  announces it as a note, and a session that lists the unhandled notes, or the
+  runner that gives an item's sent notes to its engineer, never meets it. A pick
+  with the owner's words (a text the owner changed) rules the card the same way
+  but stays `sent` for the architect, as does a pick sent when its card is no
+  longer open: the card keeps its ruling and the note is not handled by it.
+  Rejected: closing every pick's note, which would leave the owner's words in a
+  closed note nobody is told of; leaving the note `sent` and having each reader
+  skip it, since the runner, `brief`, `notes` and the page would each need the
+  same test and a later reader would forget it. `rule_card(key,
   choice?, ruling?)` is for a decision the owner made in chat: it takes the
   option chosen, the owner's own words, or both, and the words are kept in
   `ruling` for the design log's approval line. A card ruled in words alone has
@@ -2775,7 +2787,9 @@ Another version makes the page reload itself (`web/update.ts`):
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
 sent note produces one `note` event on the wake stream (below). Sending
-does not mark a note handled. It stays `sent` until a project agent replies with
+does not mark a note handled, except a choice that says nothing but its option
+and rules its open card in the same commit, which is written `done` (section 5,
+Decision cards, Ruling). A note stays `sent` until a project agent replies with
 `reply_note` or closes it with `close_note`. Closing stamps the handler and
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
@@ -2837,7 +2851,9 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, 
   card, so the owner's comments on an engineer's item reach the architect too. Every kind
   of note is one: a comment, an explain request, an approval, a choice on a card. A sent choice
   note also rules its open card in the same commit (see Decision cards), so the
-  architect does not rule it afterwards. The PM gets none of them: most ask about an
+  architect does not rule it afterwards; and a choice that says nothing but its option is
+  written handled by that commit, so it is never `sent` and is not pushed as a note: the
+  ruling is pushed instead (A card ruled). The PM gets none of them: most ask about an
   item's content, which takes reading it to answer, and the PM does the process;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
@@ -2879,13 +2895,14 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, 
 - a card that was ruled (`card-ruled`): an open card became ruled, whether the owner
   sent a choice on the page or a session recorded one with `rule_card`. It goes to
   the session holding the card's item, which may be stopped on the card; when
-  nobody holds the item nothing is pushed (A card ruled, below).
+  nobody holds the item, a pick the owner sent on the page goes to the architect and a
+  ruling a session recorded to no one (A card ruled, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
 
-**A card ruled.** The owner's pick on the page reaches the architect as a `note`
+**A card ruled.** The owner's pick on the page used to reach the architect as a `note`
 (a sent choice note also rules the card), and the engineer rules had the architect
 forward it to the session stopped on the card. One ruling was never forwarded, and
 the engineer holding its item stayed stopped for two days. So the board tells that
@@ -2896,16 +2913,25 @@ which an open card becomes ruled, not the note, since a decision recorded with
 item. The frame carries the card's key and question, the key and name of the option
 chosen and the owner's words, so the line says what was decided without a read of the
 board; runs of white space in the question, the option's name and the words are one
-space, so the line stays one line. Nothing is pushed when nobody holds the item: the
-owner's pick has already reached the architect as the note, and a ruling a session
-recorded was made by a session that knows it. A card that is withdrawn, or written
-again while open, is not ruled and pushes nothing. Rejected: leaving it to the
-architect to forward, which rests on one session remembering and is what failed;
-pushing to the PM when nobody holds the item, which hands the PM a message it can
-only pass on while the architect already has the note; pushing the owner's note
-itself to the holder, which would send every comment and explain request on the item
-to the engineer before the architect has judged it, and says nothing of the option
-chosen.
+space, so the line stays one line.
+
+When nobody holds the item, a pick the owner sent on the page goes to the architect
+as the same frame: a pick that says nothing but its option is written handled by the
+commit that rules the card (section 5, Decision cards, Ruling), so the `note` that
+told the architect of it is never pushed, and without this frame a pick on an item
+nobody holds would reach no one. The change is the owner's when its author is
+`owner`, which only a page send has. A pick with the owner's words is still a `note`
+and its ruling is pushed as well, so the architect has both lines. A ruling a session
+recorded was made by a session that knows it, and is pushed to no one when nobody
+holds the item. A card that is withdrawn, or written again while open, is not ruled and
+pushes nothing. Rejected: leaving it to the architect to forward, which rests on one
+session remembering and is what failed; pushing to the PM when nobody holds the item,
+which hands the PM a message it can only pass on; pushing every pick to the architect
+as well as to the holder, which gives the architect a line it can only pass on while the
+holder acts, and gives a kind two recipients where the table gives each kind one route;
+pushing the owner's note itself to the holder, which would send every comment and explain
+request on the item to the engineer before the architect has judged it, and says nothing
+of the option chosen.
 
 **Free slots are the PM's to count.** The board holds no limit per pool and pushes no
 offer, so no push says a slot is free. The PM compares the working count and the candidates
@@ -2984,7 +3010,7 @@ the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
+| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. A choice that says nothing but its option is written `done` by the commit that rules its card and is not pushed (A card ruled). `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
 | `{n, at, event:"timed", since, changed, working, architect, pm, review, finished}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `review` and `finished` are the item keys (at most 20, then `{more: n}`) of what the PM was told once and may not have taken up: items whose review step is in progress with no reviewer on them, and done items a session still holds. They are the reminder for a push lost or a PM that was away, since those two pushes are not repeated otherwise.
 | `{n, at, event:"timed-architect", since, changed, working}` | Every 60 minutes after the last one on the architect's stream (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, in the form of the `timed` frame's, except that an item only the architect's own session wrote is left out; the PM's writes are listed. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds, counted as in `timed`. Nothing else: the keys of the reviews and finished items, the counts of the Architect and PM projects and the usage sentence are the PM's. The time of the last one is kept in the architect's stream file |
@@ -3002,7 +3028,7 @@ the forms the server sends:
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |
-| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream, and nothing is pushed when nobody holds the item (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
+| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream. When nobody holds the item, a pick the owner sent on the page goes to the architect's stream, and a ruling a session recorded to no one (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -4337,46 +4363,8 @@ a short run, a label on a box, labels on each other, a line through a box, a gap
 can only be observed by waiting, so the wait is short, and the reported line must say what was
 waited for and what the page held, not a bare timeout or a page that did not start.
 
-Time limits have their own file, `test/e2e/press-n.e2e.ts`, on a board of the live
-board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a
-15 MB snapshot and 330 unread commits; the default board has 176 items, on which one
-press of n takes about a quarter of the time). The owner's limit for n is 0.2 s
-(board-read-fast); the file holds it in two layers. Counts, exact on any machine: a
-press that lands on another item builds the board's rules no time, counts the filters no
-time and draws at most twice, read from the page's performance marks: every draw from the
-key until the page is quiet counts, those of the rows around the target included. The
-draws depend on when the baselines of the rows around the target answer, because the
-navigation waits for them 100 ms at most, so the test sets that time and does not leave
-it to the machine or the server: it delivers the answers it recorded on a first walk of
-the board, those of the rows around the target after 300 ms and the others after 20 ms.
-On a copy of the page whose wait is 2 s, the landing draws twice at most: a browser held
-up for less than 1.7 s cannot turn that, where a row answering 40 ms inside the 100 ms
-turned it on a slow runner. On the page itself the landing draws twice and then the late
-rows on their own, every later draw of other items' rows alone; whether two late rows share
-a frame is the browser's timing and not checked. The 100 ms itself is held by the
-fake-clock tests of `test/web.test.ts`. The page without the wait, and the page with a
-wait that has no limit, must be reported by the first and the second. While sessions
-write log entries, each write builds the rules again, derives them from scratch no time
-except in a new minute (the mark `board:rules-full` names the reason) and counts every
-item's filters no time; a page that derives the rules from scratch at every write, and
-one that counts every item's filters, must be reported. Time:
-over 30 landings, the main thread's busy time from the key until the page is quiet
-is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
-quiet and with sessions writing three times a second, each run made once. The time
-layer depends on the runner: the same page measured at the median 142 to 205 ms with
-sessions writing in four CI runs, and the speed of a hosted runner differs by up to a
-factor of two between jobs. While sessions write, a press also carries the page's
-handling of the writes that fall into it, about 1–2 writes in its window of about 375 ms
-at three a second, whether they come before or after the landing. A write derived the
-whole board again for 55–80 ms each until the rules kept what a write cannot reach
-(section 4, Write cost), about 33 ms since (n-writes-stable-study, measured on hosted
-runners); the slowest runners seen run about 1.3 times slower than the one measured, and
-the acceptance of that work measured the page at that speed (CPU throttled 1.3 times). The
-write rate of the test is more than three times the busiest minute of the live board (53
-writes), on purpose. Each change that the counts protect is taken out
-in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
-stands for the time layer; each must be reported. After n and m, the page asks for the
-unread list and does not fetch the board.
+The jump to the next unread change (n) has a lane of its own, on a board of the live board's weight, which runs in
+Node and not in the browser: [The n-key lane](#the-n-key-lane).
 
 **Evidence.** Each check runs on the current page, where it must find
 nothing, and on the page with the thing it guards spoiled, where it must
@@ -4393,10 +4381,63 @@ right column's widths, a plan's card row squeezed by its pick, and the diagram
 fitted to its box. A witness whose edit no longer matches the current file
 fails and is updated or retired on purpose.
 
+### The n-key lane
+
+The owner reads the board a stop at a time with n and wants the page to answer within 0.2 s (board-read-fast). On the live board a press that landed on another item
+took 0.3–0.5 s, because each of its four draws rebuilt the board's rules and counted every filter again (page-n-fast). The default generated board has
+176 items and a press of n there takes about a quarter of the time, so the lane (`test/nkey/`, the CI job `nkey`, `npm run test:nkey`) runs on a board of the
+live board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a 15 MB snapshot and 330 unread commits). The unread commits, which
+through the store are four git processes each, are made by one `git fast-import`, the documents written as the store writes them, and the board is then
+opened again as a daemon starts. The lane runs the real page in jsdom (`DomPage`, `test/dom/page.ts`) against the real server in the same process, and no
+browser. Its first version ran in headless Chromium (`test/e2e/press-n.e2e.ts`) and took most of that job; the layout it needed was never part of the question.
+
+**A tape of the server's answers.** A first walk of n on the real server records the answers to the page's reads; every other window is answered from that
+tape, so a window's busy time is the page's own and the server's git reads fall into no window. A write, and a read the tape has no answer for, go to the real
+server and are counted as misses; a window of the current page with a miss fails its check, while the base page's only warns (an older page may ask for what the current one does not). The change events of "sessions write while the owner reads" are
+the `change` events of real writes (a log entry on an open item), one per landing, recorded off the real server's stream after the tape and delivered to
+the page right after the key, each against the commit before it. A virtual clock stands for the page's timers longer than a frame and for the answers a test
+holds back, so a baseline that arrives 300 ms late is 300 ms of the clock's time and no real waiting.
+
+**Counts**, exact on any machine, from the page's performance marks (`countEvent` in `web/app.ts`): a press that lands on another item builds the board's rules
+no time, counts the filters no time and draws once or twice, every draw from the key until the page is quiet counting, those of the rows around the target
+included; and writes no more than the markup (characters assigned to `innerHTML`) and the elements (`createElement`) it wrote when the numbers were set, held at
+the median over the landings of the first walk (`WRITES` in `test/nkey/lane.ts`; a change to the page that moves them changes the numbers and the pull request
+says why). The draws depend on when the baselines of the rows around the target answer, because the navigation waits for them 100 ms at most, so a
+test sets that time on the virtual clock: the rows around the target answer after 300 ms and the others after 20 ms. On a copy of the page whose wait is
+2 s, the landing draws twice at most; on the page itself it draws twice and then the late rows on their own, every later draw of other items' rows alone;
+whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
+reported by the first and the second. While sessions write, each write builds the rules again, derives them from scratch no time except in a new minute
+(the mark `board:rules-full` names the reason), and counts every item's filters no time. After m the page asks for the unread list and does not fetch
+the board.
+
+**Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
+the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that
+commit's `web/` and `src/`; none when `web/` and `src/` are as they are there), with the board quiet and with a write in each press. Windows of the base,
+of the twin of the base (the same page again, the control) and of the page when it differs are open side by side and press n in turn, the order rotating press by press, so
+that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
+its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
+holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
+otherwise. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+"undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
+runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
+against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
+twenty, so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
+runner differs by up to a factor of two between jobs, and every fixed number made a pull request red or green by the runner.
+
+**Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
+three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
+waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (judged against the
+page it was made from; ×1.5 of the base in a quiet phase on an unchanged page, ×1.3 against the changed page).
+
+**Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
+(the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two
+time phases. The jobs take 30 to 55 s including the 10 to 17 s the runner needs before the tests start. `test/nkey/stats.test.ts` holds the arithmetic and the
+verdict on made-up pairs whose answer is known.
+
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 8 shards, `e2e` and `result`) takes about 12 minutes with its queue,
+`test` in 8 shards, `nkey` in 4 parts, `e2e` and `result`) takes about 12 minutes with its queue,
 nearly all of it the browser tests, which a run started by hand leaves out
 unless it is given the input `browser`; a change under way is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
