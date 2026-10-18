@@ -4732,6 +4732,26 @@ test("a tree row in progress carries a band as wide as its plan's share, and a p
 });
 
 
+test("a tree row of an item planned in stages shows the stage it is at, and counts stages instead of rows", async () => {
+  const s = nativeSnapshot();
+  const base = s.items.child!, acceptance = planStep("tests", "Checks pass", "todo", {accept: true});
+  s.items.staged = {...base, title: "Staged", plan: [planStep("detail-a", "Detail", "done"), planStep("detail-b", "Detail", "done"), planStep("research", "Research", "done"), planStep("impl", "Implement", "doing"), planStep("ci", "CI"), acceptance, planStep("accept", "Accept"), planStep("merge", "Merge")]};
+  s.items.queued = {...base, title: "Queued", plan: [planStep("detail-a", "Detail"), planStep("research", "Research"), planStep("impl", "Implement"), acceptance, planStep("accept", "Accept")]};
+  s.items.plain = {...base, title: "Plain", plan: planWork([planStep("one", "One", "done"), planStep("merge", "Merge")])};
+  s.items.area!.plan = planWork([ownedRow("child"), ownedRow("staged"), ownedRow("queued"), ownedRow("plain")]);
+  const p = await page(s, []); await expand(p);
+  const tagOf = (id: string) => rowOf(p, id).querySelector(".stage-tag") as Element | null;
+  assert.equal(tagOf("staged")!.innerHTML, "实现", "the stage in progress");
+  assert.equal(tagOf("queued")!.innerHTML, "研究", "none in progress: the first not done");
+  assert.equal(tagOf("plain"), null, "a plan without stages shows none");
+  assert.equal(tagOf("child"), null);
+  const shareOf = (id: string) => parseFloat((rowOf(p, id).querySelector(".progress-band") as unknown as { style: Record<string, string> }).style["--p"]!);
+  assert.equal(shareOf("staged"), 1.5 / 5, "the band is the share of the five stages, not of the eight rows");
+  assert.equal(shareOf("staged"), rules(s).progressShare("staged"), "the page draws the share the rules compute");
+  assert.equal(rowOf(p, "queued").querySelector(".steps-ratio")!.innerHTML, "0/3", "a row without a band counts its stages: research, impl and accept");
+  assert.equal(shareOf("plain"), 1 / 3, "a plan without stages counts every row as before: one done of three");
+});
+
 test("a row in progress or idle draws its band, and a row not started draws none", async () => {
   const s = nativeSnapshot();
   const base = s.items.child!;

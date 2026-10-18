@@ -1410,6 +1410,7 @@ write-time refusals in the last column still apply to it:
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
+| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1530,6 +1531,30 @@ Both colour pairs keep the text tokens at 4.5:1 or more against both ends of
 the band, in both themes; the values were computed from the tokens, not
 measured in a browser. The owner asked for this on the board, so the left list
 shows how far each open item is without opening it.
+
+A plan an engineer wrote by the engineer rules (The plan's stages) is read by
+its stages, so the share and the count say how far the item is in the flow and
+items written with different numbers of detail rows can be compared. A stage
+row is a step without the acceptance mark whose id is `research`, `impl`, `ci`,
+`accept`, `merge` or `verify`, with `-2` and up for the round that going back
+appends (`impl-2`). `Rules.stages` gives the plan's stages only when it has
+both a `research` and an `impl` row, because older plans use `merge`, `impl`
+and `accept` for ordinary rows: the live board, read on 2026-10-18, held many
+open items with a `merge` row and no other stage id, and `accept` is the id of
+the acceptance step in nearly every item, which is why a step with the mark is
+never a stage. Without both rows the plan keeps counting every row, as above. For a plan
+read by stages, `Rules.progressShare` and the count on a tree row without a
+band count only the stage rows, with the same weights (done 1, in progress ½)
+and the dropped ones left out; detail rows, sub-item rows and cards do not move
+them. The stage ids and names are the engineer rules' own (研究, 实现, 完整 CI,
+验收, 合入, 线上验证) and `review` is not among them, as this version has no
+review. The tree row also shows the name of the stage the item is at as a small
+muted tag, `实现·2` from the second round on: the first stage in progress,
+else the first not done, none when every stage is done and none on a finished
+or cancelled item. The detail column and the agent list keep the count of all
+rows, and the plan lists every row. When going back appends a round, the
+stages of the earlier round that were not reached stay in the plan until the
+engineer drops them, so a share can fall when a round is added.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
