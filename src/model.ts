@@ -462,7 +462,7 @@ export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>
   [ARCHITECT_ROLE]: { ...partsAt("board", PARTS.filter(p => p !== "item.merge-row" && p !== "message.send")), "message.send": "own" },
   [PM_ROLE]: { ...partsAt("board", PARTS.filter(p => !ARCHITECT_ONLY.includes(p) && p !== "message.send")), "message.send": "own" },
   "观察者": { ...partsAt("board", PARTS.filter(p => !RESERVED.includes(p) && p !== "message.send")), "message.send": "own" },
-  // The resource agent writes the log of any item and keeps its own records (the 14900K queue, the Actions usage): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
+  // The resource agent writes the log of any item and keeps its own records (the 14900K queue): the items its credential names. It closes the dispatches of the sessions it is asked about (docs/design.md, section 9).
   "资源管理": { "item.log": "board", "dispatch.finish": "board", "message.send": "own", ...partsAt("subtree", ["item.head", "item.plan"]) },
   // An engineer writes the progress of its own work, makes the sub-items of its tree and rates and tags them, and replies to the notes the PM forwards. The 改动 section lives in the body today, so it may write the whole body; this narrows to that section when bodies are stored by section (item mcp-sections).
   "工程师": { ...partsAt("subtree", ["item.log", "item.plan", "item.targets", "item.head", "item.links", "item.create", "item.tags", "card.write", "note.reply", "term"]), "item.difficulty": "below", "message.send": "own" },

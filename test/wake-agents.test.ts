@@ -42,7 +42,7 @@ test("every kind says where it goes, and a holder or session route names one of 
     assert.ok(to === "pm" || to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
-  for (const kind of ["review", "finished", "stalled", "no-answer", "timed", "pr-red", "pr-orphan", "actions-usage"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  for (const kind of ["review", "finished", "stalled", "no-answer", "timed", "pr-red", "pr-orphan"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
   // What needs the content of an item read to judge goes to the architect: the owner's notes, and its own hourly wake.
   for (const kind of ["note", "timed-architect"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
@@ -59,7 +59,7 @@ const L = "长".repeat(1000), many = Array.from({ length: 500 }, (_, i) => `x${i
 const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
-  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many, actions: L },
+  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many },
   "timed-architect": { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999 },
   review: { item: L, project: L, title: L, level: 5 },
   finished: { item: L, project: L, title: L, session: L },
@@ -68,7 +68,6 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   "pr-orphan": { repo: L, number: 123456, project: L, title: L, url: L, draft: true },
   "slow-op": { op: L, ms: 123456789, limitMs: 1000, params: L },
   "backup-behind": { commits: 123456, lastSuccess: L, reason: L },
-  "actions-usage": { org: L, reason: "month", level: 90, month: L, day: L, used: 1, included: 1, today: 1, budget: null, text: L },
   deployed: { version: L, restarted: true, item: L, project: L, title: L, pr: 123456 },
   deployFailed: { version: L, running: L, reason: L, item: L, project: L, title: L, pr: 123456 },
   "item-done": { item: L, project: L, title: L, parent: L },

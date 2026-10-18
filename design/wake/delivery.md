@@ -1,0 +1,8 @@
+Decision: Any tool call by a session other than the PM carries that session's undelivered pushes after its answer, as a marker line, at most five lines, oldest first, and a count by kind, each line at most 200 characters (a kind that the call itself answers is not shown and counts as delivered), because a session that is working is not running its wait script, and the lines stay short and the PM's pushes carry no whole list that repeats from one push to the next since whatever is pushed stays in the receiving agent's context until compaction (the lists of the timed wake were 74 percent of the characters pushed over a day, 198,000 of 266,000) ([In a tool result](../../docs/design.md#the-wake-streams)), instead of relying on the wait script alone, an inbox tool that the agent must remember to call, or lists of open items in the timed wake.
+
+Decision: Push events are numbered and kept in local state files outside git, so that numbers continue and delivery survives a restart, and a gap frame tells a client to read the board when events it missed were dropped, because a push says what needs handling and leaves the details to a read of the board ([Delivery and reconnect](../../docs/design.md#the-wake-streams)).
+
+Rejected:
+- Relying on the wait script alone: rejected because an owner's change of direction would stay unseen through hours of implementation.
+- An inbox tool that the agent must remember to call: rejected because it costs a call each time and is mostly empty.
+- Carrying the lists of open items in the timed wake: rejected because they were most of what was pushed (74 percent of the characters over a day).
