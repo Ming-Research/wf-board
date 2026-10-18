@@ -1410,6 +1410,7 @@ write-time refusals in the last column still apply to it:
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
+| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1530,6 +1531,30 @@ Both colour pairs keep the text tokens at 4.5:1 or more against both ends of
 the band, in both themes; the values were computed from the tokens, not
 measured in a browser. The owner asked for this on the board, so the left list
 shows how far each open item is without opening it.
+
+A plan an engineer wrote by the engineer rules (The plan's stages) is read by
+its stages, so the share and the count say how far the item is in the flow and
+items written with different numbers of detail rows can be compared. A stage
+row is a step without the acceptance mark whose id is `research`, `impl`, `ci`,
+`accept`, `merge` or `verify`, with `-2` and up for the round that going back
+appends (`impl-2`). `Rules.stages` gives the plan's stages only when it has
+both a `research` and an `impl` row, because older plans use `merge`, `impl`
+and `accept` for ordinary rows: the live board, read on 2026-10-18, held many
+open items with a `merge` row and no other stage id, and `accept` is the id of
+the acceptance step in nearly every item, which is why a step with the mark is
+never a stage. Without both rows the plan keeps counting every row, as above. For a plan
+read by stages, `Rules.progressShare` and the count on a tree row without a
+band count only the stage rows, with the same weights (done 1, in progress ½)
+and the dropped ones left out; detail rows, sub-item rows and cards do not move
+them. The stage ids and names are the engineer rules' own (研究, 实现, 完整 CI,
+验收, 合入, 线上验证) and `review` is not among them, as this version has no
+review. The tree row also shows the name of the stage the item is at as a small
+muted tag, `实现·2` from the second round on: the first stage in progress,
+else the first not done, none when every stage is done and none on a finished
+or cancelled item. The detail column and the agent list keep the count of all
+rows, and the plan lists every row. When going back appends a round, the
+stages of the earlier round that were not reached stay in the plan until the
+engineer drops them, so a share can fall when a round is added.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
@@ -2502,9 +2527,27 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden). The library draws with its
-own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
-the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
+diagram stands in for its code (the code stays in the page, hidden). The page asks the library
+for a compact drawing: the classic look (the default look writes a larger padding into every box and draws a
+decision as a hexagon about 95 px high), 8 px of padding in a box, and 20 px between boxes and between layers
+(`flowchart.nodeSpacing` and `flowchart.rankSpacing`). ELK, the layout the library draws flowcharts and the
+state, class and ER diagrams with, does not read those two settings, only dagre does: the library writes
+its own gaps into the graph it hands ELK, 40 px between boxes and layers at the top, and in a subgraph 50 px
+between boxes and a 30 px straight run before an arrow. The bundled entry (`web/mermaid-entry.ts`) therefore
+wraps the call that hands the graph to ELK (`layout` of elkjs, which the library calls once for each diagram).
+The wrapper reads the two settings from the configuration in force for that diagram, which is the
+page's with the diagram's own frontmatter over it, and sets them as ELK's gaps between boxes and between layers
+on the graph and on every subgraph in it; the library's own unscoped name for a subgraph's gap between boxes is
+removed, since ELK reads both names as one option and the two values would compete. It also keeps a straight
+run of 12 px before an arrowhead (a shorter one leaves the head on a bend; at a total gap of 12 the run was
+3 px) and 10 px between lines that run side by side. In the CI's browser the synthetic role chart goes from 3420 to 2406 px high (30% less) and a chart with three lanes from 2477 to 1657 px (33% less), every arrow still entering a box from above (other fonts give other sizes: the study measured 3214 to 2430 and 2443 to 1801). Dagre, which reads the settings, draws the role chart 12% shorter again (2124 px) but 10 of its 28 arrows enter a box from the side. The classic look alone saves 16% (3420 to 2868 px), and ELK's layering and edge-merging settings change the height by at most 4% and some widen the drawing. The
+wrapper reaches ELK because the library calls it through elkjs's `layout`; should the library move ELK into a
+web worker or leave elkjs, the wrapper stops acting, the gap between layers returns to 40 px and the
+browser check fails (the library would then be patched instead). The settings a diagram brings in a frontmatter
+block at its start win over the page's, as they do wherever mermaid is used: the page does not strip them,
+and a block that asks for 60 px gets 60. A state, class or ER diagram is drawn by ELK too and takes the same
+two settings of `flowchart`, not its own; a diagram that asks for `layout: dagre` keeps dagre, which reads them. A sequence diagram is not drawn by
+ELK and keeps its own spacing. Its width on the page
 is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
 width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
 nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
@@ -4245,7 +4288,8 @@ the diagram's frame with its items in order, the hint at the right and the frame
 it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand, a
 shade at the edge with more) and the toolbar and the bar read in both color schemes; a
 view survives a live update that leaves the source alone and a changed source starts
-at the default size. The stand-in is what the page depends on of the library and nothing
+at the default size; the page configures the library for a compact drawing (the classic look,
+padding 8, gaps of 20). The stand-in is what the page depends on of the library and nothing
 more: the same text gives the same drawing, its ids and their references begin with the id
 the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
 page's. The widths come from the model of the boxes, not from a layout; the model also
@@ -4263,7 +4307,17 @@ window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in t
 an enlarged diagram can be scrolled to both its ends (and two page variants where it cannot),
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
 a view and the page's scroll survive a live update (and a variant that draws the diagrams
-after the scroll is restored); labels and lines read in both color schemes. A diagram that never appears
+after the scroll is restored); labels and lines read in both color schemes. The compactness of a drawing
+has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2406 px high
+against the library's own 3420) and a synthetic chart with three lanes (17 arrows, 1657 px against
+2477) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
+for a chart whose settings block asks for 60); no arrow enters a box from the side and each runs at
+least 6 px straight before its head; no edge label covers a box or another label and no line crosses
+a box that is not its end. The check runs on pages with one part taken out (the wrapper around ELK,
+the wrapper's reading of the diagram's gaps, the 12 px run, the page's configuration, and a page that
+asks for dagre), where it reports the height, the gap, the arrows from the side or a line through a box; and on
+hand-made drawings, one wrong in one way each, to show that the measurement sees a side entry,
+a short run, a label on a box, labels on each other, a line through a box, a gap and a height. A diagram that never appears
 can only be observed by waiting, so the wait is short, and the reported line must say what was
 waited for and what the page held, not a bare timeout or a page that did not start.
 
@@ -4272,15 +4326,18 @@ Node and not in the browser: [The n-key lane](#the-n-key-lane).
 
 **Evidence.** Each check runs on the current page, where it must find
 nothing, and on the page with the thing it guards spoiled, where it must
-report it. In the DOM layer the spoiled page is the source text edited in
-memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
-(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles,
-mermaid) its own, each naming the reason it must fail for. In the browser layer
-`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
-reversed in a copy served from a temporary directory. A fix is reversed by
-undoing its commit's hunks, or, where later work rewrote the lines around it,
-by a targeted edit that removes just the fix. A witness whose edits no longer
-match the current file fails and is updated or retired on purpose.
+report it. The spoiled page is the source text edited as it is bundled
+(`test/e2e/variant.ts`), by a literal replacement that removes just the fix,
+so no test reads the repository's history. In the DOM layer `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
+(agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
+naming the reason it must fail for; the fixes of the page's update run in the
+fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+because a window has no page reload. The browser layer keeps only the
+witnesses of facts that need a box, in `test/e2e/regressions.e2e.ts`: the
+right column's widths, a plan's card row squeezed by its pick, and the diagram
+fitted to its box. A witness whose edit no longer matches the current file
+fails and is updated or retired on purpose.
 
 ### The n-key lane
 
@@ -4353,9 +4410,7 @@ only the jobs it lists.
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
   skeleton, whose setup steps are those of the `test` and `e2e` jobs of
-  `ci.yml`: keep each step the selected tests need and drop the others (the
-  regression witnesses of `test/e2e/regressions.e2e.ts` read fix commits, so
-  a job that runs them needs `fetch-depth: 0`):
+  `ci.yml`: keep each step the selected tests need and drop the others:
 
   ```yaml
   name: tmp-quick
@@ -4384,8 +4439,6 @@ only the jobs it lists.
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
-          with:
-            fetch-depth: 0
         - uses: actions/setup-node@v5
           with:
             node-version: 24

@@ -138,6 +138,27 @@ export async function othersFold(t: Hooks, reverts: Revert[] = []) {
   assert.deepEqual(bp.errors, []);
 }
 
+/** With nothing selected and a cell of the list unfolded, a key command (c) asks for the item on screen: a row of the tree, not a row of
+ * the list, whose element id is not an item's. */
+export async function keyWithListUnfolded(t: Hooks, reverts: Revert[] = []) {
+  const board = await startBoard(t), bp = await open(t, board, reverts);
+  const s = board.store.snapshot(), r = rules(s), rows = bp.treeRows();
+  const id = rows.find(x => !s.items[x]!.record && s.items[x]!.group && r.children(x).some(c => rows.includes(c)));
+  assert.ok(id, "the generated board draws an item with a drawn sub-item");
+  const base = bp.changes();
+  await start(board, "agent-x", id);
+  await bp.waitChanges(base + 1);
+  bp.click(bp.$('#agents [data-agent="agent-x"] .agitem-caret'), "the cell's caret");
+  await bp.settle();
+  bp.blur();
+  assert.equal(bp.selected(), null, "nothing is selected before the key");
+  assert.ok(bp.$$("#agents .item").length > 0, "the unfolded cell shows item rows above the tree");
+  bp.key("c");
+  await bp.settle();
+  const sel = bp.selected();
+  assert.ok(sel && s.items[sel], `c with the list unfolded and nothing selected selected ${sel}, not an item of the tree`);
+}
+
 const app = (edit: string, find: string, replace: string): Revert => ({ file: "web/app.ts", edit, find, replace });
 const html = (edit: string, find: string, replace: string): Revert => ({ file: "web/index.html", edit, find, replace });
 const WITNESSES: Array<{ bug: string; scenario: (t: Hooks, reverts: Revert[]) => Promise<void>; reverts: Revert[]; reason: RegExp }> = [
@@ -176,6 +197,10 @@ const WITNESSES: Array<{ bug: string; scenario: (t: Hooks, reverts: Revert[]) =>
   {
     bug: "the heading counted every session, not only the running ones",
     scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + running.length', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length')], reason: /nothing runs: the heading counts none/,
+  },
+  {
+    bug: "a key command with nothing selected took the first item row it found, an unfolded row of the agent list, for a tree row (agent list, review of wf-board#37)",
+    scenario: keyWithListUnfolded, reverts: [app("the list's rows count as a place on screen", 'find(e => { if (e.closest("#agents")) return false; const r =', "find(e => { const r =")], reason: /not an item of the tree/,
   },
   {
     bug: "the folded sessions came above the running ones",

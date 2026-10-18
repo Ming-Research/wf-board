@@ -119,16 +119,14 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
-  # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
-  # commits, so the checkout carries history; the browser is cached by Playwright version. It takes about 11 minutes, so a
-  # run started by hand leaves it out unless the input `browser` is set; the main line and the nightly run always have it.
+  # The owner's page in headless Chromium against the real server (test/e2e); the browser is cached by Playwright version. It
+  # takes about 11 minutes, so a run started by hand leaves it out unless the input `browser` is set; the main line and the
+  # nightly run always have it.
   e2e:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.browser }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24

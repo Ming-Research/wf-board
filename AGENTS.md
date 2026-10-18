@@ -94,7 +94,7 @@ matches what the artifact board offered.
   tests call directly), bundled by esbuild. `mermaid.ts` draws the ```mermaid
   blocks of board text as diagrams; the library itself is `mermaid-entry.ts`
   bundled as a file of its own, `dist/mermaid.js`, which the page loads only
-  when it shows a block (design section 7, Diagrams).
+  when it shows a block and which also makes ELK keep the gaps the page asks for (design section 7, Diagrams).
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
@@ -108,7 +108,7 @@ matches what the artifact board offered.
   its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
   and `style-checks.ts` the checks; `witnesses.ts` and the scenario files the pages with one thing spoiled; `mermaid-library.ts`
   the stand-in for the diagram library the page loads by address, `mermaid-layout.ts` the model of the diagram boxes, and
-  `mermaid-checks.ts`, `mermaid-spoiled.ts` and `mermaid-*.test.ts` the diagram checks and their spoiled pages). Each
+  `mermaid-checks.ts`, `mermaid-spoiled.ts` and `mermaid-*.test.ts` the diagram checks and their spoiled pages; `changed-blocks.test.ts` and `width-caps*.ts` the stylesheet checks of the changed-block bar and of the right column's widths). Each
   `*.test.ts` there has a board of its own and is kept short enough to be dealt out to the shards (the
   longest takes 27 seconds on a hosted runner).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
@@ -163,9 +163,10 @@ matches what the artifact board offered.
   (`test/e2e`), for what needs a layout. A page bug gets its test in the lowest
   layer that can see it.
 - Every page fix gets a witness in the lowest layer that can see its bug: a run
-  on the page with the fix reversed that reports the bug (`test/dom/witnesses.ts`
-  and the scenario files, or `test/e2e/regressions.e2e.ts` for a layout fact).
-  The witnesses of older fixes are still in `regressions.e2e.ts` until they move.
+  on the page with the fix reversed (a literal text edit, `test/e2e/variant.ts`)
+  that reports the bug (`test/dom/witnesses.ts` and the scenario files,
+  `test/web.test.ts` for the page's update, or `test/e2e/regressions.e2e.ts` for
+  a layout fact). No test reads git history.
 - `make design-lint` checks the design tree's form and the checker's own tests;
   the `design` workflow runs it on every push. `make design-ready` is the
   readiness check, which the same workflow runs on a pull request that is ready

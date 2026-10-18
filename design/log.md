@@ -8,6 +8,12 @@ Nodes: testing/press-n
 
 Summary: The checks of the jump to the next unread change ran in headless Chromium, held a fixed 0.2 second median and 0.3 second 90th percentile that failed on slow runners, and took most of the browser job. They now run the real page in jsdom in Node with the server's answers recorded once and replayed: the counts (draws, rebuilds of the rules, filter counts, markup written, elements made, each with a page that has the protected part taken out) hold on any machine, and the time is the page of the commit over the page of its base in interleaved pairs with a twin of the base as the control, red only when the interval lies wholly on the slower side and the twin shows the run's noise. The absolute 0.2 seconds no longer fails a pull request; the grounds and the numbers are in the research record.
 
+## 2026-10-18 Draw the page's diagrams compact
+
+Nodes: page/diagrams/layout
+
+Summary: A synthetic role chart was drawn 3420 px high and a chart with three lanes 2477 px, boxes filling 16% of the drawing, and the page's gap settings did nothing because ELK does not read them. The page now asks the library for the classic look, 8 px of padding in a box and 20 px between boxes and between layers, and the bundled library entry wraps the call that hands each graph to ELK so that ELK takes those gaps from the diagram's configuration on the graph and every subgraph, keeping a 12 px straight run before an arrowhead; the role chart comes out 2406 px and the lanes 1657 px, every arrow entering from above. The grounds and the refused alternatives are in the node; the measurements are in docs/design.md, section 7, Diagrams.
+
 ## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
 
 Nodes: responsibility/identities, wake, wake/architect-stream, items

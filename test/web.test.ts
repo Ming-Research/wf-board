@@ -4,9 +4,12 @@ import { build } from "esbuild";
 import { runInNewContext } from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { rules } from "../src/rules.ts";
 import type { Snapshot, Decision, Note, ItemTarget, Item, PlanRow, PlanStep, Status, Project } from "../src/model.ts";
 import { RECHECK_MS, STUCK, WAITING } from "../web/update.ts";
+import { reverted } from "./e2e/variant.ts";
+import type { Revert } from "./e2e/variant.ts";
 
 // Execute the actual bundle against a tiny synthetic DOM and modeled geometry. No browser or listener
 // is needed: the harness checks controls, frame scheduling and synthetic layout/scrolling.
@@ -77,11 +80,22 @@ class Element {
   get firstElementChild(): Element | null { return this.firstChild; }
 }
 let bundle: Promise<string> | undefined;
+const variants = new Map<string, Promise<string>>();
+/** The page's bundle, with the given fixes reversed in web/app.ts (literal text edits, as the browser-free layers apply them). */
+function bundleOf(reverts: Revert[] = []): Promise<string> {
+  const options = { bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" } as const;
+  if (!reverts.length) return bundle ??= build({ entryPoints: ["web/app.ts"], ...options }).then(result => result.outputFiles[0]!.text);
+  const key = JSON.stringify(reverts);
+  if (!variants.has(key)) variants.set(key, reverted("web/app.ts", reverts).then(contents => build({ stdin: { contents, resolveDir: fileURLToPath(new URL("../web", import.meta.url)), sourcefile: "app.ts", loader: "ts" }, ...options })).then(result => result.outputFiles[0]!.text));
+  return variants.get(key)!;
+}
 interface FakeResponse { ok:boolean; status:number; json: () => Promise<unknown> }
 interface PageOptions {
   storageUnavailable?: boolean; storage?: Map<string,string>; detailGeometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   notesOpen?: Record<string,boolean>; geometry?: (e:Element, all: () => Element[]) => {top:number;height:number};
   transform?: (code:string) => string;
+  /** The page with these fixes reversed (test/e2e/variant.ts). */
+  reverts?: Revert[];
   frames?: Frames;
   reducedMotion?:boolean; noFrames?:boolean; scrollHeight?:()=>number; stalledFrames?:boolean; pointId?:string;
   version?: string; session?: Map<string,string>;
@@ -101,7 +115,7 @@ async function page(fixture: PageInput, unread: unknown[], before: unknown = nul
     const doc = value as { before?: unknown; after?: unknown }, id = params.get("doc")!;
     return { ...doc, before: nativeDocument(doc.before, id), after: nativeDocument(doc.after, id) };
   };
-  const code = await (bundle ??= build({ entryPoints: ["web/app.ts"], bundle: true, format: "iife", globalName: "BoardPage", write: false, target: "es2022" }).then(result => result.outputFiles[0]!.text));
+  const code = await bundleOf(options.reverts);
   const roots = new Map<string, Element>();
   for (const id of ["goal", "goal-title", "eyebrow", "meta", "summary", "nav", "agents", "messages", "areas", "cards", "decisions", "sendbox", "send-all", "send-note", "to-top", "server-banner", "update-banner", "hint", "item-detail", "split-divider", "page-left"]) { const e = new Element(id === "send-all" ? "button" : id === "nav" ? "nav" : "div"); e.id = id; roots.set(id,e); }
   // The page's own version, which the server fills into the page's text; a page opened without one does not know it.
@@ -4521,23 +4535,38 @@ test("a page opened again with the stored state shows the same selected item and
   assert.ok(rowOf(again, "child").classList.contains("selected") && detailItem(again, "child")!.classList.contains("cur"), "the same item is selected after the reload");
 });
 
-test("a page told another version reloads itself, and the next page scrolls both panes back to where they were", async () => {
+// The scenarios below take the fixes to reverse: the tests run them on the page as it is, the witnesses at the end of the group on the
+// page with one fix reversed, where the scenario must fail with the family named in its message.
+async function reloadAndScroll(reverts: Revert[] = []) {
   const session = new Map<string, string>();
-  const first = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session });
+  const first = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session, reverts });
   first.roots.get("page-left")!.scrollTop = 420; first.roots.get("item-detail")!.scrollTop = 130;
   first.announce("b2");
-  assert.equal(first.reloads, 1);
+  assert.equal(first.reloads, 1, "update-reload: the page told another version did not reload itself");
   assert.equal(updateLine(first), null, "a page that is not writing reloads without a banner");
   assert.deepEqual([JSON.parse(session.get("board-scroll")!).list, JSON.parse(session.get("board-scroll")!).detail], [420, 130]);
-  const second = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session });
-  assert.equal(second.scrollY, 420);
-  assert.equal(second.roots.get("item-detail")!.scrollTop, 130);
+  const second = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session, reverts });
+  assert.equal(second.scrollY, 420, "update-scroll: the list was not scrolled back after the reload");
+  assert.equal(second.roots.get("item-detail")!.scrollTop, 130, "update-scroll: the detail was not scrolled back after the reload");
   assert.equal(session.has("board-scroll"), false, "the position is used once");
   // A position left by a reload long ago is not this page's to restore.
   session.set("board-scroll", JSON.stringify({ list: 420, detail: 130, at: Date.now() - 60_000 }));
-  const later = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session });
+  const later = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session, reverts });
   assert.equal(later.scrollY, 0);
-});
+}
+test("a page told another version reloads itself, and the next page scrolls both panes back to where they were", () => reloadAndScroll());
+
+async function selectionAcrossReload(reverts: Revert[] = []) {
+  const session = new Map<string, string>(), storage = new Map<string, string>();
+  const first = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session, storage, reverts });
+  await expand(first);
+  assert.ok(detailItem(first, "child"), "setup: the item is selected before the deploy");
+  first.announce("b2");
+  assert.equal(first.reloads, 1, "setup: the page reloaded");
+  const second = await page(nativeSnapshot(), [], null, undefined, { version: "b2", session, storage, reverts });
+  assert.ok(detailItem(second, "child"), "update-state: the page that followed the reload has no item selected");
+}
+test("the item selected before a reload is selected on the page that follows it", () => selectionAcrossReload());
 
 test("a page told its own version stays, and a page that does not know its version ignores the announcement", async () => {
   const same = await page(nativeSnapshot(), [], null, undefined, { version: "a1" });
@@ -4551,10 +4580,10 @@ test("a page told its own version stays, and a page that does not know its versi
   }
 });
 
-test("while a comment box is open the page shows the banner and waits; once the comment is saved it reloads, and the comment is kept", async () => {
-  const { p, ta, type } = await composer(linked(), { version: "a1" });
+async function waitsForTheComment(reverts: Revert[] = []) {
+  const { p, ta, type } = await composer(linked(), { version: "a1", reverts });
   p.announce("b2");
-  assert.equal(p.reloads, 0);
+  assert.equal(p.reloads, 0, "update-writing: the page reloaded under an open comment box");
   assert.equal(updateLine(p), WAITING);
   await type("写到一半的评论");
   await sleep(RECHECK_MS + 200);
@@ -4563,7 +4592,8 @@ test("while a comment box is open the page shows the banner and waits; once the 
   assert.deepEqual(noteCalls(p).map(c => c.body), [{ target: "it:child", text: "写到一半的评论", kind: "comment" }], "the comment was saved on the server before the page went");
   await sleep(RECHECK_MS + 200);
   assert.equal(p.reloads, 1);
-});
+}
+test("while a comment box is open the page shows the banner and waits; once the comment is saved it reloads, and the comment is kept", () => waitsForTheComment());
 
 test("a comment typed and not saved holds the reload after the box is closed with Esc, until it is saved", async () => {
   const { p, ta, type } = await composer(linked(), { version: "a1" });
@@ -4604,13 +4634,14 @@ test("a send in flight holds the reload until the server has answered it", async
   assert.equal(p.reloads, 1);
 });
 
-test("a reload that left the page on another version is not repeated at once: the banner says to reload by hand", async () => {
+async function reloadNotRepeated(reverts: Revert[] = []) {
   const session = new Map<string, string>([["board-reload", JSON.stringify({ version: "b2", at: Date.now() - 1000 })]]);
-  const p = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session });
+  const p = await page(nativeSnapshot(), [], null, undefined, { version: "a1", session, reverts });
   p.announce("b2");
-  assert.equal(p.reloads, 0);
+  assert.equal(p.reloads, 0, "update-loop: the page reloaded again toward a version it had just reloaded for");
   assert.equal(updateLine(p), STUCK);
-});
+}
+test("a reload that left the page on another version is not repeated at once: the banner says to reload by hand", () => reloadNotRepeated());
 
 test("a draft being saved holds the reload too, though nothing is typed or sent", async () => {
   const held = deferred<FakeResponse>();
@@ -4636,6 +4667,49 @@ test("a saved draft being edited holds the reload until the edit is saved", asyn
   typeDraftEdit(p, "d", "Edited"); await noteButton(p, "d", "保存")!.click(); await p.flush();
   await sleep(RECHECK_MS + 200);
   assert.equal(p.reloads, 1);
+});
+
+// Each fix the page's update has had, reversed in web/app.ts by a literal text edit (the owner's report of 2026-10-16 for the first four): the scenario
+// of the same name must fail on the page that results, with the family in its message.
+const UPDATE_WITNESSES: Array<{ bug: string; scenario: (reverts: Revert[]) => Promise<void>; reverts: Revert[]; family: string }> = [
+  {
+    bug: "a page that stayed open through a deploy kept running the old page: the owner saw no new feature until a manual reload (owner, 2026-10-16)",
+    scenario: reloadAndScroll, family: "update-reload",
+    // The page no longer acts on the version the stream announces.
+    reverts: [{ file: "web/app.ts", edit: "the page acts on the announced version", find: "      pageUpdates.announce((JSON.parse((event as MessageEvent).data) as { version: string }).version);\n", replace: "" }],
+  },
+  {
+    bug: "a page that reloaded for a deploy came back scrolled to the top (owner, 2026-10-16)",
+    scenario: reloadAndScroll, family: "update-scroll",
+    // The new page does not scroll the two panes back.
+    reverts: [{ file: "web/app.ts", edit: "the new page scrolls back to where the old one was", find: "listScroller().to(saved.list); detailScroller().to(saved.detail);", replace: "" }],
+  },
+  {
+    bug: "a page that reloaded for a deploy came back with no item selected (owner, 2026-10-16)",
+    scenario: selectionAcrossReload, family: "update-state",
+    // The page no longer keeps the selected item, so the page that follows a reload has none.
+    reverts: [{ file: "web/app.ts", edit: "the selected item is kept across a reload", find: '    try { localStorage.setItem("board-selected", id || ""); } catch {}\n', replace: "" }],
+  },
+  {
+    bug: "a deploy reloaded the page under a comment box the owner was typing in (owner, 2026-10-16)",
+    scenario: waitsForTheComment, family: "update-writing",
+    // The page never counts itself as busy.
+    reverts: [{ file: "web/app.ts", edit: "the page waits while the owner writes", find: "busy: () => editing !== null || draftEdits.size > 0 || Object.values(drafts).some(text => text.trim() !== \"\") || sending || writesInFlight > 0,", replace: "busy: () => false," }],
+  },
+  {
+    bug: "a page whose version never matched the announced one reloaded without end (design: a reload toward the same version within a minute is not repeated)",
+    scenario: reloadNotRepeated, family: "update-loop",
+    // The page forgets its last reload, so nothing stops a second one.
+    reverts: [{ file: "web/app.ts", edit: "the page remembers the reload it began", find: "lastReload: () => readSession<{ version: string; at: number }>(RELOAD_KEY),", replace: "lastReload: () => undefined," }],
+  },
+];
+test("the update scenarios fail on the page with one of the fixes of its update reversed", async t => {
+  for (const w of UPDATE_WITNESSES) await t.test(w.bug, async () => {
+    await assert.rejects(w.scenario(w.reverts), (error: unknown) => {
+      assert.match((error as Error).message, new RegExp("^" + w.family + ":"), "the scenario failed on the spoiled page, but not with the family of the fix");
+      return true;
+    });
+  });
 });
 
 test("an item with part done and nobody on it is 停滞: its chip, the parent's count, the status bar and its own filter", async () => {
@@ -4669,6 +4743,26 @@ test("a tree row in progress carries a band as wide as its plan's share, and a p
   assert.equal(rowOf(p, "child").querySelector(".steps-ratio"), null, "the band replaces the count on the tree row");
 });
 
+
+test("a tree row of an item planned in stages shows the stage it is at, and counts stages instead of rows", async () => {
+  const s = nativeSnapshot();
+  const base = s.items.child!, acceptance = planStep("tests", "Checks pass", "todo", {accept: true});
+  s.items.staged = {...base, title: "Staged", plan: [planStep("detail-a", "Detail", "done"), planStep("detail-b", "Detail", "done"), planStep("research", "Research", "done"), planStep("impl", "Implement", "doing"), planStep("ci", "CI"), acceptance, planStep("accept", "Accept"), planStep("merge", "Merge")]};
+  s.items.queued = {...base, title: "Queued", plan: [planStep("detail-a", "Detail"), planStep("research", "Research"), planStep("impl", "Implement"), acceptance, planStep("accept", "Accept")]};
+  s.items.plain = {...base, title: "Plain", plan: planWork([planStep("one", "One", "done"), planStep("merge", "Merge")])};
+  s.items.area!.plan = planWork([ownedRow("child"), ownedRow("staged"), ownedRow("queued"), ownedRow("plain")]);
+  const p = await page(s, []); await expand(p);
+  const tagOf = (id: string) => rowOf(p, id).querySelector(".stage-tag") as Element | null;
+  assert.equal(tagOf("staged")!.innerHTML, "实现", "the stage in progress");
+  assert.equal(tagOf("queued")!.innerHTML, "研究", "none in progress: the first not done");
+  assert.equal(tagOf("plain"), null, "a plan without stages shows none");
+  assert.equal(tagOf("child"), null);
+  const shareOf = (id: string) => parseFloat((rowOf(p, id).querySelector(".progress-band") as unknown as { style: Record<string, string> }).style["--p"]!);
+  assert.equal(shareOf("staged"), 1.5 / 5, "the band is the share of the five stages, not of the eight rows");
+  assert.equal(shareOf("staged"), rules(s).progressShare("staged"), "the page draws the share the rules compute");
+  assert.equal(rowOf(p, "queued").querySelector(".steps-ratio")!.innerHTML, "0/3", "a row without a band counts its stages: research, impl and accept");
+  assert.equal(shareOf("plain"), 1 / 3, "a plan without stages counts every row as before: one done of three");
+});
 
 test("a row in progress or idle draws its band, and a row not started draws none", async () => {
   const s = nativeSnapshot();
