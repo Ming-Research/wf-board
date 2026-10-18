@@ -37,7 +37,7 @@ test("a step is queued after every N commits, and only then; it packs the loose 
   const { dir, store, lines } = await board(t, 3);
   await write(store); await write(store);
   await drain(store);
-  assert.deepEqual(lines, [], "two commits are below N");
+  assert.equal(lines.length, 0, "two commits are below N");
   assert.ok(await loose(dir) > 0, "the commits are loose objects");
   await write(store);
   await drain(store);
@@ -74,7 +74,7 @@ test("a backlog found when the store opens is maintained before open returns; a 
   const startup: string[] = [], lines: string[] = [];
   const open = (every: number) => Store.open(dir, { maintenance: { every, log: line => lines.push(line) }, startup: (step, _ms, detail) => { if (step === "maintenance") startup.push(detail ?? ""); } });
   await open(1000);
-  assert.deepEqual(lines, [], "a backlog below N waits");
+  assert.equal(lines.length, 0, "a backlog below N waits");
   assert.match(startup.pop()!, /below 1000/);
   assert.equal(await loose(dir), objects, "nothing was touched");
   await open(5);
@@ -101,7 +101,7 @@ test("git starts no maintenance of its own, where the same commit run plainly do
   for (let i = 0; i < 3; i++) await write(store);
   await drain(store);
   assert.equal(await starts(seen), 0);
-  assert.deepEqual(lines, [], "and the board's own step has not run either (N is 1000)");
+  assert.equal(lines.length, 0, "and the board's own step has not run either (N is 1000)");
 });
 
 test("more than 8 packs before a step also merge the small packs", async t => {
@@ -127,7 +127,7 @@ test("a step that fails is logged, loses no write, and is tried again after N mo
   await drain(store);
   assert.equal(errors.length, 1);
   assert.match(errors[0]!, /^maintenance of 2 commits failed after \d+ ms; the next try is after 2 more commits/);
-  assert.deepEqual(lines, []);
+  assert.equal(lines.length, 0);
   await write(store);
   await drain(store);
   assert.equal(errors.length, 1, "the count started again after the failure");
