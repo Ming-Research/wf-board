@@ -48,6 +48,13 @@ test("the runner's job is a row with its words, its level and the turn running; 
   await bp.waitChanges(waiting + 1);
   assert.equal(turnLine(bp, id), null, "the report no longer says a turn runs");
   assert.match(rowOf(bp, id)!.textContent!, /等 CI：wf-board#9 的 CI/);
+  const chip = () => bp.$(".agent-state.runner", rowOf(bp, id)!)!;
+  assert.equal(chip().classList.contains("overdue"), false, "a wait inside its limit is not amber");
+  // An exception has no time to wait out: the whole view's limit marks it at once, and the chip turns amber.
+  const failed = bp.changes();
+  await board.ops.reportState({ ...runner, id, state: "exception", note: "两轮没有交回状态" });
+  await bp.waitChanges(failed + 1);
+  assert.equal(chip().classList.contains("overdue"), true, "past its limit, or an exception: amber");
   assert.deepEqual(bp.errors, []);
 });
 
