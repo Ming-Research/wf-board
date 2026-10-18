@@ -1,0 +1,58 @@
+name: tmp-browser
+# Temporary (ci-browser-lane): runs the browser file and the n report once on the head that has main merged a second time. Deleted before the full CI.
+on:
+  push:
+    branches: [ci-browser-lane]
+permissions:
+  contents: read
+jobs:
+  # The step is cut at 90 seconds: the file is small on purpose, and one that outgrows its time is named in the log of a red run.
+  layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      # Playwright's own headless shell starts on the runner image without the system packages `--with-deps` would install.
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --only-shell chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - name: browser file
+        run: |
+          timeout 90 node --test --test-reporter=spec test/e2e/browser.e2e.ts || {
+            code=$?
+            if [ "$code" = 124 ]; then echo "::error title=browser file::the browser file ran over its 90 seconds"; fi
+            exit "$code"
+          }
+  # One press of n on a board of the live board's weight, in a real browser; the number goes to the log and the job summary.
+  press-n:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --only-shell chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run test:press-n-report
