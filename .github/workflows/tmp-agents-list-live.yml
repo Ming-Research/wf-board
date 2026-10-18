@@ -1,0 +1,22 @@
+name: tmp-agents-list-live
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-agents-list-live-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/agents.test.ts test/runner-rows.test.ts test/derived.test.ts test/watch.test.ts test/ci-watch.test.ts test/live.test.ts test/web.test.ts test/page-version.test.ts test/dom/agents.test.ts test/dom/agents-spoiled-1.test.ts test/dom/agents-spoiled-2.test.ts test/dom/runner-block.test.ts
