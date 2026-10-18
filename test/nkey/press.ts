@@ -339,6 +339,8 @@ export interface PhaseResult {
   ratios: Record<string, Interval>;
   /** The window each ratio is against. */
   versus: Record<string, string>;
+  /** The twin's interval after each round (the pairs of that round and the rounds before it). */
+  twins: Interval[];
   /** `sound`: the twin's interval holds 1 within `floor`; per window other than base and twin the verdict. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
@@ -352,6 +354,7 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
   let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false;
+  const twins: Interval[] = [];
   while (rounds < ROUNDS && !sound) {
     rounds++;
     const scope = new Scope();
@@ -364,8 +367,9 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
     } finally { await scope.close(); }
     ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
     sound = twinIsSound(ratios.twin!, floor);
+    twins.push(ratios.twin!);
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
   const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, sound, verdicts, misses };
+  return { first: first!, busy, rounds, ratios, versus, twins, sound, verdicts, misses };
 }

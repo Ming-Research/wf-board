@@ -105,9 +105,10 @@ export async function startLiveBoard(t: { after(fn: () => unknown): void }): Pro
   await commitTail(dir, writes);
   lap("unread commits made");
   // The store that wrote the board does not know the commits made beside it: the board is opened again, as a daemon starts.
-  const store = await Store.open(dir, { maintenance: { every: 1_000_000, log: () => {} } });
+  const opening: string[] = [];
+  const store = await Store.open(dir, { maintenance: { every: 1_000_000, log: () => {} }, startup: (step, took) => opening.push(`${step} ${Math.round(took)} ms`) });
   lap("opened again");
-  console.log(`live board: ${steps.join(", ")}`);
+  console.log(`live board: ${steps.join(", ")}; the start took ${opening.join(", ")}`);
   // The server of the board, with the page of this checkout.
   return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, join(ROOT, "web"));
 }
