@@ -62,6 +62,8 @@ function button(text: string, title: string, click: () => void): HTMLButtonEleme
 function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLElement {
   const svg = fig.querySelector("svg")!;
   let zoom = 1;
+  /** The size buttons, each with the share of the diagram's own size it draws; the one whose size is shown is pressed. */
+  const sizes: [HTMLButtonElement, number][] = [];
   /** How large the diagram is drawn, as a share of its own width. */
   const percent = document.createElement("span");
   percent.className = "mermaid-percent";
@@ -73,6 +75,7 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     // A diagram in a folded section has no width; its percentage is read again when the section opens (the box's size changes).
     const drawn = svg.getBoundingClientRect().width, own = svg.viewBox.baseVal.width;
     if (drawn && own) percent.textContent = Math.round(drawn / own * 100) + "%";
+    for (const [b, part] of sizes) b.setAttribute("aria-pressed", String(Math.abs(zoom - ownSize() * part) < 0.01));
   };
   /** The zoom at which the diagram is drawn at its own size: the box is narrower than the diagram, so the zoom makes up for the shrinking. */
   const ownSize = () => {
@@ -128,6 +131,16 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
   if (typeof ResizeObserver !== "undefined") new ResizeObserver(refresh).observe(fig);
   refresh();
 
+  /** A size button draws the diagram at its share of its own size, so 100% is the diagram at its own size even where its box is narrower.
+   * Pressed again while that size shows, it gives the width of the box back. */
+  const share = (text: string, part: number) => {
+    const b = button(text, text, () => {
+      if (Math.abs(zoom - ownSize() * part) < 0.01) { set(1, middle()); fig.scrollLeft = 0; } else set(ownSize() * part, middle());
+    });
+    sizes.push([b, part]);
+    return b;
+  };
+
   const bar = document.createElement("div");
   bar.className = "mermaid-tools";
   const hint = document.createElement("span");
@@ -138,10 +151,9 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     percent,
     button("+", "放大", () => set(zoom * STEP, middle())),
     button("适应宽度", "适应宽度", () => { set(1, middle()); fig.scrollLeft = 0; }),
-    // Each sets the size as a share of the diagram's own size, so 100% is the diagram at its own size, even where its box is narrower.
-    button("60%", "60%", () => set(ownSize() * 0.6, middle())),
-    button("80%", "80%", () => set(ownSize() * 0.8, middle())),
-    button("100%", "100%", () => set(ownSize(), middle())),
+    share("60%", 0.6),
+    share("90%", 0.9),
+    share("100%", 1),
     hint,
   );
   return bar;
