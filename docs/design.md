@@ -1625,7 +1625,9 @@ where the design reaches it.
 - **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
   any more: the status becomes `withdrawn`, the log text goes to the item's
   log, and a row counts as resolved. It is the one way to retire a card;
-  nothing deletes one.
+  nothing deletes one. Cancelling an item withdraws its open cards in the
+  same commit, marked `withdrawnWithItem`; reopening the item restores those
+  marked cards to open, and leaves a card withdrawn by hand withdrawn.
 - **Legacy text.** Cards converted from the earlier form (see
   [Card conversion](#card-conversion)) keep their old `background` in
   `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,

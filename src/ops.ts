@@ -803,7 +803,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
     }, true),
-    setStatus: a => run(a, "item.cancel", async (s, at) => {
+    setStatus: a => run(a, ["item.cancel", "card.write"], async (s, at) => {
       onlyProcess(a, "cancel or reopen an item");
       const it = ownedItem(s, a.id, a), message = `set_status ${a.id} ${a.status}`;
       // A repeat finds the item already as the first write left it; after a reopen, a cancel is a decision of its own.
@@ -817,7 +817,19 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.status === "cancelled" && open.length) throw new OpError(`status: owned items are still open: ${open.join(", ")}; cancel or move each part first`);
       const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
       if (a.status === "cancelled") doc.status = "cancelled"; else delete doc.status;
-      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc)] };
+      // A cancelled item keeps no open card: its open cards are withdrawn in this commit. Reopening restores exactly those,
+      // so a card withdrawn by hand stays withdrawn.
+      const cards = r.cardsOf(a.id).flatMap(key => s.decisions[key] ? [{ key, card: s.decisions[key] }] : []);
+      const moved = cards.filter(({ card }) => a.status === "cancelled" ? card.status === "open" : card.status === "withdrawn" && card.withdrawnWithItem === true);
+      const keys = moved.map(({ key }) => key).join("、");
+      if (keys) doc.log.push(entry(a.author, at, a.status === "cancelled" ? `因为条目取消，撤下了未裁的决策卡：${keys}` : `因为重新打开，恢复了决策卡：${keys}`));
+      const cardPuts = moved.map(({ key, card }) => {
+        if (a.status === "cancelled") return { kind: "decision" as const, id: key, doc: parse(Decision, { ...card, status: "withdrawn", withdrawnWithItem: true, ruledAt: at, updated: at }), expectRev: card.rev };
+        const reopened: Partial<Decision> = { ...card, status: "open", updated: at };
+        delete reopened.ruledAt; delete reopened.withdrawnWithItem;
+        return { kind: "decision" as const, id: key, doc: parse(Decision, reopened), expectRev: card.rev };
+      });
+      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc), ...cardPuts] };
     }),
     setPause: a => run(a, "item.pause", (s, at) => {
       onlyProcess(a, "pause or resume an item, at the owner's request");
