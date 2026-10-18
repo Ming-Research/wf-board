@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Draw the page's diagrams compact
+
+Nodes: page/diagrams/layout
+
+Summary: A synthetic role chart was drawn 3214 px high and a chart with three lanes 2443 px, boxes filling 16% of the drawing, and the page's gap settings did nothing because ELK does not read them. The page now asks the library for the classic look, 8 px of padding in a box and 20 px between boxes and between layers, and the bundled library entry wraps the call that hands each graph to ELK so that ELK takes those gaps from the diagram's configuration on the graph and every subgraph, keeping a 12 px straight run before an arrowhead; the role chart comes out 2430 px and the lanes 1801 px, every arrow entering from above. The grounds and the refused alternatives are in the node; the measurements are in docs/design.md, section 7, Diagrams.
+
 ## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
 
 Nodes: responsibility/identities, wake, wake/architect-stream, items
