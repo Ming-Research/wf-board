@@ -91,6 +91,34 @@ jobs:
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
         run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+  # The n-key lane (test/nkey, docs/design.md, section 11, The n-key lane): the page in jsdom on a board of the live board's weight,
+  # the counts of one press of n and its time against the base page, in four parts that each seed the board and run at once. A part
+  # takes about 10 seconds to start and 15 to 30 to run. The time parts compare with the page of the base: on a main-line push the
+  # commit before the push, otherwise the merge base with the main line; the checkout carries history for it.
+  nkey:
+    name: nkey ${{ matrix.part }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [counts, witnesses, time-quiet, time-writing]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Base page
+        env:
+          PUSHED_FROM: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
+          echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
   # The owner's page in headless Chromium against the real server (test/e2e); the browser is cached by Playwright version. It
   # takes about 11 minutes, so a run started by hand leaves it out unless the input `browser` is set; the main line and the
   # nightly run always have it.
@@ -123,7 +151,7 @@ jobs:
   # e2e is skipped in a run started by hand without the input `browser`; no other job is skipped.
   result:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-    needs: [start, no-tmp-workflow, check, test, e2e]
+    needs: [start, no-tmp-workflow, check, test, nkey, e2e]
     runs-on: ubuntu-latest
     permissions:
       statuses: write
