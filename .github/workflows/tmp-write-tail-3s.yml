@@ -23,3 +23,70 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test test/write-trace.test.ts test/replay.test.ts test/budget.test.ts test/journal.test.ts test/stateless.test.ts test/slow-ops.test.ts test/maintenance.test.ts test/store.test.ts test/shutdown.test.ts test/mcp.test.ts test/ops.test.ts test/http.test.ts test/owner-ops.test.ts
+  # Each new check, watched failing once for each condition it protects: the code with one thing spoiled must turn its test red.
+  witness:
+    name: spoiled ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: retry check without the minute
+            file: test/replay.test.ts
+            path: src/ops.ts
+            from: 'since, limit: 20'
+            to: 'limit: 20'
+          - name: conflict without the revision bound
+            file: test/budget.test.ts
+            path: src/ops.ts
+            from: ', limit: current.rev - rev + 1'
+            to: ''
+          - name: maintenance counted in a write
+            file: test/write-trace.test.ts
+            path: src/store.ts
+            from: '"maintenance", false'
+            to: '"maintenance"'
+          - name: git commands not timed
+            file: test/write-trace.test.ts
+            path: src/store.ts
+            from: 'trace?.lap(`git ${gitCommand(args)}`);'
+            to: ''
+          - name: store queue wait not timed
+            file: test/write-trace.test.ts
+            path: src/store.ts
+            from: 'trace?.lap("store queue", ahead ?'
+            to: 'void (ahead ?'
+          - name: operations queue wait not timed
+            file: test/write-trace.test.ts
+            path: src/ops.ts
+            from: 'trace?.lap("ops queue");'
+            to: ''
+          - name: steps shown for every write
+            file: test/write-trace.test.ts
+            path: src/slow-ops.ts
+            from: 'if (ms >= STEPS_FROM_MS) try'
+            to: 'try'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Spoil one thing
+        env:
+          FROM: ${{ matrix.from }}
+          TO: ${{ matrix.to }}
+          TARGET: ${{ matrix.path }}
+        run: |
+          node -e '
+            const fs = require("fs"), { FROM, TO, TARGET } = process.env;
+            const text = fs.readFileSync(TARGET, "utf8");
+            if (!text.includes(FROM)) { console.error("the line to spoil is not in " + TARGET); process.exit(2); }
+            fs.writeFileSync(TARGET, text.replace(FROM, TO));
+          '
+          git diff --stat
+      - name: The test must fail
+        run: |
+          if node --test ${{ matrix.file }}; then echo "the spoiled code passed ${{ matrix.file }}"; exit 1; fi
