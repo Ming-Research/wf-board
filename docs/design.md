@@ -89,7 +89,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command that writes the repository, which all run through the store's `git()`; the read-only `cat-file` reader and the reads of a one-time conversion start no maintenance); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
@@ -109,13 +109,13 @@ has diverged (an error). Commits written while a push runs go in the next one. O
 runs at a time, and a call made while one runs gets its result. A push beside a write
 is safe because it reads objects and changes one remote-tracking reference, and its
 git runs with automatic maintenance off, so it never starts a repack of its own. The
-other direction is a write's commit starting a repack while a push reads objects. A
-40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
-maintenance triggered by each commit, in the foreground or the background, beside
-back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
-pushes each) there was no error, `git fsck` passed, and the remote's head was an
-ancestor of the local one. A push that did fail would be tried again at the next round
-and, if it kept failing, told by the lag push below.
+other direction is a maintenance step repacking while a push reads objects. Two
+replays of the live board's busiest ten minutes (hosted runner, git 2.55.0, 1652 writes
+each, a step after every 200 commits) ran a push every 3 seconds beside the writes and
+the steps: 396 pushes in all, none failed, `git fsck` passed at the end, and the remote's
+head was an ancestor of the local one (item `data-repo-gc-timing-study`). A push that
+did fail would be tried again at the next round and, if it kept failing, told by the
+lag push below.
 
 A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
 with the network down, never ends. In the queue, it held every write: in CI with a fake
@@ -143,6 +143,49 @@ the last failure's reason. The hour counts from the last time the copy was known
 a push that sent or found nothing to send, or a round that found nothing to send; after a
 start, from the start, since the state is in memory. A copy that is current again and falls
 behind again is told again.
+
+**Maintenance.** The data repository gains loose objects, about 4 for each commit (4.14 on the
+live board), and someone has to pack them. git does it by itself after a commit, at a time and in a
+size the board does not choose: the first such repack on the live repository (9,087 loose objects from
+2,160 commits) held a write for 5,672 ms, over the 3 seconds a write may wait. In the background, the same
+repack deleted an empty object directory while the next `git add` made a temporary file in it, which
+failed 11 of 1,726,480 writes in a reproduction with git alone and none of 2,030,080 without the
+repack (item `e2e-git-tmp-flake-study`). So git's own maintenance is off, and the board runs a step
+itself as a task of the write queue, where it cannot overlap a write.
+
+- **When.** After every `MAINTENANCE_EVERY` (100) commits, counted from the last step. `Store.open` estimates the
+  commits waiting from the loose objects it finds (divided by 4), maintains a backlog of 100 or more before it returns,
+  and so before the daemon listens. A commit queues no second step while one is queued. A step that fails is logged and
+  tried again after 100 more commits. Rejected, with the measurements of item `data-repo-gc-timing-study`: waiting for
+  idle time (the live board's busiest ten minutes of 596 seconds have 105 seconds without a commit and a commit in
+  the others, so the cap on commits would decide anyway), maintaining only at start (the backlog has no bound: a week without a restart is about 20,000 commits and a
+  step of about 60 s, estimated), maintaining at fixed times (a step follows the writes: the busiest ten minutes' 1,566
+  commits would be one step of about 5 s, estimated), and git's own trigger with a lower threshold (it still
+  rewrites the whole repository now and then, and its trigger is out of the board's hands: on the replica it started at 3,436 loose
+  objects and on the live repository not yet at 5,154, for a cause that was not found).
+- **How many.** 100. On a hosted runner, replaying the live board's busiest ten minutes against a copy of its shape
+  (1652 writes each), a step of 100 commits took a median of 240 and 299 ms (two samples) and at most 753 and 734 ms, the slowest
+  write was 631 and 771 ms, and none of the writes took 3 s. A step of 200 took at most 1,065 to 1,699 ms in three samples. In one reproduction of the 10-16
+  repack the replica took 0.69 to 0.95 of the live repository's time, so the live Mac may be up to 1.45 times slower: a step of 100
+  then takes about 1.1 to 1.3 s, under the 2 s line at which a slow write is told to the PM (Time limits), and a step of 200
+  about 1.5 to 2.5 s, which reaches that line.
+- **What a step does.** `git repack -d -l --write-midx` packs every loose object into one new pack;
+  `git commit-graph write --split --reachable` writes the commit-graph (a history query is about 6 times
+  faster with it); and, when the repository had more than 8 packs before the step, `git multi-pack-index expire` and
+  `git multi-pack-index repack --batch-size=16m` merge the small packs in batches of about 16 MB. Over 12,000
+  commits on a synthetic copy a step of 100 took a median of 601 ms and at most 906 ms, and there were at most 10 packs.
+  Rejected: git's own geometric repack for each step (the smallest disk, but a repack of the whole repository every
+  7,300 commits took 3.6 to 4.4 s and grows with the repository), packing without merging (the pack count has no bound: 63
+  after 60 steps), and a `.keep` file on the large packs (every step took 2.2 to 2.6 s).
+
+The cost is disk: the merge in batches finds deltas only inside a batch, so the synthetic copy grew to 134 MB over 12,000 commits
+where git's own way gave 75 MB (from 54 MB), about 4 times per commit. On the live board that is an estimated 80 to 108 MB a
+week more than git's own, not measured there. Each step writes a line to the service log,
+`maintenance 100 commits 301 ms 6 packs 27.5 MB` (commits, time, packs and size after the step), and the start writes
+`startup maintenance: ...` with what it found. The first start after this change has a backlog of about 1,600 commits and a
+step of about 5 s (estimated). Reopen the choice when the service log shows a step over 1.5 s or a write over 2 s, when a week's
+growth is over twice the estimate (then a full repack at start, before listening, once the disk passes a threshold), or when
+the pack count passes 10.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -207,16 +250,11 @@ sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
 
-A commit's automatic repack also runs in the foreground (see Storage). On
-2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
-wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
-runs; the same commit with the repack in the background took 25 to 103 ms). The
-study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
-5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
-has ruled that the board turns git's automatic maintenance off and queues a
-maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
-not yet built); until then the repack stays in the foreground.
+A maintenance step that is running when the signal arrives is not stopped: the commit of the
+reading state waits for it in the write queue, and the shutdown queues no step after the signal
+(`Store.stopMaintenance`). In the replays of Maintenance a step of 100 commits took 753 ms at most
+on a hosted runner. Not measured: a step that runs at the moment of a shutdown on the live Mac, and
+the first step after a long backlog.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in

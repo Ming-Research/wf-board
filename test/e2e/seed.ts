@@ -2,12 +2,12 @@
 // read batch, so later batches show as unread on the page.
 
 import { Store } from "../../src/store.ts";
-import type { DocKind } from "../../src/store.ts";
+import type { DocKind, OpenOptions } from "../../src/store.ts";
 import { ownerOps } from "../../src/owner-ops.ts";
 import type { Generated } from "./board-gen.ts";
 
-export async function seedBoard(dir: string, gen: Generated): Promise<{ store: Store; commits: string[] }> {
-  const store = await Store.open(dir, { init: true, board: gen.board });
+export async function seedBoard(dir: string, gen: Generated, opts: Pick<OpenOptions, "maintenance"> = {}): Promise<{ store: Store; commits: string[] }> {
+  const store = await Store.open(dir, { init: true, board: gen.board, ...opts });
   const commits: string[] = [];
   for (const batch of gen.batches) {
     const s = store.snapshot();
