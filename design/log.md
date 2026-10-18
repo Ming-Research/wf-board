@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Draw the runner's work on the agent list and keep its beats in memory
+
+Nodes: page/agent-list, daemon/live-state
+
+Summary: The agent list read only what sessions write to the board, so the work the runner holds (turns of a minute to ten, waits for CI, a card or the architect) was invisible between writes, and the owner could not tell whether it was running. The list now draws each piece of work the runner holds from the runner's report on the item and the engineer's dispatch record, in the whole view's words and limits, and leaves those sessions and the runner's own names out of the older rows. For the inside of a turn the runner beats about every 30 seconds, and the board keeps the newest beat for each turn in the daemon's memory only, with no commit, and sends it to the open pages as an event; a beat not repeated for 90 seconds is shown as silent. The grounds and the refused alternatives (a commit for each action, the report renewed every five minutes, the board asking the runner) are in the two nodes; the derivation is in docs/design.md, section 7, Agent list and The live view of a turn.
+
 ## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
 
 Nodes: responsibility/identities, wake, wake/architect-stream, items

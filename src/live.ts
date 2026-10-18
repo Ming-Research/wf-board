@@ -1,6 +1,6 @@
 // What the runner says about a turn it is running now: the turn's number, how long it has run, how long since its last action and what
 // that action was. It lives in the daemon's memory only: no commit, no data file, gone when the daemon stops and filled again by the
-// runner's next beat. The agent list reads it beside the runner's report on the item (src/runner-rows.ts). docs/design.md, section 8,
+// runner's next beat. The agent list reads it beside the runner's report on the item (src/runner-rows.ts). docs/design.md, section 7,
 // "The live view of a turn", gives the reasons for each rule.
 
 /** Whose turn it is: an engineer's, or the architect's turn the runner starts to answer an engineer's question. */

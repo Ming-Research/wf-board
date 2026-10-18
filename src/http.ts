@@ -34,6 +34,7 @@ import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 import { pageVersion, stampPage } from "./page-version.ts";
+import { LiveStore } from "./live.ts";
 import type { LiveEntry } from "./live.ts";
 
 /** How many of the newest messages the page is sent with the board; the messages tool finds older ones (docs/design.md, Messages). */
@@ -52,7 +53,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits; live?: LiveStore }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -94,8 +95,10 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The version the open pages were last told: by a deploy that ended, or when the first page connected. A deploy that ends tells them
   // again only when the version differs (design section 4, Deploying).
   let announced: string | undefined;
+  // The runner's beats for the turns running now (src/live.ts): the store the operations keep them in, or an empty one without it.
+  const live = deps.live ?? new LiveStore();
   const pageEvent = (version: string) => "event: page\ndata: " + JSON.stringify({ version }) + "\n\n";
-  // The runner's beats for the turns running now (src/live.ts), all of them every time: the list is a few entries.
+  // The event that sends them: all of them every time, since the list is a few entries.
   const liveEvent = (entries: readonly LiveEntry[]) => "event: live\ndata: " + JSON.stringify(entries) + "\n\n";
   // The reads run one after another, in the order asked: a page that connects is told what was on disk when it joined, and no
   // announcement made after that read passes it.
@@ -176,7 +179,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
         const version = await readPage(false);
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version)) + liveEvent(deps.ops.live.all())); streams.add(res);
+        res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version)) + liveEvent(live.all())); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
       }
       if (path === "/api/unread") { const { head, owner: { cursor, readMarks } } = store.snapshot(); json(res, 200, { cursor, steps: await unreadSteps(store, cursor, readMarks, head) }); return; }
@@ -317,7 +320,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
-  const unsubscribeLive = deps.ops.live.onChange(entries => writeStreams(liveEvent(entries)));
+  const unsubscribeLive = live.onChange(entries => writeStreams(liveEvent(entries)));
   /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
   const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
   /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined) or an agent's. */

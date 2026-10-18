@@ -39,12 +39,10 @@ export interface Ops {
   /** The runner's report on the work on an item (docs/design.md, section 5, Runner reports): replaces the item's `runner`, stamps `since` and `at`, and writes nothing when the report changes nothing. */
   reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
   /**
-   * The runner's beat for a turn it is running (docs/design.md, section 8, The live view of a turn): the same writers as `reportState`,
-   * kept in `live` and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
+   * The runner's beat for a turn it is running (docs/design.md, section 7, The live view of a turn): the same writers as `reportState`,
+   * kept in the options' `live` store and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
    */
   reportLive(a: { author: string; session?: string; access?: Access; id: string; role: LiveRole; turn: number; turnSeconds: number; idleSeconds?: number; action?: string }): Promise<string>;
-  /** The beats reportLive keeps; the page server reads and follows it. */
-  readonly live: LiveStore;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
@@ -365,16 +363,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       else if (put.kind === "glossary" && put.id !== project) throw new OpError(`glossary ${put.id}: a ${role} credential writes only its own project's glossary (${project})`);
     }
   }
+  /** What every write asks of its call before it reads anything: the table for a credential's role, the text of every field, the removed names, the session and the author. */
+  function checkWriter(a: Writer, parts: readonly Part[]): void {
+    mayWrite(a, parts);
+    nonempty(a);
+    if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
+    for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
+    if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
+    if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
+    if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write the process as ${PM_AUTHOR} (session ${PM_SESSION}), and the rules and the architect's own entries as ${ARCHITECT}`);
+  }
   function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       const partList = typeof parts === "string" ? [parts] : parts;
-      mayWrite(a, partList);
-      nonempty(a);
-      if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
-      for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
-      if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
-      if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
-      if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write the process as ${PM_AUTHOR} (session ${PM_SESSION}), and the rules and the architect's own entries as ${ARCHITECT}`);
+      checkWriter(a, partList);
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
@@ -566,7 +568,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   /** The log line a write added last, for `earlierWrite`'s `same`. */
   const lastLine = (doc: Item, by: string, text: string): boolean => { const last = doc.log[doc.log.length - 1]; return last !== undefined && last.by === by && last.text === text; };
   return {
-    live,
     createProject: a => run(a, "project.create", s => {
       if (s.board.projects.some(p => p.name === a.name)) throw new OpError(`project ${a.name}: already exists`);
       const projects = [...s.board.projects, { name: a.name, ...(a.repo === undefined ? {} : { repo: a.repo }) }];
@@ -724,7 +725,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { ...it, updated: at, runner: next };
     }, false, ` ${a.state}`),
     reportLive: async a => {
-      mayWrite(a, ["item.runner"]);
+      checkWriter(a, ["item.runner"]);
       onlyProcessOrRunnerWithoutCredential(a, "report a turn's live state");
       const it = ownedItem(store.snapshot(), a.id, a);
       if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);

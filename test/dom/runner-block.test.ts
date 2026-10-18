@@ -69,7 +69,7 @@ test("the architect's turn is drawn under the work that asks the architect while
   assert.equal(bp.$(".runner-architect", rowOf(bp, id)!), null);
   // A beat the runner has not repeated for 200 seconds: silent, with what it last said, counted from when it was heard.
   const now = Date.now();
-  board.ops.live.put({ role: "工程师", item: id, turn: 2, turnStartedAt: iso(now - 600_000), lastActionAt: iso(now - 400_000), action: "跑 git push", at: iso(now - 200_000) });
+  board.live.put({ role: "工程师", item: id, turn: 2, turnStartedAt: iso(now - 600_000), lastActionAt: iso(now - 400_000), action: "跑 git push", at: iso(now - 200_000) });
   await bp.waitFor(() => /没有动静/.test(turnLine(bp, id) ?? ""), "the silent turn");
   assert.match(turnLine(bp, id)!, /^没有动静：执行程序 3 分钟没报这一轮；上次报的是第 2 轮，这一轮 6 分钟，最后动作 3 分钟前：跑 git push$/);
   assert.ok(bp.$(".runner-turn.silent", rowOf(bp, id)!), "marked for the reader's eye");

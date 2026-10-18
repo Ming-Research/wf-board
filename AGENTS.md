@@ -57,6 +57,10 @@ matches what the artifact board offered.
   on, waiting, set aside) by the runner's report on it (`item.runner`, written by `report_state`), a live engineer session
   and the plan, in one function that the `whole_view` tool prints and the page draws (design section 6, The whole view;
   section 5, Runner reports). Imported by the server and bundled into the page.
+- `src/live.ts`: the runner's beats for the turns running now (the turn's number, its length, the last action), kept in the
+  daemon's memory only and sent to the page as the event `live`; `src/runner-rows.ts`: the runner's block of the agent list, one row
+  for each piece of work the runner holds, read from its report on the item, the dispatch record and the beats (design section 7,
+  Agent list, The live view of a turn). Imported by the server and bundled into the page.
 - `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
