@@ -135,14 +135,25 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A row that points at a record. A record is no step of its plan: the order skips it and the counts leave it out (docs/design.md, Records). */
+export function isRecordRow(items: Readonly<Record<string, Pick<Item, "record">>>, row: PlanRow): boolean {
+  return "item" in row && !!items[row.item]?.record;
+}
+/** What a row with no `after` at position `at` comes after: the nearest row before it that is not a record row, none for the first. */
+export function followedRows(plan: readonly PlanRow[], at: number, isRecord: (row: PlanRow) => boolean): string[] {
+  for (let i = at - 1; i >= 0; i--) if (!isRecord(plan[i]!)) return [plan[i]!.id];
+  return [];
+}
 /** The plan without a card's row, for a card that does not block. Rows that waited for the row wait for what it waited for. */
-export function withoutCardRow(plan: PlanRow[], key: string): PlanRow[] {
+export function withoutCardRow(plan: PlanRow[], key: string, isRecord: (row: PlanRow) => boolean = () => false): PlanRow[] {
   const i = plan.findIndex(r => "card" in r && r.card === key);
   if (i < 0) return plan;
-  const waited = plan[i]!.after ?? (i > 0 ? [plan[i - 1]!.id] : []);
-  return plan.filter((_, n) => n !== i).map((r, n) => {
+  const waited = plan[i]!.after ?? followedRows(plan, i, isRecord), rest = plan.filter((_, n) => n !== i);
+  // The row with no `after` that followed the card is the first one after it that is not a record row.
+  const next = rest.findIndex((r, n) => n >= i && !isRecord(r));
+  return rest.map((r, n) => {
     if (r.after?.includes(key)) return { ...r, after: [...new Set([...r.after.filter(x => x !== key), ...waited])] };
-    return r.after === undefined && n === i ? { ...r, after: waited } : r;
+    return r.after === undefined && n === next ? { ...r, after: waited } : r;
   });
 }
 
@@ -808,17 +819,19 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     const target = item(row.item);
     if (!target) return { state: "waiting", dropped: false, excluded: false, weight: 0 };
-    if (target.record) return { state: "resolved", dropped: false, excluded: row.own, weight: 1 };
+    // A record is no step: resolved so that nothing waits for it, and left out of the counts and the share, owned or shared.
+    if (target.record) return { state: "resolved", dropped: false, excluded: true, weight: null };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
     const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
     // A sub-item counts as its status says, shared or owned: done whole, in progress or idle half; a cancelled one is left out of the share.
     const weight = status === "cancelled" ? null : status === "done" ? 1 : status === "wip" || status === "idle" ? 0.5 : 0;
     return { state, dropped, excluded: dropped, paused: status === "paused", weight };
   }
+  const isRecord = (row: PlanRow): boolean => isRecordRow(s.items, row);
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
-    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
-    for (const row of item(id)?.plan ?? []) {
-      const preceding = row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
+    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>(), plan = item(id)?.plan ?? [];
+    for (const [at, row] of plan.entries()) {
+      const preceding = (row.after ?? followedRows(plan, at, isRecord)).map(key => byId.get(key));
       const { paused, ...derived } = rowState(row, seen);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
@@ -894,16 +907,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return closed;
   }
   // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
-  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready.
+  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready. A record row in the owner's
+  // plan is no step: the row after it follows the step before it.
   function ownerRowReady(id: string): boolean {
     const owner = parentOf(id), plan = owner ? item(owner) : undefined;
     if (!owner || !plan || plan.record) return true;
     const resolved = new Map<string, boolean>(), seen = new Set([id]);
-    let previous = true;
-    for (const row of plan.plan) {
-      if ("item" in row && row.item === id) return (row.after === undefined ? [previous] : row.after.map(key => resolved.get(key) ?? false)).every(Boolean);
-      previous = rowResolved(row, seen);
-      resolved.set(row.id, previous);
+    for (const [at, row] of plan.plan.entries()) {
+      if ("item" in row && row.item === id) return (row.after ?? followedRows(plan.plan, at, isRecord)).every(key => resolved.get(key) ?? false);
+      resolved.set(row.id, rowResolved(row, seen));
     }
     return true;
   }

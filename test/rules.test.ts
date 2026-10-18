@@ -241,10 +241,12 @@ test("cards and missing targets wait, and only closing the card resolves its row
   for (const status of ["ruled", "withdrawn"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo", "a ruled card is not the item's own work"); }
 });
 
-test("row ratios exclude dropped steps, cancelled owned work and owned records, while shared records count", () => {
+test("row ratios and the progress share exclude dropped steps, cancelled owned work and record rows, owned or shared", () => {
   const s = snapshot({ item: { plan: workPlan([step("done", "done"), step("dropped", "dropped"), own("cancelled"), own("ownedRecord"), shared("sharedRecord"), shared("cancelled-shared")]) }, cancelled: { status: "cancelled" }, ownedRecord: { record: true }, sharedRecord: { record: true }, "cancelled-shared": { status: "cancelled" } });
   const r = rules(s);
-  assert.deepEqual(r.planRatio("item"), { done: 2, total: 4 });
+  // Counted: the done step, the shared cancelled row and the acceptance step; the share has the shared cancelled row out too.
+  assert.deepEqual(r.planRatio("item"), { done: 1, total: 3 });
+  assert.equal(r.progressShare("item"), 0.5);
   assert.deepEqual(r.planRows("item").map(row => row.glyph), ["✓", "✗", "✗", "✓", "✓", "⏸", "○"]);
   assert.equal(r.statusOf("item"), "blocked");
   assert.ok(texts(s, "item").includes("依赖的条目已取消"));
@@ -323,7 +325,8 @@ test("progressShare weighs each kind of sub-item by its status, and leaves a can
   assert.equal(share([own("d")]), 0.5, "an owned sub-item done counts whole");
   assert.equal(share([own("i")]), 0.25, "an owned sub-item idle counts half");
   assert.equal(share([own("t")]), 0, "an owned sub-item not started counts nothing");
-  assert.equal(share([shared("r")]), 0.5, "a shared record counts whole");
+  assert.equal(share([shared("r")]), 0, "a shared record row is no step: left out of the share, as an owned one is");
+  assert.equal(share([own("r")]), 0, "an owned record row is left out of the share");
   assert.equal(share([own("c")]), 0, "an owned cancelled sub-item is left out of the share");
   s.items.a!.plan = [shared("c"), accept()];
   assert.equal(rules(s).progressShare("a"), 0, "a shared cancelled sub-item is left out too: it does not lift the share of an open acceptance step");

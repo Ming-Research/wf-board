@@ -34,7 +34,7 @@ test("independent row-state table covers normal, cancelled, record and missing t
     // What others finished is not this item's own work: a done shared target leaves the item at todo.
     { row: { id: "target", item: "target", own: false }, target: { plan: [acceptance("done")] }, expected: ["resolved", "✓", false, false, "todo"] },
     { row: { id: "target", item: "target", own: true }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, true, "todo"] },
-    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, false, "todo"] },
+    { row: { id: "target", item: "target", own: false }, target: { record: true, plan: [] }, expected: ["resolved", "✓", false, true, "todo"] },
     { row: { id: "gone", item: "gone", own: true }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "gone", item: "gone", own: false }, expected: ["waiting", "⏸", false, false, "blocked"] },
     { row: { id: "q", card: "q" }, expected: ["waiting", "⏸", false, false, "blocked"] },
@@ -163,6 +163,56 @@ test("status table: only the item's own work makes it part way", () => {
     const s = fixture(c.plan, c.target, c.card);
     assert.equal(rules(s).statusOf("subject"), c.expected, `production: ${c.name}`);
     assert.equal(derivePlanOracle(s).statusOf("subject"), c.expected, `oracle: ${c.name}`);
+  }
+});
+
+// A record is no step of the plan: a row with no `after` follows the nearest row before it that is not a record row, and a
+// record row is left out of the counts, owned or shared. The first case is the one the board met: a record row that stands
+// apart (after nothing) put in front of the acceptance row, which then came up at once though every row before was waiting.
+test("status table: a record row is no step, so a row after it follows the last step before it", () => {
+  const rec = (id: string, own: boolean, extra: Partial<PlanRow> = {}): PlanRow => ({ id, item: id, own, ...extra } as PlanRow);
+  const wait: PlanRow = { id: "target", item: "target", own: false, after: [] };
+  const work: PlanRow = { id: "work", text: "Work", state: "todo" };
+  const cases: Array<{ name: string; plan: PlanRow[]; status: Status; ready: boolean[]; counted: number }> = [
+    { name: "an owned record row apart from the wait, acceptance after it", plan: [wait, rec("rec", true, { after: [] }), acceptance()], status: "blocked", ready: [true, false, false], counted: 2 },
+    { name: "a shared record row apart from the wait, acceptance after it", plan: [wait, rec("rec", false, { after: [] }), acceptance()], status: "blocked", ready: [true, false, false], counted: 2 },
+    { name: "a record row after the wait", plan: [wait, rec("rec", false), acceptance()], status: "blocked", ready: [true, false, false], counted: 2 },
+    { name: "two record rows in a row", plan: [wait, rec("rec", true, { after: [] }), rec("rec2", false, { after: [] }), acceptance()], status: "blocked", ready: [true, false, false, false], counted: 2 },
+    { name: "a record row between two steps", plan: [wait, rec("rec", false, { after: [] }), work, acceptance()], status: "blocked", ready: [true, false, false, false], counted: 3 },
+    { name: "a record row first: the row after it follows nothing", plan: [rec("rec", false), work, acceptance()], status: "todo", ready: [false, true, false], counted: 2 },
+    { name: "a row that names the record row in after waits for nothing", plan: [wait, rec("rec", false, { after: [] }), { ...acceptance(), after: ["rec"] }], status: "todo", ready: [true, false, true], counted: 2 },
+  ];
+  for (const c of cases) {
+    const s = fixture(c.plan);
+    for (const id of ["rec", "rec2"]) s.items[id] = Item.parse({ title: id, group: "P", record: true, plan: [], updated: at, rev: 1 });
+    assert.equal(rules(s).statusOf("subject"), c.status, `production: ${c.name}`);
+    assert.deepEqual(rules(s).planRows("subject").map(row => row.ready), c.ready, `production ready: ${c.name}`);
+    assert.equal(derivePlanOracle(s).statusOf("subject"), c.status, `oracle: ${c.name}`);
+    assert.deepEqual(derivePlanOracle(s).rows("subject").map(row => row.ready), c.ready, `oracle ready: ${c.name}`);
+    assert.equal(rules(s).planRatio("subject").total, c.counted, `production counted: ${c.name}`);
+    assert.equal(derivePlanOracle(s).rows("subject").filter(row => !row.excluded).length, c.counted, `oracle counted: ${c.name}`);
+    // The status was todo with the rating missing, which is what put the item among the startable and asked for a rating.
+    assert.equal(rules(s).checks("subject").some(check => check.label === "缺难度"), c.status === "todo", `rating check: ${c.name}`);
+  }
+});
+
+test("status table: a record row in an owner's plan does not let the owned item's row come up early", () => {
+  const owner = (plan: PlanRow[]) => {
+    const s = fixture([{ id: "work", text: "Work", state: "todo" }, acceptance()]);
+    s.items.owner = Item.parse({ title: "Owner", group: "P", plan, updated: at, rev: 1 });
+    s.items.rec = Item.parse({ title: "Rec", group: "P", record: true, plan: [], updated: at, rev: 1 });
+    return s;
+  };
+  const first: PlanRow = { id: "first", text: "First", state: "todo" }, recRow: PlanRow = { id: "rec", item: "rec", own: false, after: [] };
+  const cases: Array<[string, PlanRow[], Status]> = [
+    ["the step before the record row is still to do", [first, recRow, { id: "subject", item: "subject", own: true }, acceptance()], "blocked"],
+    ["the step before the record row is done", [{ ...first, state: "done", doneAt: at }, recRow, { id: "subject", item: "subject", own: true }, acceptance()], "todo"],
+    ["the record row is first", [recRow, { id: "subject", item: "subject", own: true }, acceptance()], "todo"],
+  ];
+  for (const [name, plan, expected] of cases) {
+    const s = owner(plan);
+    assert.equal(rules(s).statusOf("subject"), expected, `production: ${name}`);
+    assert.equal(derivePlanOracle(s).statusOf("subject"), expected, `oracle: ${name}`);
   }
 });
 
