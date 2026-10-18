@@ -14,6 +14,7 @@ import type { WakeKind } from "../src/wake.ts";
 import { BackupPush } from "../src/backup-push.ts";
 import { SlowOps } from "../src/slow-ops.ts";
 import { decide } from "../src/watch.ts";
+import { STALLED_LABEL } from "../src/rules.ts";
 import type { PullState, RepoState } from "../src/github.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z"), MIN = 60_000;
@@ -101,16 +102,20 @@ test("there is no stream at /wake: the upgrade is refused, and PM is an ordinary
 test("stalled work is not pushed, though the check stays", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const start = Date.parse("2026-10-11T03:00:00Z");
-  let clock = start + 60 * MIN + MIN;
+  // Half an hour of active time at the start: not stalled yet, so the first scan does not take it for standing.
+  let clock = start + 30 * MIN;
   const wake = new Wake({ now: () => clock }), events = pushes(wake);
-  await server(t, { wake, now: () => clock, checkIntervalMs: 1000, architectTimedWakeMs: 1e12, prepare: ({ store }) => {
-    // A step in progress for more than an hour of active time: the board used to push it as stalled work.
+  const { store } = await server(t, { wake, now: () => clock, checkIntervalMs: 1000, architectTimedWakeMs: 1e12, prepare: ({ store }) => {
     const s = structuredClone(store.snapshot());
-    s.items.w = { ...s.items.other!, title: "没人推进的叶子", group: "Whitefoot", plan: [{ id: "work", text: "当前工作", state: "doing", since: iso(start) }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }] };
+    s.items.w = { ...s.items.other!, title: "没人推进的叶子", group: "Whitefoot", created: iso(start), updated: iso(start), log: [], plan: [{ id: "work", text: "当前工作", state: "doing", since: iso(start) }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }] };
     s.activity = { writes: Array.from({ length: 2 }, (_, i) => iso(start + i * 30 * MIN)), items: {} };
     store.snapshot = () => structuredClone(s);
   } });
-  t.mock.timers.tick(1000);
+  const stalled = () => store.derived.rules(store.snapshot(), clock).checks("w").some(c => c.label === STALLED_LABEL);
+  assert.equal(stalled(), false, "control: not stalled at the start");
+  // A step in progress for an hour of active time: the board used to push it as stalled work.
+  clock = start + 61 * MIN; t.mock.timers.tick(1000);
+  assert.equal(stalled(), true, "control: the check is raised");
   assert.deepEqual(events.filter(e => RETIRED.includes(e)), []);
 });
 
