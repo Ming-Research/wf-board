@@ -4379,7 +4379,7 @@ otherwise. When the twin does not show the noise, 30 pairs more are made in fres
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
 against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
-twenty, so a run that makes a second round is expected. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
+twenty, so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
 runner differs by up to a factor of two between jobs, and every fixed number made a pull request red or green by the runner.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
