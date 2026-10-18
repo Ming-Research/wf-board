@@ -815,14 +815,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.status === "open" && it.status !== "cancelled") throw new OpError("status: only a cancelled item can be reopened");
       const r = rulesOf(s), open = r.children(a.id).filter(id => r.isOpenWork(id));
       if (a.status === "cancelled" && open.length) throw new OpError(`status: owned items are still open: ${open.join(", ")}; cancel or move each part first`);
-      const doc = { ...it, updated: at, log: [...it.log, entry(a.author, at, a.log)] };
-      if (a.status === "cancelled") doc.status = "cancelled"; else delete doc.status;
       // A cancelled item keeps no open card: its open cards are withdrawn in this commit. Reopening restores exactly those,
       // so a card withdrawn by hand stays withdrawn.
       const cards = r.cardsOf(a.id).flatMap(key => s.decisions[key] ? [{ key, card: s.decisions[key] }] : []);
       const moved = cards.filter(({ card }) => a.status === "cancelled" ? card.status === "open" : card.status === "withdrawn" && card.withdrawnWithItem === true);
       const keys = moved.map(({ key }) => key).join("、");
-      if (keys) doc.log.push(entry(a.author, at, a.status === "cancelled" ? `因为条目取消，撤下了未裁的决策卡：${keys}` : `因为重新打开，恢复了决策卡：${keys}`));
+      // The card line comes before the reason, so the reason stays the item's last log line.
+      const cardLog = keys ? [entry(a.author, at, a.status === "cancelled" ? `因为条目取消，撤下了未裁的决策卡：${keys}` : `因为重新打开，恢复了决策卡：${keys}`)] : [];
+      const doc = { ...it, updated: at, log: [...it.log, ...cardLog, entry(a.author, at, a.log)] };
+      if (a.status === "cancelled") doc.status = "cancelled"; else delete doc.status;
       const cardPuts = moved.map(({ key, card }) => {
         if (a.status === "cancelled") return { kind: "decision" as const, id: key, doc: parse(Decision, { ...card, status: "withdrawn", withdrawnWithItem: true, ruledAt: at, updated: at }), expectRev: card.rev };
         const reopened: Partial<Decision> = { ...card, status: "open", updated: at };

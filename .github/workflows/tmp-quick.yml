@@ -20,3 +20,4 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test test/ops.test.ts
       - run: node --test test/access.test.ts
+      - run: node --test test/liveness.test.ts test/derived.test.ts test/history.test.ts test/changes-report.test.ts test/difficulty.test.ts test/move-project.test.ts test/ops-roles.test.ts test/replay.test.ts test/query.test.ts test/watch.test.ts test/convert-plans.test.ts test/mcp.test.ts test/credentials.test.ts

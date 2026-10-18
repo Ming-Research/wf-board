@@ -112,7 +112,8 @@ test("each operation records its effects, author and single atomic commit", asyn
   const waiting=store.snapshot().items.new!;
   await store.commit({author:"Fixture",message:"Legacy ask",puts:[{kind:"item",id:"new",expectRev:waiting.rev,doc:{...waiting,ask:{text:"Approve",url:"https://example.com/approve",chat:true}}}]});
   const beforeCancel=store.snapshot().items.new!;
-  await itemCommit(() => op.setStatus({ ...asArchitect, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled",undefined,architect);
+  // The cancellation withdraws the item's open card in the same commit.
+  await committed(() => op.setStatus({ ...asArchitect, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled",["decisions/new-card.yaml","items/new.yaml"],"item","new",architect);
   assert.equal(rules(store.snapshot()).statusOf("new"),"cancelled"); assert.deepEqual(store.snapshot().items.new!.plan,beforeCancel.plan); assert.deepEqual(store.snapshot().items.new!.ask,beforeCancel.ask);
   assert.deepEqual(store.snapshot().items.new!.log.at(-1),{at:later,by:architect,text:"Superseded"});
   await itemCommit(() => op.setStatus({ ...asArchitect, id: "new", status: "open", log: "Resume" }),"set_status new open",undefined,architect);
