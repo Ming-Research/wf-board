@@ -4026,13 +4026,19 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
    layout. It runs every check that needs only the page's logic, its DOM
    and the board's rules: the cost of a browser per check is gone, the page's
    own draws cost more than in a browser (the parser and the element
-   constructors are JavaScript).
+   constructors are JavaScript). Two things it is given for the diagrams: the
+   library the page loads by address is answered by a stand-in
+   (`test/dom/mermaid-library.ts`; the bundle is built with `import()` turned
+   into `require()`, which the window answers, so the page's source is
+   untouched), and the diagram boxes are laid out by a small model
+   (`test/dom/mermaid-layout.ts`) whose widths are the page's own stylesheet
+   evaluated for a box of given width.
 4. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
    `e2e`): headless Chromium (Playwright) loads the real page from the real
    server (the wiring of `src/main.ts`, in process) on a temporary data
    repository, so the page talks to the real API and event stream. It keeps
    what needs a layout: where a box lands, how wide it is, what a browser
-   hides, hit-testing and scrolling, and the diagrams.
+   hides, hit-testing and scrolling, and what the real diagram library draws.
 
 The browser layer exists because five page bugs in one day passed every test of
 the first two: saving a comment folded the card's comment list and hid its
@@ -4113,28 +4119,44 @@ own and short enough to be dealt out to the shards (the longest of the layer's
 13 files takes 27 seconds on a hosted runner, all 13 together 220), so the files
 run side by side.
 
-Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
-log are drawn, with Chinese labels; a block that does not parse shows its code and the
-error while the blocks after it are drawn; hostile text (a script in a label, a
-`javascript:` link) leaves nothing that runs; a page with no diagram never fetches the
-library and one with diagrams fetches it once; the diagrams are drawn again after a live
-update repaints their item; a diagram is as wide as itself or its box, whichever is less, with
-nothing to scroll sideways in the box or the page, at a window 1500 px wide and one 700 px wide; the
-settings in a diagram's own frontmatter win over the page's; the buttons, and Ctrl with the wheel,
-zoom, the plain wheel scrolls the page and nothing else, an enlarged diagram can be scrolled to both
-its ends and dragged, and 适应宽度 restores the default size; the toolbar is the top row of the
-diagram's frame, with its items in order and the size in percent following the zoom; an enlarged
-diagram says it can be moved (scroll bar, hand, a shade at the edge with more) and the toolbar and
-the bar read in both color schemes; a live update that
-leaves a diagram's source alone leaves its zoom, its sideways scroll and the page's scroll alone, and one
-that changes the source starts it at the default size; the same diagram drawn twice in one page, the
-first copy in a folded section, has no id twice and the visible copy's line markers are its own;
-labels and lines read in both color schemes, and the `data-theme` attribute wins over the system's
-scheme. Each check also
-runs on a page with the one part it protects taken out by an edit applied while the page is
-bundled, where it must report the part's absence in a line that says what the check was
-waiting for and what the page held (a diagram that never appears can only be observed by
-waiting, so the wait is short), not a bare timeout or a page that did not start.
+Diagrams are checked in two places. The page's own doing runs in the DOM layer
+(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`) against the stand-in library:
+a block in a head and one in a log are drawn; a block that does not parse shows its code
+and the error while the blocks after it are drawn; the library is asked for when a block is
+shown and only once, and with the strict security level and the diagram's text whole; the
+diagrams are drawn again after a live update repaints their item; the same diagram drawn
+twice, the first copy in a folded section, has no id twice and the visible copy's line
+markers are its own; the settings in a diagram's frontmatter reach the library; the diagram
+follows the system's color scheme and the `data-theme` attribute over it; a diagram is as wide as itself or
+its box, whichever is less, centered when narrow, with nothing to scroll sideways in the box; the
+buttons, and Ctrl with the wheel, zoom about a point that stays put, the plain wheel is left
+to the page, a zoomed diagram is dragged and 适应宽度 restores the default size; the 60%,
+90% and 100% buttons draw it at that share of its own width; the toolbar is the top row of
+the diagram's frame with its items in order, the hint at the right and the frame around
+it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand, a
+shade at the edge with more) and the toolbar and the bar read in both color schemes; a
+view survives a live update that leaves the source alone and a changed source starts
+at the default size. The stand-in is what the page depends on of the library and nothing
+more: the same text gives the same drawing, its ids and their references begin with the id
+the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
+page's. The widths come from the model of the boxes, not from a layout; the model also
+clamps a box's scroll to what its `overflow-x` allows. Each check also runs on a page with
+the one part it protects taken out by an edit applied while the page is bundled
+(`test/dom/mermaid-spoiled.ts`), where it must report the part's absence.
+
+What only the real library and a real layout show stays in
+`test/e2e/mermaid.e2e.ts`: a head's diagram has its Chinese labels and a size, and the library's
+error under a bad block; hostile text (a script in a label, a `javascript:` link) leaves nothing
+that runs under the strict level; the real library names the ids and line markers so that a
+second copy of a diagram has none in common with the first; the settings in a diagram's own
+frontmatter win over the page's in the real library; a diagram is as wide as itself or its box at a
+window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in the box or the page;
+an enlarged diagram can be scrolled to both its ends (and two page variants where it cannot),
+the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
+a view and the page's scroll survive a live update (and a variant that draws the diagrams
+after the scroll is restored); labels and lines read in both color schemes. A diagram that never appears
+can only be observed by waiting, so the wait is short, and the reported line must say what was
+waited for and what the page held, not a bare timeout or a page that did not start.
 
 Time limits have their own file, `test/e2e/press-n.e2e.ts`, on a board of the live
 board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a
@@ -4181,8 +4203,8 @@ unread list and does not fetch the board.
 nothing, and on the page with the thing it guards spoiled, where it must
 report it. In the DOM layer the spoiled page is the source text edited in
 memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
-(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles)
-its own, each naming the reason it must fail for. In the browser layer
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles,
+mermaid) its own, each naming the reason it must fail for. In the browser layer
 `test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
 reversed in a copy served from a temporary directory. A fix is reversed by
 undoing its commit's hunks, or, where later work rewrote the lines around it,

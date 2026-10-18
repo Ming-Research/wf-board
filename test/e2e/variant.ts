@@ -15,7 +15,7 @@ import type { Hooks } from "./board-server.ts";
 // is never written.
 export type Revert =
   | { commit: string; file: "web/app.ts" | "web/index.html"; hunks?: number[] }
-  | { file: "web/app.ts" | "web/index.html"; edit: string; find: string; replace: string };
+  | { file: "web/app.ts" | "web/index.html" | "web/mermaid.ts" | "web/highlight.ts"; edit: string; find: string; replace: string };
 /** The hunks of one file's diff in a commit, each as its old and new text. */
 function hunks(commit: string, file: string): Array<{ before: string; after: string }> {
   const diff = execFileSync("git", ["show", "--format=", "--no-color", "-U3", commit, "--", file], { cwd: ROOT, encoding: "utf8" });

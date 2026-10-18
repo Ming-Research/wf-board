@@ -5,9 +5,10 @@
 // checks of position, size and hit-testing stay in the browser layer. docs/design.md, section 11, Four test layers.
 
 import { build } from "esbuild";
+import type { Plugin } from "esbuild";
 import { JSDOM, VirtualConsole } from "jsdom";
 import type { DOMWindow } from "jsdom";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { stampPage } from "../../src/page-version.ts";
 import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
@@ -34,7 +35,20 @@ export function pageScript(reverts: Revert[] = []): Promise<string> {
   const k = key(reverts);
   if (!bundles.has(k)) bundles.set(k, (async () => {
     const contents = await reverted("web/app.ts", reverts);
-    const out = await build({ stdin: { contents, resolveDir: join(ROOT, "web"), sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", write: false, logLevel: "silent" });
+    // A fix reversed in another source file of the page (web/mermaid.ts) is applied as the file is read.
+    const others = new Set<string>(reverts.map(r => r.file).filter(f => f !== "web/app.ts" && f !== "web/index.html"));
+    const plugin: Plugin = {
+      name: "reverted",
+      setup(b) {
+        b.onLoad({ filter: /[\\/]web[\\/][\w-]+\.ts$/ }, async args => {
+          const file = ("web/" + basename(args.path)) as Revert["file"];
+          return others.has(file) ? { contents: await reverted(file, reverts), loader: "ts" } : undefined;
+        });
+      },
+    };
+    // A window has no module loader for the page's `import("/mermaid.js")`: the bundle asks for the library through `require`
+    // instead, which the window answers (PageOptions.library). Nothing else of the page changes.
+    const out = await build({ stdin: { contents, resolveDir: join(ROOT, "web"), sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", supported: { "dynamic-import": false }, plugins: [plugin], write: false, logLevel: "silent" });
     return out.outputFiles[0]!.text;
   })());
   return bundles.get(k)!;
@@ -53,6 +67,11 @@ export interface PageOptions {
   reverts?: Revert[];
   /** The colour scheme the page's media queries answer for. */
   scheme?: "light" | "dark";
+  /** What the window answers when the page asks for the diagram library (`import("/mermaid.js")`), made for each window; a window
+   * with none refuses the request, as a server without the file would. Held as `library` and counted in `loads`. */
+  library?: (page: DomPage) => object;
+  /** Run once the window has its shims and before the page's script: more shims, such as the layout of the diagram boxes. */
+  setup?: (page: DomPage) => void;
 }
 
 export class DomPage {
@@ -62,6 +81,11 @@ export class DomPage {
   errors: string[] = [];
   /** Counts of the performance marks the page leaves for its tests (`board:render` is a draw). */
   marks = new Map<string, number>();
+  /** The library this window answered the page's request for the diagrams with, and the addresses the page asked for. */
+  library: Loose | undefined;
+  loads: string[] = [];
+  private scheme: "light" | "dark" = "light";
+  private schemeListeners: Array<() => unknown> = [];
   private inflight = 0;
   private frames = 0;
   private changeCount = 0;
@@ -99,6 +123,7 @@ export class DomPage {
     this.close();
     this.stylesOfWindow = undefined;
     this.errors = []; this.marks = new Map(); this.inflight = 0; this.changeCount = 0;
+    this.library = undefined; this.loads = []; this.scheme = this.options.scheme ?? "light"; this.schemeListeners = [];
     const { reverts = [] } = this.options;
     const [html, script] = await Promise.all([pageHtml(reverts), pageScript(reverts)]);
     // The window's own complaints about what it does not implement (a stylesheet it cannot parse, navigation) are not the page's.
@@ -179,8 +204,14 @@ export class DomPage {
     perf.clearMarks = () => {};
     // A reader who prefers reduced motion: the page then moves at once instead of gliding.
     win.matchMedia = (query: string) => {
-      const matches = /prefers-reduced-motion:\s*reduce/.test(query) || (/prefers-color-scheme:\s*dark/.test(query) && this.options.scheme === "dark");
-      return { matches, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} } as unknown as MediaQueryList;
+      const matches = /prefers-reduced-motion:\s*reduce/.test(query) || (/prefers-color-scheme:\s*dark/.test(query) && this.scheme === "dark");
+      const dark = /prefers-color-scheme:\s*dark/.test(query);
+      return {
+        matches, media: query,
+        addEventListener: (kind: string, fn: () => unknown) => { if (dark && kind === "change") this.schemeListeners.push(fn); },
+        removeEventListener: (kind: string, fn: () => unknown) => { if (dark && kind === "change") this.schemeListeners = this.schemeListeners.filter(f => f !== fn); },
+        addListener() {}, removeListener() {},
+      } as unknown as MediaQueryList;
     };
     win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
     win.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -191,6 +222,14 @@ export class DomPage {
       proto.scrollIntoView ??= function () {}; proto.scrollTo ??= function () {}; proto.scrollBy ??= function () {};
     }
     win.scrollTo = () => {}; win.scrollBy = () => {};
+    // A pointer drag captures the pointer; a window has no pointer to capture.
+    for (const name of ["setPointerCapture", "releasePointerCapture"]) (win.Element.prototype as Loose)[name] ??= function () {};
+    // The library of diagrams is a module the page loads by its address (web/mermaid.ts); the bundle asks `require` for it.
+    win.require = (address: string) => {
+      this.loads.push(address);
+      if (!this.options.library) throw new Error(`the page asked for ${address}, which this window does not serve`);
+      return this.library ??= this.options.library(this) as Loose;
+    };
     // There is no layout, so the window is modelled as one tall enough for the whole page: every box is the same small box at the top
     // of panes that show it, and nothing scrolls. What the page decides by where a box is (whether it is on screen) then always says yes.
     win.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20, toJSON() { return this; } });
@@ -202,6 +241,14 @@ export class DomPage {
     win.HTMLElement.prototype.checkVisibility = function (this: HTMLElement) { return page.shown(this); };
     win.addEventListener("error", (e: ErrorEvent) => { this.errors.push("window error: " + (e.message || String(e.error))); });
     win.addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => { this.errors.push("unhandled rejection: " + String(e.reason)); });
+    this.options.setup?.(this);
+  }
+
+  /** The system changes its colour scheme: the page's media queries answer anew and the listeners of the change are told. */
+  setScheme(scheme: "light" | "dark") {
+    if (scheme === this.scheme) return;
+    this.scheme = scheme;
+    for (const fn of [...this.schemeListeners]) fn();
   }
 
   /** Waits until `done()` holds, polling by turns of the event loop; throws saying what was waited for. */

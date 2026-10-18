@@ -99,7 +99,9 @@ matches what the artifact board offered.
   `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11). `test/dom/` holds the DOM
   layer: the bundled page in jsdom against the real server on the same generated board (`page.ts` the window,
   its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
-  and `style-checks.ts` the checks; `witnesses.ts` and the scenario files the pages with one thing spoiled). Each
+  and `style-checks.ts` the checks; `witnesses.ts` and the scenario files the pages with one thing spoiled; `mermaid-library.ts`
+  the stand-in for the diagram library the page loads by address, `mermaid-layout.ts` the model of the diagram boxes, and
+  `mermaid-checks.ts`, `mermaid-spoiled.ts` and `mermaid-*.test.ts` the diagram checks and their spoiled pages). Each
   `*.test.ts` there has a board of its own and is kept short enough to be dealt out to the shards (the
   longest takes 27 seconds on a hosted runner).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage

@@ -1,4 +1,18 @@
-// Diagram sources for the mermaid checks (test/e2e/mermaid.e2e.ts). Synthetic: invented text, no board data.
+// Diagram sources for the mermaid checks (test/e2e/mermaid.e2e.ts, and test/dom/mermaid-*.test.ts, where a stand-in library draws
+// them). Synthetic: invented text, no board data.
+
+export const fence = (code: string) => "```mermaid\n" + code + "\n```";
+
+export const GOOD = "flowchart LR\n  A[需求] --> B[设计]\n  B --> C[实现]";
+export const SEQUENCE = "sequenceDiagram\n  参与者甲->>参与者乙: 你好\n  参与者乙-->>参与者甲: 收到";
+// Two arrows in a row: a syntax error.
+export const BAD = "flowchart LR\n  A --> --> B";
+/** A head with a good diagram, a bad one, another good one after it and a code block that is no diagram. */
+export const HEAD = ["先看这张图：", "", fence(GOOD), "", "下面这张是错的：", "", fence(BAD), "", "错的后面还有一张：", "", fence(SEQUENCE), "", "```wf\nfn main() {}\n```"].join("\n");
+// Asks for the dark theme in its own frontmatter, on a page that shows the light colors.
+export const OWN = "---\nconfig:\n  theme: dark\n---\nflowchart LR\n  A[需求] --> B[设计]";
+export const WIDE = "flowchart LR\n  " + Array.from({ length: 30 }, (_, i) => `N${i}[第${i}步]`).join(" --> ");
+export const SMALL = "flowchart LR\n  A[甲] --> B[乙]";
 
 /** A flowchart of the shape a role's flow chart on the board has: top to bottom, about thirty nodes, decisions, a rounded end, labelled and
  * dashed edges, a subgraph holding nine nodes in three columns, and a loop back. The text is a bakery taking an order, and each label is
@@ -50,3 +64,5 @@ export const PIPELINE = [
   "  class N1,N2,N3,N4,N5,N6,N7,N8,N9,N10,N12,N13,N14,N15 settled",
   "  class N11,N22,N23 pending",
 ].join("\n");
+/** A small diagram, a wide one and the tall chart, in one head. */
+export const FIT_HEAD = ["一张窄的：", "", fence(SMALL), "", "一张很宽的：", "", fence(WIDE), "", "一张又高又宽的：", "", fence(PIPELINE)].join("\n");
