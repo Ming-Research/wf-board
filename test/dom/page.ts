@@ -36,7 +36,7 @@ export function pageScript(reverts: Revert[] = []): Promise<string> {
   if (!bundles.has(k)) bundles.set(k, (async () => {
     const contents = await reverted("web/app.ts", reverts);
     // A fix reversed in another source file of the page (web/mermaid.ts) is applied as the file is read.
-    const others = new Set(reverts.map(r => r.file).filter(f => f !== "web/app.ts" && f !== "web/index.html"));
+    const others = new Set<string>(reverts.map(r => r.file).filter(f => f !== "web/app.ts" && f !== "web/index.html"));
     const plugin: Plugin = {
       name: "reverted",
       setup(b) {
