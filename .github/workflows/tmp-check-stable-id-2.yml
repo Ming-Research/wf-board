@@ -1,0 +1,61 @@
+name: tmp-check-stable-id-2
+# Temporary (check-stable-id): delete before the last full CI, which fails while this file exists.
+# The main line went red on the n-key writing lane after the merge of the check-id change (cand/base x1.054 [1.014, 1.096] against the
+# commit before the merge). This runs the lane as the full CI does (one round of 30 pairs, six times) on three pages, each against
+# that commit: the page on main now, the page before the merge with one no-op statement (a control: it must read 1), and the page with
+# the fix; and the type check and the tests the fix touches.
+on:
+  push:
+    branches: [check-stable-id-2]
+concurrency:
+  group: tmp-check-stable-id-2-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  BEFORE_MERGE: 9e8881c32ab5a10e712b6f7f3abcdb196c1594a3
+jobs:
+  unit:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/rules.test.ts test/rules-reuse-a.test.ts test/derived.test.ts test/changes-report.test.ts
+  lane:
+    name: nkey writing x6, ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, control, fix]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The page of the variant
+        run: |
+          case "${{ matrix.variant }}" in
+            main) git checkout origin/main -- src web ;;
+            control) git checkout "$BEFORE_MERGE" -- src web; echo 'void 0;' >> web/app.ts ;;
+            fix) ;;
+          esac
+          echo "NKEY_BASE=$BEFORE_MERGE" >> "$GITHUB_ENV"
+      - name: The lane, six times
+        run: |
+          for i in 1 2 3 4 5 6; do
+            node --test --test-concurrency=1 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (time|twin) \(writing\): (cand/base|[0-9]+ round|round)|press-n base" || true
+          done

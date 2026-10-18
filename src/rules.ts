@@ -251,10 +251,12 @@ export interface Check {
   /** What the check points at, when it is about another item or card than the one it sits on. */
   target?: { kind: "item" | "card"; id: string };
 }
-/** The one way to make a check: its label comes from its kind, so the two cannot disagree. */
+/** The one way to make a check: its label comes from its kind, so the two cannot disagree. Built as literals, not by spreading
+ * optional parts: it runs for every check of every item the page works out again after a write. */
 function check(id: CheckId, text: string, target?: Check["target"]): Check {
-  const { label } = checkKind(id);
-  return { id, text, ...(label === undefined ? {} : { label }), ...(target ? { target } : {}) };
+  const label = checkKind(id).label;
+  if (label === undefined) return target ? { id, text, target } : { id, text };
+  return target ? { id, text, label, target } : { id, text, label };
 }
 /** What makes a check the same check on two boards: its kind and what it points at, whatever its text says. */
 export const checkKey = (c: Pick<Check, "id" | "target">): string => `${c.id}|${c.target ? `${c.target.kind}:${c.target.id}` : ""}`;
