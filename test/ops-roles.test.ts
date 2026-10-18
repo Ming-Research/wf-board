@@ -315,8 +315,9 @@ test("every session name that starts with 架构师 (author Architect) writes as
     await op.updateItem({ ...who, id: key, rev: store.snapshot().items[key]!.rev, title: "Retitled" });
     assert.equal(store.snapshot().items[key]!.title, "Retitled");
     await op.setPause({ ...who, id: "a", paused: true, reason: "Owner chose to wait" });
-    await op.appendLog({ ...who, id: "a", text: `Written by ${session.trim()}` });
-    assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: `Written by ${session.trim()}` });
+    // The text differs for each round: the same session appending the same text again within minutes is taken for a retry and not made again.
+    await op.appendLog({ ...who, id: "a", text: `Written by ${session.trim()} (${n})` });
+    assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: `Written by ${session.trim()} (${n})` });
     // What the board reserves for the architect alone.
     // Limited to the item's own project: a tag for every project would be required on the next item made for Firn.
     await op.setTag({ ...who, name: `标签${n}`, meaning: "测试用", projects: [author] });
