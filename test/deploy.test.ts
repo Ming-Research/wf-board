@@ -227,7 +227,7 @@ test("checks still unfinished an hour after the job first saw the commit are pus
   assert.equal(await deploy(), "waiting");
   w.clock += 59 * 60_000;
   assert.equal(await deploy(), "waiting");
-  assert.deepEqual(w.posts, [], "not yet an hour");
+  assert.equal(w.posts.length, 0, "not yet an hour");
   w.clock += 2 * 60_000;
   assert.equal(await deploy(), "waiting");
   assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployFailed", sha]]);
@@ -249,7 +249,7 @@ test("the hour counts from the newest commit: a commit that arrives while the ol
   r.land({ "src/b.ts": "b" }, "B (#2)");
   w.clock += 20 * 60_000;
   assert.equal(await deploy(), "waiting");
-  assert.deepEqual(w.posts, [], "B has waited 0 minutes, A's 70 do not count against it");
+  assert.equal(w.posts.length, 0, "B has waited 0 minutes, A's 70 do not count against it");
 });
 
 test("a checkout the job may not move is refused before anything is asked of GitHub", async t => {
