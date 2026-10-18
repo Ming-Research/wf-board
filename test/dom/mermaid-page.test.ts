@@ -4,7 +4,7 @@
 // diagram's own text whole and the theme the owner's attribute or the system's scheme gives; the diagrams are drawn again after a live
 // update repaints their item, the same diagram drawn twice has no id twice, and a diagram keeps its zoom and its box's scroll through a
 // repaint. Each check also runs on a page with the one part it protects taken out, where it must report the part's absence. What the
-// real library draws, and what only a layout shows, is the browser layer's (test/e2e/mermaid.e2e.ts). Docs/design.md, section 11.
+// real library draws, and what only a layout shows, is the browser layer's (test/e2e/browser.e2e.ts). Docs/design.md, section 11.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

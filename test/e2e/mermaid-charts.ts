@@ -1,4 +1,4 @@
-// Diagram sources for the mermaid checks (test/e2e/mermaid.e2e.ts, and test/dom/mermaid-*.test.ts, where a stand-in library draws
+// Diagram sources for the mermaid checks (test/e2e/browser.e2e.ts, and test/dom/mermaid-*.test.ts, where a stand-in library draws
 // them). Synthetic: invented text, no board data.
 
 export const fence = (code: string) => "```mermaid\n" + code + "\n```";

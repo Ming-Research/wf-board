@@ -3,7 +3,7 @@
 // does for the things the page depends on, and draws nothing else: the same text gives the same drawing, the drawing has a view box,
 // its ids and the references to them all begin with the id the page gave, text that does not parse is refused with a message, and the
 // settings in a frontmatter block at the start of the text win over the page's configuration. What the real library draws (its labels,
-// its sizes, its colours, how it parses, what it makes of hostile text) is the browser layer's (test/e2e/mermaid.e2e.ts).
+// its sizes, its colours, how it parses, what it makes of hostile text) is the browser layer's (test/e2e/browser.e2e.ts).
 
 /** What the page gives `initialize`. */
 export interface Config { startOnLoad?: boolean; securityLevel?: string; theme?: string; suppressErrorRendering?: boolean; fontFamily?: string }

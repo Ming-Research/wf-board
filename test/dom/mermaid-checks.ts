@@ -1,6 +1,6 @@
 // The checks of the diagrams on the owner's page, run in a DOM library against a stand-in for the diagram library
 // (test/dom/mermaid-library.ts) and a model of the diagram boxes (test/dom/mermaid-layout.ts). They are the checks of
-// test/e2e/mermaid.e2e.ts whose answer is the page's own doing: what it makes of a block (its state, its error, its toolbar), what it
+// test/e2e/browser.e2e.ts whose answer is the page's own doing: what it makes of a block (its state, its error, its toolbar), what it
 // asks the library, how it zooms and drags, which stylesheet rules it relies on. Each returns its violations, each opening with the
 // family name, so a test can assert none and a witness can assert the one its spoiled page causes. What the real library draws and how
 // a real browser lays a box out are the browser layer's.

@@ -6,7 +6,7 @@
 // the frame with its items in order and the hint at the right; an enlarged diagram says it can be moved (a scroll bar that stays, the
 // hand, a word in the bar, a shade at the edge) and the bar reads in both color schemes. Each check also runs on a page with the one part
 // it protects taken out, where it must report the part's absence. What a real browser lays out (the ends of an enlarged diagram, the
-// native wheel, the width at real window sizes) is the browser layer's (test/e2e/mermaid.e2e.ts). Docs/design.md, section 11.
+// native wheel, the width at real window sizes) is the browser layer's (test/e2e/browser.e2e.ts). Docs/design.md, section 11.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
