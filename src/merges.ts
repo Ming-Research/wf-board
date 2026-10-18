@@ -47,7 +47,8 @@ export function newlyMerged(s: Snapshot, before: Item | null, after: Item | null
   if (!before || !after) return [];
   const repos = knownRepos(s), out = new Map<string, PrId>();
   for (const row of before.plan) {
-    if (!("text" in row) || after.plan.find(r => r.id === row.id)?.state !== "done") continue;
+    const now = after.plan.find(r => r.id === row.id);
+    if (!("text" in row) || !now || !("text" in now) || now.state !== "done") continue;
     for (const pr of mergePullsIn(s, before.head, row, repos)) out.set(prKey(pr), pr);
   }
   return [...out.values()];
