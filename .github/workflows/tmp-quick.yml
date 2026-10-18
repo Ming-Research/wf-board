@@ -1,0 +1,22 @@
+name: tmp-quick
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/ops.test.ts
+      - run: node --test test/access.test.ts

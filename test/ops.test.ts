@@ -896,3 +896,20 @@ test("acceptance naming avoids collisions with valid ordinary rows", async t => 
   assert.deepEqual(store.snapshot().items["record-collision"]!.plan.map(row => row.id), ["accept", "accept-1"]);
 });
 
+test("cancelling an item withdraws its open cards in the same commit; reopening restores those, not the ones withdrawn by hand", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  const openCards = () => Object.entries(store.snapshot().decisions).filter(([, card]) => card.item === "cancel-cards" && card.status === "open").map(([key]) => key).sort();
+  await op.createItem({ ...asArchitect, key: "cancel-cards", group: author, title: "Cancel cards", accept: "Pass" });
+  for (const key of ["cancel-card-one", "cancel-card-two", "cancel-card-manual"]) await op.writeCard({ ...asArchitect, confidence: conf, key, item: "cancel-cards", question: `Question ${key}?`, options: [opt("A")] });
+  await op.withdrawCard({ ...asArchitect, key: "cancel-card-manual", log: "Not needed" });
+  assert.deepEqual(openCards(), ["cancel-card-one", "cancel-card-two"]);
+  const commits = (await store.log()).length;
+  await op.setStatus({ ...asArchitect, id: "cancel-cards", status: "cancelled", log: "No longer needed" });
+  assert.deepEqual(openCards(), [], "no open card is left on a cancelled item");
+  assert.equal(store.snapshot().decisions["cancel-card-one"]!.status, "withdrawn");
+  assert.equal((await store.log()).length, commits + 1, "the cancellation and the withdrawals are one commit");
+  await op.setStatus({ ...asArchitect, id: "cancel-cards", status: "open", log: "Needed again" });
+  assert.deepEqual(openCards(), ["cancel-card-one", "cancel-card-two"], "reopening restores the cards the cancellation withdrew");
+  assert.equal(store.snapshot().decisions["cancel-card-manual"]!.status, "withdrawn", "a card withdrawn by hand stays withdrawn");
+});
+
