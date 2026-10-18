@@ -1,0 +1,62 @@
+name: tmp-shards
+# Temporary (ci-browser-lane): the longest step of the script-test shards at 12 and at 16 shards, with the costs brought up to date.
+# Delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-shards-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: test ${{ matrix.total }} shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { total: 12, shard: 1 }
+          - { total: 12, shard: 2 }
+          - { total: 12, shard: 3 }
+          - { total: 12, shard: 4 }
+          - { total: 12, shard: 5 }
+          - { total: 12, shard: 6 }
+          - { total: 12, shard: 7 }
+          - { total: 12, shard: 8 }
+          - { total: 12, shard: 9 }
+          - { total: 12, shard: 10 }
+          - { total: 12, shard: 11 }
+          - { total: 12, shard: 12 }
+          - { total: 16, shard: 1 }
+          - { total: 16, shard: 2 }
+          - { total: 16, shard: 3 }
+          - { total: 16, shard: 4 }
+          - { total: 16, shard: 5 }
+          - { total: 16, shard: 6 }
+          - { total: 16, shard: 7 }
+          - { total: 16, shard: 8 }
+          - { total: 16, shard: 9 }
+          - { total: 16, shard: 10 }
+          - { total: 16, shard: 11 }
+          - { total: 16, shard: 12 }
+          - { total: 16, shard: 13 }
+          - { total: 16, shard: 14 }
+          - { total: 16, shard: 15 }
+          - { total: 16, shard: 16 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          timeout 90 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.total }})
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
