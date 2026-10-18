@@ -4572,11 +4572,11 @@ minutes put every total over the line. The shard table reads the jobs named `tes
 
 ### The browser file
 
-`test/e2e/browser.e2e.ts` is the browser layer, apart from one report below: 14
+`test/e2e/browser.e2e.ts` is the browser layer, apart from one report below: 15
 tests on one headless Chromium, one generated board and one page, each test
 clearing the viewer's state and loading the page again. Its checks are in
-`test/e2e/invariants.ts` (the page's layout), `browser-checks.ts` and
-`mermaid-checks.ts`, so that a test only picks the page's state for one of them.
+`test/e2e/invariants.ts` (the page's layout), `browser-checks.ts`,
+`mermaid-checks.ts` and `mermaid-compact.ts`, so that a test only picks the page's state for one of them.
 It holds what a script cannot see:
 
 - the page loads, a click opens an item, and the page does not scroll sideways;
@@ -4625,13 +4625,13 @@ request that adds the test records that run, a line for each test with the edit 
 violation it reported. Nothing of that stays in the repository, so a change to the
 stylesheet does not leave edits that no longer match.
 
-**Measured** (hosted runner, ubuntu-latest, one run on 18 October 2026): the 14 tests
-took 42.5 s together, 43.4 s as a process: the plan's card rows 12.7 s, the right
-column's widths 7.9 s, the real library's head, hostile text, ids and frontmatter 4.6 s, a
-closed card's fold 4.5 s, the page's load and click 2.4 s, the fit at two windows 1.9 s,
-zoom 1.7 s, the view kept through an update 1.7 s, the size buttons 1.4 s, and the
-other six under 1 s each. The job, with its checkout, `npm ci`, the build and the
-browser from the cache, took 58 s.
+**Measured** (hosted runner, ubuntu-latest, one run on 18 October 2026): the 15 tests
+took 48.2 s together: the plan's card rows 13 s, the compact drawing 9 s, the right
+column's widths 8 s, the real library's head, hostile text, ids and frontmatter 4.5 s, a
+closed card's fold 4.6 s, the page's load and click 2.5 s, the fit at two windows 1.7 s,
+zoom 1.6 s, the view kept through an update 1.7 s, the size buttons 1.4 s, and the
+other five under 1 s each. The job, with its checkout, `npm ci`, the build and the
+browser from the cache, took 63 s.
 
 **The time of n in a real browser** is reported, never judged
 (`test/e2e/press-n-report.e2e.ts`, `npm run test:press-n-report`, the job `press-n`): the
@@ -4644,8 +4644,8 @@ reading over the days; a fixed limit on it turned red with the runner (a hosted
 runner's speed differs by up to a factor of two between jobs): 19 of the 56 red runs of
 the former job between 16 and 17 October failed on the time limits of n alone.
 
-**Rejected**: the browser file on a pull request's path (its job took 58 s on the line
-of 60 s that a pull request's whole run may take, and two runs of one configuration
+**Rejected**: the browser file on a pull request's path (its job took 63 s against the
+60 s that a pull request's whole run may take, and two runs of one configuration
 differ by 13%); no browser layer (nothing else sees a width, a place or a hit); the
 browser tests as a job of the full CI that some runs leave out (a run started by hand
 then has no browser result unless it asks, and the time gate could only report); a
