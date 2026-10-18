@@ -96,7 +96,7 @@ const line = (text: string) => text.trim();
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().split("\n").slice(0, 3).join(" ").slice(0, 300);
 
 /** One run of the deploy job: move the checkout to the main line's head and restart the daemon on it when that is needed, go back to
- * the last healthy commit when the daemon does not come up, and tell the PM either way (docs/design.md, Running). */
+ * the last healthy commit when the daemon does not come up, and tell the engineer holding the item either way, the architect when none does (docs/design.md, Running). */
 export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   const state = d.load();
   const save = () => d.save(state);
@@ -295,7 +295,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
 
   try { return await run(); }
   catch (error) {
-    // Whatever the job could not do, the PM hears of it once; it would otherwise stop deploying with only a log to show.
+    // Whatever the job could not do, the architect hears of it once; it would otherwise stop deploying with only a log to show.
     d.log(`the deploy job failed: ${reasonOf(error)}`);
     await tellOnce("error", reasonOf(error), () => failedPush(null, null, `the deploy job itself failed: ${reasonOf(error)}`, null))
       .catch(failure => d.log(`could not tell: ${reasonOf(failure)}`));

@@ -5,7 +5,7 @@ import { rules } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, at, later, author, architect, asArchitect, asPM, retired, retiredExactly, rx, conf, opt, goalNumbers } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect, retiredTextOf, rx, conf, opt, goalNumbers } from "./helpers.ts";
 
 test("Architect pause and resume are atomic, server-stamped and preserve every plan row", async t => {
   const { store, op, dir } = await board(t);
@@ -125,7 +125,7 @@ test("other projects still refuse cross-project writes without changing memory, 
     () => op.closeNote({ author: "Firn", id: "note-1", log: "Handled" }),
   ];
   for (const call of calls) {
-    await assert.rejects(call(), /item [ab] belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it/);
+    await assert.rejects(call(), /item [ab] belongs to project Whitefoot; report what you need from it to the architect, who creates work another project needs in the project that delivers it/);
     assert.deepEqual(store.snapshot(), before);
     assert.deepEqual((await Store.open(dir)).snapshot(), before);
     assert.equal(store.snapshot().head, before.head);
@@ -161,14 +161,14 @@ test("Architect writes any project's items, cards and note replies under its own
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
-test("only the PM or the architect creates items, cancels or reopens them, changes a title, moves them to another project, pauses or resumes, and only 架构师 changes the tag vocabulary", async t => {
+test("only the architect creates items, cancels or reopens them, changes a title, moves them to another project, pauses or resumes, and only 架构师 changes the tag vocabulary", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass" });
   const before = store.snapshot(), count = (await store.log()).length, rev = before.items.a!.rev;
   const tag = { name: "新标签", meaning: "测试用" };
   const only = (what: string) => rx`^author: only ${what.startsWith("change the tag vocabulary") ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The item's own project, another project, and the Architect project with no session, another session or a near miss.
-  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }, { author: architect, session: "PM" }, { author: "PM" }, { author: "PM", session: "架构师" }, { author: "PM", session: "PMx" }, { author: "PM", session: "engineer" }];
+  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }, { author: architect, session: "PM" }];
   const cases: Array<[() => Promise<unknown>, RegExp]> = [];
   for (const who of writers) cases.push(
     [() => op.createItem({ ...who, key: "made", group: who.author, title: "Made", accept: "Pass" }), only("create items")],
@@ -203,40 +203,26 @@ test("only the PM or the architect creates items, cancels or reopens them, chang
   assert.equal(store.snapshot().items.a!.head, "改动一节由工程师写");
 });
 
-test("the PM (author PM, session PM) does what the process needs in any project, and neither the tag vocabulary nor a project's repository", async t => {
-  const { store, op, dir } = await board(t, { sharedProjects: true });
-  const padded = { ...asPM, session: "  PM  " };
-  await op.createItem({ ...asPM, key: "pm-made", group: author, title: "Made by the PM", accept: "Pass" });
-  await op.createItem({ ...padded, key: "pm-padded", group: "Firn", title: "Made under a padded name", accept: "Pass" });
-  assert.equal(store.snapshot().items["pm-made"]!.group, author, "the PM creates in another project's name");
-  assert.equal((await store.log({ limit: 1 }))[0]!.session, "PM", "the commit records the trimmed session");
-  await op.updateItem({ ...asPM, id: "pm-made", rev: store.snapshot().items["pm-made"]!.rev, title: "Retitled by the PM" });
-  await op.setDifficulty({ ...asPM, id: "pm-made", difficulty: 3, reason: "PM rates" });
-  await op.setPause({ ...asPM, id: "pm-made", paused: true, reason: "Wait" });
-  await op.setPause({ ...asPM, id: "pm-made", paused: false });
-  await op.setStatus({ ...asPM, id: "pm-made", status: "cancelled", log: "Not needed" });
-  await op.updateItem({ ...asPM, id: "pm-made", rev: store.snapshot().items["pm-made"]!.rev, record: true });
-  await op.moveItemProject({ ...asPM, id: "pm-padded", project: "Whitefoot" });
-  await op.updateProject({ ...asPM, name: "Firn", after: "Whitefoot" });
-  await op.createProject({ ...asPM, name: "Placed", after: "Whitefoot" });
+test("Architect from the session 架构师 does what the process needs in any project, also under a padded session name", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  const padded = { ...asArchitect, session: "  架构师  " };
+  await op.createItem({ ...asArchitect, key: "made", group: author, title: "Made by the architect", accept: "Pass" });
+  await op.createItem({ ...padded, key: "padded", group: "Firn", title: "Made under a padded name", accept: "Pass" });
+  assert.equal(store.snapshot().items.made!.group, author, "the architect creates in another project's name");
+  assert.equal((await store.log({ limit: 1 }))[0]!.session, "架构师", "the commit records the trimmed session");
+  await op.updateItem({ ...asArchitect, id: "made", rev: store.snapshot().items.made!.rev, title: "Retitled by the architect" });
+  await op.setDifficulty({ ...asArchitect, id: "made", difficulty: 3, reason: "The architect rates" });
+  await op.setPause({ ...asArchitect, id: "made", paused: true, reason: "Wait" });
+  await op.setPause({ ...asArchitect, id: "made", paused: false });
+  await op.setStatus({ ...asArchitect, id: "made", status: "cancelled", log: "Not needed" });
+  await op.updateItem({ ...asArchitect, id: "made", rev: store.snapshot().items.made!.rev, record: true });
+  await op.moveItemProject({ ...padded, id: "padded", project: "Whitefoot" });
+  await op.updateProject({ ...asArchitect, name: "Firn", after: "Whitefoot" });
+  await op.createProject({ ...asArchitect, name: "Placed", after: "Whitefoot" });
   const names = store.snapshot().board.projects.map(p => p.name), first = names.indexOf("Whitefoot");
-  assert.deepEqual(names.slice(first + 1, first + 3), ["Placed", "Firn"], "the PM places projects in the page order");
-  assert.equal(store.snapshot().items["pm-made"]!.title, "Retitled by the PM");
-  assert.equal(store.snapshot().items["pm-padded"]!.group, "Whitefoot");
-  // What stays the architect's alone: the tag vocabulary, and a repository or mainline of a project that is not the writer's.
-  const before = store.snapshot(), count = (await store.log()).length;
-  const cases: Array<[() => Promise<unknown>, RegExp]> = [
-    [() => op.setTag({ ...asPM, name: "新标签", meaning: "测试用" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
-    [() => op.renameTag({ ...asPM, name: "新标签", to: "改名" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
-    [() => op.removeTag({ ...asPM, name: "新标签" }), rx`^author: only ${ARCHITECT_WRITER} may change the tag vocabulary`],
-    [() => op.updateProject({ ...asPM, name: "Whitefoot", repo: "Org/Changed" }), rx`^project Whitefoot: only that project or ${ARCHITECT_WRITER} may update its repo$`],
-  ];
-  for (const [call, message] of cases) {
-    await assert.rejects(call(), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
-    assert.deepEqual(store.snapshot(), before);
-    assert.equal((await store.log()).length, count);
-  }
-  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  assert.deepEqual(names.slice(first + 1, first + 3), ["Placed", "Firn"], "the architect places projects in the page order");
+  assert.equal(store.snapshot().items.made!.title, "Retitled by the architect");
+  assert.equal(store.snapshot().items.padded!.group, "Whitefoot");
 });
 
 test("Architect from another session writes only the Architect project's items, and a padded session name still counts", async t => {
@@ -244,13 +230,12 @@ test("Architect from another session writes only the Architect project's items, 
   await op.createItem({ ...asArchitect, key: "own-item", group: architect, title: "Architect's own", accept: "Pass" });
   const engineer = { author: architect, session: "engineer" };
   // An engineer working in the Architect project is an ordinary project author there.
-  // The same holds for the PM's project: author PM from another session is not the PM.
   await op.appendLog({ ...engineer, id: "own-item", text: "Engineer evidence" });
   await op.setPlan({ ...engineer, id: "own-item", row: { id: "work", text: "Implementation", state: "doing" } });
   assert.deepEqual(store.snapshot().items["own-item"]!.log.at(-1), { at: later, by: architect, text: "Engineer evidence" });
   const before = store.snapshot(), count = (await store.log()).length;
-  for (const who of [engineer, { author: architect }, { author: "PM", session: "engineer" }, { author: "PM" }]) {
-    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the PM, who creates work another project needs in the project that delivers it; only ${PROCESS_WRITERS} write other projects' items`);
+  for (const who of [engineer, { author: architect }]) {
+    await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the architect, who creates work another project needs in the project that delivers it; only ${PROCESS_WRITERS} write other projects' items`);
     await assert.rejects(op.writeCard({ confidence: conf, ...who, key: "foreign-card", item: "a", question: "Q?", options: [opt("A")] }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.replyNote({ ...who, id: "note-1", reply: "Answer" }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.moveItem({ ...who, id: "a", owner: "other" }), /item a belongs to project Whitefoot/);
@@ -289,12 +274,12 @@ test("the architect's turns (author Architect, session 架构师轮次) write as
   await op.appendLog({ ...turn, session: "  架构师轮次  ", id: "a", text: "Padded" });
   assert.equal((await lastCommit()).session, "架构师轮次", "spaces around the name are ignored and the commit records the trimmed session");
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
-  // The same names that fail for the conversation's session fail here: a near miss, another author, the PM.
+  // The same names that fail for the conversation's session fail here: a near miss, another author.
   const before = store.snapshot(), count = (await store.log()).length;
   const only = (what: string) => rx`^author: only ${what === "change the tag vocabulary" ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The message is tested, not the error's text, which begins with the class name.
   const refused = (pattern: RegExp) => (e: unknown) => e instanceof OpError && pattern.test(e.message);
-  for (const who of [{ author: architect, session: "架构师轮次x" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架构师 轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }, { author: "PM", session: "架构师轮次" }]) {
+  for (const who of [{ author: architect, session: "架构师轮次x" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架构师 轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }]) {
     await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), refused(only("create items")));
     await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), refused(only("pause or resume an item")));
     await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), refused(only("change the tag vocabulary")));
@@ -369,9 +354,10 @@ test("Architect without the session cannot resume paused work in its own project
   assert.equal(rules(store.snapshot()).statusOf("arch-child"), "wip");
 });
 
-test("every write under the retired author 总管 is refused and changes nothing", async t => {
+// Both coordinators are retired: 总管 earlier, and the PM with the PM stream (item board-retire-pm-stream).
+for (const retired of ["总管", "PM"]) test(`every write under the retired author ${retired} is refused and changes nothing`, async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  const before = store.snapshot(), count = (await store.log()).length, retired = "总管";
+  const before = store.snapshot(), count = (await store.log()).length;
   assert.ok(before.board.projects.some(p => p.name === retired), "the retired project is still configured, so only the retirement refuses");
   const calls: Record<keyof Ops, () => Promise<unknown>> = {
     createProject: () => op.createProject({ author: retired, name: "New" }),
@@ -408,7 +394,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     sendMessage: () => op.sendMessage({ author: retired, session: "s", to: "架构师", text: "看 a" }),
   };
   for (const [name, call] of Object.entries(calls)) {
-    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, retiredExactly, name); return true; });
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, new RegExp(`^${rx`${retiredTextOf(retired)}`.source}$`), name); return true; });
     assert.deepEqual(store.snapshot(), before, name);
     assert.deepEqual((await Store.open(dir)).snapshot(), before, name);
     assert.equal((await store.log()).length, count, name);

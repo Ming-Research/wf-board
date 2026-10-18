@@ -52,7 +52,7 @@ test("the long-lived file: a missing file holds none, a change is read at the ne
   assert.deepEqual(missing.read(), { entries: [] });
 });
 
-test("the file's entries are checked: a role of its own, the architect and the PM only as themselves, no two alike", () => {
+test("the file's entries are checked: a role of its own, the architect only as itself, no two alike", () => {
   const ok = entry("x");
   assert.ok(CredentialsFile.safeParse({ credentials: [ok] }).success);
   const bad: Array<[string, unknown]> = [
@@ -63,15 +63,11 @@ test("the file's entries are checked: a role of its own, the architect and the P
     ["the architect's session name for the resource agent", { ...ok, role: "资源管理", session: "架构师" }],
     ["the architect's turn session name for another role", { ...ok, session: "架构师轮次" }],
     ["the architect's turn session name for the resource agent", { ...ok, role: "资源管理", session: "架构师轮次" }],
-    ["the architect's turn session name for the PM", { ...ok, role: "PM", session: "架构师轮次", project: "PM" }],
     ["the architect's turn in another project", { ...ok, role: "架构师", session: "架构师轮次", project: "Firn" }],
     ["the runner's session name for another role", { ...ok, session: "执行程序" }],
     ["the runner's session name for the architect", { ...ok, role: "架构师", session: "执行程序", project: "Architect" }],
-    ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "PM" }],
-    ["the PM in the architect's project", { ...ok, role: "PM", session: "PM", project: "Architect" }],
-    ["the PM in another project", { ...ok, role: "PM", session: "PM", project: "Firn" }],
-    ["the PM's session name for another role", { ...ok, session: "PM" }],
-    ["the PM's session name for the architect", { ...ok, role: "架构师", session: "PM", project: "Architect" }],
+    ["the retired PM's role, whatever its session and project", { ...ok, role: "PM", session: "PM", project: "PM" }],
+    ["the architect's role under an ordinary session name", { ...ok, role: "架构师", session: "PM", project: "Architect" }],
     ["a hash that is not one", { ...ok, hash: "abc" }],
     ["an unknown field", { ...ok, token: "wfb_x" }],
   ];
@@ -80,8 +76,7 @@ test("the file's entries are checked: a role of its own, the architect and the P
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" })] }).success);
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the architect's role under the turns' session name");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the conversation's and the turns' credentials side by side");
-  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "PM", session: "PM", project: "PM" })] }).success, "the PM only as itself");
-  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "PM", session: "PM", project: "PM" })] }).success, "the architect and the PM side by side");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { session: "PM" })] }).success, "the session name PM is an ordinary name now");
 });
 
 test("a credential is resolved to its writer; none without a header, a refusal for one that names nothing valid", async t => {
@@ -107,17 +102,13 @@ test("a dispatch issues a credential for its session, role, item and project, an
   const { credential } = await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-1" });
   assert.deepEqual(credentials.resolve(`Bearer ${credential}`, store.snapshot()), { ok: true, who: { author: "Whitefoot", session: "a-worker", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } });
   // The architect's session name is the architect's alone: a dispatch credential under it would be taken for the architect's.
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师", agentId: "agent-3" }), /agent.*the PM's or the architect's session name/);
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师 ", agentId: "agent-4" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name: the board ignores them where it takes a session for the architect's");
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师", agentId: "agent-3" }), /agent.*the architect's session name/);
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师 ", agentId: "agent-4" }), /agent.*the architect's session name/, "spaces around the name do not make another name: the board ignores them where it takes a session for the architect's");
   assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师") ?? false, false, "and no dispatch was recorded");
   // The same for the name of the architect's turns, whose rights a dispatch's credential must not borrow.
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师轮次", agentId: "agent-7" }), /agent.*the PM's or the architect's session name/);
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: " 架构师轮次 ", agentId: "agent-8" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师轮次", agentId: "agent-7" }), /agent.*the architect's session name/);
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: " 架构师轮次 ", agentId: "agent-8" }), /agent.*the architect's session name/, "spaces around the name do not make another name");
   assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师轮次") ?? false, false, "and no dispatch was recorded");
-  // The PM's session name is the PM's alone, for the same reason.
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "PM", agentId: "agent-5" }), /agent.*the PM's or the architect's session name/);
-  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: " PM ", agentId: "agent-6" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
-  assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "PM") ?? false, false, "and no dispatch was recorded");
   const review = await op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 3, model: "Opus", agent: "a-review", agentId: "agent-2" });
   const reviewer = credentials.resolve(`Bearer ${review.credential}`, store.snapshot()) as Extract<Resolved, { ok: true }>;
   assert.equal(reviewer.who.access.role, "审查");
@@ -244,21 +235,6 @@ test("dispatch_start answers with the credential once, and a connection that car
   const after = await worker.callTool({ name: "append_log", arguments: { id: "a", text: "after the dispatch ended" } });
   assert.equal(after.isError, true);
   assert.match(text(after), /credential is not valid/);
-});
-
-test("a PM credential over HTTP creates an item and is refused the journal; the writes are recorded under the PM's session", async t => {
-  const { file } = await credentialsFile(t, [entry("pm-token", { session: "PM", role: "PM", project: "PM" })]);
-  const { url, store } = await server(t, { credentials: new Credentials(file) });
-  const client = new Client({ name: "HTTP PM test", version: "1" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(url + "/mcp"), { requestInit: { headers: { Authorization: "Bearer pm-token" } } }));
-  t.after(() => client.close());
-  const text = (r: Awaited<ReturnType<Client["callTool"]>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
-  const made = await client.callTool({ name: "create_item", arguments: { key: "pm-made", title: "PM 建的", accept: "通过", group: "Whitefoot" } });
-  assert.ok(!made.isError, text(made));
-  assert.equal((await store.log({ limit: 1 }))[0]!.session, "PM");
-  assert.equal(store.snapshot().items["pm-made"]!.group, "Whitefoot");
-  const journal = await client.callTool({ name: "journal_entry", arguments: { text: "PM 不写日志" } });
-  assert.equal(journal.isError, true); assert.match(text(journal), /journal: a PM credential may not write/);
 });
 
 test("ops stay usable without any credential: the GitHub watch and the old callers", async t => {

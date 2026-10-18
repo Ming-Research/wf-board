@@ -8,10 +8,11 @@ import { request as rawRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, author, wakeSocket } from "./helpers.ts";
+import { board, author, agentSocket } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
 import { Wake } from "../src/wake.ts";
 import { OPERATION_LIMITS_MS, PAGE_ROUTES, SlowOps, TELL_AGAIN_MS, TIME_LIMITS_MS, pageOperation, pageRoute, pathnameOf, requestParams, summarize, toolClass } from "../src/slow-ops.ts";
 import type { OperationClass } from "../src/slow-ops.ts";
@@ -26,7 +27,7 @@ async function logged<T>(fn: () => Promise<T> | T): Promise<{ result: T; info: s
   console.error = (...parts: unknown[]) => { error.push(parts.join(" ")); };
   try { return { result: await fn(), info, warn, error }; } finally { console.info = i; console.warn = w; console.error = e; }
 }
-const slowFrames = (wake: Wake) => wake.since(0).frames.filter(f => f.event === "slow-op");
+const slowFrames = (wake: Wake) => wake.agent(ARCHITECT_SESSION).since(0).frames.filter(f => f.event === "slow-op");
 /** A SlowOps over a Wake whose clock `time` moves. */
 function rig(limitsMs?: Partial<Record<OperationClass, number>>) {
   const time = { now: T0 }, wake = new Wake({ now: () => time.now }), slow = new SlowOps({ wake, now: () => time.now, limitsMs });
@@ -46,7 +47,10 @@ test("an operation over its class limit is told to the architect with its name, 
     slow.record({ name: "tool context", cls: "read", ms: 1001, result: "ok", params: () => "id=a log=all" });
   });
   const [frame] = slowFrames(wake);
-  assert.deepEqual(frame, { n: 1, at: "2026-10-16T00:00:00.000Z", event: "slow-op", op: "tool context", ms: 1001, limitMs: 1000, params: "id=a log=all" });
+  // The architect's stream, an agent's, also keeps the line the frame is shown as.
+  const { line, ...fields } = frame!;
+  assert.deepEqual(fields, { n: 1, at: "2026-10-16T00:00:00.000Z", event: "slow-op", op: "tool context", ms: 1001, limitMs: 1000, params: "id=a log=all" });
+  assert.match(String(line), /操作太慢 · tool context 用了 1001 毫秒，限 1000/);
   assert.deepEqual(info, ["tool context ok 1000 ms", "tool context ok 1001 ms"], "every operation is logged with its time, slow or not");
   assert.deepEqual(warn, ["slow tool context: 1001 ms, limit 1000 ms (id=a log=all)"]);
 });
@@ -91,19 +95,19 @@ test("the same operation is told once an hour, later ones only logged, and again
   });
   assert.deepEqual(slowFrames(wake).map(f => [f.op, f.ms]), [["tool brief", 1500], ["tool context", 1500], ["tool brief", 1600]]);
   assert.equal(warn.length, 5, "every slow call is in the log, told or not");
-  assert.match(warn[1]!, /^slow tool brief: 4000 ms, limit 1000 ms; the PM was told 10 min ago$/);
+  assert.match(warn[1]!, /^slow tool brief: 4000 ms, limit 1000 ms; the architect was told 10 min ago$/);
   assert.doesNotMatch(warn[0]!, /was told/);
 });
 
 test("a restart does not tell again within the hour what the kept pushes already told", async t => {
-  const dir = await mkdtemp(join(tmpdir(), "wf-board-slow-")), file = join(dir, "wake.jsonl");
+  const dir = await mkdtemp(join(tmpdir(), "wf-board-slow-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const time = { now: T0 }, wake = new Wake({ now: () => time.now, file });
+  const time = { now: T0 }, wake = new Wake({ now: () => time.now, dir });
   await logged(() => new SlowOps({ wake, now: () => time.now }).record({ name: "tool brief", cls: "read", ms: 1500, result: "ok" }));
   assert.equal(slowFrames(wake).length, 1);
-  // The daemon starts again: a new Wake reads the file, a new SlowOps starts from what it holds.
+  // The daemon starts again: a new Wake reads the streams, a new SlowOps starts from what it holds.
   time.now += 20 * 60_000;
-  const reloaded = new Wake({ now: () => time.now, file }), after = new SlowOps({ wake: reloaded, now: () => time.now });
+  const reloaded = new Wake({ now: () => time.now, dir }), after = new SlowOps({ wake: reloaded, now: () => time.now });
   await logged(() => after.record({ name: "tool brief", cls: "read", ms: 1500, result: "ok" }));
   assert.equal(slowFrames(reloaded).length, 1, "told 20 minutes ago: not again");
   time.now += 40 * 60_000;
@@ -199,7 +203,7 @@ test("a page request that runs over its limit is told to the architect; one with
   const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 150 } });
   // The ownerOps of a board whose notes write is slow: a deliberately slow operation behind the real entry.
   const { url, api } = await slowWrites(t, wake, slow, 300);
-  const socket = await wakeSocket(t, url);
+  const socket = await agentSocket(t, url, ARCHITECT_SESSION);
   const logs = await logged(async () => {
     assert.equal((await api("/api/snapshot")).status, 200);
     await socket.sync();
@@ -220,13 +224,13 @@ test("a page request that runs over its limit is told to the architect; one with
   assert.ok(logs.info.some(line => /^GET \/api\/snapshot 200 \d+ ms$/.test(line)), logs.info.join("\n"));
   assert.ok(logs.info.some(line => /^POST \/api\/notes 200 \d+ ms$/.test(line)));
   assert.equal(logs.warn.length, 2);
-  assert.match(logs.warn[1]!, /the PM was told 0 min ago/);
+  assert.match(logs.warn[1]!, /the architect was told 0 min ago/);
 });
 
 test("a request whose connection closes before the answer is timed as closed, and is over its limit when it ran past it", async t => {
   const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 100 } });
   const { url, store } = await slowWrites(t, wake, slow, 400);
-  const socket = await wakeSocket(t, url);
+  const socket = await agentSocket(t, url, ARCHITECT_SESSION);
   const { info } = await logged(async () => {
     const controller = new AbortController();
     const pending = fetch(url + "/api/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: "it:a", kind: "comment", text: "x" }), signal: controller.signal }).catch(() => undefined);

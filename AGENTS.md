@@ -25,7 +25,7 @@ matches what the artifact board offered.
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
   remote, their log lines, ending the push on shutdown, and the push to the
-  PM when the remote copy stays behind for an hour.
+  architect when the remote copy stays behind for an hour.
 - `src/budget.ts`: the budget of one request's reads of the board's history (bytes
   read, whole old boards rebuilt, the process heap), held in the request's async
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
@@ -51,18 +51,18 @@ matches what the artifact board offered.
   progress and the dispatch records. Imported by the server and bundled into
   the page.
 - `src/candidates.ts`: the items an engineer could be started on and the working engineers of the two pools, read from the
-  whole board (the `candidates` tool): the board lists and holds no limit, the PM compares the count with the owner's
-  numbers, the architect chooses (design section 6, The candidates read).
+  whole board (the `candidates` tool): the board lists and holds no limit, the architect compares the count with the owner's
+  numbers and chooses (design section 6, The candidates read).
 - `src/whole-view.ts`: the whole view: every open work item in one of five kinds (waiting too long, nobody's, being worked
   on, waiting, set aside) by the runner's report on it (`item.runner`, written by `report_state`), a live engineer session
   and the plan, in one function that the `whole_view` tool prints and the page draws (design section 6, The whole view;
   section 5, Runner reports). Imported by the server and bundled into the page.
-- `src/dispatch.ts`: dispatch records (the agent sessions the PM or the architect
+- `src/dispatch.ts`: dispatch records (the agent sessions the architect or the runner
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
 - `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
   time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
-  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the PM.
+  entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
 - `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
@@ -73,11 +73,11 @@ matches what the artifact board offered.
   default answer and `section`); `src/tool-errors.ts`: the parameter table and
   example a refused call is answered with, and the wrong names the tools read as
   the right ones. Both are in `docs/design.md`, section 6, Lean replies.
-- `src/wake.ts`: the PM's push channel (the table of kinds, numbered
-  events kept in a local file, receipts, the no-receipt alert);
+- `src/wake.ts`: the push channel (the table of kinds, each agent's numbered
+  stream kept in a local file, the alert that the architect's stream is behind);
   `src/liveness.ts`: whether the sessions holding items are still there (the
-  ask and the "no answer" push, its silences kept in `state/liveness.json`);
-  `src/timed-wake.ts`: what the PM's half-hourly and the architect's hourly wake carry. The protocol is
+  ask, its silences kept in `state/liveness.json`);
+  `src/timed-wake.ts`: what the architect's hourly wake carries. The protocol is
   `docs/design.md`, section 8. `src/notify.ts`: the macOS notification the
   deploy job shows the owner when the board does not answer.
 - `src/merges.ts`: which item delivered a merge (the pull request a commit title names, the item whose 改动 section names it),
@@ -229,13 +229,13 @@ daemon when a changed path needs it, waits for `/health`, and goes back to the
 last healthy commit when the daemon does not come up. Its log is
 `~/Library/Logs/wf-board-deploy.log`.
 
-The PM does not deploy by hand. The deploy result goes to the
+Nobody deploys by hand. The deploy result goes to the
 engineer holding the item that delivered the merge (the pull request in the
 commit's title, the item whose 改动 section names it): `deployed` names the
 version now served, and the engineer checks the change on the live page;
 `deployFailed` says why nothing was deployed (a null version means the job
 itself could not run, as when its fetch fails; the log has the detail), and
-goes to the PM when no engineer holds such an item, where `deployed` is not
+goes to the architect when no engineer holds such an item, where `deployed` is not
 pushed at all. The job leaves a checkout alone that is on another branch, has local
 changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys.

@@ -6,7 +6,7 @@ export const TIME_LIMITS_MS = { read: 1000, write: 2000, history: 10_000 } as co
 export type OperationClass = keyof typeof TIME_LIMITS_MS;
 /** Operations that keep a limit of their own, lower than their class's: the owner's mark-read key waits on this one. */
 export const OPERATION_LIMITS_MS: Readonly<Record<string, number>> = { "POST /api/read": 300 };
-/** How long after telling the PM of an operation that operation is only logged. */
+/** How long after telling the architect of an operation that operation is only logged. */
 export const TELL_AGAIN_MS = 60 * 60_000;
 
 /** What is timed: `name` is the operation's identity, which the one-hour rule and the push go by; `cls` its class, or none for
@@ -92,14 +92,14 @@ export interface Timing extends Operation {
   params?: () => string;
 }
 export interface SlowOpsOptions {
-  /** Where a slow operation is told to the PM; without it a slow operation is only logged. */
+  /** Where a slow operation is told to the architect; without it a slow operation is only logged. */
   wake?: Wake;
   now?: () => number;
   /** The limit of each class, for tests; the limit an operation has of its own is not changed. */
   limitsMs?: Partial<Record<OperationClass, number>>;
 }
 
-/** Times the board's operations at their one entry each, logs a line for every one, and tells the PM of those over their
+/** Times the board's operations at their one entry each, logs a line for every one, and tells the architect of those over their
  * limit: one `slow-op` push per operation per hour, then only a log line. */
 export class SlowOps {
   private readonly wake?: Wake;
@@ -112,7 +112,7 @@ export class SlowOps {
     this.now = options.now ?? Date.now;
     this.limits = { ...TIME_LIMITS_MS, ...options.limitsMs };
     // What the kept pushes already told is not told again, so a restart does not repeat a push within the hour.
-    for (const frame of this.wake?.since(0).frames ?? []) if (frame.event === "slow-op" && typeof frame.op === "string") this.told.set(frame.op, Date.parse(frame.at));
+    for (const frame of this.wake?.kept() ?? []) if (frame.event === "slow-op" && typeof frame.op === "string") this.told.set(frame.op, Date.parse(frame.at));
   }
 
   /** Starts timing an operation; the returned function ends it with how it ended and, for the log of a slow one, its parameters. */
@@ -135,7 +135,7 @@ export class SlowOps {
       try { this.wake!.push("slow-op", { op: name, ms, limitMs: limit, params: detail }); }
       catch (error) { console.error("slow-op push failed", error); }
     }
-    const earlier = !tell && last !== undefined ? `; the PM was told ${Math.round((now - last) / 60_000)} min ago` : "";
+    const earlier = !tell && last !== undefined ? `; the architect was told ${Math.round((now - last) / 60_000)} min ago` : "";
     console.warn(`slow ${label}: ${ms} ms, limit ${limit} ms${detail ? ` (${detail})` : ""}${earlier}`);
   }
 }

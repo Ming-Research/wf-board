@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Liveness } from "./liveness.ts";
-import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
+import { ARCHITECT_SESSION } from "./model.ts";
 
-/** Where a kind of push goes: the PM's stream; the architect's, an agent's stream under its session name; the stream of the
- * session holding the item that `holder` names (an item key among the fields), and the PM's when no session holds it, or
- * nobody's when the route is `only` for the holder, or the architect's when it is `otherwise: "architect"`; or the stream of
- * the session that `session` names (the PM's when that is the PM's session) (docs/design.md, The wake streams). */
-export type WakeRoute = "pm" | "architect" | { holder: string; only?: true; otherwise?: "architect" } | { session: string };
+/** Where a kind of push goes: the architect's stream, an agent's stream under its session name; the stream of the session
+ * holding the item that `holder` names (an item key among the fields), which for a push `only` the holder gets is not made
+ * when nobody holds the item, and with `otherwise: "architect"` goes to the architect's stream then; or the stream of the
+ * session that `session` names (docs/design.md, The wake streams). */
+export type WakeRoute = "architect" | { holder: string; only: true } | { holder: string; otherwise: "architect" } | { session: string };
 
-/** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
+/** Every kind of push, in one place: `label` names it in a line and in the alert that the architect's stream is behind, `fields` are the frame's fields
  * besides n, at and event, `to` says whose stream it goes to, `external` lists the fields of the request by which another process may ask
  * for a kind through POST /api/wake (the deploy job, which runs beside the daemon and cannot call push; the daemon turns the
  * request into pushes with `fields`), and `answeredByCall` marks a kind the
@@ -18,23 +18,16 @@ export type WakeRoute = "pm" | "architect" | { holder: string; only?: true; othe
  * set, and the design doc's frame table is checked against this table. A new kind is one entry here and one row there. */
 export const WAKE_KINDS = {
   note: { label: "主人的留言", fields: ["note", "target", "kind", "title", "project"], to: "architect" },
-  stalled: { label: "无人推进", fields: ["item", "project", "title", "text"], to: "pm" },
-  timed: { label: "定时唤醒", fields: ["since", "changed", "working", "architect", "pm", "review", "finished"], to: "pm" },
   "timed-architect": { label: "架构师定时唤醒", fields: ["since", "changed", "working"], to: "architect" },
-  review: { label: "要审查", fields: ["item", "project", "title", "level"], to: "pm" },
-  finished: { label: "条目做完", fields: ["item", "project", "title", "session"], to: "pm" },
-  "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url", "item", "pr"], to: { holder: "item" } },
-  "pr-red": { label: "PR 检查红了", fields: ["repo", "number", "project", "title", "commit", "failed", "url", "items"], to: "pm" },
-  "pr-orphan": { label: "PR 没挂在条目上", fields: ["repo", "number", "project", "title", "url", "draft"], to: "pm" },
-  "slow-op": { label: "操作太慢", fields: ["op", "ms", "limitMs", "params"], to: "pm" },
-  "backup-behind": { label: "备份落后", fields: ["commits", "lastSuccess", "reason"], to: "pm" },
+  "main-red": { label: "主线红了", fields: ["repo", "project", "branch", "commit", "failed", "url", "item", "pr"], to: { holder: "item", otherwise: "architect" } },
+  "slow-op": { label: "操作太慢", fields: ["op", "ms", "limitMs", "params"], to: "architect" },
+  "backup-behind": { label: "备份落后", fields: ["commits", "lastSuccess", "reason"], to: "architect" },
   deployed: { label: "部署成功", fields: ["version", "restarted", "item", "project", "title", "pr"], to: { holder: "item", only: true }, external: ["version", "previous", "changes", "restarted", "repo"] },
-  deployFailed: { label: "部署失败", fields: ["version", "running", "reason", "item", "project", "title", "pr"], to: { holder: "item" }, external: ["version", "running", "reason", "changes", "repo"] },
+  deployFailed: { label: "部署失败", fields: ["version", "running", "reason", "item", "project", "title", "pr"], to: { holder: "item", otherwise: "architect" }, external: ["version", "running", "reason", "changes", "repo"] },
   "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent", only: true } },
-  "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
-  "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
+  "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item", only: true }, answeredByCall: true },
   message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
-  "card-ruled": { label: "卡裁了", fields: ["card", "item", "project", "title", "choice", "option", "ruling"], to: { holder: "item", only: true } },
+  "card-ruled": { label: "卡裁了", fields: ["card", "item", "project", "title", "choice", "option", "ruling"], to: { holder: "item", otherwise: "architect" } },
   "dep-merged": { label: "等的活合入了", fields: ["item", "project", "title", "prs", "waiter"], to: { holder: "waiter", otherwise: "architect" } },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: readonly string[]; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
@@ -65,7 +58,6 @@ const short = (v: unknown) => str(v).slice(0, 7);
 /** The number of entries a capped list stands for: its entries, plus the count in a trailing `{more}`. */
 const count = (v: unknown) => Array.isArray(v) ? v.reduce((n: number, e) => n + (e && typeof e === "object" && typeof (e as { more?: unknown }).more === "number" ? (e as { more: number }).more : 1), 0) : 0;
 const it = (item: unknown, project: unknown) => `it:${str(item)}（${str(project)}）`;
-const pr = (f: Record<string, unknown>) => `${str(f.repo)}#${str(f.number)}`;
 /** The entries of a list of strings, joined; a value that is not a list is empty. */
 const list = (v: unknown) => Array.isArray(v) ? v.map(str).join("、") : "";
 /** A time given as an ISO string, to the minute. */
@@ -78,21 +70,14 @@ const ruling = (f: Record<string, unknown>) => [f.choice ? `选 ${str(f.choice)}
  * read from the board when needed, so a line carries no list and no body text. */
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   note: f => `${str(f.target)}（${str(f.project)}）· ${str(f.kind)} · ${str(f.title)}`,
-  stalled: f => `${it(f.item, f.project)} · ${str(f.title)}`,
-  timed: f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条，Architect 项目开着 ${str(f.architect)} 条，PM 项目开着 ${str(f.pm)} 条${count(f.review) ? `，${count(f.review)} 条审查行在进行中却没有审查会话` : ""}${count(f.finished) ? `，${count(f.finished)} 条做完的条目还有会话没收` : ""}`,
   "timed-architect": f => `变了 ${count(f.changed)} 条，在做 ${str(f.working)} 条`,
-  review: f => `${it(f.item, f.project)} · ${f.level ? `${str(f.level)} 级` : "级别没写"} · ${str(f.title)}`,
-  finished: f => `${it(f.item, f.project)} · 拿着它的会话 ${str(f.session)} · ${str(f.title)}`,
   "main-red": f => `${str(f.repo)} ${str(f.branch)} ${short(f.commit)} · ${count(f.failed)} 项检查失败${f.item ? ` · 交付它的 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""}`,
-  "pr-red": f => `${pr(f)} · ${count(f.failed)} 项检查失败 · ${str(f.title)}`,
-  "pr-orphan": f => `${pr(f)}${f.draft ? "（草稿）" : ""} · ${str(f.title)}`,
   "slow-op": f => `${str(f.op)} 用了 ${str(f.ms)} 毫秒，限 ${str(f.limitMs)}`,
   "backup-behind": f => `远端缺 ${str(f.commits)} 个提交`,
   deployed: f => `${short(f.version)}${f.restarted ? "，重启了" : ""} · 含 ${it(f.item, f.project)} PR #${str(f.pr)}`,
   deployFailed: f => `${short(f.version) || "版本不明"}${f.item ? ` · 含 ${it(f.item, f.project)} PR #${str(f.pr)}` : ""} · ${str(f.reason)}`,
   "item-done": f => `${it(f.item, f.project)} · ${str(f.title)} · 等它的：it:${str(f.parent)}`,
   "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
-  "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
   message: f => `${str(f.from)}（${str(f.project)}）${f.item ? ` · it:${str(f.item)}` : ""}`,
   "card-ruled": f => `${it(f.item, f.project)} · q:${str(f.card)} · ${ruling(f)} · ${str(f.title)}`,
   "dep-merged": f => `${it(f.item, f.project)} · ${list(f.prs)} 已合入 · 等它的：it:${str(f.waiter)} · ${str(f.title)}`,
@@ -109,12 +94,8 @@ export function lineOf(frame: WakeFrame): string {
 /** A notice the owner is told: its title and message, and the card or item it is about, which a click opens. */
 export interface Told { title: string; message: string; target?: { kind: "card" | "item"; key: string } }
 
-/** The kinds that are about one item the PM has to act on: a click on a notice about one opens the item. */
-const ITEM_EVENTS = new Set<WakeKind>(["stalled", "no-answer", "review", "finished"]);
-/** The card or item a frame is about, for a click to open: an item the PM has to act on (stalled, to be
- * reviewed, finished, or whose session gave no answer), or the item or card a note is on. Other frames have none. */
+/** The card or item a frame is about, for a click to open: the item or card a note is on. Other frames have none. */
 function targetOf(frame: WakeFrame): Told["target"] {
-  if (ITEM_EVENTS.has(frame.event) && typeof frame.item === "string") return { kind: "item", key: frame.item };
   if (frame.event === "note" && typeof frame.target === "string") {
     if (frame.target.startsWith("it:")) return { kind: "item", key: frame.target.slice(3) };
     if (frame.target.startsWith("q:")) return { kind: "card", key: frame.target.slice(2) };
@@ -146,9 +127,9 @@ function checked(event: WakeKind, fields: Record<string, unknown>): void {
 }
 
 /**
- * One numbered, kept stream of pushes: the events, their numbers and the file that keeps them. The PM's stream (Wake) and
- * each agent's (AgentStream) add what they keep besides: a line of the file that is not an event goes to `loadState`, and
- * `stateLines` writes that state back when the file is rewritten.
+ * One numbered, kept stream of pushes: the events, their numbers and the file that keeps them. An agent's stream (AgentStream)
+ * adds what it keeps besides: a line of the file that is not an event goes to `loadState`, and `stateLines` writes that state
+ * back when the file is rewritten.
  */
 abstract class NumberedLog {
   protected readonly file?: string;
@@ -251,8 +232,8 @@ abstract class NumberedLog {
 }
 
 /**
- * The stream of one agent other than the PM (docs/design.md, The wake streams): a session holding an item, a reviewer, the
- * observer. The board keeps how far it has been delivered: an event is delivered when the agent's wait script says it printed
+ * The stream of one agent (docs/design.md, The wake streams): a session holding an item, a reviewer, the observer, the
+ * architect. The board keeps how far it has been delivered: an event is delivered when the agent's wait script says it printed
  * it (an `ack` on its connection) or when a tool result carried it. A delivered event is never sent again.
  */
 export class AgentStream extends NumberedLog {
@@ -337,12 +318,14 @@ export class AgentStream extends NumberedLog {
   }
 }
 
-export interface WakeOptions extends LogOptions {
+export interface WakeOptions {
+  now?: () => number;
   /** Where the agents' streams are kept, one file each; without it they live in memory only. */
   dir?: string;
   /** Where the marks of the liveness checks are kept (src/liveness.ts); without it they live in memory only. */
   livenessFile?: string;
-  receiptLimitMs?: number;
+  /** How long the architect's oldest undelivered push may wait before the owner is told. */
+  overdueMs?: number;
 }
 
 /** The file of an agent's stream: a hash of the session name, so any name of up to 80 characters is a short file name and two
@@ -365,18 +348,16 @@ function nameIn(file: string): string | undefined {
 export const AGENT_STREAM_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * The board's pushes: the PM's numbered, kept stream with the receipts that answer it (this class), and one stream for each
- * other agent (AgentStream), with the routing between them. The owner's notifications go out from here too.
+ * The board's pushes: one stream for each agent (AgentStream), the architect's among them, and the routing between them. The
+ * owner's notifications go out from here too.
  */
-export class Wake extends NumberedLog {
-  readonly receiptLimitMs: number;
+export class Wake {
+  readonly overdueMs: number;
   private readonly dir?: string;
+  private readonly now: () => number;
   /** Whether the sessions holding items are still there: a call, or an alive frame from its wait script, is a sign (`liveness.see`), and the server's
-   * minute timer runs `liveness.check`, which pushes the ask and the "no answer" through this object. */
+   * minute timer runs `liveness.check`, which pushes the ask through this object. */
   readonly liveness: Liveness;
-  private receipted = 0;
-  private alerted = false;
-  private marked?: TimedMark;
   private tellListeners = new Set<(told: Told) => void>();
   private agents = new Map<string, AgentStream>();
   private agentListeners = new Set<(stream: AgentStream, frame: WakeFrame) => void>();
@@ -384,11 +365,10 @@ export class Wake extends NumberedLog {
   private holder: (item: string) => string | undefined = () => undefined;
 
   constructor(options: WakeOptions = {}) {
-    super(options, 1000, 2 * 1024 * 1024);
+    this.now = options.now ?? Date.now;
     this.dir = options.dir;
-    this.receiptLimitMs = options.receiptLimitMs ?? 60 * 60 * 1000;
+    this.overdueMs = options.overdueMs ?? 60 * 60 * 1000;
     this.liveness = new Liveness({ wake: this, now: this.now, file: options.livenessFile });
-    this.loadFile();
     // The agents' streams are read at start, so what is undelivered reaches a tool result before any wait script connects.
     try {
       if (this.dir && existsSync(this.dir)) for (const file of readdirSync(this.dir)) {
@@ -400,29 +380,12 @@ export class Wake extends NumberedLog {
     } catch (error) { console.error("agent wake logs unreadable", error); }
   }
 
-  protected loadState(record: Record<string, unknown>): void {
-    if (typeof record.ack === "number") { this.receipted = Math.max(this.receipted, record.ack); this.alerted = false; }
-    else if (record.alert === true) this.alerted = true;
-    else if (record.timed && typeof record.timed === "object") this.marked = record.timed as TimedMark;
-  }
-  protected stateLines(): unknown[] {
-    const lines: unknown[] = [];
-    if (this.receipted) lines.push({ ack: this.receipted });
-    if (this.alerted) lines.push({ alert: true });
-    if (this.marked) lines.push({ timed: this.marked });
-    return lines;
-  }
-
-  /** The number of the newest event the PM has answered, 0 before any. */
-  receiptedUpTo(): number { return this.receipted; }
-  get lastTimed(): TimedMark | undefined { return this.marked; }
-
   /** How a holder-routed push finds its session: the session holding an item, or none. */
   routeBy(holder: (item: string) => string | undefined): void { this.holder = holder; }
   /** The session holding an item, or none: what a push for a holder alone asks before it is made. */
   holds(item: string): string | undefined { return this.holder(item); }
 
-  /** The stream of an agent other than the PM, made on first use. Its file is written only once something happens on it. */
+  /** The stream of an agent, made on first use. Its file is written only once something happens on it. */
   agent(name: string): AgentStream {
     let stream = this.agents.get(name);
     if (!stream) {
@@ -440,23 +403,22 @@ export class Wake extends NumberedLog {
     this.agentListeners.add(fn);
     return () => { this.agentListeners.delete(fn); };
   }
+  /** The pushes still kept on any stream: what a look that pushes once for each key reads at start, so a restart repeats none. */
+  kept(): WakeFrame[] { return [...this.agents.values()].flatMap(stream => stream.since(0).frames); }
 
-  /** Number, keep and send one event to the stream its kind routes it to: the PM's; the architect's; the stream of the session
-   * holding the item the route names (the PM's when nobody holds it, the architect's with `otherwise`); or the stream of the
-   * session the route names. The fields must be exactly those the kind lists. */
+  /** Number, keep and send one event to the stream its kind routes it to: the architect's; the stream of the session holding
+   * the item the route names (the architect's with `otherwise`); or the stream of the session the route names. The fields must be
+   * exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
     if (to === "architect") return this.agent(ARCHITECT_SESSION).push(event, fields);
-    if (to !== "pm") {
-      const named = "session" in to ? fields[to.session] : fields[to.holder];
-      const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
-      if (name !== undefined && !isPMSession(name)) return this.agent(name).push(event, fields);
-      // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
-      if ("only" in to && name === undefined) throw new Error(`Wake ${event} is for the session holding ${String(named)}, and nobody does`);
-      if ("otherwise" in to && name === undefined) return this.agent(ARCHITECT_SESSION).push(event, fields);
-    }
-    return this.add(event, fields);
+    const named = "session" in to ? fields[to.session] : fields[to.holder];
+    const name = typeof named !== "string" ? undefined : "session" in to ? named : this.holder(named);
+    if (name !== undefined) return this.agent(name).push(event, fields);
+    if ("otherwise" in to) return this.agent(ARCHITECT_SESSION).push(event, fields);
+    // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
+    throw new Error(`Wake ${event} is for the session ${"session" in to ? `that ${to.session} names` : `holding ${String(named)}`}, and there is none`);
   }
 
   /** The fields of the request by which another process may ask for `event`: the kinds the table marks external, and no other. */
@@ -503,29 +465,10 @@ export class Wake extends NumberedLog {
     }
   }
 
-  /** Record when the last timed wake was made and at which commit, so the next one counts changes from there even after a restart. */
-  markTimed(mark: TimedMark): void { this.marked = mark; this.append({ timed: mark }); }
-
-  /** A call from the PM's or the architect's session (model `answersPushes`): everything pushed to the PM before it is answered. Writes only when that changes something. */
-  receipt(): void {
-    if (this.counter === this.receipted && !this.alerted) return;
-    this.receipted = this.counter; this.alerted = false;
-    this.append({ ack: this.receipted, at: this.iso() });
-  }
-
-  /** When the oldest event without a receipt is `receiptLimitMs` old, tell the owner once; a receipt starts the count again. The
-   * same for the architect's stream, where the answer is a delivery: its oldest push not delivered in that time. */
-  checkReceipts(): void {
-    if (!this.alerted) {
-      const oldest = this.frames.find(f => f.frame.n > this.receipted)?.frame;
-      if (oldest && this.now() - Date.parse(oldest.at) >= this.receiptLimitMs) {
-        this.alerted = true;
-        this.append({ alert: true, at: this.iso() });
-        this.tell(`PM ${spanOf(this.receiptLimitMs)}没响应`, `最早没回执的是 #${oldest.n}：${WAKE_KINDS[oldest.event].label}${typeof oldest.title === "string" ? "：" + oldest.title : ""}`, targetOf(oldest));
-      }
-    }
-    const late = this.agents.get(ARCHITECT_SESSION)?.overdue(this.receiptLimitMs);
-    if (late) this.tell(`${ARCHITECT_SESSION} ${spanOf(this.receiptLimitMs)}没响应`, `最早没送到的是 #${late.n}：${WAKE_KINDS[late.event].label}${typeof late.title === "string" ? "：" + late.title : ""}`, targetOf(late));
+  /** When the architect's oldest push still undelivered is `overdueMs` old, tell the owner once. A delivery starts the count again. */
+  checkOverdue(): void {
+    const late = this.agents.get(ARCHITECT_SESSION)?.overdue(this.overdueMs);
+    if (late) this.tell(`${ARCHITECT_SESSION} ${spanOf(this.overdueMs)}没响应`, `最早没送到的是 #${late.n}：${WAKE_KINDS[late.event].label}${typeof late.title === "string" ? "：" + late.title : ""}`, targetOf(late));
   }
 
   /** Tell the owner: every listener (the open pages) gets the notice. A failing listener is logged and never reaches the write that caused the notice. */
