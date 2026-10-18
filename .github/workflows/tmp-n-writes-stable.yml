@@ -17,7 +17,12 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test test/rules-reuse.test.ts test/derived.test.ts test/rules.test.ts test/rules-oracle.test.ts test/web.test.ts
+  # Nine runs of the press-n file side by side, each on its own runner: with the full CI's, ten in a row for the acceptance.
   press-n:
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
