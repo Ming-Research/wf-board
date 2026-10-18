@@ -6,9 +6,9 @@ import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
 
 /** Where a kind of push goes: the PM's stream; the architect's, an agent's stream under its session name; the stream of the
  * session holding the item that `holder` names (an item key among the fields), and the PM's when no session holds it, or
- * nobody's when the route is `only` for the holder; or the stream of the session that `session` names (the PM's when that is
- * the PM's session) (docs/design.md, The wake streams). */
-export type WakeRoute = "pm" | "architect" | { holder: string; only?: true } | { session: string };
+ * nobody's when the route is `only` for the holder, or the architect's when it is `otherwise: "architect"`; or the stream of
+ * the session that `session` names (the PM's when that is the PM's session) (docs/design.md, The wake streams). */
+export type WakeRoute = "pm" | "architect" | { holder: string; only?: true; otherwise?: "architect" } | { session: string };
 
 /** Every kind of push, in one place: `label` names it in a line and in the no-receipt alert, `fields` are the frame's fields
  * besides n, at and event, `to` says whose stream it goes to, `external` lists the fields of the request by which another process may ask
@@ -34,6 +34,7 @@ export const WAKE_KINDS = {
   "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
   "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
   message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
+  "dep-merged": { label: "等的活合入了", fields: ["item", "project", "title", "prs", "waiter"], to: { holder: "waiter", otherwise: "architect" } },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: readonly string[]; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
@@ -64,6 +65,8 @@ const short = (v: unknown) => str(v).slice(0, 7);
 const count = (v: unknown) => Array.isArray(v) ? v.reduce((n: number, e) => n + (e && typeof e === "object" && typeof (e as { more?: unknown }).more === "number" ? (e as { more: number }).more : 1), 0) : 0;
 const it = (item: unknown, project: unknown) => `it:${str(item)}（${str(project)}）`;
 const pr = (f: Record<string, unknown>) => `${str(f.repo)}#${str(f.number)}`;
+/** The entries of a list of strings, joined; a value that is not a list is empty. */
+const list = (v: unknown) => Array.isArray(v) ? v.map(str).join("、") : "";
 /** A time given as an ISO string, to the minute. */
 const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 
@@ -87,6 +90,7 @@ const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
   "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
   message: f => `${str(f.from)}（${str(f.project)}）${f.item ? ` · it:${str(f.item)}` : ""}`,
+  "dep-merged": f => `${it(f.item, f.project)} · ${list(f.prs)} 已合入 · 等它的：it:${str(f.waiter)} · ${str(f.title)}`,
 };
 
 /** The one line an agent is given for a push: its number, label and what it is about, at most LINE_LIMIT characters. */
@@ -433,8 +437,8 @@ export class Wake extends NumberedLog {
   }
 
   /** Number, keep and send one event to the stream its kind routes it to: the PM's; the architect's; the stream of the session
-   * holding the item the route names (the PM's when nobody holds it); or the stream of the session the route names. The fields
-   * must be exactly those the kind lists. */
+   * holding the item the route names (the PM's when nobody holds it, the architect's with `otherwise`); or the stream of the
+   * session the route names. The fields must be exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
@@ -445,6 +449,7 @@ export class Wake extends NumberedLog {
       if (name !== undefined && !isPMSession(name)) return this.agent(name).push(event, fields);
       // A push for a holder alone is not made when nobody holds the item: the caller asks `holds` first.
       if ("only" in to && name === undefined) throw new Error(`Wake ${event} is for the session holding ${String(named)}, and nobody does`);
+      if ("otherwise" in to && name === undefined) return this.agent(ARCHITECT_SESSION).push(event, fields);
     }
     return this.add(event, fields);
   }

@@ -2,8 +2,14 @@ Decision: A session holds an item while an engineer dispatch record on the item 
 
 Decision: A deploy result and a red main line go to the session that holds the item whose changes section names the merged pull request, which is read from the commit's title, and when no session holds that item the failed deploy and the red main line go to the PM while a successful deploy goes nowhere, because the engineer that merged must act on the result, instead of every deploy going to the PM to forward or only the engineer of the last commit a deploy carried.
 
+Decision: A merge row that turns done, whether the look at GitHub marked it or a session did by hand, is pushed as `dep-merged` to the session holding each open, unpaused item that has a shared row on the item, and to the architect for such an item that nobody holds, and an owner's row is not told, because a session that waits on another item's merge goes on at the merge while the item stays open until its later steps are done, so `item-done` comes too late, and the architect starts or hands on the work nobody holds ([A merge a waiter waits on](../../docs/design.md#the-wake-streams)), instead of telling only the sessions that hold an item, telling the PM, telling the owner of the item too, or pushing at `item-done` only.
+
 Rejected:
 - A claim and release tool that the engineer calls: rejected because it adds two calls an engineer can forget and a second record that can disagree with the dispatch.
 - Inferring the holder from who last wrote an item with a step in progress: rejected because one write by another session points the push at the wrong session.
 - Pushing every deploy to the PM to forward: rejected because it hands the PM a message that it can only pass on.
 - Telling only the engineer of the last commit of a deploy: rejected because it misses the other commits that the deploy carried.
+- Telling only the sessions that hold a waiter: rejected because an item nobody holds then waits until the architect's patrol, which finds a wait that has ended only by chance.
+- Telling the PM when nobody holds the waiter: rejected because it hands the PM a message that it can only pass on.
+- Telling the item that owns the merged item as well: rejected because an owner learns of a part at `item-done`, and an owner that nobody holds would send the architect a line for every merge of every part.
+- Pushing at `item-done` only: rejected because the item stays open until its deploy and live check are done, long after the merge the waiter needed.
