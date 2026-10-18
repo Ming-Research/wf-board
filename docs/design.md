@@ -1710,8 +1710,8 @@ where the design reaches it.
   nothing deletes one. Cancelling an item withdraws its open cards in the
   same commit, marked `withdrawnWithItem`; reopening the item restores those
   marked cards to open, and leaves a card withdrawn by hand withdrawn.
-- **Legacy text.** Cards converted from the earlier form (see
-  [Card conversion](#card-conversion)) keep their old `background` in
+- **Legacy text.** Cards converted from the earlier form (by the one-time card
+  migration, removed once it ran on the live board) keep their old `background` in
   `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
   and search covers it. An open card's fold starts open, because its reader
   decides from the background; a closed card's starts folded. Their options
@@ -4001,19 +4001,12 @@ Every work item has an acceptance step from phase 1 on, so 没有计划：至少
 
 ### Clearing the retired difficulty level
 
-`npm run migrate:architect-level -- --data DIR` clears the retired level
-`architect` (「架构师做」, section 5, Difficulty) from the item files that hold
-it. It runs offline, with the daemon stopped or on a copy: the board refuses to
-start on a file that holds the level, and `Store.open(dir, { clearArchitectLevel:
-true })`, which the command calls, reads those files without it and writes one
-commit, `clear_architect_level N items`, in which each such item has no
-difficulty and one more log line, `难度：架构师做 → 未评，理由：迁移：…`. The
-commit is bookkeeping for the owner: unread shows nothing for it. Items cleared this way raise 缺难度 once they qualify
-(section 5, Difficulty) and are rated 1–5 by whoever may rate them. A second run
-writes nothing. The command, its module, its test, the npm script and the start
-option are deleted after the run on the live board; what stays is the omission of
-the value from old versions in historical comparison, and unread's reading of
-the clearing as bookkeeping.
+The board refuses to start on an item file that holds the retired level
+`architect` (「架构师做」, section 5, Difficulty). The one-time clearing ran on
+the live board, in one commit, `clear_architect_level N items`, which left
+each such item unrated with one more log line. The command that wrote that
+commit is removed. What stays is the omission of the value from old versions in
+historical comparison, and unread's reading of the clearing as bookkeeping.
 
 ### Clearing the retired priority
 
@@ -4027,18 +4020,17 @@ only make the deploy job roll back) and prints the report to its log: the totals
 by value, then one line per item with its key, project and the value it held.
 The commit sets no `updated` and adds no log line to the items, so no item looks
 changed. The value each item held stays in git history, as the lines the commit
-removed, and in that report. `npm run migrate:priority -- --data DIR` does the
-same offline on a copy of the data and prints the same report, which is how the
-run is rehearsed before the live one.
+removed, and in that report. The offline command that did the same on a copy is
+removed; the live run is the one that counts.
 
 The commit is bookkeeping, not work on the items: historical comparison omits the
 field from old versions, so unread shows nothing for it, and activity and the
 timed wake leave the commit out, so no item's last-change time or no-progress
 clock restarts and the wake lists nothing it wrote. A second start writes
-nothing. The command, its module, its test, the npm script, the start option, the
+nothing. The command and its test are removed. The module, the start option, the
 daemon's use of it, the two checks that leave the commit out of activity and the
 timed wake, and the transaction flag (`rewrite`) that lets it write unchanged
-documents are deleted after the run on the live board; what stays is the
+documents stay until a later cleanup removes them; what stays for good is the
 omission of the field from old versions in historical comparison.
 
 ### Owner-wide rules to change
@@ -4083,54 +4075,6 @@ the board.
     grow while a project rewrites. Proceeding on: accept it; the owner can
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
-
-### Card conversion
-
-The card shape of section 5 (Decision cards) replaces cards whose option text
-was long, whose background, confidence and ruling were text of the same kind,
-and plans that named cards of other items. `npm run migrate:cards -- --data
-DIR [--apply]` converts a data directory in one commit, `Migrate decision cards
-into item plans`. It is a one-time offline command, not a startup step: it
-reads the raw files (the current schemas refuse the old cards), prints a
-report without `--apply`, and with `--apply` writes only when the working tree
-is clean, the daemon is stopped and the report has no error. A commit with this
-message is not work on the items: activity and the owner's unread list skip
-it, as they skip the numbering commit. The command is deleted once it has run
-on the live board.
-
-- Each card keeps `item`, `question`, `status`, `blocks`, `choice`, `ruledAt`,
-  `confidence`, `ruling`, `num` and times. Each option's text becomes its
-  `detail` and its name stays empty. The old `background` moves to `legacy`;
-  `order` is dropped. A status other than open and ruled is an error.
-- An open card whose owner pick was already sent closes with that pick and the
-  send time as `ruledAt`.
-- Only a card that blocks has a row. An open blocking card with no row gets
-  one before the first acceptance step, which then also waits for it. An open
-  card that has a row but no `blocks` becomes a blocking card: in the old plans
-  a card's row made the step after it wait, so `blocks` names that step (the row
-  waiting for the card, else the row after it; a step's text, an item's title or
-  a card's question) and the row stays. No item changes status because of it,
-  and the report lists these cards. A closed card keeps the row it has and gets
-  none: the row records the step that once waited for it.
-- A row for a card of another item is dropped (an open one is an error: place
-  it by hand). Every such card was ruled, so the row was resolved. Each
-  affected item's log gets one entry naming the card and what was chosen. A
-  dropped id is removed from later rows' `after`, and a row that implicitly
-  followed a dropped row gets `after: []`, so it was ready before and stays ready.
-- The head of every item with cards the head does not place gets a section at
-  its end, before its first 参考 section: the bold line **以前的决定**, then
-  one line `[[q:key]]` per card, in the order the cards were written, so the
-  converted cards show in the body without the reader having to ask for them.
-  A card the head already places keeps its line and is not listed again.
-- The report lists every item whose status or ready rows differ
-  between the board before and after, both read with the same current rules,
-  and prints the text of one section it added. The expected differences are an
-  item that waits on an open blocking card it never named (that card now has its
-  row) and an item whose answered card now closes; anything else is a fault in
-  the conversion.
-- Open cards the head does not place are placed by the section above, so the
-  conversion raises no 卡没标位置. Cards written afterwards are placed by the
-  head that asks the question.
 
 ## 11. Testing
 

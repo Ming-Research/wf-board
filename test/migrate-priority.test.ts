@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -37,7 +37,7 @@ test("a board that still holds a priority refuses to start and says how to clear
   const { dir } = await withPriority(t);
   await assert.rejects(Store.open(dir), (e: unknown) => {
     assert.ok(e instanceof Error);
-    for (const id of IDS) assert.match(e.message, new RegExp(`items/${id}\\.yaml: priority: .*migrate:priority`));
+    for (const id of IDS) assert.match(e.message, new RegExp(`items/${id}\\.yaml: priority: .*no longer exists`));
     assert.doesNotMatch(e.message, /items\/a\.yaml/, "only the items that hold it are named");
     return true;
   });
@@ -103,19 +103,4 @@ test("the migration runs once: a second start with or without it writes nothing"
   assert.deepEqual(again.clearedPriority, []);
   assert.deepEqual((await Store.open(dir, { clearPriority: true })).clearedPriority, []);
   assert.equal(await git("rev-parse", "HEAD"), head);
-});
-
-test("the command clears a copy of the data, prints each item's value, and needs --data", async t => {
-  const { dir } = await withPriority(t);
-  const cli = join(import.meta.dirname, "../src/migrate-priority-cli.ts");
-  const copy = `${dir}-copy`;
-  await cp(dir, copy, { recursive: true });
-  t.after(() => exec("rm", ["-rf", copy]));
-  const done = await exec(process.execPath, [cli, "--data", copy]);
-  assert.match(done.stdout, /Cleared the retired priority of 2 items \(P1 1, P2 1\)\narea · Whitefoot · P1\nother · Firn · P2\nCommit [0-9a-f]{40}/);
-  const again = await exec(process.execPath, [cli, "--data", copy]);
-  assert.match(again.stdout, /Nothing to migrate/);
-  await Store.open(copy);
-  const missing = await exec(process.execPath, [cli]).then(() => undefined, (e: { code: number; stderr: string }) => e);
-  assert.equal(missing?.code, 1); assert.match(missing!.stderr, /Usage: npm run migrate:priority -- --data DIR/);
 });
