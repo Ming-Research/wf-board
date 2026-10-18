@@ -338,8 +338,9 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         const card = doc.after as Decision | null, was = doc.before as Decision | null;
         if (card?.status === "open" && card.blocks && (was?.status !== "open" || was.blocks !== card.blocks)) wake.tell(`挡事的卡 · ${r.projectOf(card.item)}`, `${card.question}（挡住：${card.blocks}）`, { kind: "card", key: doc.id });
         // A card ruled, on the page or with rule_card, is told to the session holding its item, which may be waiting on it;
-        // when nobody holds the item the owner's pick has already reached the architect as a note (docs/design.md, The wake streams).
-        if (card?.status === "ruled" && was?.status === "open" && wake.holds(card.item) !== undefined) {
+        // when nobody holds the item the owner's pick on the page goes to the architect, who gets it no other way once the board
+        // has closed the pick's note, and a ruling a session recorded is told to no one (docs/design.md, The wake streams).
+        if (card?.status === "ruled" && was?.status === "open" && (wake.holds(card.item) !== undefined || change.author === "owner")) {
           const option = card.choice === undefined ? undefined : optionName(card.options.find(o => o.key === card.choice));
           const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
           wake.push("card-ruled", { card: doc.id, item: card.item, project: r.projectOf(card.item), title: oneLine(card.question), choice: card.choice ?? null, option: option === undefined ? null : oneLine(option), ruling: card.ruling === undefined ? null : oneLine(card.ruling) });

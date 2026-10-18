@@ -136,7 +136,7 @@ test("a sent note is pushed to the architect's stream with a number whatever pro
   assert.equal(star.events().length, 3, "explain requests and a choice on a card are notes of the architect's stream too");
 });
 
-test("a card ruled on the page or with rule_card is pushed to the session holding its item, as one line naming the card and the pick or the owner's words; nobody holding it, a withdrawn card and a rewritten open card push nothing, and the architect's note is as before", async t => {
+test("a card ruled on the page or with rule_card is pushed to the session holding its item, as one line naming the card and the pick or the owner's words; nobody holding it, the owner's pick goes to the architect and a ruling a session recorded to no one, and a withdrawn card and a rewritten open card push nothing", async t => {
   const { url, api, op } = await server(t);
   const card = { author, item: "b", confidence: { reason: "判断" }, options: [{ text: "先做", detail: "先做它" }, { text: "后做", detail: "后做它" }] };
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-b" });
@@ -150,7 +150,7 @@ test("a card ruled on the page or with rule_card is pushed to the session holdin
     { n: 1, event: "card-ruled", card: "choice", item: "b", project: "Whitefoot", title: "中文方案？", choice: "B", option: "另一选项", ruling: null },
     "#1 卡裁了 · it:b（Whitefoot） · q:choice · 选 B「另一选项」 · 中文方案？",
   ]], "the holder is told which card and which option");
-  assert.deepEqual(star.events().map(f => [f.event, f.target]), [["note", "q:choice"]], "and the architect keeps its note");
+  assert.deepEqual(star.events(), [], "the architect gets nothing for a plain pick: its note is handled by the ruling, and the holder acts");
   // A decision made in chat and recorded with rule_card: the owner's words, with or without an option.
   await op.writeCard({ ...card, key: "words", question: "先做哪个？" });
   await op.writeCard({ ...card, key: "both", question: "两个都说了？" });
@@ -161,14 +161,17 @@ test("a card ruled on the page or with rule_card is pushed to the session holdin
     [{ n: 2, event: "card-ruled", card: "words", item: "b", project: "Whitefoot", title: "先做哪个？", choice: null, option: null, ruling: "主人说先做" }, "#2 卡裁了 · it:b（Whitefoot） · q:words · 原话：主人说先做 · 先做哪个？"],
     [{ n: 3, event: "card-ruled", card: "both", item: "b", project: "Whitefoot", title: "两个都说了？", choice: "A", option: "先做", ruling: "按第一个做" }, "#3 卡裁了 · it:b（Whitefoot） · q:both · 选 A「先做」 · 原话：按第一个做 · 两个都说了？"],
   ]);
-  assert.equal(star.events().length, 1, "a ruling recorded by a session is not an owner's note");
+  assert.equal(star.events().length, 0, "a ruling recorded by a session is told to the holder alone");
   // A card that is withdrawn, or written again while open, is not ruled.
   await op.writeCard({ ...card, key: "drop", question: "不要了？" });
   await op.writeCard({ ...card, key: "drop", rev: 1, question: "改一下？" });
   await op.withdrawCard({ author, key: "drop", log: "不需要了" });
-  // Nobody holds item `a`: its ruling pushes the architect's note and nothing to a holder.
+  // Nobody holds item `a`: the owner's pick goes to the architect as the ruling, with the words as a note when there are some.
   await op.writeCard({ ...card, key: "lonely", item: "a", question: "没人拿着？" });
   await api("/api/notes", { target: "q:lonely", kind: "choice", text: "选 A", choice: "A" });
+  await api("/api/send", {});
+  await op.writeCard({ ...card, key: "worded", item: "a", question: "没人拿着，还附了话？" });
+  const worded = await api("/api/notes", { target: "q:worded", kind: "choice", text: "选 B，先补测试", choice: "B" });
   await api("/api/send", {});
   await op.writeCard({ ...card, key: "quiet", item: "a", question: "没人拿着，口头裁？" });
   await op.ruleCard({ author, key: "quiet", ruling: "口头" });
@@ -178,7 +181,11 @@ test("a card ruled on the page or with rule_card is pushed to the session holdin
   await op.ruleCard({ author, key: "late", choice: "B" });
   await worker.sync(); await star.sync();
   assert.equal(pushed().length, 3, "no more than the three rulings of a held item");
-  assert.deepEqual(star.events().map(f => [f.event, f.target]), [["note", "q:choice"], ["note", "q:lonely"]]);
+  assert.deepEqual(star.events().map(({ at, line, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), [frame, line])), [
+    [{ n: 1, event: "card-ruled", card: "lonely", item: "a", project: "Whitefoot", title: "没人拿着？", choice: "A", option: "先做", ruling: null }, "#1 卡裁了 · it:a（Whitefoot） · q:lonely · 选 A「先做」 · 没人拿着？"],
+    [{ n: 2, event: "note", note: worded.data.id, target: "q:worded", kind: "choice", title: "没人拿着，还附了话？", project: "Whitefoot" }, "#2 主人的留言 · q:worded（Whitefoot）· choice · 没人拿着，还附了话？"],
+    [{ n: 3, event: "card-ruled", card: "worded", item: "a", project: "Whitefoot", title: "没人拿着，还附了话？", choice: "B", option: "后做", ruling: null }, "#3 卡裁了 · it:a（Whitefoot） · q:worded · 选 B「后做」 · 没人拿着，还附了话？"],
+  ], "the architect is told of the pick that nobody holds, and of the words a pick carries; the quiet ruling and the ended dispatch's ruling reach no one");
 });
 
 test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {

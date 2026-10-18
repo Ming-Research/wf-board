@@ -48,7 +48,7 @@ test("every kind says where it goes, and a holder or session route names one of 
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item", otherwise: "architect" }, "a failed deploy with no session on the item is the architect's");
   assert.deepEqual(WAKE_KINDS["main-red"].to, { holder: "item", otherwise: "architect" });
   assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
-  assert.deepEqual(WAKE_KINDS["card-ruled"].to, { holder: "item", only: true }, "a ruling is for the session holding the card's item alone: the architect has the owner's note");
+  assert.deepEqual(WAKE_KINDS["card-ruled"].to, { holder: "item", otherwise: "architect" }, "a ruling is for the session holding the card's item, else the architect (the board pushes the latter only for the owner's pick, whose note it closes)");
   assert.deepEqual(WAKE_KINDS["dep-merged"].to, { holder: "waiter", otherwise: "architect" });
   assert.equal("pr-ready" in WAKE_KINDS, false, "a pull request that can merge is the engineer's to merge, not pushed");
   assert.equal("dispatch" in WAKE_KINDS, false, "the board pushes no offers: the architect compares the candidates with the owner's limits");

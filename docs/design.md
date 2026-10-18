@@ -1722,7 +1722,19 @@ where the design reaches it.
 - **Ruling.** The owner's pick on the page is recorded by the board itself:
   sending a choice note sets `status: ruled`, `choice` and `ruledAt` (the send
   time) on the open card in the same commit, so no session has to rule it
-  afterwards and a pick can no longer sit sent but unrecorded. `rule_card(key,
+  afterwards and a pick can no longer sit sent but unrecorded. The ruling also
+  handles the pick's own note when it says nothing but the option (`isPlainPick`
+  in `src/rules.ts`: the text the page writes, "选 A", or no text): the commit
+  writes that note `done`, with no reply, so it never waits as `sent`, no push
+  announces it as a note, and a session that lists the unhandled notes, or the
+  runner that gives an item's sent notes to its engineer, never meets it. A pick
+  with the owner's words (a text the owner changed) rules the card the same way
+  but stays `sent` for the architect, as does a pick sent when its card is no
+  longer open: the card keeps its ruling and the note is not handled by it.
+  Rejected: closing every pick's note, which would leave the owner's words in a
+  closed note nobody is told of; leaving the note `sent` and having each reader
+  skip it, since the runner, `brief`, `notes` and the page would each need the
+  same test and a later reader would forget it. `rule_card(key,
   choice?, ruling?)` is for a decision the owner made in chat: it takes the
   option chosen, the owner's own words, or both, and the words are kept in
   `ruling` for the design log's approval line. A card ruled in words alone has
@@ -2771,7 +2783,9 @@ Another version makes the page reload itself (`web/update.ts`):
 
 "发给 Claude" posts to `/api/send`. Draft notes become `sent`, and each
 sent note produces one `note` event on the wake stream (below). Sending
-does not mark a note handled. It stays `sent` until a project agent replies with
+does not mark a note handled, except a choice that says nothing but its option
+and rules its open card in the same commit, which is written `done` (section 5,
+Decision cards, Ruling). A note stays `sent` until a project agent replies with
 `reply_note` or closes it with `close_note`. Closing stamps the handler and
 time and appends `关闭评论：<log>` to the owning item, atomically; it adds no
 reply text and refuses draft notes; an existing reply is preserved.
@@ -2829,7 +2843,9 @@ else to the architect; `deployed`, `item-done`, `ask-alive` and `card-ruled` go 
   card, so the owner's comments on an engineer's item reach the architect too. Every kind
   of note is one: a comment, an explain request, an approval, a choice on a card. A sent choice
   note also rules its open card in the same commit (see Decision cards), so the
-  architect does not rule it afterwards;
+  architect does not rule it afterwards; and a choice that says nothing but its option is
+  written handled by that commit, so it is never `sent` and is not pushed as a note: the
+  ruling is pushed instead (A card ruled);
 - the architect's timed wake (`timed-architect`), every 60 minutes, with what changed
   since the last one and the number of items being worked on, so the architect looks over
   what is in progress once an hour;
@@ -2856,7 +2872,8 @@ else to the architect; `deployed`, `item-done`, `ask-alive` and `card-ruled` go 
 - a card that was ruled (`card-ruled`): an open card became ruled, whether the owner
   sent a choice on the page or a session recorded one with `rule_card`. It goes to
   the session holding the card's item, which may be stopped on the card; when
-  nobody holds the item nothing is pushed (A card ruled, below).
+  nobody holds the item, a pick the owner sent on the page goes to the architect and a
+  ruling a session recorded to no one (A card ruled, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any check (the checks are shown on the board and the page, and
@@ -2864,7 +2881,7 @@ whoever acts on one finds it in the whole view), draft-PR CI. The kinds that wer
 and are no longer made are in The PM is retired, below. A later kind is one entry in the
 table and one row below.
 
-**A card ruled.** The owner's pick on the page reaches the architect as a `note`
+**A card ruled.** The owner's pick on the page used to reach the architect as a `note`
 (a sent choice note also rules the card), and the engineer rules had the architect
 forward it to the session stopped on the card. One ruling was never forwarded, and
 the engineer holding its item stayed stopped for two days. So the board tells that
@@ -2875,16 +2892,26 @@ which an open card becomes ruled, not the note, since a decision recorded with
 item. The frame carries the card's key and question, the key and name of the option
 chosen and the owner's words, so the line says what was decided without a read of the
 board; runs of white space in the question, the option's name and the words are one
-space, so the line stays one line. Nothing is pushed when nobody holds the item: the
-owner's pick has already reached the architect as the note, and a ruling a session
-recorded was made by a session that knows it. A card that is withdrawn, or written
-again while open, is not ruled and pushes nothing. Rejected: leaving it to the
-architect to forward, which rests on one session remembering and is what failed;
-pushing to the architect (earlier, to the PM) when nobody holds the item, which hands it a
-ruling it already has as the note; pushing the owner's note
-itself to the holder, which would send every comment and explain request on the item
-to the engineer before the architect has judged it, and says nothing of the option
-chosen.
+space, so the line stays one line.
+
+When nobody holds the item, a pick the owner sent on the page goes to the architect
+as the same frame: a pick that says nothing but its option is written handled by the
+commit that rules the card (section 5, Decision cards, Ruling), so the `note` that
+told the architect of it is never pushed, and without this frame a pick on an item
+nobody holds would reach no one. The change is the owner's when its author is
+`owner`, which only a page send has. A pick with the owner's words is still a `note`
+and its ruling is pushed as well, so the architect has both lines. A ruling a session
+recorded was made by a session that knows it, and is pushed to no one when nobody
+holds the item. A card that is withdrawn, or written again while open, is not ruled and
+pushes nothing. Rejected: leaving it to the architect to forward, which rests on one
+session remembering and is what failed; pushing a ruling a session recorded to the architect
+when nobody holds the item, which hands it a line it can only pass on, since that session made
+the ruling; pushing every pick to the architect
+as well as to the holder, which gives the architect a line it can only pass on while the
+holder acts, and gives a kind two recipients where the table gives each kind one route;
+pushing the owner's note itself to the holder, which would send every comment and explain
+request on the item to the engineer before the architect has judged it, and says nothing
+of the option chosen.
 
 **Free slots are the architect's to count.** The board holds no limit per pool and pushes no
 offer, so no push says a slot is free. The architect compares the working count and the candidates
@@ -2959,7 +2986,7 @@ the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
+| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. A choice that says nothing but its option is written `done` by the commit that rules its card and is not pushed (A card ruled). `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"timed-architect", since, changed, working}` | Every 60 minutes after the last one on the architect's stream (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect project someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted). Nothing else: the lists of open items repeat from one wake to the next, and `list` gives them. The time of the last one is kept in the architect's stream file |
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the architect's when nobody does (Deploys and the red main line) |
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged. It goes to the architect's stream |
@@ -2970,7 +2997,7 @@ the forms the server sends:
 | `{n, at, event:"dep-merged", item, project, title, prs, waiter}` | A merge row of `item` turned done, whether the board marked it after GitHub reported the pull requests merged or a session did by hand. One event for each open, unpaused item `waiter` with a shared row on `item`; it goes to the stream of the session holding `waiter`, and to the architect's stream when nobody does. `prs` lists the pull requests that counted for the row, as `Owner/Name#N`, and `item`, `project` and `title` are the item whose row turned done. Nothing is pushed for an owner's row, a dropped row, a row that names no counted pull request, or a paused `waiter`. Made by the write that turned the row done, so a restart announces nothing |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence, and not made for an item the runner reports on (Liveness) |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to` |
-| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream, and nothing is pushed when nobody holds the item (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
+| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream. When nobody holds the item, a pick the owner sent on the page goes to the architect's stream, and a ruling a session recorded to no one (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event of the stream, 0 before any |
 | `{event:"gap", oldest, latest}` | After `connected`, when events the client was never given were dropped by retention: the stream keeps only its newest events, and `oldest` is the number of the oldest one kept. The client reads the board for what it missed; the kept events that follow are all numbered from `oldest` and none is taken for a repeat |
 

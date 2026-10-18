@@ -6,7 +6,7 @@ import type { Snapshot } from "./model.ts";
 import { ConflictError } from "./store.ts";
 import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
-import { draftEditable, noteTextProblem } from "./rules.ts";
+import { draftEditable, isPlainPick, noteTextProblem } from "./rules.ts";
 import { unreadSteps, commitsSince, inHistory } from "./history.ts";
 import type { DocKind } from "./store.ts";
 
@@ -119,14 +119,19 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       const drafts = Object.entries(s.notes).filter(([id, n]) => n.state === "draft" && (!only || only.has(id)));
       const sentAt = now();
       // A pick made on the page is recorded on its card as it is sent: the card closes with the chosen option and the send
-      // time. A card that is no longer open (ruled meanwhile) keeps its ruling; the note is still sent.
-      const closed = new Map<string, Decision>();
-      for (const [, n] of drafts) {
+      // time. A card that is no longer open (ruled meanwhile) keeps its ruling; the note is still sent. A pick that says
+      // nothing but the option is handled by that ruling, so it is written done; one with the owner's words stays sent for
+      // the architect to read.
+      const closed = new Map<string, Decision>(), handled = new Set<string>();
+      for (const [id, n] of drafts) {
         const key = n.target.slice(2), card = n.kind === "choice" && n.target.startsWith("q:") && Object.hasOwn(s.decisions, key) ? s.decisions[key] : undefined;
-        if (card?.status === "open" && !closed.has(key) && card.options.some(o => o.key === n.choice)) closed.set(key, Decision.parse({ ...card, status: "ruled", choice: n.choice, ruledAt: sentAt, updated: sentAt }));
+        if (card?.status === "open" && !closed.has(key) && card.options.some(o => o.key === n.choice)) {
+          closed.set(key, Decision.parse({ ...card, status: "ruled", choice: n.choice, ruledAt: sentAt, updated: sentAt }));
+          if (isPlainPick(n)) handled.add(id);
+        }
       }
       if (drafts.length) await store.commit({ author: "owner", message: `send ${drafts.length} notes`, puts: [
-        ...drafts.map(([id, n]) => ({ kind: "note" as const, id, expectRev: n.rev, doc: { ...n, state: "sent" as const, sentAt } })),
+        ...drafts.map(([id, n]) => ({ kind: "note" as const, id, expectRev: n.rev, doc: { ...n, state: handled.has(id) ? "done" as const : "sent" as const, sentAt } })),
         ...[...closed].map(([id, doc]) => ({ kind: "decision" as const, id, expectRev: s.decisions[id]!.rev, doc })),
       ] });
       // Item changes can commit while this send waits for the store.

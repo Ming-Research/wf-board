@@ -27,7 +27,7 @@ export const WAKE_KINDS = {
   "item-done": { label: "子条目做完", fields: ["item", "project", "title", "parent"], to: { holder: "parent", only: true } },
   "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item", only: true }, answeredByCall: true },
   message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
-  "card-ruled": { label: "卡裁了", fields: ["card", "item", "project", "title", "choice", "option", "ruling"], to: { holder: "item", only: true } },
+  "card-ruled": { label: "卡裁了", fields: ["card", "item", "project", "title", "choice", "option", "ruling"], to: { holder: "item", otherwise: "architect" } },
   "dep-merged": { label: "等的活合入了", fields: ["item", "project", "title", "prs", "waiter"], to: { holder: "waiter", otherwise: "architect" } },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: readonly string[]; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;

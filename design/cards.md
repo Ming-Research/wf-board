@@ -4,6 +4,8 @@ Decision: A card is stored once, with its item, and only a card that names the w
 
 Decision: Sending the owner's choice on a card records the ruling on the card in the same commit, a decision made in chat is recorded by a separate tool, and nothing deletes a card, an open card being retired only by withdrawing it, because no session should have to rule a card afterwards and a pick must not sit sent but unrecorded, and a closed card keeps its plan row as resolved, instead of a session ruling the card after the owner's pick or a card that can be deleted.
 
+Decision: The commit that sends the owner's choice on a card also writes the choice note `done`, with no reply, when the note says nothing but its option, and leaves it `sent` when it carries the owner's own words or when its card was no longer open, because the ruling is all such a pick asks of anyone, so a session that reads the unhandled notes would find nothing to do with it (the runner starts an engineer turn for each sent note of an item), while the owner's words still have to reach a reader ([Ruling](../docs/design.md#decision-cards)), instead of closing every choice note or leaving each one sent.
+
 Rejected:
 - A long background on the card with only names in the options: rejected because the owner decides where the head gives the reasoning and each option's cost belongs beside its name.
 - A stored placement field or an index of cards: rejected because the head already places each card and an index could disagree with it.
@@ -12,3 +14,5 @@ Rejected:
 - A plan row for every card: rejected because a card that blocks nothing would hold an item's status for a question the work does not wait on.
 - A session ruling the card after the owner's pick: rejected because a pick could sit sent but unrecorded.
 - Deleting a card: rejected because withdrawing is the one way to retire a card and nothing deletes one, so an open card stays in the history.
+- Closing every choice note when it is sent: rejected because the owner's words in a changed pick would sit in a closed note that nobody is told of.
+- Leaving a plain pick's note sent and having each reader skip it: rejected because the runner, the unhandled-note reads and the page would each need the same test, and a reader that forgets it starts an engineer turn for a pick that needs nothing.
