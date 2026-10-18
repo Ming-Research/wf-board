@@ -113,7 +113,7 @@ matches what the artifact board offered.
   the stand-in for the diagram library the page loads by address, `mermaid-layout.ts` the model of the diagram boxes, and
   `mermaid-checks.ts`, `mermaid-spoiled.ts` and `mermaid-*.test.ts` the diagram checks and their spoiled pages; `changed-blocks.test.ts` and `width-caps*.ts` the stylesheet checks of the changed-block bar and of the right column's widths). Each
   `*.test.ts` there has a board of its own and is kept short enough to be dealt out to the shards (the
-  longest takes 27 seconds on a hosted runner).
+  longest takes about 33 seconds on a hosted runner).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand
@@ -133,7 +133,7 @@ matches what the artifact board offered.
   11). It reads only added lines, paths, commit messages and the pull request's
   title and body, and prints the rule and place, never the matched text.
 - `scripts/test-shard.ts` with `test/shard-costs.json`, `scripts/test-times-reporter.ts`
-  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 8
+  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 16
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
   summary, and the time gate in the run's last job (design section 11, Sharding the
@@ -143,7 +143,7 @@ matches what the artifact board offered.
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
-  three on every main-line merge (`npm test` as 8 shards at once), with the four jobs of the n-key lane beside them, and on a pull
+  three on every main-line merge (`npm test` as 16 shards at once), with the four jobs of the n-key lane beside them, and on a pull
   request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
   pushes in between are
   checked by a temporary `tmp-*.yml` workflow that runs what

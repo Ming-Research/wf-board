@@ -4394,7 +4394,7 @@ verdict on made-up pairs whose answer is known.
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 8 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
+`test` in 16 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
 last check (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
@@ -4518,7 +4518,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 8 shards, each in a job of its own, beside the type check, which is a
+full CI as 16 shards (8 until the checks of the browser moved into the suite), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -4562,6 +4562,20 @@ the longest `tests` step at 20 seconds against 26 for the 8 of that run, and
 `--test-concurrency=6` was no faster than the default 3 (mean 18.9 against 19.4
 seconds over 8 shards). Both differences are inside the spread between runs. The
 next lever is splitting the largest files, as `ops.test.ts` was.
+
+**Measured again** (hosted runners, 4 cores, 18 October 2026, after the checks of the
+browser had moved into the suite: 90 files, 906 seconds of file time): with the 8 shards the step `tests` took 33 to 56
+seconds (mean 45.5) and the job of the slowest shard 68, so a full CI took 73 seconds
+against the line of 60, with the table's costs out of date (a file such as `page-numbers` held
+at 20 seconds took 30). With the costs brought up to date from the shards' tables, 12
+shards left the longest job at 61 seconds (`tests` 20 to 45) and 16 shards at 51
+(`tests` 17 to 35, wait for a runner 3). Three runs of the 16 side by side gave the longest
+job 46, 49 and 50 seconds, `tests` 16 to 34, the waits 4 at most, so a full CI of 16
+shards is about 50 to 54 seconds from the push. What is left is the floor of the largest
+files, 25 to 33 seconds each among two others (`page-cards`, `page-tree`, `page-filters-after`,
+the three `rules-reuse` files, `page-numbers`, `page-plan`): more shards do not shorten
+a shard that holds one of them, and a typical 50 seconds needs those files split. The
+costs in the table are the mean of four runs of the 16.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
