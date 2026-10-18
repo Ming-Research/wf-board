@@ -43,6 +43,14 @@ jobs:
             tests: test/runner-rows.test.ts
             mutate: |
               sed -i 's/silent: now - heardAt > LIVE_FRESH_MS/silent: false/' src/runner-rows.ts
+          - name: the board's own session is listed as an agent
+            tests: test/agents.test.ts
+            mutate: |
+              sed -i 's/ || session?.trim() === BOARD_SESSION;/;/' src/model.ts
+          - name: the architect's turns are listed as agents
+            tests: test/agents.test.ts test/runner-rows.test.ts
+            mutate: |
+              sed -i 's/ || session?.trim() === ARCHITECT_TURN_SESSION//' src/model.ts
     name: witness (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v5
