@@ -3891,9 +3891,11 @@ on the live board.
   random sequence against a reverse scan of the commits and rebuilt after a
   restart; the rows (window, state words, level, dispatch records and ended
   names) on hand-built snapshots, each boundary on both sides; the page in a
-  fake DOM; and in a real browser the list above the projects, 在树中
-  landing on the tree's row and 返回 coming back, and every tree click still
-  landing with a cell unfolded.
+  fake DOM; the page in a DOM library (the list above the projects, 在树中
+  selecting the tree's row and 返回 coming back, a cell unfolding in place with
+  every tree click still landing, the line of the sessions with no dispatch
+  record); and in a real browser where the list lies and how far the jump
+  scrolls.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
   pull request, when the engineer starts it (below), with a temporary quick
   workflow for the pushes in between; the write-path benchmark runs by hand,
@@ -3901,9 +3903,9 @@ on the live board.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
-### Three test layers
+### Four test layers
 
-The page is tested in three layers. Each catches a class of fault the layer
+The page is tested in four layers. Each catches a class of fault the layer
 below cannot see, and a page bug gets its test in the lowest layer that can.
 
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
@@ -3914,12 +3916,27 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
    board's shapes.
-3. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
+3. **The page in a DOM library** (`test/dom`, run by `npm test`): jsdom runs
+   the real page (`test/dom/page.ts` bundles `web/app.ts` as a script and
+   evaluates it in a window) against the real server on the generated board
+   of layer 4, through Node's real `fetch` and a reader of the real event
+   stream, with no browser. A window has no layout, so its boxes are one box
+   at the top, nothing is under a point and nothing scrolls; what the page
+   decides from positions always says yes. The few checks of style read the
+   stylesheet's cascade (`test/dom/styles.ts`: specificity, order,
+   inheritance, `var()`, the scheme and width media queries) instead of a
+   layout. It runs every check that needs only the page's logic, its DOM
+   and the board's rules: the cost of a browser per check is gone, the page's
+   own draws cost more than in a browser (the parser and the element
+   constructors are JavaScript).
+4. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
    `e2e`): headless Chromium (Playwright) loads the real page from the real
    server (the wiring of `src/main.ts`, in process) on a temporary data
-   repository, so the page talks to the real API and event stream.
+   repository, so the page talks to the real API and event stream. It keeps
+   what needs a layout: where a box lands, how wide it is, what a browser
+   hides, hit-testing and scrolling, and the diagrams.
 
-The third layer exists because five page bugs in one day passed every test of
+The browser layer exists because five page bugs in one day passed every test of
 the first two: saving a comment folded the card's comment list and hid its
 send button; the purple and red numbers jumped to another project's card
 after unrelated re-renders; a card row in a plan jumped to another item
@@ -3950,10 +3967,13 @@ generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
-**The invariants.** `test/e2e/invariants.ts` clicks every kind of clickable
-thing and compares where the page landed with what the element claims,
-computed independently from the stored board with `src/rules.ts` and the
-server's unread history:
+**The invariants.** `test/dom/checks.ts` (the style ones in
+`test/dom/style-checks.ts`) clicks every kind of clickable thing and compares
+where the page landed with what the element claims, computed independently
+from the stored board with `src/rules.ts` and the server's unread history
+(`test/e2e/invariants.ts` holds the oracle and what still needs a browser:
+the layout of a card row in a plan, the visibility of a folded card and the
+alignment of the difficulty chip, in `test/e2e/page.e2e.ts`):
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
@@ -3989,7 +4009,9 @@ server's unread history:
 Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
-new item), so incremental re-renders happen in between.
+new item), so incremental re-renders happen in between. The families run in
+three files (`test/dom/page-*.test.ts`), each with a board and a page of its
+own, so the files run side by side.
 
 Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
 log are drawn, with Chinese labels; a block that does not parse shows its code and the
@@ -4041,13 +4063,17 @@ in turn, and a draw made 150 ms slower, with the board quiet and with sessions w
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
 
-**Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
-current page, where it must find nothing, and on the page with a past fix
-reversed in a copy served from a temporary directory, where it must report
-the bug. A fix is reversed by undoing its commit's hunks, or, where later
-work rewrote the lines around it, by a targeted edit that removes just the
-fix. A witness whose edits no longer match the current file fails and is
-updated or retired on purpose.
+**Evidence.** Each check runs on the current page, where it must find
+nothing, and on the page with the thing it guards spoiled, where it must
+report it. In the DOM layer the spoiled page is the source text edited in
+memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.test.ts`
+holds one per page check, and each scenario file (agents, messages, styles)
+its own, each naming the reason it must fail for. In the browser layer
+`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
+reversed in a copy served from a temporary directory. A fix is reversed by
+undoing its commit's hunks, or, where later work rewrote the lines around it,
+by a targeted edit that removes just the fix. A witness whose edits no longer
+match the current file fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 

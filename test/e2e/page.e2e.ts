@@ -1,6 +1,6 @@
 // The owner's page in headless Chromium against the real server, on a generated board with the real board's shapes: what needs a
 // layout. Where a box lands, how wide it is and what a browser hides; every other click on the page is checked in a DOM library
-// (test/dom/page.test.ts). Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
+// (test/dom/page-families.ts). Run by CI's e2e job (npm run test:e2e), not on the owner's Mac.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

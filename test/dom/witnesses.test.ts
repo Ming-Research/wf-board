@@ -1,4 +1,4 @@
-// Evidence that the page checks of test/dom/checks.ts catch what they guard: each runs on the current page, where test/dom/page.test.ts
+// Evidence that the page checks of test/dom/checks.ts catch what they guard: each runs on the current page, where test/dom/page-families.ts
 // holds it to find nothing, and here on the page with one thing spoiled, a copy edited as it is bundled (test/e2e/variant.ts), where it
 // must report the family the spoiled thing belongs to. A witness whose edit no longer matches the current file fails loudly; update or
 // retire it then. Most spoilings are small bugs of the kind the check exists for (a click that selects the wrong item, a number that

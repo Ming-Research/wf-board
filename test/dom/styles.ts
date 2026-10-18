@@ -2,7 +2,7 @@
 // specificity and order, the inherited properties, the custom properties the rules use), read from the stylesheet text, with no
 // layout. jsdom's own getComputedStyle drops a shorthand that holds `var()` and answers `var(--x)` for a colour, so it cannot say what
 // colour a chip is; this can. It answers questions of the form "does the stylesheet give this element that value" (a font, a colour,
-// a position, a width limit); it does not know where a box lands. docs/design.md, section 11, Three test layers.
+// a position, a width limit); it does not know where a box lands. docs/design.md, section 11, Four test layers.
 
 import type { DOMWindow } from "jsdom";
 

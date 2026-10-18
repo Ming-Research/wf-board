@@ -2,7 +2,7 @@
 // server (the wiring of src/main.ts, in process) through a real fetch and a real event stream, and is driven by script clicks and
 // key events. It is the middle layer between test/web.test.ts (a hand-written fake DOM) and test/e2e (headless Chromium): the real
 // page and server on a generated board like the real one, without a browser's cost. It computes no layout (every box is 0 by 0), so
-// checks of position, size and hit-testing stay in the browser layer. docs/design.md, section 11, Three test layers.
+// checks of position, size and hit-testing stay in the browser layer. docs/design.md, section 11, Four test layers.
 
 import { build } from "esbuild";
 import { JSDOM, VirtualConsole } from "jsdom";
