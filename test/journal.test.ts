@@ -10,7 +10,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { Store } from "../src/store.ts";
 import { ARCHITECT_WRITER } from "../src/model.ts";
-import { rx } from "./helpers.ts";
+import { retiredPM, rx } from "./helpers.ts";
 
 const architect = "Architect";
 /** The architect writes as author Architect from the session 架构师; the journal takes no other writer. */
@@ -114,8 +114,13 @@ test("only the architect writes the journal; another project is refused with the
 test("the journal is the architect's: Architect without the session 架构师, the PM included, is refused, and nothing is written", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const before = store.snapshot();
-  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }, { author: "PM", session: "PM" }, { author: "PM", session: "架构师" }, { author: architect, session: "架构师轮次x" }, { author: "Whitefoot", session: "架构师轮次" }, { author: "PM", session: "架构师轮次" }]) {
+  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }, { author: architect, session: "架构师轮次x" }, { author: "Whitefoot", session: "架构师轮次" }]) {
     await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
+    assert.deepEqual(store.snapshot(), before);
+  }
+  // The author PM is retired and refused before the journal's own rule is asked, whatever session it writes from.
+  for (const session of ["PM", "架构师", "架构师轮次"]) {
+    await assert.rejects(() => op.journalEntry({ author: "PM", session, text: "不该写进去" }), retiredPM);
     assert.deepEqual(store.snapshot(), before);
   }
 });
