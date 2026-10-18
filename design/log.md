@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Tell the sessions that wait on an item when its merge row is done
+
+Nodes: wake/routing
+
+Summary: An engineer that waited for another item's pull request to merge learned of the merge only when the architect found it on a patrol, because the board pushed only when an item was wholly done, which is after its deploy and live check. The board now pushes `dep-merged` when a merge row turns done, to the session holding each open item with a shared row on it, and to the architect for one nobody holds; the grounds and the refused alternatives are in docs/design.md, section 8, A merge a waiter waits on.
+
 ## 2026-10-18 Run the data repository's maintenance as a task of the write queue
 
 Nodes: storage

@@ -2639,7 +2639,8 @@ does with a push, and how it listens, is in its rules and in
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
 PM's stream; `architect`, the stream of the session 「架构师」, an agent's stream like any other; `{holder: <field>}`, the stream of the session holding
 the item that field names, and the PM's when nobody holds it or the field is null (`only: true` on it: a push
-for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it); or
+for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it;
+`otherwise: "architect"` on it: the architect's stream instead of the PM's when nobody holds the item); or
 `{session: <field>}`, the stream of the session that field names, the
 PM's when it names the PM. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
@@ -2655,11 +2656,11 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Nineteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `note` and `timed-architect`,
-which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` and
+which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, `dep-merged` and
 `ask-alive`, which go to a holder; and `message`, which goes to its recipient:
 
 - an owner note, to the architect: a note becomes `sent`, on any project's item or
@@ -2698,6 +2699,9 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` a
   board makes the pushes (Deploys and the red main line, below);
 - an item that became done (`item-done`), to the session holding each open item
   that waits on it; when nobody holds that item nothing is pushed;
+- an item whose merge row became done (`dep-merged`), to the session holding each open item
+  that waits on it by a shared row, and to the architect for one nobody holds (A merge
+  a waiter waits on, below);
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
@@ -2736,6 +2740,24 @@ when none does. The job names at most `MAX_CHANGES` commits in a request and cou
 request only a later commit names of a deploy that carried more gets no push. Rejected: pushing every deploy to the PM to forward, which hands
 the PM a message it can only pass on; telling the engineer of the last commit only, which
 misses the others a deploy carried.
+
+**A merge a waiter waits on.** An item that waits on another by a shared row is held up by that item until
+it is done, but the work it waits for is often only the item's merge: an engineer stacked on a pull request, or
+about to rebase on it, goes on at the merge, while the item stays open until its later steps (the deploy, the live
+check) are done, and `item-done` is not pushed before. So a merge row turning done (Watching GitHub, Merge rows;
+marked by the look at GitHub or by a session by hand) is pushed as `dep-merged`, once for the change that did it
+(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a row open before and done
+after, with the pull requests that counted for it before; a dropped row, a row naming no counted pull request
+and an item written new push nothing), to each open, unpaused item with a *shared* row on the item (`dependents`
+without `own`), one push for each. A session holding the waiter gets it; when nobody does it goes to the
+architect, who starts or hands on the work nobody holds (the PM would only pass it on), and an item that is
+paused is not told. An owner's row on a part is not a wait: the owner learns of the part at `item-done`, and
+an owner that nobody holds would send the architect a line for every merge of every part. `item-done` is
+unchanged, and an item whose last row is its merge row produces both pushes. The kind is one entry in the
+table, route `{holder: "waiter", otherwise: "architect"}`, and a restart repeats nothing, since a push is made by the write
+that turned the row done and is not read from the state. Rejected: pushing only the holders, which leaves an item that nobody holds waiting until the
+architect's patrol; telling the PM, which can only pass it on; telling the owners of the item as well, as above;
+pushing at `item-done` only, which is after the point the waiter needed to go on.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -2780,6 +2802,7 @@ the forms the server sends:
 | `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the PM, naming the first |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"dep-merged", item, project, title, prs, waiter}` | A merge row of `item` turned done, whether the board marked it after GitHub reported the pull requests merged or a session did by hand. One event for each open, unpaused item `waiter` with a shared row on `item`; it goes to the stream of the session holding `waiter`, and to the architect's stream when nobody does. `prs` lists the pull requests that counted for the row, as `Owner/Name#N`, and `item`, `project` and `title` are the item whose row turned done. Nothing is pushed for an owner's row, a dropped row, a row that names no counted pull request, or a paused `waiter`. Made by the write that turned the row done, so a restart announces nothing |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |

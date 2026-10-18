@@ -1,0 +1,30 @@
+name: tmp-dep-merged
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-dep-merged-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/wake-agents.test.ts
+      - run: node --test test/wake.test.ts
+      - run: node --test test/liveness.test.ts
+      - run: node --test test/watch.test.ts
+      - run: node --test test/merges.test.ts
+      - run: node --test test/query.test.ts
+      - run: make design-lint
