@@ -161,9 +161,12 @@ matches what the artifact board offered.
   layer that can see it.
 - Every page fix gets a witness in the lowest layer that can see its bug: a run
   on the page with the fix reversed (a literal text edit, `test/e2e/variant.ts`)
-  that reports the bug (`test/dom/witnesses.ts` and the scenario files,
-  `test/web.test.ts` for the page's update, or `test/e2e/regressions.e2e.ts` for
-  a layout fact). No test reads git history.
+  that reports the bug (`test/dom/witnesses.ts` and the scenario files, or
+  `test/web.test.ts` for the page's update). A fact only a real browser shows goes
+  into the browser file (`test/e2e/browser.e2e.ts`: at most 15 tests, no
+  reversed-fix variants of its own); a test added or changed there is shown to
+  fail once on a page with the thing it guards spoiled, and its pull request
+  records that run. No test reads git history.
 - `make design-lint` checks the design tree's form and the checker's own tests;
   the `design` workflow runs it on every push. `make design-ready` is the
   readiness check, which the same workflow runs on a pull request that is ready
