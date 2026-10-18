@@ -71,8 +71,8 @@ One local daemon, `wf-board`, written in TypeScript on Node 24, bound to
    Codex session on the Mac connects to the same process. It keeps no session:
    each request stands alone (see *MCP without a session*).
 3. **The wake streams** (WebSocket): `/wake` pushes the PM's session what
-   needs it (owner notes, stalled work, a timed wake, the results of deploys; the architect, which keeps every right the PM has, answers it too), and
-   `/wake/<session name>` pushes another agent what needs it (section 8).
+   needs it (stalled work, a timed wake; the architect, which keeps every right the PM has, answers it too), and
+   `/wake/<session name>` pushes another agent, the architect among them, what needs it (the architect: the owner's notes and its hourly wake; section 8).
 
 **Why one daemon rather than an MCP subprocess per session.** The usual MCP
 setup starts one server process per session (stdio). Several processes
@@ -81,7 +81,7 @@ changes to the page. A single process is the only writer, serializes all
 writes, and pushes every change to the page and to waiting sessions.
 
 **Why TypeScript.** The page's derived rules (an item's status from its
-plan, priority, the 需核对 flags, freshness) are JavaScript
+plan, the 需核对 flags, freshness) are JavaScript
 today. One module, `src/rules.ts`, serves both the page and the server, so an
 agent sees exactly the flags the owner sees. MCP has an official TypeScript
 SDK.
@@ -419,9 +419,11 @@ restart.
   says why, when it is on another branch, has local changes to tracked
   files (untracked files do not count) or has a commit the main line lacks: the
   edit or commit is someone's, not the job's to move or undo.
-- The pushes reach the PM through `POST /api/wake` (section 8). One the
+- The job asks the board to make the pushes through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
-  next run. A fetch that still fails after three tries ten seconds apart (or killed at its cap), and a
+  next run; one it refused with a 4xx answer (a request in the shape an older job
+  sent, say) is dropped and logged, since asking again gets the same answer and
+  the pushes behind it would never be sent. A fetch that still fails after three tries ten seconds apart (or killed at its cap), and a
   failure of the job itself, are pushed once with `version` null. Each kind of
   standing problem (the fetch, a refusal, a rollback that did not finish, the
   job itself) is remembered separately and forgotten by a run that ends with
@@ -518,7 +520,7 @@ wf-board-data/
   state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
-  state/actions-usage.json  the time of the last look at the Actions billing, the month's account and the pushes told this month (same)
+  state/ci-watch.json       what the look at the checks last saw of each pull request an open item names (same)
   import/                 the original artifact export, kept as provenance
 ```
 
@@ -681,11 +683,12 @@ log:
   the ownership chain always agree. The legacy `area` was folded into
   `parent` at the artifact migration and `parent` into owned plan rows at the
   plan conversion (section 10).
-- **Priority.** The former per-project migration switch (`migrated: true` and
-  the legacy priority of `src/legacy-priority.ts`) is retired by the plan
-  conversion, which migrates the remaining projects in the same commit
-  (section 10); every project follows the priority rule of
-  [Item plans](#item-plans).
+- **Priority.** Items store no priority and none is derived
+  ([Item plans](#item-plans), Priority). The former per-project migration
+  switch (`migrated: true` and the legacy priority of
+  `src/legacy-priority.ts`) went with the plan conversion (section 10), and
+  the stored field was cleared from the data by one migration (section 10,
+  Clearing the retired priority).
 - **Stalled work.** A work item in progress that has at least one `doing`
   step of its own is flagged after at least one hour of active time without
   a change to the clock's items: `进行中但 1 小时（活跃时间）没有动静`. The
@@ -915,7 +918,7 @@ log:
   marks the option; a changed question and the closing of a card mark the
   question and the 已裁定 tag. Multi-paragraph card questions use the same
   block comparison as heads, keeping unchanged paragraphs once. Changed
-  status and priority rows, and added or changed link rows, are not
+  status rows, and added or changed link rows, are not
   coloured either.
   New items and cards carry no per-block marks; added plan and target rows still mark their own lines. No green background is used
   anywhere: the owner never asked for one. A card with unread changes of its
@@ -923,7 +926,7 @@ log:
   reads; a parent whose only new content is below it shows that in its 新 chip
   and carries no line, since `m` leaves sub-items alone. The tree shows only
   head rows, with a short blue line for an item's own unread content; the
-  selected item's body and comments appear in the detail column, with a short blue line beside its headline.
+  selected item's body and comments appear in the detail column, with a short blue line beside its headline only when the title itself changed (a new item carries it too; a changed body does not).
   The 新 chip counts what is new inside. Added or changed plan rows and target rows, new notes
   and replies, and added link rows use the same blue bar. Plan rows
   and targets compare by stable id against the item before its first unread
@@ -976,7 +979,7 @@ parent's `deps` (174 children in the board of 2026-10-13 are missing from their
 parent's list), separate `steps`, and own-work sub-items invented only so a
 parent's status could be derived (58 of them). One ordered list holds all of
 it, so an item's page reads top to bottom as what remains to be done, and the
-tree, status, priority and blocking are all derived from it.
+tree, status and blocking are all derived from it.
 
 #### Rows
 
@@ -1185,16 +1188,12 @@ them as for every other author.
     first.
     Only a violation this move newly causes is refused; one that was already there (a top item of the new project that
     an open item of the new project already waits on) does not stop it.
-  - Priority. An item that lands as an open root keeps the `priority` it stores, and one with none needs it given. A
-    given `priority` replaces the stored one and the log says so when the value changes; it is refused when the item
-    does not land as a root, as in `move_item` without an owner. Work owned by a backlog record has no stored priority,
-    and a record is not open work, so it lands as a root and needs one.
   - Rejected: moving only the named item and leaving what it owns behind (the owned rows would become cross-project
     ownership), and an argument naming the new owner (above).
 - **Top items.** An item no row owns is a top item (what earlier sections
   call an area), drawn at the top level of its project. A top item is one of: a root (below); an item another
   project's shared row waits on, such as a collecting item (drawn under the
-  existing 被其他项目依赖 separator, its priority derived); or a closed item (done or
+  existing 被其他项目依赖 separator); or a closed item (done or
   cancelled), which needs nothing further. An open top item that an open work
   item of its own project waits on through a shared row shows
   同项目有条目在等它，却没有条目拥有它, and a write that introduces this is
@@ -1202,22 +1201,15 @@ them as for every other author.
   the others share it.
 - **Roots.** A root is an item that no open work item depends on through any
   item row, owned or shared, as before (paused work is still open for ownership
-  and rootness). Only a root stores `priority`; an open
-  root without one shows 没有未完成的条目依赖它，却没写优先级, unchanged. An
+  and rootness). An
   owned item under an open owner is never a root. An open item owned by a
   closed item shows 拥有它的条目已关闭 (it can only arise from data written
   before the cancellation refusal).
-  An open work item owned by a record is not a root, stores no priority,
-  and is exempt from the missing-root-priority check. It derives priority
-  from open, not-paused shared dependents, or none without them.
+  An open work item owned by a record is not a root.
 - **Backlog.** A project's backlog is a record whose plan owns the items it
-  holds. Records pass no priority (below), so backlog items without open,
-  not-paused shared dependents show no priority; moving an item out under an unpaused root's
-  plan gives it the root's priority. This replaces the present practice of a
-  P2 root named 待选工作, which gave every backlog item P2.
-  Setting priority on an open item owned by a record is refused with an
-  explanation that record-owned work cannot store priority and takes its
-  priority from open shared dependents. Record ownership supplies no seed.
+  holds. A record is not work, so backlog work is needed only through a
+  needed item other than its record (below); moving an item out under an
+  unpaused root's plan makes that root need it.
 - **Cycles.** Item rows, owned and shared together, may not form a cycle; a
   write that closes one is refused, and a stored cycle shows 依赖成环 as
   today. Owned rows alone therefore form a forest. `after` cannot form a cycle
@@ -1225,22 +1217,22 @@ them as for every other author.
 
 #### Priority
 
-Unchanged in substance from the migrated rule, now for every project: a
-root's priority is its stored one; every other item's is the highest among the
-open, not-paused work items whose plans hold an item row (owned or shared) for it, across
-projects and transitively. A closed item keeps the priority that reached it
-and passes none on; card rows carry none; a cycle that no open outside
-dependent reaches has none. One change: a record passes no priority, because
-a record is not work. Before, a record counted as an open dependent; three
-records exist (the 14900K queue among them). Open work owned by a record
-still takes the highest priority from open, not-paused shared dependents,
-and shows none without them; the record supplies none.
-A root stores `priority`; every write that makes an item a non-root, or
-writes a non-root, drops its stored priority in the same commit and logs
-`不再是根：优先级改由依赖它的条目决定，原来写的 PX 不再使用` on it, and the
-write's result lists the items. So no non-root holds a stored priority, and
-none returns when an item becomes a root again. A closed root shows its own
-stored priority.
+Items store no priority and the board derives none. The owner found that a
+large share of items showed P0 (a root's value reached everything it needs), so
+the value ranked nothing. What must come first is a dependency, and which ready
+work to start is the architect's call from the owner's principles, kept in the
+architect's context and not on the board. Siblings, and `brief`'s paused and
+in-progress lists, sort ended items last, then by `order` (`compareSiblings`); the page's
+waiting panel lists the longest wait first. A write that still names
+`priority` (any tool that took it, or an operation) is refused with a message
+saying the field was removed, so a session working from old instructions
+learns it at once instead of seeing the argument ignored.
+
+Rejected: keeping the three levels as a coarse rank (it no longer separates
+anything, and agents would take it for the architect's choice); a sequence
+number the architect maintains on the board (a second ordering beside the
+dependencies that must be kept current by hand, for a choice the architect
+makes from context the board does not hold).
 
 An open work item is *needed* when an unpaused root needs it: it is an unpaused
 root, or an unpaused, open item holds an item row (owned or shared) for it and
@@ -1248,22 +1240,17 @@ is itself needed. A record is not work. So backlog work is needed
 only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
-started and has no stored priority is. The same walk
+started is. The same walk
 decides which items 缺难度 asks a difficulty for (with the state and next-step
 conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
-priority and checks stay the same.
-
-Effectively paused work keeps its own stored or derived displayed priority,
-but passes none through its item rows. Only open, not-paused dependents
-contribute priority to their targets. Pausing changes neither ownership nor
-rootness, so it does not discard a root's stored priority.
+checks stay the same.
 
 #### Records
 
 A record (`record: true`) may have a plan of steps, owned rows, shared rows
 and card rows, and no acceptance step; it has no status, appears in no status
-queue, is never waiting or blocking for anyone, and passes no priority. It may
+queue, is never waiting or blocking for anyone. It may
 own work items (the backlog, the 14900K queue's run items). A record can be
 owned, and an owned record row is always resolved and left out of the owner's
 counts. Setting `record: true` on a work item removes all its acceptance steps,
@@ -1348,7 +1335,7 @@ three manual-status checks listed under Status.
   like steps were.
 - **Provisional plans.** The conversion (section 10) marks every plan it
   produces `provisional: true`, a server-owned item field no caller can set.
-  A provisional plan works like any plan (status, priority and progress are
+  A provisional plan works like any plan (status and progress are
   derived from it, and single rows can be upserted to record progress), but
   it shows the check 计划待重写, whose label 待重写 appears beside the item's
   title in the tree and beside the 计划和进展 heading, and its owned rows
@@ -1396,7 +1383,7 @@ old model required are the common case.
 
 The detail column of a selected item reads, top to bottom:
 
-1. the head row: status, priority, title, ratio, chips (unchanged); the left
+1. the head row: status, title, ratio, chips; the left
    tree already shows the owner, so the detail has no ownership line;
    under it the difficulty and tag chips;
 2. 目标, the target-number table (unchanged), when the item has targets;
@@ -1462,9 +1449,9 @@ follow the existing tokens with no new colours:
   doing step, `等 <waits>` when set, `10-12` (month-day) for a done step, the
   reason after a dropped step.
 - **Owned item row.** The glyph carries the child's status, then its
-  priority chip, its title as a link (click selects it, Back returns) and its
+  title as a link (click selects it, Back returns) and its
   own ratio `2/5`, on one line; there is no status chip and no second line.
-- **Shared item row.** ⏸ or ✓, the target's priority chip and title as a
+- **Shared item row.** ⏸ or ✓, the target's title as a
   link, on one line; there is no owner or project line under it.
 - **Card row.** ⏸ or ✓ (a withdrawn card counts as ✓), the card tag (阻塞
   purple, 决策卡 red, 已裁定 or 已撤回) and the question's first line as a link.
@@ -1503,9 +1490,9 @@ progress with completed and dropped parts:
  ✗ 旧解析方案 · 已由新解析器替代
  ┌ 可同时进行
  │● 写解析器 · 3 天 · 等 CI
- │● [P0] Halo 的协程能挂起 2/5
+ │● Halo 的协程能挂起 2/5
  └○ 改写文档
- ⏸ [P0] Whitefoot 能读出对端地址
+ ⏸ Whitefoot 能读出对端地址
  ○ 发布说明
  ○ 验收  四个 Redis 7.0.15 限流脚本的回复与 oracle 逐字一致，
          CI 上连跑 3 次全部通过
@@ -1525,11 +1512,11 @@ The same as an HTML snippet, using only existing tokens, so dark mode follows
   <div class="plan-group" role="group" aria-label="可同时进行">
     <div class="plan-group-label">可同时进行</div>
     <div class="plan-row wip"><span class="g">●</span>写解析器 · 3 天 · 等 CI</div>
-    <div class="plan-row wip own"><span class="g">●</span><span class="prio p0">P0</span>
+    <div class="plan-row wip own"><span class="g">●</span>
       <a>Halo 的协程能挂起</a> <span class="steps-ratio">2/5</span></div>
     <div class="plan-row todo"><span class="g">○</span>改写文档</div>
   </div>
-  <div class="plan-row blocked shared"><span class="g">⏸</span><span class="prio p0">P0</span>
+  <div class="plan-row blocked shared"><span class="g">⏸</span>
     <a>Whitefoot 能读出对端地址</a></div>
   <div class="plan-row todo"><span class="g">○</span>发布说明</div>
   <div class="plan-row accept todo"><span class="g">○</span><span class="tag">验收</span>
@@ -1669,19 +1656,11 @@ overturn it.
    completing and is flagged, because a waited-for result that will never
    come is a problem for the waiting project to settle. Alternative: count it
    resolved like a cancelled owned item.
-2. **Records pass no priority, and a backlog is a record.** Proceeding on:
-   yes; record-owned work derives priority from open shared dependents,
-   or none without them. Alternative: keep backlogs as P2
-   roots; then every backlog item ranks P2, as now.
-3. **Retiring legacy priority.** Proceeding on: the plan conversion migrates
-   Whitefoot-kit, 总管 and 网站 and removes the legacy path, because plans make
-   every project's structure dependency-only. Alternative: keep the switch;
-   the plan model would then need the legacy rule for those three projects.
-4. **Order of same-level rows.** Proceeding on: rows display in stored order,
+2. **Order of same-level rows.** Proceeding on: rows display in stored order,
    and `context` warns when rows of one level are not adjacent. Alternative:
    the server keeps every plan sorted by level (stable), which always makes
    parallel rows adjacent but reorders what a session wrote.
-5. **Closed items after conversion.** Proceeding on: the mechanical
+3. **Closed items after conversion.** Proceeding on: the mechanical
    conversion keeps closed children as provisional rows of their owners'
    plans, fully visible; a rewrite keeps only the closed items its new plan attaches,
    and every other closed item becomes, or stays, a closed top item without a
@@ -1689,12 +1668,12 @@ overturn it.
    because an item that only holds finished items is a topic group, which the
    rules forbid. Alternative: a per-project record 已完成 owning loose closed
    items, which would tidy the tree but carries no meaning.
-6. **Own-work sub-items.** Proceeding on: the mechanical conversion keeps
+4. **Own-work sub-items.** Proceeding on: the mechanical conversion keeps
    the 58 own-work sub-items as provisional owned rows; the rewrite folds each
    back by the rule in "When a row becomes its own item". Alternative: the
    converter folds them automatically, which rewrites history the sessions
    did not review.
-7. **Cancelling with open parts.** Proceeding on: refused, naming the open
+5. **Cancelling with open parts.** Proceeding on: refused, naming the open
    owned items, so each gets its own reason. Alternative: a cascade that
    cancels all open owned descendants with the same reason.
 
@@ -1718,8 +1697,8 @@ coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-PM's or the architect's session (`PM`, `架构师`) is also a receipt for the wake stream, and another
-session's call carries what was pushed to it and not yet delivered (section 8, The wake streams).
+PM's or the architect's session (`PM`, `架构师`) is also a receipt for the PM's wake stream, and any
+session's call but the PM's, the architect's included, carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
 writer, and `brief` gives each work-in-progress row a `lastPush` with the
@@ -1760,18 +1739,19 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its plan, one compact line per row (below); the items holding a shared row for it, each with its status; its cards (an open card whole, with its `rev`; a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and PR references; the last five log entries unless `log` asks for more |
+| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows other than acceptance steps folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
-| `list(filters)` | Structured browsing | Compact rows matching status, priority, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
-| `overview(group?, status?)` | The board at a glance | Project name once per heading; per area: counts by status including paused, owner actions waiting, blocked items, flags; status narrows those results while retaining area headings |
+| `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
+| `overview(group?, status?, detail?)` | The board at a glance | By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged; `detail` gives every area with its counts, owner actions waiting, blocked items and flags; status narrows those results while retaining area headings (below, Lean replies) |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
+| `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -1837,6 +1817,145 @@ whose commits do not count.
 - The timed wake and this read share one function that tells who wrote to each item in a
   list of commits.
 
+**The candidates read.** `candidates` lists the items an engineer could be started on and how
+many engineers are working in each pool, so the PM neither collects the items nor counts sessions. It lists; it
+does not choose. Which candidate to start is the architect's decision (the PM asks the architect,
+who gives the reason), so the order below is only the default order of the rows, and no row is
+called the next one. `candidates` in `src/candidates.ts` is the one function; the tool prints it,
+and the board pushes nothing from it.
+
+- *What is a candidate.* An item that `startable` allows (the one definition above: rated 1–5,
+  `canStart`) and that nobody holds. It is held when an engineer dispatch is open on it, even
+  when that session has gone quiet: the PM takes such an item over, and listing it again
+  would start a second engineer beside a stopped one.
+- *Default order.* One comparison, `compareCandidates`, over all projects: the item more open,
+  unpaused work items hold a shared dependency row for first (its owner holds an owned row for
+  every item it owns, which tells none apart, so it is not counted); then the earlier item
+  number. Choosing among the candidates, by any principle, is the architect's. `brief`'s todo list uses the same order, so there is one.
+- *Pools.* Level 1 is one pool, level 2 and above the other (`POOLS`). An item belongs to the
+  pool of its difficulty, an engineer to the pool of its dispatch's level. The board holds no
+  limit on a pool: the owner gives the numbers to the PM, which compares them with the working
+  count and decides how many to start.
+- *Working.* One engineer per session with an open engineer dispatch, on the item it holds.
+  It does not count when the board shows it waiting: the item is blocked (it waits on another
+  item, a card or the owner), paused, done or cancelled; or every step it has in progress is the
+  review step or waits on a 14900K run (`waitsOnRun`: its `waits` names the machine; the rules
+  keep `waits` for a wait outside the board, CI or a 14900K run, and an engineer waiting for CI
+  is still working, so only the run frees the slot); or it has no step in progress and an owned
+  sub-item on its way is worked by another session (an open dispatch of another session on the
+  sub-item or below it).
+  An engineer that has marked no step yet counts, so a slot is not freed between its start and
+  its first mark. A session that has stopped keeps its slot until the PM closes its dispatch.
+- *The review step* is the plan step whose id is `review` (`isReviewStep`, the one place that
+  knows this). The review that waits for a reviewer is that step in progress.
+- *Answer.* Per pool: the engineers working and the number of candidates of the pool (`total`,
+  written 候选 N in the text), then the first 10 rows in the default order, then the number of
+  candidates not listed. The answer names no limit and no free slot. More than 3
+  candidates under one parent, of any level, are one row naming the parent and the count of all
+  of them, at the place of the best of them in each pool they fall in; the candidates a pool
+  counts are counted apart from the groups. `under=<parent>` lists the
+  parent's candidates of every level one by one (at most 10).
+  The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
+  of the live board's shape it stays under 1500 characters and shorter than the todo lists of
+  `brief`. The character counts were not measured again after the limits went.
+
+### Lean replies
+
+What a tool returns stays in the caller's context until it is compacted, as the patrol read
+says, so the two reads that returned the most carry a summary by default and the detail is
+asked for. The architect's session between 15 and 17 October 2026 (counted from its
+transcripts) made 433 `context` calls that returned 1.59 million characters (3.7k on average,
+32k at most), and `overview` returned 24k characters a call. The same sessions' calls were
+refused again and again for a parameter name the tool lacked (18 of 88 `create_item`, 10 of
+290 `set_plan`, 8 of 263 `update_item`), and the refusal named no name that would have worked.
+This is a temporary trim; the redesign of the tools, which is planned separately, may replace it.
+
+**`context` by default** answers with:
+
+- *The head*, as the first paragraph of each section. A section opens at a line that begins
+  with a bold title standing alone or followed by a colon or a bracket (`**问题**：…`,
+  `**参考：…**`), or with a `#` heading; the text before the first title is a section called
+  `开头`; a line inside a fenced block opens none. The sections laid end to end are the head,
+  character for character. A section shows its title line and the paragraph up to the first
+  blank line (below a title that stands alone, the paragraph under it), at most 400
+  characters; a 参考 section shows its title only. A section with 100 characters or fewer left
+  over is shown whole, and a head with nothing cut prints as before. What is left out is
+  counted on the line that follows.
+- *The plan* with finished rows (done, dropped) folded into `✓ N 项已完成` and `✗ M 项已放弃`
+  as `brief` folds them, except the acceptance steps, which stay listed whatever their state
+  (the architect checks an item by them); other rows, targets, relations and flags as before.
+- *Open cards* with the question, `rev`, `blocks`, the option names, the recommendation and
+  the confidence (its reason cut at 160 characters); the options' grounds are left out.
+  A ruled or withdrawn card is as before.
+- *Notes* that are handled (state `done`) as the text and the reply, each cut at 160
+  characters and without the original action line; an unhandled note whole.
+- *Pull requests*: the first five references and the count of the rest (`prs` lists the rest).
+- *The log*: the latest five entries, each cut at 240 characters with its full length.
+  A call that gives `log` gets the entries it asked for whole.
+
+Every cut or fold says how much it left out and what gets the rest: the head (`… N more
+characters (section "…")`, and `section`), the plan and the handled notes (a line naming
+`full: true`; the notes also the `notes` tool), a card's grounds (the line naming `context` of
+its key), the log (the full length of the entry, and `log: N`), the pull requests (the count
+and the `prs` tool). The parameters that get the rest: `section` answers with the head alone,
+the one section of it named by its title (or by the start of its title, so `参考` finds every
+参考 section) or `all` for the whole head, with the `rev` that an edit of the head needs;
+`full: true` answers whole, with nothing cut or folded; the card's key given to `context`
+answers with the card whole, and with the notes on it whole.
+
+**A summary is not a head.** The line the head's cut writes (`  … N more characters (section
+"…")`) is a mark that text is missing. `update_item` and `create_item` refuse a head that holds
+that line, and say to read the whole head with `section: "all"` and write that; a head copied
+from a cut answer and written back would drop the text the answer left out. The check is on
+the line's exact shape, so a head that quotes the mark in another form is not refused.
+
+**`overview` by default** answers with one line for each project (areas, leaf counts by
+status, owner actions waiting, blocked items, checks) and, under it, only the areas with an
+owner waiting or a check flagged: a line of counts, then at most five rows of each kind, a
+row being the item's key, status and title (the title cut at 36 characters; for a check also
+the check's short label), and the count of the rest with `detail: true` named. Blocked items
+are counted, not listed. `detail: true` gives every area with all its rows, as the answer was.
+
+**A call the tool refuses.** The MCP SDK checks a call's arguments before the tool runs and
+answers a mistake with the bare check text; the board turns that check off (it overrides the
+SDK's private `validateToolInput` on the server object; the SDK is pinned, and the test in
+`test/lean.test.ts` fails if the bare text comes back) and checks the arguments in the tool's
+own handler. A schema loosened for the SDK would not do: it would drop the `required` list
+the client is shown, and the SDK would still check what is nested in it. The refusal says what
+is wrong in plain words (an unknown parameter, a missing required one, a value of the wrong
+type or outside the allowed words, the row of a plan that fails and why), then the tool's
+parameter table (name, type, required or optional, the first sentence of its description,
+built from the same schema the client is shown) and an example call (built from the required
+parameters; written by hand for `create_item`, `set_plan` and `update_item`).
+
+**Names the tools read as others.** A parameter the tool lacks is read as the name it has,
+and the answer ends with `note: <name> read as <name>`: `key` and `id` for each other,
+`item` and `note` as `id`, `project` as `group`, `plan` and `steps` as `rows` in `set_plan`;
+and a parameter written beside a tool's `filters` that the `filters` take (`limit`, `state`,
+`since`, `group` …) is moved into them. A read tool given an `author` ignores it (`note:
+author ignored`), since a write needs one and a read takes none. Nothing is read when the right
+name is also given, and a name that matches none stays unknown and is refused as above with the
+tool's parameters; so `move_item` given a `reason` (only the tools that log a reason take it) is
+told it has none and shown what it has, and the other writes are not changed to take one.
+
+**Measured** (a copy of the live board's snapshot on 17 October 2026, computed once by the
+engineer outside the repository; "whole" is the answer before this change, "default" the
+answer now):
+
+| Calls | Whole | Default | Default as share of whole |
+|---|---|---|---|
+| `context` of five items the architect read often (a project's parent item, a push-notification item, a notes item, a role-rules item, a CI item) | 53,448 | 18,250 | 34% |
+| `context` of one of those, read as an engineer's own item | 7,405 | 4,518 | 61% |
+| those six calls together (the acceptance set; `brief` is not part of it) | 60,853 | 22,768 | 37% |
+| `brief` of `wf-board` | 21,290 | 21,290 | 100% (unchanged) |
+| `context` of the 19 items the architect named most often in its calls | 130,157 | 62,843 | 48% |
+| the same 19 without the largest (a rules item with a 29k head, 31,068 → 3,527) | 99,089 | 59,316 | 60% |
+| `overview` of the whole board | 170,878 | 25,201 | 15% |
+| `overview` of the project `wf-board` | 3,753 | 1,789 | 48% |
+
+An item whose size is mostly its plan, relations and notes shrinks little (the first, 95%);
+one with a long head or log shrinks most (a role-rules item, 19%).
+
 ### Changing things
 
 A plan line in `context` and `brief` is `L<level> <glyph> <id> <text>`, with
@@ -1870,7 +1989,7 @@ author `总管` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, priority?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the PM or the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); priority only for a new root (no `owner`), refused otherwise; no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the PM or the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the PM and the architect create items |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the PM or the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the PM or the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the PM and the architect create items |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
@@ -1885,11 +2004,11 @@ author `总管` is refused by every tool.
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, priority, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry; priority only on a root, otherwise refused naming the items it comes from; `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the PM and the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
-| `move_item(id, owner?, after?, priority?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, `priority` is required when the item becomes a root and refused otherwise, and the move is refused when an open item of the same project still waits on it through a shared row, naming them; `priority` refused with `owner` |
-| `move_item_project(id, project, priority?)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); an item that lands as an open root keeps its stored `priority` and needs one given when it has none; a given `priority` replaces the stored one, with a log line when the value changes, and is refused when the item does not land as a root; work leaving a paused chain is allowed, because the PM and the architect can resume it |
+| `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
+| `move_item_project(id, project)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the PM and the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); work leaving a paused chain is allowed, because the PM and the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
 | `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
@@ -1949,7 +2068,7 @@ names it (TODO, WIP, BLOCK, DONE, DROP, ◌ PAUSE, 记录). Every item status ch
 does this alike: tree rows, the detail header, dependency rows and search
 rows. An item not yet numbered shows the status word. A decision card's header
 shows its number before the question.
-Each item shows only its head row: fold toggle, status, priority, title, its
+Each item shows only its head row: fold toggle, status, title, its
 tags as small neutral grey chips (never a status colour; the tooltip is the tag's meaning),
 
 new-content count, owner-wait counts and leaf counts. Clicking the row selects the item and
@@ -1957,7 +2076,7 @@ highlights it without changing its sub-item fold; the ▸/▾ toggle folds only
 sub-items. Split tree titles, badges and counts use one smaller text size.
 A tree row's right-hand counts show only open parts (todo, idle, in progress,
 blocked, paused); done and cancelled parts are not counted there, and a cancelled
-item shows no check tags. Each tree row stays on one line: caret, status, priority, title, chips
+item shows no check tags. Each tree row stays on one line: caret, status, title, chips
 and counts. The tree draws each item's owned items under it in plan order
 (section 5, Item plans); a shared row draws nothing. An item that owns work
 items counts, at the right of its row, its owned descendants that own no work
@@ -1995,8 +2114,7 @@ The arrow keys, 阻塞 and 决策卡 walk the waits blocking first.
 
 The 等你 panel sits under row 1 and shows only while a blocking wait exists:
 one row per blocking card or ask with a purple dot, the project, the `blocks`
-(or ask) text and the shortened card question, ordered by priority (P0 first)
-then by how long it has waited (card creation time; an ask's item update
+(or ask) text and the shortened card question, ordered by how long it has waited (card creation time; an ask's item update
 time). A click jumps like the `/` search and remembers the place for Back. A
 line 另有 M 张决策卡不挡工作 follows when M > 0.
 
@@ -2150,7 +2268,9 @@ minute tick (elapsed times move with the clock). A click, a fold, a filter, an u
 mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
 indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
 until the data changes: the counts on every project's filter buttons are made in one pass
-over the board, where each button once passed over it. A navigation (n, a number on an
+over the board, where each button once passed over it, and the cards each head places are
+found once for each version of an item (a write makes a new object), so a write does not scan
+all the heads again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
 comments in one draw, and draws once more when the baselines it needs have loaded. The
 rows that first draw paints around the target ask for their own baselines too, and the
@@ -2440,17 +2560,19 @@ The board pushes on one stream per recipient. The PM's stream, at
 `/wake`, carries what the PM must handle, and any call from its session
 answers it (Receipts, below); the architect, which keeps every right the PM has,
 answers it as well when it works before the PM does. Every other agent the board
-pushes to (a session holding an item, later a reviewer or the observer) has its
+pushes to (a session holding an item, a reviewer, the observer, and the architect, whose session is named
+「架构师」) has its
 own stream at `/wake/<session name>` (Agents' streams, below), with its own
 numbers and retention and a record of how far it was delivered. What an agent
 does with a push, and how it listens, is in its rules and in
 `~/dev/wf/AGENTS.md`, section "Board".
 
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
-PM's stream; `{holder: <field>}`, the stream of the session holding
-the item that field names, and the PM's when nobody holds it; or
+PM's stream; `architect`, the stream of the session 「架构师」, an agent's stream like any other; `{holder: <field>}`, the stream of the session holding
+the item that field names, and the PM's when nobody holds it or the field is null (`only: true` on it: a push
+for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it); or
 `{session: <field>}`, the stream of the session that field names, the
-PM's when it names the PM or the architect. A session
+PM's when it names the PM. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
 names it as `agent` and has not ended; when several have not ended, the newest
 start wins, so a takeover holds the item from its start (`holderOf` in
@@ -2464,34 +2586,49 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Sixteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
-All go to the PM except `item-done` and `ask-alive`, which go to a holder,
-and `message`, which goes to its recipient:
+Each is something one session has to act on, as the PM rules (main flow 9–15)
+and the engineer rules say. All go to the PM except `note` and `timed-architect`,
+which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` and
+`ask-alive`, which go to a holder; and `message`, which goes to its recipient:
 
-- an owner note: a note becomes `sent`, on any project's item or card, so the
-  owner's comments on an engineer's item reach the PM too. A sent choice
+- an owner note, to the architect: a note becomes `sent`, on any project's item or
+  card, so the owner's comments on an engineer's item reach the architect too. Every kind
+  of note is one: a comment, an explain request, an approval, a choice on a card. A sent choice
   note also rules its open card in the same commit (see Decision cards), so the
-  PM does not rule it afterwards;
+  architect does not rule it afterwards. The PM gets none of them: most ask about an
+  item's content, which takes reading it to answer, and the PM does the process;
 - stalled work: an open item gains the 无人推进 check. No other check is
   pushed: the rest are format flags that whoever wrote the item sees;
-- the timed wake, every 30 minutes, with a line of the month's Actions usage;
+- the timed wake, every 30 minutes, with what changed since the last one and
+  counts, never a standing list, and the keys of the reviews and finished items
+  not yet taken up (Size, below);
+- the architect's timed wake (`timed-architect`), every 60 minutes, with what changed
+  since the last one and the number of items being worked on, so the architect looks over
+  what is in progress once an hour;
+- a review is needed (`review`): the item's review step, the plan step whose id is `review`,
+  such as 「审查（3 级）」, became in progress, and no reviewer is on the item yet. The
+  push carries the level the step's text names; the pull request and the range to
+  review are in the item's log, where the engineer writes them. A reviewer already
+  on the item is resumed by the engineer and does not come to the PM;
+- an item finished (`finished`): an item that a session holds became done. It tells
+  the PM which session to stop;
 - what the look at GitHub finds (Watching GitHub, below): a main line whose
   checks failed (`main-red`), a pull request an open item names whose checks
-  failed (`pr-red`), one whose checks all passed and which can merge
-  (`pr-ready`), and an open pull request no open item names (`pr-orphan`);
+  failed (`pr-red`), and an open pull request no open item names (`pr-orphan`).
+  A pull request that can merge is not pushed: an engineer merges its own once
+  its checks pass;
 - a page request or tool call that took longer than its time limit (`slow-op`,
   section 4, Time limits), once per operation per hour;
 - a remote copy of the board's data that has stayed behind for an hour
   (`backup-behind`; section 4, Storage);
-- what the look at the Actions billing finds (Watching Actions usage, below):
-  the month's use reaching a level, a day of heavy use, or the included minutes
-  all used with a budget of 0 (`actions-usage`);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
-  deploy did not happen. The job asks through `POST /api/wake` (below);
+  deploy did not happen. The job asks through `POST /api/wake` (below), and the
+  board makes the pushes (Deploys and the red main line, below);
 - an item that became done (`item-done`), to the session holding each open item
-  that waits on it;
+  that waits on it; when nobody holds that item nothing is pushed;
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
@@ -2500,6 +2637,34 @@ and `message`, which goes to its recipient:
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
+
+**Free slots are the PM's to count.** The board holds no limit per pool and pushes no
+offer, so no push says a slot is free. The PM compares the working count and the candidates
+that `candidates` answers with the limits the owner gave it, and decides whether to start an
+engineer. The PM learns of a slot that frees from the pushes that end an engineer's work:
+`finished` (an item it holds became done, and its session should stop) and `review` (an
+item's review step started for the first time, with no reviewer on it yet, so its engineer
+waits for a reviewer). An engineer that waits on a card, a 14900K run, another item, or a
+re-review by a reviewer already on the item pushes nothing; the PM reads `candidates` when it
+collects an engineer, on `finished` and on a new list from the architect, and sees the slot
+then. The timed wake does not carry the counts. Rejected: the board holding the limits and pushing a free slot, which keeps a second
+copy of the owner's numbers that can drift from what the owner said; a push naming the next
+item, which makes the board choose among the candidates.
+
+**Deploys and the red main line.** A pull request's merge to the main line is made by the
+engineer that holds its item, so what the merge did to the main line is told to that
+session. The deploy job sends the commits its deploy concerns as `<short hash> <subject>`
+with the repository as `Owner/Name`; the look at GitHub reads the subject of the newest commit
+of the main line. A subject names a pull request in the forms `Merge pull request #N …` and
+`… (#N)` (`pullNumbers` in `src/merges.ts`); the item that delivers it is the item whose
+改动 section names that pull request in that repository, done or not, since its session
+stays until the PM finishes it (`deliveries`). `deployed` is pushed to each session holding
+such an item, one push per pull request and item, and to nobody when none does. `deployFailed` and `main-red` are
+pushed the same way and, when no delivering item is held, to the PM, naming the first delivering
+item if there is one. The job names at most `MAX_CHANGES` commits in a request and counts the rest, so a pull
+request only a later commit names of a deploy that carried more gets no push. Rejected: pushing every deploy to the PM to forward, which hands
+the PM a message it can only pass on; telling the engineer of the last commit only, which
+misses the others a deploy carried.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -2510,15 +2675,19 @@ command-line client sends no `Origin`. A `session` parameter, which the earlier
 per-project filter took, is ignored.
 
 **Pushing from outside.** The deploy job runs in its own process, so it cannot
-call `push`; it posts `{event, ...fields}` to `POST /api/wake` and gets `{n}`
-back. Only a kind the table marks `external` is taken (`deployed` and
-`deployFailed`); the board's own kinds are not, whatever fields come with them.
-Another kind, a field set that is not exactly the kind's, a body that is not a
-JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
-Host and Origin rules are those of every other write, so only a program on this
-machine can ask. A `deployed` or `deployFailed` push also makes the daemon read the
-page files again and tell the open pages if their version changed (section 4,
-Deploying).
+call `push`; it posts `{event, ...fields}` to `POST /api/wake`. Only a kind the
+table gives an `external` list is taken (`deployed` and `deployFailed`), with exactly the
+fields that list names, which are not the frame's: `deployed` takes `version`, `previous`,
+`changes` (the commits as `<short hash> <subject>`), `restarted` and `repo`
+(`Owner/Name`, null when the job cannot read it); `deployFailed` takes `version`, `running`,
+`reason`, `changes` and `repo`. The board turns the request into the pushes of the sessions
+it concerns (Deploys and the red main line) and answers `{pushed}`, how many it made, which is
+0 for a deploy that happened and concerns no held item. The board's own kinds are not taken,
+whatever fields come with them. Another kind, a field set that is not exactly the kind's, a body
+that is not a JSON object, or more than 16 KiB is refused with 400 and nothing is sent. The
+Host and Origin rules are those of every other write, so only a program on this machine can
+ask. A request also makes the daemon read the page files again and tell the open pages if
+their version changed (section 4, Deploying), whether or not a push was made.
 
 **Frames.** Each event is one text frame holding one JSON object. `n` is its
 number, 1 for the first event and rising by 1; `at` is its time. These are all
@@ -2526,28 +2695,29 @@ the forms the server sends:
 
 | Frame | Sent when |
 |---|---|
-| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
+| `{n, at, event:"note", note, target, kind, title, project}` | A note changes from not sent to `sent`; it goes to the architect's stream. `note` is its id, `target` is `it:<item>` or `q:<card>`, `kind` is the note's kind (comment, explain, approve, choice, done), `title` is the card's question, else the item's title, else `target` itself, and `project` is the item's project |
 | `{n, at, event:"stalled", item, project, title, text}` | An open item gains the 无人推进 check it did not have, after a committed change or on the one-minute timer (stalled work appears with active time alone). `text` is the check's explanation. A stall that goes and returns is sent again; the set is seeded at start without sending, so a restart announces nothing |
-| `{n, at, event:"timed", since, changed, working, architect, pm, actions}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. `working` lists the open items outside the Architect and PM projects that someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is left out), `architect` every open item of the Architect project and `pm` every open item of the PM project, each as `{item, project, title, status, flags}` with the labels of its checks. Each list holds at most 60 entries, then `{more: n}`. `actions` is one line of text, the Actions usage as the board last read it (Watching Actions usage), or why it could not be read; empty only where no usage watch runs (tests) |
-| `{n, at, event:"main-red", repo, project, branch, commit, failed, url}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page |
+| `{n, at, event:"timed", since, changed, working, architect, pm, review, finished}` | Every 30 minutes after the last timed wake (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, as `{item, project, title, status, by}` where `by` are the writing sessions (or authors, when there is no session); an item only the PM's or the architect's own session wrote is left out. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds (status `wip`, with a step of its own being done or a live session; an item that is `wip` only because an item it owns is, is not counted), `architect` how many open items the Architect project has and `pm` how many the PM project has: numbers, not lists, since the lists repeat from one wake to the next and `list` gives them. `review` and `finished` are the item keys (at most 20, then `{more: n}`) of what the PM was told once and may not have taken up: items whose review step is in progress with no reviewer on them, and done items a session still holds. They are the reminder for a push lost or a PM that was away, since those two pushes are not repeated otherwise.
+| `{n, at, event:"timed-architect", since, changed, working}` | Every 60 minutes after the last one on the architect's stream (the first, after the daemon's start). `since` is the time of the last one, or of the start. `changed` lists the items whose documents, cards or notes changed after the last one, in the form of the `timed` frame's, except that an item only the architect's own session wrote is left out; the PM's writes are listed. At most 20 entries, then `{more: n}`. `working` is how many open items outside the Architect and PM projects someone holds, counted as in `timed`. Nothing else: the keys of the reviews and finished items, the counts of the Architect and PM projects and the usage sentence are the PM's. The time of the last one is kept in the architect's stream file |
+| `{n, at, event:"review", item, project, title, level}` | The item's review step (id `review`) became in progress and no reviewer has an open dispatch on the item. `level` is the review level the step's text names (`（N 级）`), null when it names none |
+| `{n, at, event:"finished", item, project, title, session}` | An item that a session holds became done. `session` is the session holding it, which the PM stops |
+| `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the PM's when nobody does (Deploys and the red main line) |
 | `{n, at, event:"pr-red", repo, number, project, title, commit, failed, url, items}` | A non-draft pull request that an open item's 改动 section names has failed checks on its newest commit and no `pr-red` was pushed for that commit. `items` lists `{item, title, project}` for each such item, `url` is the pull request's page |
-| `{n, at, event:"pr-ready", repo, number, project, title, base, commit, url, items}` | A non-draft pull request that an open item's 改动 section names has all checks passed and can merge, and no `pr-ready` was pushed for its newest commit. `base` is the branch it merges into. `items` lists `{item, title, project, blocking, approval}`: `blocking` the item's open blocking cards as `{card, question, blocks}`, `approval` the cards the item's merge row for this pull request follows, directly or through earlier rows, as `{card, question, ruled}` |
 | `{n, at, event:"pr-orphan", repo, number, project, title, url, draft}` | An open pull request that no open item's 改动 section names, draft or not, and no `pr-orphan` was pushed for it. `url` is the pull request's page, `draft` says whether it is one |
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged |
 | `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none |
-| `{n, at, event:"actions-usage", org, reason, level, month, day, used, included, today, budget, text}` | The look at an organization's Actions billing finds, for the first time in a month or a day, that `reason` holds: `month` (the month's use first reached `level` percent of the included minutes: 50, 75 or 90), `day` (more than 300 minutes counted on one UTC day) or `cap` (all the included minutes used while the Actions budget is 0). `level` is null except for `month`. `month` is `2026-10`, `day` the UTC day, `used` and `today` the counted minutes of the month and of the day, `included` the minutes the plan includes, `budget` `{amount, stop}` in US dollars (`stop`: usage stops at the limit) or null when none is set, and `text` a sentence saying it, with those figures |
-| `{n, at, event:"deployed", version, previous, changes, restarted}` | The deploy job moved the checkout and the board is healthy on it. `version` is the commit now served, `previous` the one before, `changes` the main-line commits between them as `<short hash> <subject>` strings, newest first (at most 20, then `{more: n}`), and `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
-| `{n, at, event:"deployFailed", version, running, reason}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed |
-| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared; it goes to the stream of the session holding `parent`, and to the PM's when nobody holds it, like every holder-routed kind. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
+| `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the PM, naming the first |
+| `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
-| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's or the architect's session |
+| `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
 `connected` and `gap` carry no number and are not events. A frame on an
-agent's stream also carries `line`, the one line the agent is shown for it (Size,
-below); the architect's frames do not.
+agent's stream, the architect's included, also carries `line`, the one line the agent is shown for it (Size,
+below); the PM's frames do not.
 
 **Delivery and reconnect.** Events are numbered and kept: the newest 1000, at
 most 2 MiB, in `state/wake.jsonl` beside the board (git excludes it), so numbers
@@ -2574,7 +2744,7 @@ answers within the hour.
 `ws://127.0.0.1:<port>/wake/<session name>`, the name percent-encoded; the
 Host and Origin rules are those of `/wake`. The server answers 400 for an empty
 name, one longer than 80 characters, one holding a slash or a control character,
-the name of the PM or the architect (their stream is `/wake`), a name that does not decode, and
+the name of the PM (its stream is `/wake`), a name that does not decode, and
 any query string. The board, not the client, keeps how far the stream was
 delivered, so the client sends no number: it gets `connected`, then `gap` when
 events never delivered were dropped by retention (it reads the board for what
@@ -2606,8 +2776,8 @@ the board all the time while it works, and would answer events it never saw.
 
 **In a tool result.** A session that is working is not running its wait script,
 so the board gives it its undelivered events in the next tool result it gets:
-any tool, read or write, whose caller is a session other than the PM's or the architect's
-(the credential's session when the connection has one, else the `session` the
+any tool, read or write, whose caller is a session other than the PM's, the architect's
+included (the credential's session when the connection has one, else the `session` the
 call names, trimmed). After the tool's own text and a blank line come the line
 `【看板推送】` and one line per event, oldest first, at most five; more are
 counted by kind in one more line and wait for the next call. The events shown
@@ -2678,7 +2848,10 @@ the number, the kind's label and what it is about (an item or pull request
 with its project, a title, counts instead of lists), at most 200 characters,
 cut with … past that; the tests measure it for every kind with the longest
 fields. A message's line cuts only what comes before its text (Messages,
-below). An event reaches an agent once (above).
+below). An event reaches an agent once (above). The PM's frames are printed whole by its
+script, so the PM's pushes carry no whole list that repeats from one to the next: the timed wake
+once carried the lists of every open item of two projects each time, 74% of the characters pushed over a day
+(measured on 2026-10-16 and 17: 198,000 of 266,000), and now carries what changed, counts, and the keys of the two kinds of item not yet taken up (the reminder for a lost push).
 
 **No receipt.** When the oldest unanswered event on the PM's stream is one hour old (the limit is
 an option for tests), the board tells the owner once: 「PM 1 小时没响应」,
@@ -2687,6 +2860,26 @@ permission prompt, or no longer holds the Monitor that carries the stream.
 No more alerts follow until a receipt arrives and a later event goes unanswered
 for an hour. The receipts and the alert state are in the same file, so a restart
 neither repeats an alert nor forgets one.
+
+**The architect's stream.** The architect's stream is an agent's like any other, under the
+session name 「架构师」: its client is the generic wait script, a push is delivered when the
+script printed it or a tool result of the architect's carried it, and a delivered push is not
+given again. The architect's calls are still receipts for the PM's stream (above); that is
+provisional, because no PM runs yet and the architect handles what is pushed to it: once a PM runs, only
+its calls should answer the PM's stream, or its silence is hidden from the owner by the
+architect's work; reopen then. The owner is told when the architect has not been given a push
+for an hour, as for the PM: when the oldest push to the architect still undelivered is one hour old,
+the board tells the owner once, 「架构师 1 小时没响应」, naming that push (the limit is the same option as for
+the PM). A delivery starts the count again, and the alert state is in the stream's file, so a
+restart neither repeats an alert nor forgets one. No other agent's stream is watched this way:
+a session holding an item is watched by the liveness check (below). The time of the architect's last
+timed wake is kept in the same file. Decision: the architect uses the agents' stream, the owner's rule
+that any agent can be reached the same way, one protocol and one set of state for a recipient. Rejected: a second
+stream of the PM's kind for the architect (a number the client keeps, receipt by any call), which is
+a second protocol and a second set of state for one recipient and puts the owner's notes in a
+stream the architect's calls answer without having been shown them; pushing each note to both
+streams, because two receipts for one note leave it unclear who handled it; the PM forwarding the
+notes, because it would have to judge which are about content, and that judgment is the architect's.
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
@@ -2704,8 +2897,8 @@ the deploy job's notice on the Mac (section 4, Deploying) is the only one that r
 and it runs when the board does not answer.
 
 A card without `blocks` tells no one. A no-receipt notice's target is the item
-or card of its oldest unanswered event: the item of a `stalled` or `no-answer`
-event, or the item or card a `note` event is on; a `timed` event names neither, so its notice has no
+or card of its oldest unanswered event: the item of a `stalled`, `no-answer`, `review`
+or `finished` event, or the item or card a `note` event is on; a `timed` or `timed-architect` event names neither, so its notice has no
 target.
 
 **Why not MCP push.** Plain MCP lets a server send notifications, but Claude
@@ -2738,9 +2931,11 @@ board, where the owner and later readers find it.
   once instead of filling a stream nobody reads. The text is one line of at most
   150 characters (`MESSAGE_TEXT_LIMIT` in `src/model.ts`); longer text is
   refused, never cut: a message is a doorbell, and the content belongs on the
-  item. Every role may send (part `message.send`, section 9).
+  item. Every role may send (part `message.send`, section 9). The board sends too, as
+  the session 「看板」 with an item's project: the finished checks of a pull request
+  (Watching GitHub, The look at the checks, below).
 - **Delivery.** The write pushes one `message` event to the recipient's
-  stream: the PM's for the PM or the architect, else the session's own. With no
+  stream: the PM's for the PM, else the session's own, the architect's among them. With no
   process connected it waits there, and reaches the session once, on its wait
   script's next connection or in the result of its next board call (The wake
   streams, above).
@@ -2772,12 +2967,15 @@ keeps a second place to read messages from and a job that moves them.
 ### Watching GitHub
 
 The board looks at GitHub itself and does with the answer what the PM
-would otherwise do by hand on each round: it tells the PM when a pull
-request can merge or the checks went red, and it marks the merge row of a
-merged pull request done (`src/watch.ts`, `src/github.ts`).
+would otherwise do by hand on each round: it tells when the checks went red on
+the main line or on a pull request, and when an open pull request is named by no item, and it marks the merge row of a
+merged pull request done (`src/watch.ts`, `src/github.ts`). A second look, every 30 seconds,
+tells the engineer when the checks of a pull request have finished (The look at the
+checks, below; `src/ci-watch.ts`, `src/ci-source.ts`).
 
 **The look.** Every five minutes, and not oftener, because every session on the
-owner's account shares GitHub's quota. The time of the last look is kept in
+owner's account shares GitHub's quota and every GraphQL question costs some of it (the look at the
+checks, below, asks REST conditionally and so can run oftener). The time of the last look is kept in
 `state/github-watch.json` beside the board (git excludes it), so a restart waits
 out what is left of the interval (no record: it looks at once; a record in the
 future, from a clock that went back, counts as at most one interval). The daemon asks
@@ -2826,16 +3024,23 @@ successful check makes it `success`; a skipped or neutral check is no failure
 and no pass, since a gate that was skipped ran nothing. A commit with no check
 to read, or only skipped or neutral ones, is `none`, which is not green: GitHub
 runs no pull request check for a pull request with a merge conflict, and a
-commit nobody has run yet looks the same.
+commit nobody has run yet looks the same. A commit status counts like a check
+(`success` passes, `failure` and `error` fail, anything else is pending). The
+full CI of a pull request reaches the board only this way: a run started by
+hand is not among the checks a pull request lists, so it writes its outcome as
+the status `full-ci`, pending until then (section 11, Fast checks while
+writing).
 
-**The pushes about checks.** `pr-red` and `pr-ready` are about non-draft pull
-requests; a draft's checks are the engineer's. `pr-red`: the checks say
-failure. `pr-ready`: the checks say success and GitHub reports the pull request
-mergeable (not conflicting; still being computed counts as not yet). A pull
-request whose checks are pending or none, or that cannot merge, is told nothing.
-`main-red`: the checks of the main line's newest commit say failure. A push is
-made once per key: `main-red` per branch and commit, `pr-red` and `pr-ready` per
-pull request and newest commit, `pr-orphan` per pull request.
+**The pushes about checks.** `pr-red` is about non-draft pull requests; a
+draft's checks are the engineer's. `pr-red`: the checks say failure, to the PM,
+who forwards it. A pull request whose checks are pending or none, or that
+cannot merge, is told nothing, and so is one that can: an engineer merges its own
+once its checks pass, and watches them itself. `main-red`: the checks of the main
+line's newest commit say failure; it goes to the session holding the item that
+delivers the pull request the commit's subject names, the PM's when none does
+(Deploys and the red main line): the red is usually a combination of merges
+that only the main line's own checks catch. A push is made once per key: `main-red` per branch and
+commit, `pr-red` per pull request and newest commit, `pr-orphan` per pull request.
 The keys of the events still kept are read again at start, so a restart neither
 repeats a push nor loses one (an event the log dropped may be told once more).
 
@@ -2845,7 +3050,13 @@ and commits, so a draft nobody names is told too: nothing else reports it. A pul
 request is told only once it is ten minutes old (GitHub's creation time), so the
 engineer has time to write its 改动 section after opening it; one an item names
 within those ten minutes is never told. A pull request an item names after it has
-been told is no orphan any more; the push is not taken back.
+been told is no orphan any more; the push is not taken back. The first look at a
+repository tells nothing of the pull requests already open and unnamed (ten minutes old
+or more): they were open before the board watched for orphans, and 111 of the 121 orphan pushes
+in the record when this was studied were that: all 111 made within 30 milliseconds, by the first look after the
+orphan push was deployed (the look five minutes before made none). They are kept as told (`baseline` in
+`state/github-watch.json`, dropped once the pull request is no longer open), so a restart
+does not tell them either.
 
 **Merge rows.** A merge row is a step of an open item that is not done, not
 dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
@@ -2863,68 +3074,78 @@ longer all merged, is left as written. A row that also says more (a deployment)
 is marked as a whole, so a merge row says only the merge. A write that fails is
 tried at the next look.
 
-### Watching Actions usage
+### The look at the checks
 
-The organization's GitHub Actions minutes are shared by all its private
-repositories, and nothing else shows how many are used or how fast. The board
-reads the billing itself, keeps an account of the month, and tells the
-PM before the included minutes run out (`src/usage-watch.ts`,
-`src/billing.ts`; the account, the levels and the line are pure functions in
-`src/rules.ts`).
+An engineer that waits for its pull request's checks should know within seconds
+that they have finished, and should not spend the owner's GitHub quota to find out.
+The board looks at every pull request an open item names, every 30 seconds, and
+tells the session holding the item when the checks on the pull request's newest
+commit have all finished (`src/ci-watch.ts`; the requests are `src/ci-source.ts`).
 
-**The look.** Every 30 minutes, kept across restarts like the look at GitHub
-(`state/actions-usage.json`, beside the board, git excludes it). It reads every
-owner of a project's repository: three calls to `gh api` for an organization,
-its repository list with visibility, its usage report for the UTC month
-(minutes per repository, per day and runner type) and its budgets. An owner whose
-repository list is `404` is a personal account and is skipped without a problem:
-its billing needs a `user` token scope, so the minutes of repositories there
-(`agents_config` today) are not counted. Any other failure is a reason kept per
-owner (`/health` `usage.problems`, the timed wake line) and logged once while it
-lasts; the other owners go on, and nothing is told on a failed look.
+**Why a second look.** The look above asks GraphQL, whose answers cannot be asked
+conditionally: every question costs quota, so it stays at five minutes. The REST
+API answers a request that carries the `ETag` of an earlier answer with 304
+when nothing changed, and a 304 is not counted against the hourly quota (measured
+on this board's repository: the quota left stayed the same over 304 answers to the
+pull request list, a commit's check runs and its commit status; GitHub's
+documentation says the same). So this look uses REST with conditional requests and costs
+quota only when something changed. The five-minute look is unchanged: it makes the
+pushes to the PM and marks merge rows. The two do not share state.
 
-**The account.** The usage report gives each repository's minutes but not
-whether it was public when they were spent, and public repositories' minutes are in
-it too (discounted to a net of 0, like private ones within the included
-minutes). Only private repositories use the included minutes. The board
-therefore adds up, at each look, what a repository's minutes of a day grew by
-since the last look, and counts the growth only if the repository is not public
-at that look; an unknown repository counts. Minutes are included minutes: a
-Windows minute is 2 and a macOS minute is 10. The runner names are those of the
-organization's own report ("Actions Linux", "Actions Windows", "Actions macOS 3-core");
-GitHub's billing page names the same runners but states no multipliers, only per-minute
-prices (Linux $0.006, Windows $0.010, macOS $0.062). The 2 and 10 come from GitHub's earlier
-billing description, are not on today's page and were not checked against a bill: they are
-provisional. No private repository runs Windows or macOS now, so they change no figure, and
-counting too many is the safer error (an early push, not a missed one). When a private
-repository first runs Windows or macOS, the line is checked against that month's
-included-usage figure on the billing page and the 2 and 10 are replaced by what it shows.
-Storage uses no minutes. An Actions minutes row with a name not in that list (a larger or
-arm runner, say) in a repository that is not public is not guessed at: it is left out of
-the account and named in the line. A report revised downwards adds nothing. The account starts
-at the first look of a month (and when the state file is lost or unreadable, which is
-logged), from the visibility of that look, so it covers the month only from
-when the board began keeping it: minutes spent before a repository was made public
-and before the first look are not in it. The line says since when it counts.
-A new month starts a new account.
+**What is asked.** For each pull request that the 改动 section of an open item names
+(`watchedPulls`, as in Watching GitHub; draft or not), three requests, signed with the token of
+the account `gh` is signed in as (`gh auth token`, read once and again after a 401):
+the pull request itself (its newest commit, and whether it is still open: a merged
+or closed one is dropped), the commit's check runs (`filter=all`, every attempt of
+every round, which the default would cut to the latest run of each name and so hide a red in
+one round behind a green of the same name in another) and the commit's statuses (where the full CI that a hand
+starts writes `full-ci`, section 11). They are read into the same shape as the GraphQL
+look reads, and `readChecks` (`src/github.ts`) gives the same states and failed names. A request that repeats
+an earlier one carries the answer's `ETag` in `If-None-Match`, with the same `Accept` header
+(GitHub varies its answer on it and answers 200 again otherwise); the answers are kept in memory, at most 400.
+Out of quota or told to slow down (429, or 403 with `Retry-After` or no requests left)
+the look makes no request until the time GitHub names (a minute when it names none); any other
+failure is that request's. A repository that fails is shown by `/health` (`ci.problems`, with
+the quota left from the newest answer as `ci.remaining`) and logged once; the other repositories
+go on. Up to four pull requests are asked at once.
 
-**What is told.** Once per month and level, once per day and once per month for
-the cap. The keys of the pushes told this month are kept in the account, in the state file,
-and start again with each month's account: the wake events are kept for days (1000 events or
-2 MiB, and the timed wake alone is 48 a day), so a month's levels cannot be read back from
-them. Without the state file the pushes are told again once. Levels: the highest of 50%, 75% and 90% of the 3000 included
-minutes that the month's use has reached and no level at or above it is told yet, so a
-first look at 88% is one push (75%), not two. Day: more than 300 counted minutes
-on the UTC day of the look (10% of the included minutes). Cap: the month's use
-at or over the included minutes and an Actions budget of exactly 0 (the CI of the
-private repositories is stopped, or billed from the first extra minute when the budget is
-not set to stop); no budget set is not a budget of 0 and tells nothing.
+**When a round is over.** A round is over when nothing on the commit is unfinished:
+no check run or status that is not finished, no check with only cancelled runs, and
+no more checks than one answer holds (100). The one status not waited for is `full-ci` when
+it is pending and links to no run: a mark written on every new commit of a pull request (`ci-mark.yml`,
+section 11) that says no full CI was started; the engineer's wait script treats it the same way. Once a
+run is started the status links to it, and the round is not over until the run writes its result. A red check does not end it while another
+still runs, since the engineer waits for the whole round. A round that ended with
+no check that ran (none, or only skipped ones) is told nothing. It ended with `success`, or with `failure` and the names
+of the failed checks. It is told once: again when the commit changes, when something is seen
+unfinished again (a rerun, or the full CI that a hand starts on the same commit, which writes
+the status `full-ci`, pending until its run ends), and when the result differs from the one told
+(a rerun that ended between two looks). What was last seen of each pull request, the commit and what
+was told for it, is kept in `state/ci-watch.json` beside the board (git excludes it), so a restart
+neither tells a round twice nor loses one. A look that is stopped halfway (the board is
+restarted) forgets no record of the pull requests it did not reach. The first look at a repository tells nothing of a
+round already over (`judge`, baseline): those are the backlog from before the board looked, as
+for orphan pushes. A pull request that an item names later, in a repository looked at before, is
+news when first seen finished, since the engineer has just opened it. Known limit: a check GitHub
+creates only after the first looks of a new commit is not there yet to be waited for, so a
+round read as over in the first seconds after a push may be followed by another message when that check ends.
 
-**The line.** `Actions 本月已用 N / 3000（从 MM-DD 起记账），今天 M，预算 X` in each
-timed wake, `X` being `0 美元，到上限就拦`, an amount, or `未设`; with several organizations each
-line starts with its organization, and `；有不认识的计费项：<names>` follows when the
-account met a runner name it does not know. When the billing cannot be read it is
-`Actions 用量读不到：<reason>`; before the first look `Actions 用量还没读到`.
+**Who is told.** The session holding the item that names the pull request (section 8, The wake
+streams; an item that no session holds tells nobody, and a reviewer holds nothing), by
+a message (Messages, above) sent as the session 「看板」 with the item's project and the item
+named, one for each holding session. Its text is one line, for example
+`CI 跑完：Ming-Research/wf-board#80 提交 bb81c7b 全部通过` or `… 有失败：test、e2e`; names that do not
+fit the 150 characters become a count. A message that could not be written is sent again at the
+next look to the sessions it did not reach, and only to those (their names are kept in
+`state/ci-watch.json` until sent); one the board refuses (the session ended meanwhile) is not.
+
+Rejected: GitHub webhooks, which cannot reach a board that listens on the local address only
+without a relay service; the engineer's own wait script, which asks GitHub itself every five minutes
+and so waits up to five minutes after the last check and spends the shared quota once per engineer; asking
+`gh api` for every request, which starts dozens of processes every 30 seconds and hides the
+status code and headers a conditional request needs; the open pull request list of a repository
+as one request for every newest commit, which misses a named pull request beyond its first 100 and
+saves little; telling at the first red check, which the engineer cannot act on while others run.
 
 ## 9. Project responsibility
 
@@ -3024,7 +3245,7 @@ start with the schema's own error, so nothing is read and silently discarded.
 `projects` reports name, repo, top-item counts and open item status counts.
 `brief` supplies sent item/card owner notes, checks including cleared blockers, open cards
 still awaiting the owner, items someone is working on (a doing step of their own or a live session),
-the next ten items rated 1–5 that `canStart` allows (status todo or idle), by priority,
+the next ten items rated 1–5 that `canStart` allows (status todo or idle), in the order of `candidates` (section 6),
 outgoing work (the open items of other projects that its open items wait on), and the project's glossary
 terms. Relevant item rows include compact plan and target lines, and the
 item's difficulty when it has one. `brief.progress` adds
@@ -3099,10 +3320,8 @@ the writer from it.
   project's glossary), `below` (a `subtree` without the items the credential names) or `own` (no item, only the writer's own message). `ops.run` takes the parts of every write as an argument, so a write
   cannot omit them, and refuses a part the role lacks before it reads anything; for a
   `subtree` or `below` part it then checks, once the write is complete, that every document it changes
-  is inside the subtree. The check counts the board's own effects on other items as well
-  as what the call names: a row that makes a root with a stored priority wait on another
-  item changes that root (the board drops its priority and logs it), so a subtree
-  credential cannot add such a row. It also counts what a plan row takes in: a row that owns
+  is inside the subtree. The check covers every document the write changes, the board's own effects on other
+  items (an owner's log line, say) as well as what the call names. It also counts what a plan row takes in: a row that owns
   an item puts it under the writer, so a subtree credential may own only items it already
   writes. A write with a `below` part that changes a named item is refused: the engineer was
   handed that item at its level, and the architect changes the level of what it hands out.
@@ -3237,7 +3456,7 @@ phases:
 
 1. **Data conversion**, mechanical and lossless, in one data commit. Its only
    job is to keep every item, log, card, note, target and ordinary step,
-   make the new shape valid, and report every status and priority difference
+   make the new shape valid, and report every status difference
    caused by the approved new derivation rules. Every plan it produces is provisional
    (section 5, Writing plans), and the board flags it 计划待重写.
 2. **Plan rewrite**, per project, by the project's session: each plan is
@@ -3293,7 +3512,8 @@ need them have finished; raw audit `show` and `diff` remain unchanged.
 Older versions can also hold fields that the current schema does not accept:
 an item's area short name (`short`) and session (`agent`) and a project's
 session names (`agents`), which data-repository migration commits removed,
-and the removed inbox's `request` marker on an item. Normalizing a historical
+the removed inbox's `request` marker on an item, and an item's `priority`,
+which the migration of section 10 (Clearing the retired priority) removed. Normalizing a historical
 whole board omits exactly these named fields, in every shape, before the
 schema for that shape reads it, so those versions stay comparable. `show` and
 `diff` still return them as written. Any other unknown field still refuses the
@@ -3348,22 +3568,13 @@ strict.
    and refuses a mismatch with the current rules' result.
 6. Stored `status` values other than `cancelled` are removed, as are
    `parent`, `deps` and `steps`.
-7. **Priority.** Whitefoot-kit, 总管 and 网站 are migrated in the same commit:
-   every non-root loses its stored priority with the log line
-   `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as
-   the former project migration did; the `migrated` field leaves `board.yaml`.
-   Roots seed their stored priority from their old displayed value, falling
-   back to their stored value when the display was empty; roots never get
-   the non-root priority-retirement log. Every
-   project's priority now propagates along all item rows under the approved
-   rule, including formerly unmigrated projects and closed children gaining
-   an owner. Records pass none; their owned work still receives priority
-   from open shared dependents. Every old-versus-new
-   displayed-priority difference is listed with id, project, title and cause
-   (for example, propagation from an owner, moving into backlog or losing
-   rootness); the difference alone is not an error. The independent oracle
-   computes expected priority from the converted plans independently of the
-   converter and compares it with the current rules' output.
+7. **Priority.** The converted items carry no priority: the board no longer
+   has the field (section 5, Priority), so the conversion neither seeds nor
+   compares one, and the report lists no priority differences. Whitefoot-kit,
+   总管 and 网站 are migrated in the same commit: every non-root gets the log
+   line `迁移到依赖结构：优先级改由依赖它的条目决定，原来写的 PX 不再使用`, as the
+   former project migration did; the `migrated` field leaves `board.yaml`.
+   Roots get no such line, and the value a root held is not carried over.
 8. **Removing archives.** The conversion drops the owner's entire retired
    `archived` field and reports `counts.droppedArchives`, the count of all its
    entries, not just effective archives. Read cursors and read-ahead marks
@@ -3375,12 +3586,12 @@ strict.
    the exact original owner sidefile.
 
 **Phase 1 report.** A short Chinese summary comes first: how many items were
-converted, how many status and priority differences there are, their causes,
+converted, how many status differences there are, their causes,
 the number of retired archive records dropped and whether all content
 survived verification. A separate line flags old wip items with no progress
 row for phase-two plan writing, giving the actual counts becoming todo and
 blocked instead of treating the whole cause group as todo.
-The detailed tables give every status/priority difference, including item
+The detailed tables give every status difference, including item
 id, project and title; cause groups include
 examples. Findings also identify ambiguous completion sections, duplicate
 or dangling targets and children not listed by their old parents. The
@@ -3395,7 +3606,7 @@ reported duplicate, with all whys in the one log entry; ordinary steps keep
 exact ids, text, states, dates and sequence; heads lose only the acceptance
 section; every converted work plan has its one generated acceptance row last, and
 all nonempty converted
-plan is provisional. It independently derives status and priority from the
+plan is provisional. It independently derives status from the
 converted plans and compares them with the current rules' output, checks
 that every difference appears in the report, and verifies every item, card,
 note, target and original log by id. Added logs have an exact whitelist;
@@ -3450,7 +3661,7 @@ left. The project's session follows this procedure:
 
 The old whys in each item's log are material for steps 2 and 3, not rows to
 restore. A provisional plan keeps working in the meantime: sessions record
-progress on it with single-row upserts, and its status and priority stay
+progress on it with single-row upserts, and its status stays
 derived from it, so the board stays correct while phase 2 runs.
 
 **Closed items.** Phase 1 converts done and cancelled items like any other:
@@ -3461,7 +3672,7 @@ parent stays top-level; a closed top item needs no owner and raises no check.
 Phase 2 keeps a closed item in a plan only when the new plan attaches it, for
 example a finished goal of an open release; every other closed item becomes,
 or stays, a closed top item. No history-only owner is created (section
-5, open question 5). Closed items stay reachable from plan rows, explicit
+5, open question 3). Closed items stay reachable from plan rows, explicit
 filters and unread navigation.
 
 **Report on structure for phase 2.** Alongside the phase 1 report, the dry
@@ -3496,6 +3707,32 @@ option are deleted after the run on the live board; what stays is the omission o
 the value from old versions in historical comparison, and unread's reading of
 the clearing as bookkeeping.
 
+### Clearing the retired priority
+
+The live board's files hold `priority` on every root (section 5, Priority).
+`Store.open(dir, { clearPriority: true })` reads those files without the field
+and writes one commit, `clear_priority N items`, which rewrites each such file
+without it. A board that holds the field and is opened without the option
+refuses to start and names the files. The daemon opens with the option, so the
+first start after the deploy clears the field by itself (a refusal there would
+only make the deploy job roll back) and prints the report to its log: the totals
+by value, then one line per item with its key, project and the value it held.
+The commit sets no `updated` and adds no log line to the items, so no item looks
+changed. The value each item held stays in git history, as the lines the commit
+removed, and in that report. `npm run migrate:priority -- --data DIR` does the
+same offline on a copy of the data and prints the same report, which is how the
+run is rehearsed before the live one.
+
+The commit is bookkeeping, not work on the items: historical comparison omits the
+field from old versions, so unread shows nothing for it, and activity and the
+timed wake leave the commit out, so no item's last-change time or no-progress
+clock restarts and the wake lists nothing it wrote. A second start writes
+nothing. The command, its module, its test, the npm script, the start option, the
+daemon's use of it, the two checks that leave the commit out of activity and the
+timed wake, and the transaction flag (`rewrite`) that lets it write unchanged
+documents are deleted after the run on the live board; what stays is the
+omission of the field from old versions in historical comparison.
+
 ### Owner-wide rules to change
 
 Changes to the owner-wide rules that follow from this design are tracked on
@@ -3503,37 +3740,37 @@ the board.
 
 ### Open questions on the conversion
 
-8. **Order of converted dependency rows.** Proceeding on: every converted
+6. **Order of converted dependency rows.** Proceeding on: every converted
    item or card row is `after: []` (all parallel), because the old data never
    said otherwise, while converted steps keep their sequence; phase 2 sets the
    real order. Alternative: convert everything sequentially, which would
    invent an order.
-9. **Owner approval of the dry-run report** before the live conversion.
+7. **Owner approval of the dry-run report** before the live conversion.
    Proceeding on: yes, as a decision card with the report's counts.
-10. **Records and the "every item has a plan" rule.** Proceeding on: records
-    are exempt from the acceptance step, since nothing completes them; a
-    record without rows raises nothing.
-11. **What dropping the why loses.** A shared row into another project no
-    longer says, on the row, why the other project needs the item; the
-    receiving session reads it from the needed item's head and acceptance step
-    and from its first log line. `context` and `graph`
-    show titles only, and the old whys live only in logs, which `search`
-    still covers. The rule "every dependency carries a why" disappears from
-    the server instructions, the operations' checks and CLAUDE.md. Proceeding
-    on: accept this, as the owner decided; if a receiving session finds the
-    item unclear, it asks with a note or comment, not a row field.
-12. **What clears the provisional mark.** Proceeding on: any whole-plan write
+8. **Records and the "every item has a plan" rule.** Proceeding on: records
+   are exempt from the acceptance step, since nothing completes them; a
+   record without rows raises nothing.
+9. **What dropping the why loses.** A shared row into another project no
+   longer says, on the row, why the other project needs the item; the
+   receiving session reads it from the needed item's head and acceptance step
+   and from its first log line. `context` and `graph`
+   show titles only, and the old whys live only in logs, which `search`
+   still covers. The rule "every dependency carries a why" disappears from
+   the server instructions, the operations' checks and CLAUDE.md. Proceeding
+   on: accept this, as the owner decided; if a receiving session finds the
+   item unclear, it asks with a note or comment, not a row field.
+10. **What clears the provisional mark.** Proceeding on: any whole-plan write
     by the session clears it, so a session could clear it by rewriting the
     rows unchanged. The coordinator checks each project's phase 2 item log,
     which must say how each plan changed. Alternative: also require a
     `rewrite` reason argument, stored in the log, on the clearing call.
-13. **Cancelling a redundant item another project waits on.** Phase 2 may
+11. **Cancelling a redundant item another project waits on.** Phase 2 may
     find an item redundant while another project's shared row points at it;
     cancelling it raises 依赖的条目已取消 there. Proceeding on: the procedure
     moves such an item, or keeps it and points the redundant work at it,
     rather than cancelling it; when it must be cancelled, the session tells
     the waiting project's session first.
-14. **Unread volume during phase 2.** Each rewrite changes the item, the
+12. **Unread volume during phase 2.** Each rewrite changes the item, the
     items it moves or cancels and their owners, so the owner's 新 counts
     grow while a project rewrites. Proceeding on: accept it; the owner can
     read a project at a time with the 进展 filter. Alternative: author phase
@@ -3577,7 +3814,7 @@ on the live board.
   one line `[[q:key]]` per card, in the order the cards were written, so the
   converted cards show in the body without the reader having to ask for them.
   A card the head already places keeps its line and is not listed again.
-- The report lists every item whose status, priority or ready rows differ
+- The report lists every item whose status or ready rows differ
   between the board before and after, both read with the same current rules,
   and prints the text of one section it added. The expected differences are an
   item that waits on an open blocking card it never named (that card now has its
@@ -3609,9 +3846,10 @@ on the live board.
   fake DOM; and in a real browser the list above the projects, 在树中
   landing on the tree's row and 返回 coming back, and every tree click still
   landing with a cell unfolded.
-- CI on GitHub-hosted runners for each pull request push and each main-line
-  merge; the write-path benchmark runs by hand, as a workflow that reports and
-  never fails the run.
+- CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
+  pull request, when the engineer starts it (below), with a temporary quick
+  workflow for the pushes in between; the write-path benchmark runs by hand,
+  as a workflow that reports and never fails the run.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
@@ -3762,6 +4000,131 @@ the bug. A fix is reversed by undoing its commit's hunks, or, where later
 work rewrote the lines around it, by a targeted edit that removes just the
 fix. A witness whose edits no longer match the current file fails and is
 updated or retired on purpose.
+
+### Fast checks while writing, and the full CI at the end
+
+The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `test`,
+`e2e` and `result`) takes about 12 minutes with its queue, and a change under
+way is pushed many times. A push to a pull request branch therefore does not
+start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
+and changes the test jobs and the job list in `needs` of `result`, which reads
+only the jobs it lists.
+
+- **While writing**, the engineer adds a temporary workflow
+  `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
+  that runs only what the change touches: the test files and e2e cases it
+  changed or affects, with the type check when it touches shared types. The
+  push result is listed on the pull request like any push check. Wait for it
+  with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
+  of the commit; the pull request form would wait on `full-ci` below. The
+  skeleton, whose setup steps are those of the `test` and `e2e` jobs of
+  `ci.yml`: keep each step the selected tests need and drop the others (the
+  regression witnesses of `test/e2e/regressions.e2e.ts` read fix commits, so
+  a job that runs them needs `fetch-depth: 0`):
+
+  ```yaml
+  name: tmp-quick
+  # Temporary: delete before the last full CI, which fails while this file exists.
+  on:
+    push:
+      branches-ignore: [main]
+  concurrency:
+    group: tmp-quick-${{ github.ref }}
+    cancel-in-progress: true
+  jobs:
+    unit:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v5
+        - uses: actions/setup-node@v5
+          with:
+            node-version: 24
+            cache: npm
+        - run: npm ci
+        - run: npm run build:web
+        - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+        # The test files the change touches.
+        - run: node --test test/watch.test.ts
+    e2e:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v5
+          with:
+            fetch-depth: 0
+        - uses: actions/setup-node@v5
+          with:
+            node-version: 24
+            cache: npm
+        - run: npm ci
+        # The browser steps of ci.yml's e2e job, from `id: playwright` through
+        # `install-deps`, unchanged.
+        - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+        - run: npm run build:web
+        # The e2e cases the change touches, picked by test name.
+        - run: node --test --test-name-pattern='the messages button' test/e2e/messages.e2e.ts
+  ```
+
+- **At the end**, once the change is done and reviewed: merge the main line
+  into the branch, delete the `tmp-` file, push, start the full CI with
+  `gh workflow run ci.yml --ref <branch>` and wait with
+  `wait-ci.mjs <owner/repo> <PR> <sha>`. Green on the head commit is what lets
+  the pull request be marked ready; a later push needs a new run.
+- **The main line** runs the full CI on every push, as before.
+- **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
+  `.github/workflows`. It runs in every full CI, ahead of the test jobs, so the
+  last run before a merge stops a temporary workflow that was not deleted
+  within seconds instead of after the tests, and the main line's own run stops
+  one that got in anyway. It costs the happy path about 10 seconds.
+- **Status `full-ci`**: a run started by hand is attached to the head commit
+  (`gh run list --commit` and the commit's check-run list show it), but it is
+  not among the checks a pull request lists, which is what `gh pr checks`, the
+  engineer's wait script and the board's watch read. Observed on 2026-10-17
+  on a test pull request (wf-board#69, closed): the run started with
+  `gh workflow run ci.yml --ref <branch>` on a branch with an open pull
+  request had the pull request's head commit as its commit, and the checks it
+  wrote were absent from `gh pr checks` and from the GraphQL roll-up of both
+  the pull request and the commit, five minutes and more after the run ended.
+  GitHub's documentation does not say this. Reopen the choice if GitHub lists
+  such runs among a pull request's checks: `start` and `result` would then
+  go, and the wait script and the board would read the run itself.
+  `ci-mark.yml` would need another way to tell a pull request that never had
+  a full CI, because such a pull request still lists neither `test` nor
+  `e2e`.
+
+  The status is written in three places. `ci-mark.yml` writes `full-ci` as
+  pending on every pull request push, unless the commit already has one. The
+  first job of a run started by hand (`start`) writes it as pending again, so
+  the red of an earlier run of the same commit does not stand while the new
+  one runs; the last job (`result`) writes the outcome of the run's jobs
+  (success or failure, linking to the run). To try a commit again, start the
+  full CI again; rerunning only the failed jobs leaves the earlier red
+  standing until `result` runs. A run cancelled by hand leaves the pending
+  that `start` wrote, over any earlier success of the commit, until the next
+  run of the commit; that direction is safe, since pending blocks "can be
+  merged".
+
+  A pull request therefore reads pending until a full CI has run on its head
+  commit, and the board does not push "can be merged" for a commit that never
+  had one, except in the seconds between a push and the mark (about 8 seconds
+  in the run seen, against a look every five minutes), or when the mark job
+  does not run (queued, or Actions minutes used up): then only the checks that
+  did run are read and a commit without a full CI can be taken for passed.
+  The main line has no branch protection and no required checks, so `full-ci`
+  does not stop a merge by itself: whoever merges reads `full-ci` on the head
+  commit first and merges only when it is `success`.
+- **The merge**: the run a pull request starts tests the branch merged with
+  the main line as it was at that push; a run started by hand tests the branch
+  head. The engineer merges the main line into the branch before starting it,
+  so the head is what a merge would land. If the main line moves again without
+  a conflict, the pull request is merged as it is and the main line's own run
+  covers the combination of the merged changes.
+
+Alternatives. The board reading the commit's check suites instead of a status:
+it would fix the board only, not `gh pr checks` or the wait script, whose pull
+request form would still turn green at once on the checks that did run.
+Starting the full CI by a pull request label: a label would have to be added
+and removed for each run, and any other label would start it too. Neither was
+tried; both are rejected on those grounds.
 
 ### Private content check
 

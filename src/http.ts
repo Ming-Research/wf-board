@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, MessageDay, Note } from "./model.ts";
-import { answersPushes } from "./model.ts";
-import { STALLED_LABEL, affectedItems, changeSeeds } from "./rules.ts";
+import { ARCHITECT_SESSION, isPMSession } from "./model.ts";
+import { STALLED_LABEL, affectedItems, changeSeeds, reviewRequested } from "./rules.ts";
+import type { Rules } from "./rules.ts";
+import type { TimedMark } from "./wake.ts";
 import type { Snapshot } from "./model.ts";
 import { WebSocketServer, WebSocket } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -21,11 +23,13 @@ import type { OwnerOps } from "./owner-ops.ts";
 import { unreadSteps, stepDiff } from "./history.ts";
 import { Wake } from "./wake.ts";
 import type { AgentStream } from "./wake.ts";
-import { holderOf, holders } from "./dispatch.ts";
-import { timedWake } from "./timed-wake.ts";
+import { hasReviewer, holderOf, holders } from "./dispatch.ts";
+import { deliveries } from "./merges.ts";
+import type { Delivery } from "./merges.ts";
+import { architectTimedWake, timedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
+import type { CiWatch } from "./ci-watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
-import type { UsageWatch } from "./usage-watch.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 import { pageVersion, stampPage } from "./page-version.ts";
@@ -46,7 +50,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; watch?: GithubWatch; usage?: UsageWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -162,7 +166,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         if (req.headers["if-none-match"] === tag) { res.writeHead(304, { ETag: tag, "Cache-Control": "no-cache" }); res.end(); return; }
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", ETag: tag }); res.end(library); return;
       }
-      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.usage ? { usage: deps.usage.status() } : {}) }); return; }
+      if (path === "/health") { json(res, 200, { ok: true, head: store.snapshot().head, pendingPush: await store.unpushed(), ...(deps.watch ? { github: deps.watch.status() } : {}), ...(deps.ci ? { ci: deps.ci.status() } : {}) }); return; }
       if (path === "/api/snapshot") { json(res, 200, pageSnapshot(store.snapshot())); return; }
       if (path === "/api/events") {
         // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
@@ -191,14 +195,20 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         json(res, 200, result); return;
       }
       if (path === "/api/read") { await ownerOps.read(args(await body(req))); json(res, 200, { ok: true }); return; }
-      // A push from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly their fields.
+      // A request from the deploy job, which runs beside the daemon: only the kinds the wake table marks external, with exactly
+      // the fields it lists. The daemon turns it into the pushes of the sessions it concerns (pushDeploy).
       if (path === "/api/wake") {
         const { event, ...fields } = args<Record<string, unknown>>(await body(req));
-        if (!Wake.isExternal(event)) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
+        const wanted = Wake.externalFields(event);
+        if (!wanted) throw new OpError(`Wake event ${JSON.stringify(event)} cannot be pushed through the API`);
         if (JSON.stringify(fields).length > MAX_EXTERNAL_PUSH) throw new OpError(`Wake event ${event} exceeds ${MAX_EXTERNAL_PUSH} bytes`);
-        let frame;
-        try { frame = wake.push(event, fields); } catch (error) { throw new OpError(error instanceof Error ? error.message : String(error)); }
-        json(res, 200, { n: frame.n }); return;
+        const given = Object.keys(fields).sort().join(","), expected = [...wanted].sort().join(",");
+        if (given !== expected) throw new OpError(`Wake ${event} asks for the fields ${expected}, not ${given}`);
+        const pushed = pushDeploy(event as "deployed" | "deployFailed", fields);
+        // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages
+        // are told if it did, whoever the pushes went to.
+        void readPage(true);
+        json(res, 200, { pushed }); return;
       }
     }
     if (method === "DELETE" && path.startsWith("/api/notes/")) { await ownerOps.deleteNote({ id: decodeURIComponent(path.slice(11)) }); json(res, 200, { ok: true }); return; }
@@ -243,6 +253,24 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     });
   });
   /**
+   * A deploy's result as pushes (docs/design.md, The wake streams): the commits it deployed name pull requests, each pull
+   * request is delivered by an item, and the result goes to the session holding each such item. A deploy that did not happen and
+   * concerns no held item goes to the PM; one that happened and concerns none is told to nobody, since nobody has to act on it.
+   * Returns how many pushes it made.
+   */
+  function pushDeploy(event: "deployed" | "deployFailed", fields: Record<string, unknown>): number {
+    const s = store.snapshot(), r = store.derived.rules(s, now());
+    const subjects = (Array.isArray(fields.changes) ? fields.changes : []).flatMap(c => typeof c === "string" ? [c.slice(c.indexOf(" ") + 1)] : []);
+    const found = typeof fields.repo === "string" ? deliveries(s, fields.repo, subjects) : [];
+    const held = found.filter(d => wake.holds(d.item) !== undefined);
+    const about = (d?: Delivery) => ({ item: d?.item ?? null, project: d ? r.projectOf(d.item) : null, title: d ? s.items[d.item]!.title : null, pr: d?.pr ?? null });
+    const base = event === "deployed" ? { version: fields.version, restarted: fields.restarted } : { version: fields.version, running: fields.running, reason: fields.reason };
+    for (const d of held) wake.push(event, { ...base, ...about(d) });
+    if (held.length || event === "deployed") return held.length;
+    wake.push(event, { ...base, ...about(found[0]) });
+    return 1;
+  }
+  /**
    * An agent's stream, `/wake/<session name>` (docs/design.md, The wake streams): the board keeps how far it was delivered, so the
    * client sends no number. It gets `connected`, `gap` when undelivered events were dropped, every undelivered event, then live
    * ones; it answers `{"ack": n}` once it has printed the events up to n, and they are not sent again. It also sends
@@ -251,8 +279,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   function agentUpgrade(req: IncomingMessage, raw: Duplex, head: Buffer, url: URL) {
     let name: string;
     try { name = decodeURIComponent(url.pathname.slice(6)).trim(); } catch { name = ""; }
-    // The PM's stream is /wake, which the PM's and the architect's session names answer for; a name with a slash, none, or a long one is not a session name.
-    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || answersPushes({ session: name }) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
+    // The PM's stream is /wake, which the PM's session name answers for; a name with a slash, none, or a long one is not a session name.
+    if (!name || name.length > 80 || name.includes("/") || /\p{Cc}/u.test(name) || isPMSession(name) || url.search) { raw.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     ws.handleUpgrade(req, raw, head, socket => {
       const stream = wake.agent(name), connection = { socket, alive: true, stream };
       socket.on("pong", () => { connection.alive = true; });
@@ -285,8 +313,6 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
-  // A deploy that has ended (built, and the daemon answering) may have changed the page without a restart: the open pages are told if it did.
-  const unsubscribeDeploys = wake.onPush(frame => { if (frame.event === "deployed" || frame.event === "deployFailed") void readPage(true); });
   /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
   const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
   /** Send a frame to the sockets reading one stream: the PM's (`stream` undefined) or an agent's. */
@@ -303,31 +329,47 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The items flagged 无人推进 now; one that appears and was not in it pushes one "stalled" event. Seeded at start without
   // pushing, so a restart does not announce every standing stall. Other checks are format flags the writer sees; none is pushed.
   let flagged = new Set<string>();
-  // The items done now; one that becomes done pushes "item-done" for each open item waiting on it (an owner or a shared
-  // dependent), to the session holding that item, else to the PM. Seeded at start like `flagged`, so a restart announces nothing.
+  // The items done now; one that becomes done pushes "item-done" for each open item waiting on it that a session holds, and
+  // "finished" to the PM when a session holds the done item itself. Seeded at start without pushing, like `flagged`, so a restart announces nothing.
   let finished = new Set<string>();
+  // The items whose review step is in progress now; one that enters it pushes "review" to the PM, unless a reviewer is already on it.
+  let reviewing = new Set<string>();
   // The snapshot the last scan read: a change is compared with it to find the items whose checks it can change.
   let scanned: Snapshot | undefined;
+  /** The review level a review step's text names ("审查（3 级）"), null when it names none. */
+  const reviewLevel = (text: string): number | null => { const level = /([1-5]) 级/.exec(text)?.[1]; return level === undefined ? null : Number(level); };
   /** `only`: rescan these items and keep every other item's state (rules affectedItems: a write changes no other item's
    * checks; elapsed active time alone is the timer's full scan). */
   function scanChecks(announce: boolean, s = store.snapshot(), only?: Iterable<string>) {
-    const r = store.derived.rules(s, now()), next = only ? new Set(flagged) : new Set<string>(), done = only ? new Set(finished) : new Set<string>();
+    const r = store.derived.rules(s, now()), next = only ? new Set(flagged) : new Set<string>(), done = only ? new Set(finished) : new Set<string>(), review = only ? new Set(reviewing) : new Set<string>();
     for (const id of only ?? Object.keys(s.items)) {
-      next.delete(id); done.delete(id);
+      next.delete(id); done.delete(id); review.delete(id);
       if (Object.hasOwn(s.items, id) && r.statusOf(id) === "done") {
         done.add(id);
-        if (announce && !finished.has(id)) for (const { id: parent } of r.dependents(id)) {
-          if (!r.isOpenWork(parent)) continue;
-          wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });
+        if (announce && !finished.has(id)) {
+          for (const { id: parent } of r.dependents(id)) {
+            if (!r.isOpenWork(parent) || wake.holds(parent) === undefined) continue;
+            wake.push("item-done", { item: id, project: r.projectOf(id), title: s.items[id]!.title, parent });
+          }
+          const session = holderOf(s, id);
+          if (session !== undefined) wake.push("finished", { item: id, project: r.projectOf(id), title: s.items[id]!.title, session });
         }
       }
       if (!Object.hasOwn(s.items, id) || !r.isOpenWork(id)) continue;
+      const requested = reviewRequested(s.items[id]);
+      if (requested !== undefined) {
+        review.add(id);
+        // A reviewer already on the item is resumed by the engineer: a re-review does not come to the PM.
+        if (announce && !reviewing.has(id) && !hasReviewer(s, id)) {
+          wake.push("review", { item: id, project: r.projectOf(id), title: s.items[id]!.title, level: reviewLevel(requested) });
+        }
+      }
       const stalled = r.checks(id).find(c => c.label === STALLED_LABEL);
       if (!stalled) continue;
       next.add(id);
       if (announce && !flagged.has(id)) wake.push("stalled", { item: id, project: r.projectOf(id), title: s.items[id]!.title, text: stalled.text });
     }
-    flagged = next; finished = done; scanned = s;
+    flagged = next; finished = done; reviewing = review; scanned = s;
   }
   scanChecks(false);
   const off = store.onChange(change => {
@@ -365,20 +407,26 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     }
   }, 25_000);
   heartbeat.unref();
-  // The timed wake: once `timedWakeMs` has passed since the last one (kept across restarts), or since the start when there is none.
-  const timedMs = deps.timedWakeMs ?? 30 * 60_000, started = new Date(now()).toISOString();
-  let timing = false;
-  async function timed() {
-    const last = wake.lastTimed;
-    if (timing || now() < Date.parse(last?.at ?? started) + timedMs) return;
-    timing = true;
+  // The timed wakes: the PM's once `timedWakeMs` has passed since its last one, the architect's once `architectTimedWakeMs` has
+  // (each kept across restarts), or since the start when there is none.
+  const timedMs = deps.timedWakeMs ?? 30 * 60_000, architectTimedMs = deps.architectTimedWakeMs ?? 60 * 60_000, started = new Date(now()).toISOString();
+  const timing = new Set<object>();
+  /** Make one timed wake on `stream`, which keeps the time of its last one, if it is due; one at a time for a stream. */
+  async function timedOn(stream: { lastTimed: TimedMark | undefined; markTimed(mark: TimedMark): void }, every: number, push: (s: Snapshot, r: Rules, last: TimedMark | undefined) => Promise<void>) {
+    const last = stream.lastTimed;
+    if (timing.has(stream) || now() < Date.parse(last?.at ?? started) + every) return;
+    timing.add(stream);
     try {
-      const s = store.snapshot(), fields = await withBudget(new Budget("timed wake", limits), () => timedWake(store, s, store.derived.rules(s, now()), last, started, deps.usage?.line()));
-      wake.push("timed", { ...fields });
-      wake.markTimed({ at: new Date(now()).toISOString(), head: s.head });
+      const s = store.snapshot();
+      await withBudget(new Budget("timed wake", limits), () => push(s, store.derived.rules(s, now()), last));
+      stream.markTimed({ at: new Date(now()).toISOString(), head: s.head });
     } catch (error) { console.error(error); }
-    finally { timing = false; }
+    finally { timing.delete(stream); }
   }
+  const timed = () => Promise.all([
+    timedOn(wake, timedMs, async (s, r, last) => { wake.push("timed", { ...await timedWake(store, s, r, last, started) }); }),
+    timedOn(wake.agent(ARCHITECT_SESSION), architectTimedMs, async (s, r, last) => { wake.push("timed-architect", { ...await architectTimedWake(store, s, r, last, started) }); }),
+  ]);
   // Stalls appear with active time alone, and the time limits run out without a write, so re-evaluate on a timer.
   const checker = setInterval(() => {
     scanChecks(true); wake.checkReceipts();
@@ -391,14 +439,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
   deps.watch?.start();
-  // The look at the Actions billing (src/usage-watch.ts) runs on its own timer, every half hour.
-  deps.usage?.start();
+  // The look at the checks (src/ci-watch.ts) runs on its own timer, every 30 seconds.
+  deps.ci?.start();
   // Stopping (design section 4): no new request is served; what is running gets the grace to finish; then every connection is closed.
   const close = server.close.bind(server);
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.usage?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeDeploys(); unsubscribeTold();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.ci?.stop(); off(); unsubscribe(); unsubscribeAgents(); unsubscribeTold();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();

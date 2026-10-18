@@ -14,7 +14,7 @@ import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Wake } from "../src/wake.ts";
 import type { GithubWatch } from "../src/watch.ts";
-import type { UsageWatch } from "../src/usage-watch.ts";
+import type { CiWatch } from "../src/ci-watch.ts";
 import type { Credentials } from "../src/credentials.ts";
 
 /** A RegExp from a template whose interpolated values match literally: an expected error text built from the same definition the code builds it from. */
@@ -43,14 +43,13 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: pmAuthor }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
-  const item = (title: string, fields: object = {}) => ({ title, group: author, priority: "P1", difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
-  const nonRoot = (doc: Record<string, unknown>) => { delete doc.priority; return doc; };
+  const item = (title: string, fields: object = {}) => ({ title, group: author, difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
     { kind: "item", id: "area", expectRev: null, doc: item("解释器工作", { group: "Whitefoot", plan: [{ id: "a", item: "a", own: true, after: [] }, { id: "b", item: "b", own: true, after: [] }, { id: "accept", accept: true, text: "解释器目标通过", state: "todo" }] }) },
     { kind: "item", id: "other", expectRev: null, doc: item("其他项目", { group: options.sharedProjects ? "Whitefoot" : "Firn" }) },
-    { kind: "item", id: "a", expectRev: null, doc: nonRoot(item("中文检查", { head: "稳定中文背景 Whitefoot#341", data: "中文数据", ask: { text: "批准中文检查" }, links: [{ label: "Pull request", url: "https://github.com/Ming-Research/Whitefoot/pull/341" }],
-      log: Array.from({ length: 7 }, (_, i) => ({ at: `2026-10-11T01:02:0${i}Z`, by: i === 0 ? "中文作者" : author, text: i === 0 ? "早期中文记录" : i === 6 ? "最新中文记录" : `Progress ${i}` })) })) },
-    { kind: "item", id: "b", expectRev: null, doc: nonRoot(item("阻塞证据", { priority: "P0", head: "未注明仓库 #341; Other#341\n\n[[q:choice]]", plan: [{ id: "a", item: "a", own: false, after: [] }, { id: "ruled", card: "ruled", after: [] }, { id: "choice", card: "choice", after: [] }, { id: "accept", accept: true, text: "阻塞证据验收通过", state: "todo" }] })) },
+    { kind: "item", id: "a", expectRev: null, doc: item("中文检查", { head: "稳定中文背景 Whitefoot#341", data: "中文数据", ask: { text: "批准中文检查" }, links: [{ label: "Pull request", url: "https://github.com/Ming-Research/Whitefoot/pull/341" }],
+      log: Array.from({ length: 7 }, (_, i) => ({ at: `2026-10-11T01:02:0${i}Z`, by: i === 0 ? "中文作者" : author, text: i === 0 ? "早期中文记录" : i === 6 ? "最新中文记录" : `Progress ${i}` })) }) },
+    { kind: "item", id: "b", expectRev: null, doc: item("阻塞证据", { head: "未注明仓库 #341; Other#341\n\n[[q:choice]]", plan: [{ id: "a", item: "a", own: false, after: [] }, { id: "ruled", card: "ruled", after: [] }, { id: "choice", card: "choice", after: [] }, { id: "accept", accept: true, text: "阻塞证据验收通过", state: "todo" }] }) },
     { kind: "decision", id: "choice", expectRev: null, doc: { item: "b", question: "中文方案？", options: [{ key: "A", text: "中文选项", recommended: true }, { key: "B", text: "另一选项" }], status: "open", blocks: "阻塞证据的验收等它", at, updated: at } },
     { kind: "decision", id: "ruled", expectRev: null, doc: { item: "b", question: "旧方案？", options: [{ key: "A", text: "Old" }], status: "ruled", choice: "A", ruledAt: later, ruling: "中文裁决", legacy: { background: "Old Whitefoot PR #341" }, updated: later } },
     { kind: "note", id: "note-1", expectRev: null, doc: { target: "it:a", kind: "comment", text: "中文意见 Whitefoot #341", at, sentAt: at, state: "sent" } },
@@ -60,10 +59,10 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; usage?: (fixture: Awaited<ReturnType<typeof board>>) => UsageWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; ci?: (fixture: Awaited<ReturnType<typeof board>>) => CiWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, watch: extra.watch?.(fixture), usage: extra.usage?.(fixture) });
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");

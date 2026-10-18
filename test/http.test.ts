@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { board, author, later, server, wakeSocket } from "./helpers.ts";
+import { agentSocket, board, author, later, server, wakeSocket } from "./helpers.ts";
 import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -79,7 +79,7 @@ test("exact Host and same-Origin enforced for writes and WebSocket upgrades", as
 
 test("POST /api/send with ids wakes only for those notes and refuses a non-draft id with 400", async t => {
   const { url, api } = await server(t);
-  const { events, sync } = await wakeSocket(t, url);
+  const { events, sync } = await agentSocket(t, url, "架构师");
   const one = await api("/api/notes", { target: "it:a", kind: "comment", text: "one" });
   const two = await api("/api/notes", { target: "it:other", kind: "comment", text: "two" });
   const sent = await api("/api/send", { ids: [two.data.id] });
@@ -235,7 +235,7 @@ test("draft text edit HTTP shape updates an exact note and reports stale or sent
 });
 
 // A root with a missing shared row carries a (format) check in the plan model; its next step waits on that row, so it is blocked and carries no 缺难度.
-const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", priority: "P1", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
+const blockedItem = (id: string, rev: number | null = null) => ({ kind: "item" as const, id, expectRev: rev, doc: { title: "卡住的条目", group: "Whitefoot", plan: [{ id: "missing", item: "missing", own: false, after: [] }, { id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过" } });
 test("after a write the check scan rederives only the items the write can reach", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);

@@ -28,11 +28,6 @@
   --bar-block: #8b5cf6;
   --block: #6d3fd4;
   --block-soft: #efe8fd;
-  --p0: #d9534f;
-  --p1: #fbe3dd;
-  --p1-ink: #b3412e;
-  --p2-ink: #5b6763;
-  --p2: #e6eae8;
   --wip: #9a5200;
   --wip-soft: #fdf0dc;
   --done: #2f7a43;
@@ -60,7 +55,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
-    --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
+    --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140;
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
     --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
     --prog-from: #4c3211; --prog-to: #1a3623;
@@ -72,7 +67,7 @@
 }
 :root[data-theme="dark"] {
   --tag-bg: #163633; --tag-ink: #8fe0d8; --tag-rule: #2f6b66; --bg: #111615; --surface: #182020; --ink: #e2e9e6; --muted: #98a6a1; --rule: #2a3533;
-  --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140; --p0: #c9473f; --p1: #43211d; --p1-ink: #f0a08f; --p2: #2a3533; --p2-ink: #a3aeaa;
+  --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140;
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
   --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
   --prog-from: #4c3211; --prog-to: #1a3623;
@@ -100,14 +95,13 @@ body.wide .page-left > * { flex-shrink: 0; }
 body.wide :is(#areas, #agents) .item { padding-inline: 4px; }
 body.wide :is(#areas, #agents) .item-title { font-size: 13px; }
 body.wide :is(#areas, #agents) .item.line > .item-row .item-title { font-size: 13.5px; }
-body.wide :is(#areas, #agents) .st, body.wide :is(#areas, #agents) .prio, body.wide :is(#areas, #agents) .prio-was, body.wide :is(#areas, #agents) .counts .st, body.wide :is(#areas, #agents) .newtag, body.wide :is(#areas, #agents) .asktag, body.wide :is(#areas, #agents) .waittag, body.wide :is(#areas, #agents) .checktag, body.wide :is(#areas, #agents) .pendtag { font-size: 11px; }
+body.wide :is(#areas, #agents) .st, body.wide :is(#areas, #agents) .counts .st, body.wide :is(#areas, #agents) .newtag, body.wide :is(#areas, #agents) .asktag, body.wide :is(#areas, #agents) .waittag, body.wide :is(#areas, #agents) .checktag, body.wide :is(#areas, #agents) .pendtag { font-size: 11px; }
 body.wide :is(#areas, #agents) .item.selected { background: var(--cur); }
 /* Split tree rows: the arrow and the new-content line are centered on the row, the arrow sits close to the status chip,
-   and the status and priority chips are smaller; every status chip keeps the width BLOCK needs. */
+   and the status chips are smaller; every status chip keeps the width BLOCK needs. */
 body.wide :is(#areas, #agents) .tree-row > .caret { width: 10px; margin-right: 3px; align-self: stretch; display: flex; align-items: center; justify-content: center; line-height: 1; }
 body.wide :is(#areas, #agents) .item.fresh:not(:has(> .body))::before { left: 1px; top: 50%; bottom: auto; height: 13px; transform: translateY(-50%); }
 body.wide :is(#areas, #agents) .item-head .st { font-size: 10px; padding: 0 4px; min-width: calc(5ch + 8px); line-height: 1.6; }
-body.wide :is(#areas, #agents) .item-head .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; }
 body.wide button.caret { background: none; border: 0; padding: 0; cursor: pointer; align-self: center; }
 body.wide button.caret:disabled { cursor: default; }
 header.top { padding-block: 26px 14px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--rule); }
@@ -214,12 +208,10 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-group { border-left: 2px solid var(--rule); margin-left: 7px; padding-left: 4px; }
 .plan-group-label { font-size: 11.5px; color: var(--muted); }
 .plan-row .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
-/* An item row reads like the item's head in the tree: the row glyph carries its status, then a compact priority chip,
+/* An item row reads like the item's head in the tree: the row glyph carries its status,
    the title as plain text that turns into a link on hover, then its ratio and tags. */
 .plan-row.item-line { padding: 3px 0; }
 .plan-row.item-line > .plan-main { line-height: 1.55; }
-.plan-row.item-line .prio { font-size: 10px; padding: 0 4px; line-height: 1.6; margin-right: 6px; vertical-align: 1px; }
-.plan-row.item-line .prio.none { display: none; }
 .plan-row.item-line .item-title { font-size: 13.5px; font-weight: 500; }
 .plan-row.item-line .plan-meta { display: inline; margin-left: 8px; white-space: nowrap; }
 .plan-row.item-line .plan-meta > * + * { margin-left: 6px; }
@@ -253,7 +245,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
    bends with them. A tree row, which has no body, gets a short line beside its head. */
 .item.fresh:not(:has(> .body))::before { left: 3px; top: 8px; bottom: 8px; }
 .item.fresh:has(> .body)::before { content: none; }
-/* The detail column marks an item's own new content with a short line beside its headline, which stays in sight. */
+/* The detail column marks a changed title (or a new item) with a short line beside its headline, which stays in sight. */
 body.wide #item-detail .item.fresh > .item-row { position: relative; }
 body.wide #item-detail .item.fresh > .item-row::before { content: ""; position: absolute; left: -7px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--fresh); }
 body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { padding-left: 0; }
@@ -373,11 +365,6 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .st.cancelled, .st.paused { color: var(--muted); font-weight: 600; }
 .st.blocked { color: var(--block); font-weight: 700; }
 .blocktag { font-size: 12px; font-weight: 600; background: var(--bar-block); color: #fff; padding: 0 6px; border-radius: 4px; }
-.prio { font-family: var(--font-mono); font-size: 12px; font-weight: 700; padding: 0 6px; border-radius: 4px; line-height: 1.7; color: #fff; }
-.prio.p0 { background: var(--p0); }
-.prio.p1 { background: var(--p1); color: var(--p1-ink); }
-.prio.p2 { background: var(--p2); color: var(--p2-ink); }
-.prio.none { visibility: hidden; }
 .tablewrap { overflow-x: auto; max-width: 100%; }
 .rich table { border-collapse: collapse; font-size: 13.5px; margin: 4px 0; font-variant-numeric: tabular-nums; }
 .rich th, .rich td { padding: 3px 10px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
@@ -471,7 +458,6 @@ details.refsec > .refbody p { margin: 0; }
 .deprow { font: inherit; font-size: 13.5px; display: flex; align-items: baseline; gap: 7px; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 6px; color: var(--ink); cursor: pointer; min-width: 0; }
 .deprow:hover { background: var(--accent-soft); }
 .deprow .st { flex: none; }
-.deprow .prio { flex: none; font-size: 11.5px; }
 .deprow .where { color: var(--muted); font-size: 12.5px; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deprow.cross .where { color: var(--block); font-weight: 600; }
 .deprow .t { min-width: 0; overflow-wrap: anywhere; }

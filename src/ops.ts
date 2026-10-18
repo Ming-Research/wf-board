@@ -1,25 +1,30 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
-import type { Access, Part, PlanRow, ItemTarget, Link, Option, Priority, Snapshot, DispatchUsage } from "./model.ts";
+import { Key, Item, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
+import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 
 export class OpError extends Error {}
-/** `dropped`: items whose stored priority the write removed because they are non-roots. */
+/** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
+function refuseSummary(head: string | undefined): void {
+  const mark = head === undefined ? undefined : summaryMark(head);
+  if (mark) throw new OpError(`head: it holds the line "${mark}", which context writes where it cut a section short, so it is a summary and not the head. Read the whole head with context section: "all", change that, and write it back`);
+}
 /** `credential`: the token a new dispatch writes with, shown once (only the hash is kept). `repeated`: the write was already made a moment ago, by the same session with the same text; nothing was written again. */
-export interface Result { commit: string; id: string; rev?: number; summary: string; dropped?: Array<{ id: string; priority: Priority }>; credential?: string; repeated?: true }
+export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true }
 export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; priority?: Priority; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
+  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; access?: Access; id: string; text: string }): Promise<Result>;
   /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
   markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
@@ -31,7 +36,7 @@ export interface Ops {
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
-  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; priority?: Priority; data?: string | null; order?: number }): Promise<Result>;
+  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; session?: string; access?: Access; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
@@ -44,9 +49,9 @@ export interface Ops {
   renameTag(a: { author: string; session?: string; access?: Access; name: string; to: string }): Promise<Result>;
   removeTag(a: { author: string; session?: string; access?: Access; name: string; replace?: string }): Promise<Result>;
   setPause(a: { author: string; session?: string; access?: Access; id: string; paused: boolean; reason?: string }): Promise<Result>;
-  moveItem(a: { author: string; session?: string; access?: Access; id: string; owner?: string; after?: string[]; priority?: Priority }): Promise<Result>;
+  moveItem(a: { author: string; session?: string; access?: Access; id: string; owner?: string; after?: string[] }): Promise<Result>;
   /** Moves an item and everything it owns to another project; an owner left behind keeps a shared row. */
-  moveItemProject(a: { author: string; session?: string; access?: Access; id: string; project: string; priority?: Priority }): Promise<Result>;
+  moveItemProject(a: { author: string; session?: string; access?: Access; id: string; project: string }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
   /** Creates a card and its row in the item's plan in one commit, or revises an open card's question, options and blocks. */
   writeCard(a: { author: string; session?: string; access?: Access; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
@@ -88,11 +93,6 @@ function requireCard(s: Snapshot, key: string): Decision {
   if (!card) throw new OpError(`key ${key}: choose an existing decision card`);
   return card;
 }
-/** For every project only a root, an item no open item depends on, stores a priority; any other item's comes from its dependents. */
-function derivedPriority(id: string, from: string[]): OpError {
-  return new OpError(`priority: ${id} 有未完成的条目依赖它，它的优先级来自这些条目（${from.join("、")}），不能自己设；只有没有未完成条目依赖的根条目才写优先级`);
-}
-const openDependents = (r: ReturnType<typeof rules>, id: string): string[] => r.dependents(id).map(d => d.id).filter(d => r.statusOf(d) !== "done" && r.statusOf(d) !== "cancelled");
 
 /** The tags an item of `project` may carry, as a sentence for an error message. */
 function allowedTags(s: Snapshot, project: string): string {
@@ -160,7 +160,7 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
-interface Work { moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board; dropped?: Result["dropped"] }
+interface Work { moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -251,12 +251,11 @@ function ownedNote(s: Snapshot, id: string, who: Writer): { note: Note; item: st
 }
 
 /** The parts an update_item changes, by the fields it gives. */
-function updateParts(a: { title?: string; head?: string; links?: unknown; priority?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
+function updateParts(a: { title?: string; head?: string; links?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
   const parts: Part[] = [];
   if (a.title !== undefined) parts.push("item.title");
   if (a.head !== undefined) parts.push("item.head");
   if (a.links !== undefined) parts.push("item.links");
-  if (a.priority !== undefined) parts.push("item.priority");
   if (a.data !== undefined) parts.push("item.data");
   if (a.order !== undefined) parts.push("item.order");
   if (a.record !== undefined || a.accept !== undefined) parts.push("item.record");
@@ -334,6 +333,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const partList = typeof parts === "string" ? [parts] : parts;
       mayWrite(a, partList);
       nonempty(a);
+      if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
       for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
       if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
       if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
@@ -343,7 +343,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const work = await make(s, at);
         if (work.replayed) return { ...work.replayed, repeated: true as const };
         if (!anyAuthor) requireAuthor(s, a.author);
-        const dropped = [...work.dropped ?? []];
         // A write of messages alone changes no item, card or note: no rule of the board reads it, so none is checked.
         if (work.board || work.puts.some(p => p.kind !== "message")) {
           // Validate the prospective board, including indirect effects on children,
@@ -361,23 +360,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           const beforeRules = rulesOf(s);
           // Rules of a prospective state are built once per state: again only after a step below changes `next`.
           const candidate = () => store.derived.candidate(s, next);
-          // For every project a stored priority never outlives rootness: the write drops it from every non-root it writes or makes a non-root, and says so in that item's log.
           const written = new Set(work.puts.filter(p => p.kind === "item").map(p => p.id));
-          let afterRules = candidate();
-          let droppedHere = false;
-          for (const [id, it] of Object.entries(next.items)) {
-            if (!it.priority || afterRules.isRoot(id) || !(written.has(id) || beforeRules.isRoot(id))) continue;
-            const doc = { ...it, ...(written.has(id) ? {} : { updated: at }), log: [...it.log, { at, by: a.author, text: `不再是根：优先级改由依赖它的条目决定，原来写的 ${it.priority} 不再使用` }] };
-            delete doc.priority;
-            dropped.push({ id, priority: it.priority });
-            next.items[id] = doc;
-            const put = work.puts.find(p => p.kind === "item" && p.id === id);
-            if (put) put.doc = doc; else work.puts.push({ kind: "item", id, doc, expectRev: it.rev });
-            droppedHere = true;
-          }
-          // The rules above read `next` before these priority drops; derive the changed state once more.
-          if (droppedHere) afterRules = candidate();
-          // Last of the writes, so the drops above count: they change an item the call did not name.
+          const afterRules = candidate();
           withinScope(s, a, partList, work);
           const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
           // Pause permission covers open work resumed through any indirect effect,
@@ -422,7 +406,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
-          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(dropped.length ? { dropped } : {}) };
+          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message };
         } catch (error) {
           if (error instanceof ConflictError) {
             if (!overwrite) continue;
@@ -497,11 +481,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     const waiter = out[i + 1];
     if (waiter) out[i + 1] = { ...waiter, after: [...waiter.after ?? (i > 0 ? [plan[i - 1]!.id] : []), key] };
     return out;
-  }
-  function priorityAllowed(s: Snapshot, id: string): void {
-    const r = s === store.snapshot() ? rulesOf(s) : rules(s);
-    if (r.isBacklog(id)) throw new OpError(`priority: ${id} is record-owned work and cannot store priority; priority derives from open shared dependents`);
-    if (!r.isRoot(id)) throw derivedPriority(id, openDependents(r, id));
   }
   function attach(s: Snapshot, puts: Put[], at: string, by: Writer, owner: string, id: string, after?: string[]): void {
     ownedItem(s, owner, by, "owner"); const doc = docOf(s, puts, owner);
@@ -594,8 +573,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const group = a.group ?? owner?.group;
       if (!group) throw new OpError("group: a new top item requires its project");
       requireProject(s, group);
-      if (a.owner && a.priority) throw derivedPriority(a.key, [a.owner]);
-      if (!a.owner && !a.priority && !a.record) throw new OpError("priority: a new root requires a priority");
+      refuseSummary(a.head);
       if (a.record ? a.accept !== undefined : !a.accept) throw new OpError("accept: required for work, refused for records");
       if (!a.owner && a.after !== undefined) throw new OpError("after: requires owner");
       const inputs = [...a.plan ?? []];
@@ -605,7 +583,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const id of children) { ownedItem(s, id, a, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
-      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, priority: a.priority, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rulesOf(s).parentOf(id);
@@ -804,11 +782,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
       const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
       const changedHead = a.head !== undefined && a.head !== it.head;
+      if (changedHead) refuseSummary(a.head);
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
-      if (a.priority !== undefined) priorityAllowed(s, a.id);
       if (a.order !== undefined && rulesOf(s).parentOf(a.id)) throw new OpError("order: only top items carry order; order owned items in the plan");
       const doc = { ...it, updated: at, log: [...it.log] };
-      for (const key of ["title", "head", "links", "priority", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
+      for (const key of ["title", "head", "links", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
         // Cancelled work turned into a record and back to work would be reopened without set_status.
         if (it.status === "cancelled") onlyProcess(a, "turn a cancelled item into a record");
@@ -860,14 +838,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }, false, true),
     moveItem: a => run(a, "item.move", (s, at) => {
       ownedItem(s, a.id, a);
-      if (a.owner && a.priority) throw new OpError("priority: refused with owner");
       const puts: Put[] = []; transfer(s, puts, at, a, a.id, a.owner, a.after);
-      if (!a.owner) {
-        const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
-        const r = rules(next);
-        if (r.isRoot(a.id) && !a.priority) throw new OpError("priority: moving to a root requires a priority");
-        if (a.priority) { priorityAllowed(next, a.id); const doc = docOf(s, puts, a.id); putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority })); }
-      }
       return { id: a.id, kind: "item", puts, moved: [a.id], message: `move_item ${a.id}` };
     }),
     moveItemProject: a => run(a, "item.move-project", (s, at) => {
@@ -912,11 +883,6 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           : `${waiting.join(", ")} will wait on ${id} through a shared row while no item of ${a.project} owns ${id}. Have an item of ${a.project} own ${id} first, or drop the row to ${id} from ${waiting.length === 1 ? "that item's" : "their"} plan with set_plan first`;
       };
       if (stranded.length) throw new OpError(`project: 同项目有条目在等它，却没有条目拥有它: ${stranded.map(fix).join("; ")}`);
-      if (a.priority !== undefined) {
-        priorityAllowed(next, a.id);
-        const doc = docOf(s, puts, a.id);
-        putDoc(puts, itemPut(a.id, { ...doc, priority: a.priority, log: root.priority && root.priority !== a.priority ? [...doc.log, entry(a.author, at, `优先级：${root.priority} 改为 ${a.priority}`)] : doc.log }));
-      } else if (after.isOpenWork(a.id) && after.isRoot(a.id) && !root.priority) throw new OpError(`priority: ${a.id} becomes a root of ${a.project} with no stored priority; give priority P0 (urgent), P1 (soon) or P2 (later)`);
       return { id: a.id, kind: "item", puts, moved: ids, message: `move_item_project ${a.id} ${a.project}` };
     }),
     clearAsk: a => edit(a, "item.ask", "clear_ask", (it, _s, at) => {

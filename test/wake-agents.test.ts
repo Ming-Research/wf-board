@@ -3,18 +3,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { agentSocket, board, server, wakeSocket, asArchitect } from "./helpers.ts";
+import { agentSocket, board, server, wakeSocket, asArchitect, author, later } from "./helpers.ts";
 import { ARCHITECT_SESSION, MESSAGE_TEXT_LIMIT, PM_SESSION } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { AGENT_STREAM_IDLE_MS, AgentStream, FOOTER_HEAD, FOOTER_LINES, LINE_LIMIT, WAKE_KINDS, Wake, agentFileName, lineOf } from "../src/wake.ts";
 import type { WakeKind } from "../src/wake.ts";
 import { holderOf, openDispatches } from "../src/dispatch.ts";
+import { candidates } from "../src/candidates.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import type { Resolved } from "../src/credentials.ts";
 
@@ -34,12 +36,22 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 test("every kind says where it goes, and a holder or session route names one of the kind's own fields", () => {
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) {
-    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string } | "pm" | undefined;
+    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true } | "pm" | "architect" | undefined;
     const field = typeof to === "object" && to !== null ? to.holder ?? to.session : undefined;
-    assert.ok(to === "pm" || (field !== undefined && Object.keys(to!).length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
+    const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only") : [];
+    assert.ok(to === "pm" || to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
-  assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent" });
+  // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
+  for (const kind of ["review", "finished", "stalled", "no-answer", "timed", "pr-red", "pr-orphan"] as const) assert.equal(WAKE_KINDS[kind].to, "pm", kind);
+  // What needs the content of an item read to judge goes to the architect: the owner's notes, and its own hourly wake.
+  for (const kind of ["note", "timed-architect"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
+  assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
+  assert.deepEqual(WAKE_KINDS.deployed.to, { holder: "item", only: true });
+  assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
+  assert.deepEqual(WAKE_KINDS["main-red"].to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
+  assert.equal("pr-ready" in WAKE_KINDS, false, "a pull request that can merge is the engineer's to merge, not pushed");
+  assert.equal("dispatch" in WAKE_KINDS, false, "the board pushes no offers: the PM compares the candidates with its own limits");
 });
 
 // Every field at a length no real push reaches: the line must stay within its limit whatever the fields hold.
@@ -47,16 +59,17 @@ const L = "长".repeat(1000), many = Array.from({ length: 500 }, (_, i) => `x${i
 const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   note: { note: L, target: "it:" + L, kind: "comment", title: L, project: L },
   stalled: { item: L, project: L, title: L, text: L },
-  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: many, architect: many, pm: many, actions: L },
-  "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L },
+  timed: { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999, architect: 99999, pm: 99999, review: many, finished: many },
+  "timed-architect": { since: L, changed: [...many.map(item => ({ item })), { more: 99 }], working: 99999 },
+  review: { item: L, project: L, title: L, level: 5 },
+  finished: { item: L, project: L, title: L, session: L },
+  "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },
   "pr-red": { repo: L, number: 123456, project: L, title: L, commit: L, failed: many, url: L, items: many },
-  "pr-ready": { repo: L, number: 123456, project: L, title: L, base: L, commit: L, url: L, items: many },
   "pr-orphan": { repo: L, number: 123456, project: L, title: L, url: L, draft: true },
   "slow-op": { op: L, ms: 123456789, limitMs: 1000, params: L },
   "backup-behind": { commits: 123456, lastSuccess: L, reason: L },
-  "actions-usage": { org: L, reason: "month", level: 90, month: L, day: L, used: 1, included: 1, today: 1, budget: null, text: L },
-  deployed: { version: L, previous: L, changes: many, restarted: true },
-  deployFailed: { version: null, running: null, reason: L },
+  deployed: { version: L, restarted: true, item: L, project: L, title: L, pr: 123456 },
+  deployFailed: { version: L, running: L, reason: L, item: L, project: L, title: L, pr: 123456 },
   "item-done": { item: L, project: L, title: L, parent: L },
   "ask-alive": { item: L, project: L, title: L, since: L },
   "no-answer": { session: L, item: L, project: L, title: L, since: L },
@@ -94,9 +107,12 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   const wake = new Wake({ file, dir, now: () => T0 });
   const held: Record<string, string> = { p1: "工程师甲", p2: "eng-b" };
   wake.routeBy(item => held[item]);
-  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("item-done", done("c4", "nobody"))];
+  const ask = (item: string) => ({ item, project: "Whitefoot", title: "t", since: "2026-10-17T00:00:00Z" });
+  const pushed = [wake.push("item-done", done("c1", "p1")), wake.push("item-done", done("c2", "p2")), wake.push("item-done", done("c3", "p1")), wake.push("ask-alive", ask("nobody"))];
   assert.deepEqual(pushed.map(f => f.n), [1, 1, 2, 1], "each stream numbers from 1");
-  assert.deepEqual(wake.since(0).frames.map(f => f.item), ["c4"], "only the unheld item's push is the PM's");
+  assert.deepEqual(wake.since(0).frames.map(f => f.item), ["nobody"], "only the unheld item's push is the PM's");
+  assert.throws(() => wake.push("item-done", done("c5", "nobody")), /nobody does/, "a push for a holder alone is not made without one");
+  assert.equal(wake.latest(), 1, "and takes no number");
   assert.deepEqual(wake.agent("工程师甲").pending().frames.map(f => f.item), ["c1", "c3"]);
   assert.deepEqual(wake.agent("eng-b").pending().frames.map(f => f.item), ["c2"]);
   assert.deepEqual((await readdir(dir)).sort(), ["pm.jsonl", agentFileName("eng-b"), agentFileName("工程师甲")].sort(), "one file per agent, named by a hash of its name");
@@ -107,15 +123,24 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.equal(again.latest(), 1, "the PM's numbers are its own");
 });
 
-test("a push routed to the session of the PM or of the architect goes to the PM's stream, and no stream is made under their names", async t => {
+test("a push routed to the session of the PM goes to the PM's stream, to the session of the architect to its own agent stream, and no stream is made under the PM's name", async t => {
   const dir = await scratch(t), wake = new Wake({ file: join(dir, "pm.jsonl"), dir, now: () => T0 });
   const held: Record<string, string> = { mine: PM_SESSION, theirs: ARCHITECT_SESSION };
   wake.routeBy(item => held[item]);
   const message = (to: string) => ({ message: "m", from: "eng", project: "Whitefoot", to, item: null, text: "看" });
   wake.push("message", message(PM_SESSION)); wake.push("message", message(ARCHITECT_SESSION));
   wake.push("item-done", done("c1", "mine")); wake.push("item-done", done("c2", "theirs"));
-  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "message", "item-done", "item-done"]);
-  assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), false);
+  assert.deepEqual(wake.since(0).frames.map(f => [f.event, f.item ?? f.to]), [["message", PM_SESSION], ["item-done", "c1"]], "the PM's stream gets what is for the PM");
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).pending().frames.map(f => [f.event, f.item ?? f.to]), [["message", ARCHITECT_SESSION], ["item-done", "c2"]], "and the architect's agent stream what is for the architect");
+  // A holder-routed kind with no item to name (the red main line no PR explains) is the PM's too.
+  wake.push("main-red", { repo: "o/r", project: "p", branch: "main", commit: "c", failed: [], url: "u", item: null, pr: null });
+  assert.equal(wake.since(0).frames.at(-1)!.event, "main-red");
+  assert.equal(wake.hasAgent(PM_SESSION), false); assert.equal(wake.hasAgent(ARCHITECT_SESSION), true);
+  // The owner's notes and the architect's own wake are the architect's by their kind.
+  wake.push("note", { note: "n1", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  wake.push("timed-architect", { since: "2026-10-17T00:00:00Z", changed: [], working: 0 });
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).pending().frames.slice(2).map(f => f.event), ["note", "timed-architect"]);
+  assert.deepEqual(wake.since(0).frames.map(f => f.event), ["message", "item-done", "main-red"], "and none of them is the PM's");
 });
 
 test("a delivered push is never given again: after an ack, across a restart, and once a tool result carried it", async t => {
@@ -213,21 +238,21 @@ test("an agent's socket gets what was not delivered, then its own live pushes on
   const back = await agentSocket(t, url, "eng");
   assert.deepEqual(back.frames, [{ event: "connected", latest: 1 }], "a delivered push is not replayed");
   const live = wake.agent("eng").push("item-done", done("c2", "p"));
-  wake.push("note", { note: "n1", target: "it:a", kind: "comment", title: "中文检查", project: "Whitefoot" });
+  wake.push("stalled", { item: "a", project: "Whitefoot", title: "中文检查", text: "无人推进" });
   for (const s of [pm, eng, other, back]) await s.sync();
   assert.deepEqual(eng.events().map(f => f.n), [1, 2]); assert.deepEqual(back.events(), [live]);
   assert.deepEqual(other.events(), [], "another agent's push does not reach this stream");
-  assert.deepEqual(pm.events().map(f => f.event), ["note"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
+  assert.deepEqual(pm.events().map(f => f.event), ["stalled"], "an agent's push does not reach the PM's stream, nor the PM's an agent's");
   eng.socket.send("not json"); eng.socket.send(JSON.stringify({ ack: "2" })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 1, "anything but a numeric ack is ignored");
   // Valid JSON that is not an object has no fields to read: it is ignored, and the stream still takes the next ack.
   for (const message of ["null", "[]", "1", '"ack"']) eng.socket.send(message);
   eng.socket.send(JSON.stringify({ ack: 2 })); await eng.sync();
   assert.equal(wake.agent("eng").deliveredUpTo(), 2, "a message that is not an object is ignored, and the next ack counts");
-  for (const path of ["/wake/", "/wake/" + encodeURIComponent(ARCHITECT_SESSION), "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
+  for (const path of ["/wake/", "/wake/" + encodeURIComponent(PM_SESSION), "/wake/" + encodeURIComponent(` ${PM_SESSION} `), "/wake/eng?after=1", "/wake/a%2Fb", "/wake/" + "x".repeat(81), "/wake/%E0%A4%A"]) assert.equal(await refused(t, url, path), 400, path);
 });
 
-test("another agent's tool call carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {
+test("an agent's tool call (the architect's too) carries its undelivered pushes once, by its credential's session when it has one; the PM's never does", async t => {
   const wake = new Wake({ now: () => T0 }), { store, op } = await board(t);
   const call = async (args: Record<string, unknown>, credential?: Resolved) => {
     const mcp = createMcpServer({ store, ops: op, wake, credential }), client = new Client({ name: "Footer", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
@@ -242,11 +267,12 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(await call({ session: "eng" }), plain, "carried once");
   wake.agent("eng").push("item-done", done("c2", "p"));
   assert.equal(await call({}), plain, "a call naming no session carries nothing");
-  // Nothing routes to a stream under the PM's name; one made by hand still never reaches the PM's calls.
-  wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
-  assert.equal(await call({ session: ARCHITECT_SESSION }), plain);
+  // The architect's calls carry what was pushed to its stream like any agent's; the PM's never do, whether or not a stream was made under its name.
+  const owed = wake.agent(ARCHITECT_SESSION).push("item-done", done("pm", "p"));
+  assert.equal(await call({ session: ARCHITECT_SESSION }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(owed)}`);
+  assert.equal(await call({ session: ARCHITECT_SESSION }), plain, "carried once");
   wake.agent(PM_SESSION).push("item-done", done("pm-2", "p"));
-  assert.equal(await call({ session: PM_SESSION }), plain, "the PM's session is the PM's too, whether or not a stream was made under its name");
+  assert.equal(await call({ session: PM_SESSION }), plain, "the PM's session is the PM's, whether or not a stream was made under its name");
   assert.equal(await call({ session: ` ${PM_SESSION} ` }), plain);
   assert.equal(await call({ session: " eng " }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(wake.agent("eng").since(1).frames[0]!)}`, "spaces around the name are ignored");
   const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] } } };
@@ -255,8 +281,9 @@ test("another agent's tool call carries its undelivered pushes once, by its cred
   assert.equal(await call({ session: "eng" }, credential), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(mine)}`, "the credential's session, not the one the call names");
   assert.equal(wake.agent("eng").deliveredUpTo(), 2);
   const architect: Resolved = { ok: true, who: { author: "Architect", session: ARCHITECT_SESSION, access: { role: "架构师", project: "Architect", roots: [] } } };
-  assert.equal(await call({ session: "eng" }, architect), plain, "the PM's calls are receipts for its own stream and carry nothing");
-  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 0);
+  const second = wake.agent(ARCHITECT_SESSION).push("item-done", done("c5", "p"));
+  assert.equal(await call({ session: "eng" }, architect), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(second)}`, "the architect's credential: its own stream, whatever session the call names");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 2);
   const pm: Resolved = { ok: true, who: { author: "PM", session: PM_SESSION, access: { role: "PM", project: "PM", roots: [] } } };
   assert.equal(await call({ session: "eng" }, pm), plain, "a PM credential is the PM's, whatever session the call names");
   assert.equal(wake.agent(PM_SESSION).deliveredUpTo(), 0);
@@ -275,7 +302,73 @@ test("an item becoming done tells the session holding each open item that waits 
   await op.appendLog({ ...asArchitect, id: "a", text: "a later write to the done item" });
   await pm.sync();
   assert.equal(wake.agent("b-worker").latest(), 1, "a done item is announced once");
-  assert.deepEqual(pm.events().filter(f => f.event === "item-done").map(f => [f.item, f.parent]), [["a", "area"]], "nobody holds area, so its push goes to the PM, once");
+  assert.deepEqual(pm.events().filter(f => f.event === "item-done"), [], "nobody holds area, so no push is made for it");
+});
+
+test("the pools count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {
+  const doc = (title: string, extra: object = {}) => ({ title, group: "Whitefoot", difficulty: 2, plan: [{ id: "accept", text: "某项检查通过", state: "todo", accept: true }], updated: later, head: "**完成条件**：某项检查通过", ...extra });
+  // The count of what can start in the 2+ pool, read without the code under test.
+  const independent = (s: Snapshot, r: ReturnType<(typeof import("../src/rules.ts"))["rules"]>) => Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined && s.items[id]!.difficulty! >= 2).length;
+  // Five startable parts under one parent are listed as the parent and 5, not as five rows.
+  const grouped = await board(t), children = Array.from({ length: 5 }, (_, i) => `part${i}`);
+  await grouped.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "parent", expectRev: null, doc: doc("有五个部分的条目", { plan: [...children.map(id => ({ id, item: id, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...children.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`部分 ${id}`) })),
+  ] });
+  const g = grouped.store.snapshot(), gr = grouped.store.derived.rules(g, T0), gpool = candidates(g, gr).pools.find(p => p.pool === "2+")!;
+  assert.ok(gpool.listed.some(x => "parent" in x && x.count === 5), "the five parts are listed as one group");
+  assert.equal(gpool.total, independent(g, gr), "the five parts are all counted in the pool");
+  assert.ok(independent(g, gr) >= 6, "the five parts and the fixture's own candidate");
+  // A parent whose parts are of two levels is one group in each pool, and each pool counts only its own parts.
+  const mixed = await board(t), levels = [2, 2, 2, 1, 1];
+  await mixed.store.commit({ author, message: "Seed", puts: [
+    { kind: "item", id: "mparent", expectRev: null, doc: doc("两个级别的部分", { plan: [...levels.map((_, i) => ({ id: `m${i}`, item: `m${i}`, own: true, after: [] })), { id: "accept", text: "某项检查通过", state: "todo", accept: true }] }) },
+    ...levels.map((difficulty, i) => ({ kind: "item" as const, id: `m${i}`, expectRev: null, doc: doc(`部分 m${i}`, { difficulty }) })),
+  ] });
+  const m = mixed.store.snapshot(), mr = mixed.store.derived.rules(m, T0);
+  const ofLevel = (level: (d: number) => boolean) => Object.keys(m.items).filter(id => mr.startable(id) && holderOf(m, id) === undefined && level(m.items[id]!.difficulty!)).length;
+  assert.deepEqual(candidates(m, mr).pools.map(p => [p.pool, p.total]), [["1", ofLevel(d => d === 1)], ["2+", ofLevel(d => d >= 2)]]);
+  assert.equal(ofLevel(d => d === 1), 2, "the two level 1 parts");
+  // Twelve loose candidates are more than the rows listed for a pool: the rest are only counted.
+  const crowded = await board(t), loose = Array.from({ length: 12 }, (_, i) => `loose${i}`);
+  await crowded.store.commit({ author, message: "Seed", puts: loose.map(id => ({ kind: "item" as const, id, expectRev: null, doc: doc(`单独 ${id}`) })) });
+  const c = crowded.store.snapshot(), cr = crowded.store.derived.rules(c, T0), cpool = candidates(c, cr).pools.find(p => p.pool === "2+")!;
+  assert.ok(cpool.more > 0, "some candidates are past the rows listed");
+  assert.equal(cpool.total, independent(c, cr), "the twelve are all counted in the pool, though only some are listed");
+  assert.ok(independent(c, cr) >= 13, "the twelve and the fixture's own candidate");
+});
+
+test("an item a session holds becoming done tells the PM which session to stop, once; one nobody holds tells nothing", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "other", role: "工程师", level: 2, model: "Sonnet", agent: "other-worker", agentId: "agent-o" });
+  const pm = await wakeSocket(t, url);
+  const finish = (id: string) => op.setPlan({ ...asArchitect, id, row: { id: "accept", accept: true, text: "独立验收通过", state: "done" } });
+  await finish("a");
+  await finish("other");
+  await until(() => pm.events().some(f => f.event === "finished"), "the finished push");
+  assert.deepEqual(pm.events().filter(f => f.event === "finished").map(({ n, at, line, ...f }) => f), [{ event: "finished", item: "other", project: "Firn", title: "其他项目", session: "other-worker" }]);
+  await op.appendLog({ ...asArchitect, id: "other", text: "a later write to the done item" });
+  await pm.sync();
+  assert.equal(pm.events().filter(f => f.event === "finished").length, 1, "announced once");
+});
+
+test("the review step going in progress tells the PM the level its text names, unless a reviewer is already on the item; another step does not", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: "a-review", agentId: "agent-r" });
+  const pm = await wakeSocket(t, url);
+  const step = (id: string, row: object) => op.setPlan({ ...asArchitect, id, row: { text: "审查（3 级）", state: "doing", ...row } as never });
+  await step("a", { id: "review" });
+  await step("area", { id: "other", text: "审查（3 级）" });
+  await step("other", { id: "review" });
+  await until(() => pm.events().some(f => f.event === "review"), "the review push");
+  await pm.sync();
+  assert.deepEqual(pm.events().filter(f => f.event === "review").map(({ n, at, line, ...f }) => f), [{ event: "review", item: "other", project: "Firn", title: "其他项目", level: 3 }], "item a has a reviewer, and area's step is not the review step");
+  await step("other", { id: "review", state: "done" });
+  await step("other", { id: "review", state: "doing", text: "审查" });
+  await until(() => pm.events().filter(f => f.event === "review").length === 2, "the second review push");
+  assert.equal(pm.events().filter(f => f.event === "review").at(-1)!.level, null, "a text with no level says none");
 });
 
 test("any session name up to 80 characters has a stream that survives a restart, and names differing only in case are two streams", async t => {

@@ -6,7 +6,7 @@ import { z } from "zod";
 /** `none`: the commit has no checks at all, which is not green. */
 export type CheckState = "success" | "failure" | "pending" | "none";
 export interface Checks { state: CheckState; /** Names of the checks that failed. */ failed: string[] }
-export interface MainLine { branch: string; commit: string; checks: Checks }
+export interface MainLine { branch: string; commit: string; /** The first line of its message: a merge commit names its pull request. */ subject: string; checks: Checks }
 export interface PullState {
   number: number; title: string; url: string; draft: boolean;
   /** When GitHub opened it, ISO 8601. */
@@ -45,7 +45,7 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
   const main = branch ? "main: ref(qualifiedName: $ref)" : "main: defaultBranchRef";
   const named = numbers.map(n => `p${n}: pullRequest(number: ${n}) { number state mergedAt url }`).join("\n");
   return `query($owner: String!, $name: String!${branch ? ", $ref: String!" : ""}) { repository(owner: $owner, name: $name) {
-  ${main} { name target { ... on Commit { oid ${CHECKS} } } }
+  ${main} { name target { ... on Commit { oid messageHeadline ${CHECKS} } } }
   pullRequests(states: OPEN, first: ${LIMIT}, orderBy: {field: CREATED_AT, direction: DESC}) { pageInfo { hasNextPage } nodes {
     number title url isDraft createdAt baseRefName headRefOid mergeable commits(last: 1) { nodes { commit { ${CHECKS} } } } } }
   ${named}
@@ -64,7 +64,7 @@ const Rollup = z.object({ contexts: z.object({ pageInfo: z.object({ hasNextPage:
 const Response = z.object({
   data: z.object({
     repository: z.object({
-      main: z.object({ name: z.string(), target: z.object({ oid: z.string(), statusCheckRollup: Rollup }).nullable() }).nullable(),
+      main: z.object({ name: z.string(), target: z.object({ oid: z.string(), messageHeadline: z.string().default(""), statusCheckRollup: Rollup }).nullable() }).nullable(),
       pullRequests: z.object({
         pageInfo: z.object({ hasNextPage: z.boolean() }),
         nodes: z.array(z.object({
@@ -102,8 +102,18 @@ const later = (a: CheckRun, b: CheckRun) => {
  * check is no failure and no pass (a gate that was skipped ran nothing), so a commit with only those, like one with no check at
  * all, is `none`, which is not green.
  */
-export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
-  if (!rollup) return { state: "none", failed: [] };
+export function summarize(rollup: ChecksRollup | undefined): Checks {
+  const { state, failed } = readChecks(rollup);
+  return { state, failed };
+}
+
+/** The checks of a commit as `summarize` reads them, and whether anything on it is still unfinished, which `failure` does not
+ * say: a red check makes the commit `failure` while others still run. Also unfinished: more checks than one answer holds, and a
+ * check that only has cancelled runs. */
+export interface CheckReading extends Checks { unfinished: boolean }
+export type ChecksRollup = z.infer<typeof Rollup>;
+export function readChecks(rollup: ChecksRollup | undefined): CheckReading {
+  if (!rollup) return { state: "none", failed: [], unfinished: false };
   const failed = new Set<string>(), latest = new Map<string, CheckRun>(), cancelled = new Set<string>();
   let passed = 0, pending = rollup.contexts.pageInfo.hasNextPage;
   for (const node of rollup.contexts.nodes) {
@@ -122,7 +132,7 @@ export function summarize(rollup: z.infer<typeof Rollup> | undefined): Checks {
     else if (badness(run) === 1) pending = true;
     else if (run.conclusion === "SUCCESS") passed++;
   }
-  return { state: failed.size ? "failure" : pending ? "pending" : passed ? "success" : "none", failed: [...failed] };
+  return { state: failed.size ? "failure" : pending ? "pending" : passed ? "success" : "none", failed: [...failed], unfinished: pending };
 }
 
 /** Reads the answer of `queryText`. `repo` is only copied into the result. */
@@ -143,7 +153,7 @@ export function parseResponse(repo: string, text: string): RepoState {
   }
   return {
     repo,
-    ...(main?.target ? { main: { branch: main.name, commit: main.target.oid, checks: summarize(main.target.statusCheckRollup) } } : {}),
+    ...(main?.target ? { main: { branch: main.name, commit: main.target.oid, subject: main.target.messageHeadline, checks: summarize(main.target.statusCheckRollup) } } : {}),
     pulls: pullRequests.nodes.map(pull => ({
       number: pull.number, title: pull.title, url: pull.url, draft: pull.isDraft, createdAt: pull.createdAt, base: pull.baseRefName, commit: pull.headRefOid,
       mergeable: pull.mergeable === "MERGEABLE" || pull.mergeable === "CONFLICTING" ? pull.mergeable : "UNKNOWN",

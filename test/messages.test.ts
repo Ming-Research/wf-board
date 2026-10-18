@@ -86,11 +86,11 @@ test("a message goes to the architect, to a session with an open dispatch of any
   await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, PM, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
 });
 
-test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the PM's stream", async t => {
+test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the architect's own stream and one to the PM to the PM's", async t => {
   const wake = new Wake({ now: () => Date.parse(later) });
   const { url, store, op } = await server(t, { wake });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
-  const pm = await wakeSocket(t, url);
+  const pm = await wakeSocket(t, url), architect = await agentSocket(t, url, "架构师");
   // No process is connected: the message waits in the stream.
   const first = await op.sendMessage({ ...asArchitect, to: "b-worker", text: "先看 a 的卡", item: "a" });
   await until(() => wake.hasAgent("b-worker") && wake.agent("b-worker").latest() === 1, "the first message's push");
@@ -108,10 +108,16 @@ test("a message waits in its recipient's stream until a board call or its socket
   socket.socket.send(JSON.stringify({ ack: 2 })); await socket.sync();
   assert.deepEqual((await agentSocket(t, url, "b-worker")).events(), []);
   assert.equal(await tool(t, store, op, wake, "projects", { session: "b-worker" }), plain);
-  // To the architect: the PM's own stream, and no agent's.
+  // To the architect: its own agent stream, and neither the PM's nor another agent's.
   await op.sendMessage({ ...eng, to: "架构师", text: "b 好了", item: "b" });
-  await until(() => pm.frames.some(f => f.event === "message"), "the message to the architect");
-  assert.deepEqual(pm.events().filter(f => f.event === "message").map(f => [f.from, f.to, f.text]), [["b-worker", "架构师", "b 好了"]]);
+  await until(() => architect.frames.some(f => f.event === "message"), "the message to the architect");
+  assert.deepEqual(architect.events().filter(f => f.event === "message").map(f => [f.from, f.to, f.text]), [["b-worker", "架构师", "b 好了"]]);
+  assert.deepEqual(pm.events(), [], "the PM's stream does not carry it");
+  // To the PM: the PM's own stream.
+  await op.sendMessage({ ...eng, to: "PM", text: "b 的审查好了", item: "b" });
+  await until(() => pm.frames.some(f => f.event === "message"), "the message to the PM");
+  assert.deepEqual(pm.events().map(f => [f.from, f.to, f.text]), [["b-worker", "PM", "b 的审查好了"]]);
+  assert.equal(architect.events().length, 1, "and the architect's stream does not carry that");
   assert.equal(wake.agent("b-worker").latest(), 2);
 });
 

@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Key, Time, Status, Priority, Link, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, answersPushes, ARCHITECT_WRITER, PROCESS_WRITERS, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
+import { Key, Time, Status, Link, NOTE_KINDS, MESSAGE_TEXT_LIMIT, PlanRowInput, PlanInput, StepId, ItemTargetInput, ItemTargetsInput, TagName, Difficulty, difficultyText, answersPushes, isPMCall, ARCHITECT_WRITER, PROCESS_WRITERS, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, DispatchUsage } from "./model.ts";
 import type { Decision, Note, Snapshot } from "./model.ts";
 import type { Store } from "./store.ts";
 import type { Ops } from "./ops.ts";
 import * as q from "./query.ts";
 import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
+import { candidates, candidatesText, candidatesUnder, candidatesUnderText } from "./candidates.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
@@ -14,19 +15,39 @@ import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
+import { PREAMBLE, selectSections, splitHead, summarizeHead } from "./head-sections.ts";
+import { isRecord, jsonSchemaOf, readNames, refusal } from "./tool-errors.ts";
+import { checkLabel } from "./rules.ts";
 
 export const STATUS: Record<string, string> = { wip: "WIP", done: "DONE", todo: "TODO", idle: "IDLE", blocked: "BLOCK", paused: "PAUSE", cancelled: "DROP" };
 const label = (s: string | undefined) => s === undefined ? "记录" : STATUS[s] ?? s.toUpperCase();
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 export function formatRow(it: Pick<q.Row, "id" | "status" | "title"> & Partial<q.Row>): string {
-  return `${it.id} · ${label(it.status)}${it.priority ? ` ${it.priority}` : ""} · ${oneLine(it.title)}${it.tags?.length ? ` · [${it.tags.join(" ")}]` : ""}${it.difficulty === undefined ? "" : ` · ${difficultyText(it.difficulty)}`}${it.group || it.areaId ? ` · ${[it.group, it.areaId].filter(Boolean).join(" › ")}` : ""}${it.num === undefined ? "" : ` · #${it.num}`}`;
+  return `${it.id} · ${label(it.status)} · ${oneLine(it.title)}${it.tags?.length ? ` · [${it.tags.join(" ")}]` : ""}${it.difficulty === undefined ? "" : ` · ${difficultyText(it.difficulty)}`}${it.group || it.areaId ? ` · ${[it.group, it.areaId].filter(Boolean).join(" › ")}` : ""}${it.num === undefined ? "" : ` · #${it.num}`}`;
 }
-function formatNote(n: Note & { id: string; title?: string }): string {
-  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${n.text}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined ? `\n  original action: ${n.answerText}` : ""}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${n.reply}` : ""}`;
+/** At most `limit` characters of a text, then how long it is in all. */
+const cut = (text: string, limit: number): string => {
+  const chars = [...text];
+  return chars.length <= limit ? text : `${chars.slice(0, limit).join("")} … (${chars.length} characters in all)`;
+};
+/** What the default answer of `context` cuts to (docs/design.md, section 6, Lean replies). */
+const LOG_CUT = 240, NOTE_CUT = 160, REASON_CUT = 160, PR_REFS = 5;
+/** `limit` cuts the text and the reply and leaves out the original action: a note that is handled, in a list that is not about it. */
+function formatNote(n: Note & { id: string; title?: string }, limit?: number): string {
+  const part = (text: string) => limit === undefined ? text : cut(text, limit);
+  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${part(n.text)}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined && limit === undefined ? `\n  original action: ${n.answerText}` : ""}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${part(n.reply)}` : ""}`;
 }
-function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "question" | "status"> & { choiceText?: string }): string {
+function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "question" | "status"> & { choiceText?: string }, lean = false): string {
   const lines = [`${key} · ${label(card.status)} · ${card.question}${card.rev ? ` · rev ${card.rev}` : ""}${card.num === undefined ? "" : ` · #${card.num}`}`];
   if (card.blocks) lines.push(`blocks: ${card.blocks}`);
+  if (lean && card.status === "open") {
+    // An open card in a list: the question, the option names and the recommendation; the grounds are read from the card itself.
+    for (const o of card.options ?? []) lines.push(`  ${o.key}${o.recommended ? " (recommended)" : ""}: ${q.optionName(o) ?? ""}`);
+    const left = [...(card.options ?? []).some(o => o.detail) ? ["grounds"] : [], ...card.legacy?.background !== undefined ? ["legacy background"] : []];
+    if (left.length) lines.push(`  (${left.join(" and ")} left out; context ${key} has them)`);
+    if (card.confidence) lines.push(`confidence ${card.confidence.score === undefined ? "" : card.confidence.score + "/5："}${cut(card.confidence.reason, REASON_CUT)}`);
+    return lines.join("\n");
+  }
   for (const o of card.options ?? []) lines.push(`  ${o.key}${o.recommended ? " (recommended)" : ""}${o.text ? `: ${o.text}` : ""}${o.detail ? `${o.text ? " — " : ": "}${o.detail}` : ""}`);
   if (card.confidence) lines.push(`confidence ${card.confidence.score === undefined ? "" : card.confidence.score + "/5："}${card.confidence.reason}`);
   const chosen = card.choiceText ?? q.optionName(card.options?.find(o => o.key === card.choice));
@@ -37,18 +58,41 @@ function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "quest
   if (card.legacy?.background !== undefined) lines.push(`legacy background: ${card.legacy.background}`);
   return lines.join("\n");
 }
-export function formatContext(result: ReturnType<typeof q.context>): string {
-  if (result.kind === "card") return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(formatNote)].join("\n");
+/**
+ * What a `context` answer leaves out. With no view it is whole. `lean`: each head section's first paragraph, open cards without
+ * their options' grounds, handled notes cut to a line; `cutLog`: log entries cut; `section`: only the head, or the one section
+ * of it (docs/design.md, section 6, Lean replies).
+ */
+export interface ContextView { lean?: boolean; cutLog?: boolean; section?: string }
+export function formatContext(result: ReturnType<typeof q.context>, view: ContextView = {}): string {
+  const noteLine = (n: Parameters<typeof formatNote>[0]) => formatNote(n, view.lean && n.state === "done" ? NOTE_CUT : undefined);
+  if (result.kind === "card") {
+    if (view.section !== undefined) throw new Error(`section ${view.section}: only an item has sections; a card is read whole`);
+    // A card read on its own is the detail view: its notes are whole.
+    return [formatCard(result.id, result.card!), `item: ${formatRow(result.item as q.Row)}`, ...result.notes.map(n => formatNote(n))].join("\n");
+  }
   if (!("ancestors" in result)) throw new Error("Invalid item context");
   const it = result.item as Snapshot["items"][string];
   const lines = [formatRow(result as q.Row), `rev ${it.rev} · updated ${it.updated}${it.created ? ` · created ${it.created}` : ""}`];
+  if (view.section !== undefined) {
+    const head = it.head ?? "";
+    if (view.section === "all") return [...lines, `head: ${head}`].join("\n");
+    const chosen = selectSections(head, view.section);
+    if (!chosen) throw new Error(`section ${view.section}: this head has ${splitHead(head).map(s => `"${s.title || PREAMBLE}"`).join(", ") || "no text"}; "all" is the whole head`);
+    return [...lines, ...chosen.map(s => `section: ${s.text.trimEnd()}`)].join("\n");
+  }
   lines.push("status derived from plan and owner pause");
   if (result.lastPush) lines.push(`last push: ${q.pushLine(result.lastPush)}`);
   const pausedBy = result.pausedBy;
   if (pausedBy) lines.push(`pause: ${pausedBy.title} · ${pausedBy.reason} · ${pausedBy.at}`);
   if (it.order !== undefined) lines.push(`order: ${it.order}`);
-  if (it.head !== undefined) lines.push(`head: ${it.head}`);
+  if (it.head !== undefined) {
+    const summary = view.lean ? summarizeHead(it.head) : undefined;
+    if (summary?.omitted) lines.push(`head (cut: ${summary.omitted} characters left out; sections: ${summary.titles.join(" · ")}; section: "<title>" or "all" gets them whole):`, summary.text);
+    else lines.push(`head: ${it.head}`);
+  }
   if (result.plan.length) lines.push("plan:", ...result.plan.map(line => `  ${line}`));
+  if (view.lean && result.plan.some(line => /^[✓✗] \d+ 项/.test(line))) lines.push("  (finished rows are folded into a count; full: true lists them)");
   for (const warning of result.planWarnings) lines.push(`plan warning: ${warning}`);
   if (result.targets.length) lines.push("targets:", ...result.targets.map(line => `  ${line}`));
   if (it.data) lines.push(`data: ${it.data}`);
@@ -57,13 +101,15 @@ export function formatContext(result: ReturnType<typeof q.context>): string {
     const rows = result[name];
     if (rows.length) lines.push(`${name}:`, ...rows.map(v => `  ${formatRow(v)}${"own" in v && v.own ? " · 拥有" : ""}`));
   }
-  for (const card of result.cards) lines.push(formatCard(card.key, card));
-  for (const note of result.notes) lines.push(formatNote(note));
+  for (const card of result.cards) lines.push(formatCard(card.key, card, view.lean));
+  for (const note of result.notes) lines.push(noteLine(note));
+  if (view.lean && result.notes.some(n => noteLine(n) !== formatNote(n))) lines.push(`  (handled notes are cut to ${NOTE_CUT} characters; full: true or the notes tool has them whole)`);
   for (const check of result.checks) lines.push(`check: ${check.text}${check.target ? ` ${check.target.kind}:${check.target.id}` : ""}`);
   for (const link of result.links) lines.push(`link: ${link.label} · ${link.url}`);
   const refs = [...result.prs.qualified.map(p => `${p.repo}#${p.number}`), ...result.prs.unknown.map(n => `#${n} (repository unknown)`)];
-  if (refs.length) lines.push(`PRs: ${refs.join(", ")}`);
-  lines.push(`log (${it.log.length} shown; ${result.earlierLogs} earlier):`, ...it.log.map(l => `  ${l.at} ${l.by ?? ""}: ${l.text}`));
+  if (refs.length) lines.push(`PRs: ${(view.lean ? refs.slice(0, PR_REFS) : refs).join(", ")}${view.lean && refs.length > PR_REFS ? `, … ${refs.length - PR_REFS} more (prs tool)` : ""}`);
+  lines.push(`log (${it.log.length} shown; ${result.earlierLogs} earlier):`, ...it.log.map(l => `  ${l.at} ${l.by ?? ""}: ${view.cutLog ? cut(l.text, LOG_CUT) : l.text}`));
+  if (view.cutLog && it.log.some(l => [...l.text].length > LOG_CUT)) lines.push(`  (entries over ${LOG_CUT} characters are cut; log: N gets the last N whole)`);
   return lines.join("\n");
 }
 export function formatSearch(hits: q.Hit[]): string {
@@ -117,6 +163,37 @@ export function formatReport(report: q.ChangesReport, o: { limit?: number; detai
   }
   return out.join("\n");
 }
+/** The most owner and check rows listed under one area in the default overview. */
+const OVERVIEW_ROWS = 5;
+/**
+ * The board at a glance. By default one line of counts for each project and, under it, only the areas with something to handle
+ * (the owner waiting, a check flagged), each with at most OVERVIEW_ROWS rows of each, a row being the item's key, status and
+ * title and, for a check, the check's short label; the blocked items are counted, not listed. `detail` lists every area with
+ * all its rows (docs/design.md, section 6, Lean replies).
+ */
+export function formatOverview(projects: ReturnType<typeof q.overview>, detail = false): string {
+  if (detail) return projects.map(project => [`${project.project}`, ...project.areas.map(area => [formatRow(area), Object.entries(area.counts).map(([st, n]) => `${label(st)} ${n}`).join(" · "), ...area.ownerActions.map(it => `  owner: ${formatRow(it)}`), ...area.blocked.map(it => `  blocked: ${formatRow(it)}`), ...area.checks.map(it => `  check: ${formatRow(it)} · ${it.checks.map(c => c.text).join("; ")}`)].join("\n"))].join("\n")).join("\n") || "No projects.";
+  const counts = (by: Record<string, number>) => Object.entries(by).filter(([, n]) => n).map(([st, n]) => `${label(st)} ${n}`);
+  const handle = (area: { ownerActions: unknown[]; blocked: unknown[]; checks: unknown[] }) => [`owner waiting ${area.ownerActions.length}`, `blocked ${area.blocked.length}`, `checks ${area.checks.length}`];
+  const short = (it: Pick<q.Row, "id" | "status" | "title">) => `${it.id} · ${label(it.status)} · ${cut(oneLine(it.title), 36)}`;
+  const out: string[] = [];
+  for (const project of projects) {
+    const total: Record<string, number> = {};
+    for (const area of project.areas) for (const [st, n] of Object.entries(area.counts)) total[st] = (total[st] ?? 0) + n;
+    const sum = (key: "ownerActions" | "blocked" | "checks") => project.areas.reduce((n, area) => n + area[key].length, 0);
+    out.push([project.project, `${project.areas.length} areas`, ...counts(total), `owner waiting ${sum("ownerActions")}`, `blocked ${sum("blocked")}`, `checks ${sum("checks")}`].join(" · "));
+    const needing = project.areas.filter(area => area.ownerActions.length || area.checks.length);
+    for (const area of needing) {
+      out.push(`  ${formatRow(area)}`, `    ${[...counts(area.counts), ...handle(area)].join(" · ")}`);
+      out.push(...area.ownerActions.slice(0, OVERVIEW_ROWS).map(it => `    owner: ${short(it)}`));
+      if (area.ownerActions.length > OVERVIEW_ROWS) out.push(`    … ${area.ownerActions.length - OVERVIEW_ROWS} more owner rows (detail: true)`);
+      out.push(...area.checks.slice(0, OVERVIEW_ROWS).map(it => `    check: ${short(it)} · ${[...new Set(it.checks.map(checkLabel))].join("、")}`));
+      if (area.checks.length > OVERVIEW_ROWS) out.push(`    … ${area.checks.length - OVERVIEW_ROWS} more check rows (detail: true)`);
+    }
+    if (project.areas.length > needing.length) out.push(`  ${project.areas.length - needing.length} other areas have no owner waiting and no checks`);
+  }
+  return out.length ? `${out.join("\n")}\n(detail: true lists every area with all its rows)` : "No projects.";
+}
 function formatGraph(graph: ReturnType<typeof q.graph>): string {
   const lines: string[] = [];
   function walk(n: q.GraphNode, depth: number) {
@@ -157,6 +234,12 @@ const links = z.array(Link).describe("Relevant links as {label, url}; use qualif
  */
 export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  // The SDK checks a call's arguments before the handler runs and answers a mistake with the bare check text, which names no
+  // parameter that would have worked. Each tool's handler checks them itself (`register`) and answers with the tool's parameters,
+  // so the SDK's check passes the arguments on as they came. The method is private in the SDK's types; the SDK is pinned, and
+  // test/lean.test.ts fails if its text ever comes back. A looser schema given to the SDK would not do: it would drop the
+  // `required` list the client is shown, and the SDK would still check what is nested in it (docs/design.md, section 6, Lean replies).
+  (server as unknown as { validateToolInput: (tool: unknown, args: unknown) => Promise<unknown> }).validateToolInput = async (_tool, args) => args ?? {};
   // Checks depend on elapsed active time, including when no new commit arrived.
   function read() {
     const snapshot = store.snapshot();
@@ -179,22 +262,28 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     const named = "author" in shape ? { ...shape, author: optionalAuthor } : shape;
     const full = "session" in named ? named : { ...named, session };
     const schema: z.ZodObject = z.object(full).strict();
+    const json = jsonSchemaOf(schema);
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
       let outcome = "ok";
       try {
         if (credential && !credential.ok) throw new Error(credential.problem);
-        const parsed = schema.parse(a);
+        // Wrong names the tool can place are read as the right ones, then the arguments are checked; a mistake is answered with the tool's parameters.
+        const fixed = readNames(name, json, isRecord(a) ? a : {});
+        const checked = schema.safeParse(fixed.args);
+        if (!checked.success) throw new Error(refusal(name, json, fixed.args, checked.error.issues));
+        const parsed = checked.data;
         // With a credential the writer is the credential's, whatever the call says about itself; the call is told when it said otherwise.
         const { args, note } = write ? identified(parsed) : { args: parsed, note: undefined };
+        const notes = [...fixed.notes, ...(note ? [note] : [])];
         // The PM's or the architect's call is a receipt for the wake stream: by its credential's role when it has one, else by the session name it gives.
         if (credential?.ok ? answersPushes({ role: credential.who.access.role }) : typeof args.session === "string" && answersPushes({ session: args.session })) wake?.receipt();
-        // Another agent's call is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
-        const caller = credential?.ok ? (answersPushes({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !answersPushes({ session: args.session }) ? args.session.trim() : undefined;
+        // Another agent's call (the architect's too) is a sign of life, and carries what was pushed to it and not yet delivered, once (docs/design.md, The wake streams).
+        const caller = credential?.ok ? (isPMCall({ role: credential.who.access.role }) ? undefined : credential.who.session) : typeof args.session === "string" && !isPMCall({ session: args.session }) ? args.session.trim() : undefined;
         if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (note ? `\nnote: ${note}` : "");
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (notes.length ? `\nnote: ${notes.join("; ")}` : "");
         const pushed = caller && wake ? wake.footer(caller) : "";
         return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
@@ -204,21 +293,24 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));
   register("brief", "Start or resume a project: unhandled owner notes, checks, owner cards, current work, next tasks (only items rated 1–5 that an unpaused root needs; unrated items are not listed), outgoing work (open items of other projects its open items wait on) and glossary terms. Item rows carry the item's difficulty when it has one, and relevant ones include compact plan rows with levels, ownership and dates, doing days and waits, and target numbers with comparison baselines and measurement dates; progress also covers records and blocked work omitted from those rows, except items blocked only because they wait for their turn in their owner's plan: queued counts those per owner.", { project: text("Exact configured project name from projects.") }, a => { const x = read(); return JSON.stringify(q.brief(x.snapshot,x.rules,a.project)); });
+  register("candidates", "Which items could an engineer be started on, and how many engineers are working in each pool? The board lists candidates and does not choose among them: the architect decides which to start. A candidate is an item of any project that nobody holds (no engineer dispatch open on it), that can start (todo or part way, the next step waiting on nothing, an unpaused root needs it) and is rated 1–5. Two pools of engineers: level 1, and level 2 and above; the board holds no limit, so compare the engineers working with the limit the owner gave the PM. An engineer counts as working when it holds an item and is not waiting (the item blocked, paused or done; every step it has in progress is the review step or waits on a 14900K run, while one waiting for CI still counts; or it has none in progress and a sub-item is being worked by another session). Per pool: the engineers working, the number of candidates, and the first rows (at most 10) in a default order (the open items waiting on it with a shared dependency row, then the item number), then the count not listed; more than 3 candidates under one parent are listed as the parent and a count. under: the candidates directly under that parent, one row each (at most 10).", { under: Key.describe("A parent item from a listed group: its candidates one by one.").optional() }, a => { const x = read(); return a.under === undefined ? candidatesText(candidates(x.snapshot, x.rules)) : candidatesUnderText(candidatesUnder(x.snapshot, x.rules, a.under)); });
   register("followups", "Coordinator follow-up: sent owner notes older than the given age, with their projects.", { minutes: z.number().nonnegative().describe("Age threshold in minutes, exclusive; zero returns all older pending work.") }, a => { const x = read(); return JSON.stringify(q.followups(x.snapshot,x.rules,a,now?.())); });
   register("search", "Where is this text mentioned? Search Chinese or other substrings across titles, heads, plan text, target goals, target values, current values, comparison baselines, logs, decisions and owner notes. Read context for a hit before editing it.", {
     query: text("Case-insensitive substring to find, including Chinese text."), filters: z.object({ ...scope, status: statuses, kind: z.array(z.enum(["item", "card", "note"])).describe("Search only these document kinds.").optional(), since: Time.describe("Only fields with timestamps at or after this ISO time; logs and notes use their own times.").optional(), limit: limit(20) }).strict().describe("Narrow the matches to relevant board context.").optional(),
   }, a => { const x = read(); return formatSearch(q.search(x.snapshot, x.rules, a.query, a.filters)); });
-  register("context", "What is this item or decision, what does it wait on, and what happened recently? Accepts a key or a short number (#812). Returns compact plan rows, target numbers with comparison baselines and measurement dates, and the latest five log entries; logs are historical detail and never owner unread content. Request all only when needed.", {
-    id: ref, log: z.union([z.number().int().min(0), z.literal("all")]).describe("Recent item log entries to include; default 5, 0 omits them, all returns the full log.").optional(),
-  }, a => { const x = read(); return formatContext(q.context(x.snapshot, x.rules, a.id, { log: a.log })); });
+  register("context", "What is this item or decision, what does it wait on, and what happened recently? Accepts a key or a short number (#812). By default returns the head as the first paragraph of each section, the plan with finished rows folded into a count, target numbers with comparison baselines and measurement dates, open cards without their options' grounds, handled notes cut to a line, five pull request references and the latest five log entries cut to 240 characters; a cut says the full length. section answers with one section of the head whole (all: the whole head) and nothing else, full answers with nothing cut or folded, log gives that many entries whole (all returns the full log), and the key of a card gives the card whole. Logs are historical detail and never owner unread content.", {
+    id: ref, log: z.union([z.number().int().min(0), z.literal("all")]).describe("Recent item log entries to include, whole; default the latest 5 cut to 240 characters, 0 omits them, all returns the full log.").optional(),
+    section: text("Answer with the head alone: this section of it, by the title the default answer lists (a prefix such as 参考 matches every section that starts so), or all for the whole head. Items only.").optional(),
+    full: z.boolean().describe("Answer whole, with nothing cut or folded: the whole head, the whole plan, every card option's grounds, handled notes and log entries in full.").optional(),
+  }, a => { const x = read(); return formatContext(q.context(x.snapshot, x.rules, a.id, { log: a.log, foldPlan: !a.full }), a.full ? { section: a.section } : { lean: true, cutLog: a.log === undefined, section: a.section }); });
   register("graph", "What does this wait on, and what waits on it? Accepts a key or a short number (#812). Follow plan dependencies with titles and ownership, marking open blocked chains and cycles; owned and shared item rows are included.", {
     id: ref, direction: z.enum(["up", "down", "both"]).describe("up follows blockers; down follows dependents; both shows each separately."), depth: z.number().int().min(0).max(20).describe("Maximum dependency edges from the root; default 3.").optional(),
   }, a => { const x = read(); return formatGraph(q.graph(x.snapshot, x.rules, a.id, a)); });
-  register("overview", "Which areas need attention? Shows leaf status counts, owner actions, blocked leaves and checks, optionally in one project group. status narrows leaf counts, owner actions and checks, including paused work.", {
-    group: scope.group, status: statuses,
-  }, a => { const x = read(); return q.overview(x.snapshot, x.rules, a).map(project => [ `${project.project}`, ...project.areas.map(area => [formatRow(area), Object.entries(area.counts).map(([st, n]) => `${label(st)} ${n}`).join(" · "), ...area.ownerActions.map(it => `  owner: ${formatRow(it)}`), ...area.blocked.map(it => `  blocked: ${formatRow(it)}`), ...area.checks.map(it => `  check: ${formatRow(it)} · ${it.checks.map(c => c.text).join("; ")}`)].join("\n"))].join("\n")).join("\n") || "No projects."; });
+  register("overview", "Which areas need attention? By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged, each with its first five such rows; blocked items are only counted. detail lists every area with all its rows. Optionally in one project group. status narrows leaf counts, owner actions and checks, including paused work.", {
+    group: scope.group, status: statuses, detail: z.boolean().describe("List every area with all its owner, blocked and check rows, as the answer once did.").optional(),
+  }, a => { const x = read(); return formatOverview(q.overview(x.snapshot, x.rules, a), a.detail); });
   register("list", "Which items match structured filters? Browse compact rows in page sibling order, then use context on the relevant ids. Done and cancelled items require an explicit status filter.", {
-    filters: z.object({ ...scope, status: statuses, priority: z.array(Priority).describe("Match displayed priority: a root stores it; other work inherits it from open dependents. Record-owned work inherits shared dependents' priority, or none without them.").optional(), needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
+    filters: z.object({ ...scope, status: statuses, needsOwner: z.boolean().describe("Filter by whether owner action is waiting.").optional(), hasChecks: z.boolean().describe("Filter by whether board-rule checks need attention, including items with an own doing step and 1 hour of active time without changes.").optional(), updatedSince: Time.describe("Only items updated at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Structured item filters; omitted means the first 50 open or record rows.").optional(),
   }, a => { const x = read(); return q.list(x.snapshot, x.rules, a.filters).map(it => `${formatRow(it)}${it.needsOwner ? " · owner waiting" : ""}${it.checks.length ? ` · ${it.checks.length} checks` : ""}`).join("\n") || "No items."; });
   register("dispatches", "How have the agent sessions started on items done? Tallies the dispatch records of every project, by level, by role and by the item's tags: dispatches, how many are still running, how many ended in each result, the rework share, the mean kickbacks and rounds, and the cost; then how many ended with each failure signal. Every figure is added up from the rows, so rows: true lists the rows that add up to it. An item with several tags counts under each of them. since and until bound the start time (since inclusive, until exclusive).", {
     filters: z.object({ id: Key.describe("Only the dispatches on this item.").optional(), role: z.enum(DISPATCH_ROLES).optional(), level: z.number().int().min(1).max(5).optional(), since: dispatchTime("Only dispatches started at or after this UTC time.").optional(), until: dispatchTime("Only dispatches started before this UTC time.").optional() }).strict().describe("Narrow the dispatches counted.").optional(),
@@ -233,7 +325,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   });
   register("notes", "What did the owner say? Find notes by state, kind, subtree or time, with project replies, before handling or replying to them.", {
     filters: z.object({ under: scope.under, state: z.array(z.enum(["draft", "sent", "done"])).describe("Include these note states; sent finds unhandled owner messages.").optional(), kind: z.array(z.enum(NOTE_KINDS)).describe("Include these kinds of owner note.").optional(), since: Time.describe("Notes sent, created or replied to at or after this ISO time.").optional(), limit: limit(50) }).strict().describe("Narrow owner notes to relevant messages.").optional(),
-  }, a => q.notes(read().snapshot, a.filters).map(formatNote).join("\n") || "No notes.");
+  }, a => q.notes(read().snapshot, a.filters).map(n => formatNote(n)).join("\n") || "No notes.");
   register("messages", "Who told whom what? Lists the messages agents sent each other through the board, newest first, one per line: time, sender (its project) → recipient, the item, the text. A message only says which item to read and what is awaited; the content is on the item. since is inclusive, until exclusive.", {
     filters: z.object({ to: text("Only messages to this session.").optional(), from: text("Only messages from this session.").optional(), item: Key.describe("Only messages about this item.").optional(), since: dispatchTime("Only messages sent at or after this UTC time.").optional(), until: dispatchTime("Only messages sent before this UTC time.").optional(), limit: limit(50) }).strict().describe("Narrow the messages listed.").optional(),
   }, a => {
@@ -262,12 +354,11 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     kind, id: text("Exact document id; notes use their original note id."), from: text("Starting git commit/ref or ISO time."), to: text("Ending git commit/ref or ISO time; omitted means current HEAD.").optional(),
   }, async a => await q.diff(store, a.kind === "card" ? "decision" : a.kind, a.id, a.from, a.to) || "No differences.");
   // A write answers with the state it produced: the target's row and every ancestor whose
-  // derived status or priority it changed, so the writer need not read context again.
+  // derived status it changed, so the writer need not read context again.
   const result = async (operation: Promise<import("./ops.ts").Result>) => {
     const before = read();
     const res = await operation;
     const after = read(), lines = [`${res.summary}${res.rev === undefined ? "" : ` · rev ${res.rev}`} · commit ${res.commit}`];
-    if (res.dropped?.length) lines.push(`dropped stored priority, no longer a root: ${res.dropped.map(d => `${d.id} ${d.priority}`).join(", ")}`);
     if (res.repeated) lines.push("repeated: the same session wrote this same text a moment ago, so nothing was written again; this is the first write's commit");
     if (res.credential) lines.push(`credential: ${res.credential}`, "shown once, and only its hash is kept: put it in the session's MCP configuration as the Authorization header (Bearer <credential>); it stops working when the dispatch ends");
     if (res.rev === undefined) return lines.join("\n");
@@ -276,14 +367,14 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     // The card writer sees its own option check now, not only on the next read.
     if (kind === "card") for (const check of after.rules.cardChecks(res.id)) lines.push(`check: ${check.text}`);
     if (kind === "item") for (const a of after.rules.ancestors(res.id)) {
-      const was = Object.hasOwn(before.snapshot.items, a) ? `${label(before.rules.statusOf(a))} ${before.rules.priorityOf(a)}` : "";
-      const now = `${label(after.rules.statusOf(a))} ${after.rules.priorityOf(a)}`;
+      const was = Object.hasOwn(before.snapshot.items, a) ? label(before.rules.statusOf(a)) : "";
+      const now = label(after.rules.statusOf(a));
       if (was !== now) lines.push(`ancestor ${a} now ${now}${was ? ` (was ${was})` : ""}`);
     }
     return lines.join("\n");
   };
-  register("create_item", `Create an item with initial plan rows and one acceptance step appended from accept; use set_plan to add more acceptance steps or move them. owner adds an owned row before its first acceptance step. children deliberately moves existing items into the new plan. Only new roots store priority; records require no acceptance. Author ${PROCESS_WRITERS} creates items in any project; the one other writer is an engineer, which creates them only inside its own subtree (owner must be an item of that subtree, and so must any children) and rates and tags them as it makes them.`, {
-    author, session, key: Key.describe("Unused key for the new item."), title: text("What completion delivers."), head: text("Stable problem, why and approach.").optional(), accept: text("Completion check or number appended as one acceptance step; required for work, refused for records.").optional(), owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional(), plan: PlanInput.describe("Initial ordered rows, which may include acceptance steps; accept appends one more at the end. No caller dates.").optional(), children: z.array(Key).describe("Existing same-project items deliberately moved into this new plan.").optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional(), record: z.boolean().describe("A record has no work status or acceptance; it passes no priority.").optional(), group: text("Project for a top item; otherwise owner's project.").optional(), links: links.optional(), data: text("Key numbers.").optional(), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(), tags: tagList.optional(), difficulty: Difficulty.describe("1–5; logged as the first rating. Refused for a record.").optional(),
+  register("create_item", `Create an item with initial plan rows and one acceptance step appended from accept; use set_plan to add more acceptance steps or move them. owner adds an owned row before its first acceptance step. children deliberately moves existing items into the new plan. Records require no acceptance. Author ${PROCESS_WRITERS} creates items in any project; the one other writer is an engineer, which creates them only inside its own subtree (owner must be an item of that subtree, and so must any children) and rates and tags them as it makes them.`, {
+    author, session, key: Key.describe("Unused key for the new item."), title: text("What completion delivers."), head: text("Stable problem, why and approach.").optional(), accept: text("Completion check or number appended as one acceptance step; required for work, refused for records.").optional(), owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional(), plan: PlanInput.describe("Initial ordered rows, which may include acceptance steps; accept appends one more at the end. No caller dates.").optional(), children: z.array(Key).describe("Existing same-project items deliberately moved into this new plan.").optional(), record: z.boolean().describe("A record has no work status or acceptance.").optional(), group: text("Project for a top item; otherwise owner's project.").optional(), links: links.optional(), data: text("Key numbers.").optional(), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(), tags: tagList.optional(), difficulty: Difficulty.describe("1–5; logged as the first rating. Refused for a record.").optional(),
   }, a => result(ops.createItem(a)), true);
   register("journal_entry", `Add one timed entry to today's architect journal (local date) and create that day's record under the architect notes if it does not exist yet. Only author ${ARCHITECT_WRITER} may call it; the entry goes to the end of the record's text and marks it new for the owner.`, { author, session, text: text("The entry text, possibly several lines; kept as written after the time stamp.") }, a => result(ops.journalEntry(a)), true);
   register("append_log", "Append historical detail without reading a revision. Appends are retried on concurrent writes and stamped by the server. Logs never mark an item new for the owner; use set_plan to keep progress current.", { author, session, id, text: text("Evidence, detail or stop reason to append; nonempty.") }, a => result(ops.appendLog(a)), true);
@@ -293,7 +384,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("dispatch_finish", "Complete a dispatch when its session ends: result, counts, usage, cost, failure signals and a note; logs the end on the item. result is 一次通过, 返工后通过, 换人 or 放弃. An engineer dispatch carries reports (how often it stopped to report) and kickbacks (how often you sent it back: a review's findings handed back to fix, or a rejected approach); a review dispatch carries rounds (how many review rounds it took: the first review and each re-review count one). A wrong-role count is refused. usage is the session's tokens summed from its transcript; cost is in US dollars, rounded to three decimals. signals lists the failure signals that occurred, none when omitted. waited is minutes spent waiting for the owner, the 14900K or a dependency. endedAt is UTC, now when omitted. An ended dispatch is changed only with replace: true.", {
     author, session, id: id.describe("The item the dispatch was recorded on by dispatch_start."), agentId: Key.describe("The session's full id, as given to dispatch_start."), result: z.enum(DISPATCH_RESULTS), usage: DispatchUsage.describe("Tokens, summed over the session's transcript with duplicate messages removed: input, cacheWrite, cacheRead, output."), cost: z.number().nonnegative().describe("US dollars; more than three decimals are rounded."), reports: count("Engineer only: how often it stopped to report.").optional(), kickbacks: count("Engineer only: how often it was sent back.").optional(), rounds: count("Review only: how many review rounds it took; the first review and each re-review count one.").optional(), waited: count("Minutes spent waiting for the owner, the 14900K or a dependency.").optional(), signals: z.array(z.object({ kind: z.enum(DISPATCH_SIGNALS), note: text("One sentence on this occurrence.").optional() }).strict()).describe("The failure signals that occurred, each at most once; none when omitted.").optional(), note: text("One sentence: a sign the level was set too high or too low.").optional(), endedAt: dispatchTime("UTC end time; now when omitted.").optional(), replace: z.boolean().describe("Explicitly replace an ended dispatch's record.").optional(),
   }, a => result(ops.dispatchFinish(a)), true);
-  register("set_plan", "Edit the item's plan. Exactly one mode: rows replaces the whole plan, row upserts by stable id (new rows before the first acceptance step, or at the end when there is none), remove deletes an existing row. Dates are server-owned. A blocking card's row joins the plan only through write_card and cannot be removed here (withdraw_card closes the card); here it may only change its after or its position. Whole writes clear provisional and log the rewrite. Status, blocking and priority derive from the plan; open owned rows require move_item before removal for every author. Project writes cannot indirectly resume paused open work. after names earlier rows. Work plans require at least one acceptance step anywhere; records take none. Acceptance uses ordinary step after, waits and state rules. Identical results are no-ops; concurrent writes retry atomically.", {
+  register("set_plan", "Edit the item's plan. Exactly one mode: rows replaces the whole plan, row upserts by stable id (new rows before the first acceptance step, or at the end when there is none), remove deletes an existing row. Dates are server-owned. A blocking card's row joins the plan only through write_card and cannot be removed here (withdraw_card closes the card); here it may only change its after or its position. Whole writes clear provisional and log the rewrite. Status and blocking derive from the plan; open owned rows require move_item before removal for every author. Project writes cannot indirectly resume paused open work. after names earlier rows. Work plans require at least one acceptance step anywhere; records take none. Acceptance uses ordinary step after, waits and state rules. Identical results are no-ops; concurrent writes retry atomically.", {
     author, session, id, rows: PlanInput.describe("Whole ordered plan replacement; clears provisional and logs its rewrite.").optional(), row: PlanRowInput.describe("Complete row upsert; keeps an existing id in place or inserts before the first acceptance step (appends when there is none). Use rows to choose another position.").optional(), remove: Key.describe("Existing row id; later after users must be rewritten first.").optional(),
   }, a => result(ops.setPlan(a)), true);
   register("set_targets", "Keep your item's goal numbers current, including on records. Provide exactly one: targets replaces the ordered list, target upserts a complete goal by stable id, or remove deletes that id. Existing upserts keep their position; new ids append. Each row describes a goal, its target value, current value and comparison baseline. The server stamps the measurement date when the current value changes and preserves it otherwise; callers provide no date. New values overwrite old ones, with no measurement history list. No revision is required; changes are one atomic commit with concurrent writes retried; an identical result writes no commit. Target changes are owner unread progress.", {
@@ -302,8 +393,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     target: ItemTargetInput.describe("Complete goal to add or replace: id (1–40 key characters), goal, target, current and baseline; all text is nonempty. Caller provides no date.").optional(),
     remove: StepId.describe("Existing stable target id to remove; supply no target or targets.").optional(),
   }, a => result(ops.setTargets(a)), true);
-  register("update_item", `Edit stable fields using rev from context. A changed head requires reason. Priority is written only on a root, never backlog work. order is for top items. Changing to a record removes all acceptance steps and logs their texts; project authors must have an explicit pause cleared by the owner or Architect before converting to a record (a cancelled item only by ${PROCESS_WRITERS}); an inherited pause alone does not prevent record conversion, provided no open descendant resumes; changing to work requires accept. Only author ${PROCESS_WRITERS} may change the title, and turn a cancelled item into a record. Edit progress with set_plan and ownership with move_item.`, {
-    author, session, id, rev: z.number().int().positive().describe("Revision read from context; stale writes are refused."), title: text("Replacement title.").optional(), head: text("Replacement context.").optional(), reason: text("Why head changed.").optional(), record: z.boolean().describe("A record has no work status or acceptance; it passes no priority.").optional(), accept: text("Acceptance for a record becoming work.").optional(), links: links.optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional(), data: clearableText("Replacement numbers; null clears."), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(),
+  register("update_item", `Edit stable fields using rev from context. A changed head requires reason. order is for top items. Changing to a record removes all acceptance steps and logs their texts; project authors must have an explicit pause cleared by the owner or Architect before converting to a record (a cancelled item only by ${PROCESS_WRITERS}); an inherited pause alone does not prevent record conversion, provided no open descendant resumes; changing to work requires accept. Only author ${PROCESS_WRITERS} may change the title, and turn a cancelled item into a record. Edit progress with set_plan and ownership with move_item.`, {
+    author, session, id, rev: z.number().int().positive().describe("Revision read from context; stale writes are refused."), title: text("Replacement title.").optional(), head: text("Replacement context.").optional(), reason: text("Why head changed.").optional(), record: z.boolean().describe("A record has no work status or acceptance.").optional(), accept: text("Acceptance for a record becoming work.").optional(), links: links.optional(), data: clearableText("Replacement numbers; null clears."), order: z.number().describe("Top-item ordering; owned order comes from the plan.").optional(),
   }, a => result(ops.updateItem(a)), true);
   register("set_tags", "Set your item's whole tag list: every tag must be in the vocabulary (tags) and apply to the item's project, at least one, no repeats. Identical lists are no-ops. No revision is required. Use it to backfill items the 缺标签 check lists.", { author, session, id, tags: tagList }, a => result(ops.setTags(a)), true);
   register("set_tags_many", "Set the whole tag lists of many of your items in one commit, for backfilling the 缺标签 check: each entry is checked as set_tags checks it, and one refused entry refuses the whole write. Entries whose list is unchanged write nothing; when none changes, no commit is made.", {
@@ -319,8 +410,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("remove_tag", `Vocabulary change, only author ${ARCHITECT_WRITER} and only after the owner approved it on a decision card: remove a tag. Refused while any item carries it, unless replace names another tag that applies to all those items' projects; every carrying item then gets the replacement, in the same commit.`, { author, session, name: TagName.describe("Existing tag."), replace: TagName.describe("Existing other tag every carrying item receives instead.").optional() }, a => result(ops.removeTag(a)), true);
   register("set_pause", `Owner-directed pause or resume without changing any plan row. Only author ${PROCESS_WRITERS} may write it, in any project. Records refuse this tool. Pausing requires reason and refuses done and cancelled items; those closed items may only have an existing explicit pause cleared. Descendants inherit pause; resume clears only this item's own marker, so an ancestor's pause remains. Times and the 暂停/恢复 log entry are server-owned; identical requests are no-ops.`, { author, session, id, paused: z.boolean().describe("true pauses the item and its owned subtree; false clears this item's explicit pause."), reason: text("Owner's reason for pausing; required when paused is true.").optional() }, a => result(ops.setPause(a)), true);
   register("set_status", `Only author ${PROCESS_WRITERS} may use it. Cancel with a reason, or reopen a cancelled item. Plan rows, including acceptance states and dates, and owner pause markers stay unchanged. Reopening restores any effective pause. All other statuses derive from plan. Refuses records and cancellation with open owned parts; dispose of each part first. Cancelling paused work keeps the pause marker.`, { author, session, id, status: z.enum(["cancelled", "open"]).describe("cancelled cancels; open removes cancellation, with status derived again."), log: text("Cancellation or reopening reason.") }, a => result(ops.setStatus(a)), true);
-  register("move_item", `Deliberately change ownership in one commit, logging on the item and both owners. Ownership stays within the same project, with no cycles. Project authors may move into a paused chain but cannot move open work out of one until the owner or ${PROCESS_WRITERS} resumes it. ${PROCESS_WRITERS} may move any project's items. Without owner it becomes top-level; a new root requires priority, otherwise priority is refused. after belongs to the destination row and requires owner. Later after edges naming a removed row must be rewritten first.`, { author, session, id, owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional(), priority: Priority.describe("Only root priority: P0 urgent, P1 soon, P2 later; refused for owned or backlog work.").optional() }, a => result(ops.moveItem(a)), true);
-  register("move_item_project", `Only author ${PROCESS_WRITERS} may use it. Move an item to another project, together with everything it owns, in one commit. Key, number, history, notes and cards stay with it; each moved item logs the move. An owner left behind keeps its row as a shared dependency. The item arrives as a top item of the new project; place it under an owner there afterwards with move_item. priority: an item that lands as an open root keeps a stored priority and needs one given when it has none; a given priority replaces the stored one (logged) and is refused when the item does not land as a root. Refused when the move would leave an open waiter and no owner in the new project: an open item there waits on it through a shared row (it would arrive owned by no item), or its own plan holds a shared row to a top item there that nothing owns; the error names them and says what to do first, and only what this move newly causes is refused, not a violation that was already there. Also refused when a moved item's tags do not apply to the new project, or when open work would leave a paused chain without the owner or ${PROCESS_WRITERS} resuming it.`, { author, session, id, project: text("Existing configured project to move the item into."), priority: Priority.describe("Root priority: P0 urgent, P1 soon, P2 later. Required when the item lands as an open root with none stored; optional replacement when one is stored; refused when the item does not land as a root.").optional() }, a => result(ops.moveItemProject(a)), true);
+  register("move_item", `Deliberately change ownership in one commit, logging on the item and both owners. Ownership stays within the same project, with no cycles. Project authors may move into a paused chain but cannot move open work out of one until the owner or ${PROCESS_WRITERS} resumes it. ${PROCESS_WRITERS} may move any project's items. Without owner it becomes top-level. after belongs to the destination row and requires owner. Later after edges naming a removed row must be rewritten first.`, { author, session, id, owner: Key.describe("Existing same-project owner; omit to keep or make a top item.").optional(), after: z.array(Key).describe("Earlier destination plan row ids; [] starts at once, omitted follows the preceding row.").optional() }, a => result(ops.moveItem(a)), true);
+  register("move_item_project", `Only author ${PROCESS_WRITERS} may use it. Move an item to another project, together with everything it owns, in one commit. Key, number, history, notes and cards stay with it; each moved item logs the move. An owner left behind keeps its row as a shared dependency. The item arrives as a top item of the new project; place it under an owner there afterwards with move_item. Refused when the move would leave an open waiter and no owner in the new project: an open item there waits on it through a shared row (it would arrive owned by no item), or its own plan holds a shared row to a top item there that nothing owns; the error names them and says what to do first, and only what this move newly causes is refused, not a violation that was already there. Also refused when a moved item's tags do not apply to the new project, or when open work would leave a paused chain without the owner or ${PROCESS_WRITERS} resuming it.`, { author, session, id, project: text("Existing configured project to move the item into.") }, a => result(ops.moveItemProject(a)), true);
   register("clear_ask", "Remove a legacy ask after the project has replaced it with a decision card or settled it; log the outcome in the same commit.", { author, session, id, log: text("Which decision card replaced the legacy ask or what settled it, and why it can be removed.") }, a => result(ops.clearAsk(a)), true);
   register("write_card", "Create a decision card, or revise an open card using its rev from context. A card is one question with at least three workable options, each with a short name and a detail (what it does, its cost and risks, why it is or is not recommended), and the confidence in the recommended one (score and reason, with what would overturn it). The head places the card on a line holding only [[q:key]], where the design reaches the decision, and does not repeat what the card says. Only a card with blocks is a row of the item's plan, put there in the same commit: before names the row that also waits for the card (default: the first acceptance step) and after the earlier rows the card waits for (as in set_plan). A card without blocks has no row. A revision cannot change the item; setting blocks on a revision adds the row, clearing it removes the row.", {
     author, session, key: Key.describe("Unused new decision key, or an existing open card key with rev."), rev: z.number().int().positive().describe("Required to revise an open card; omit only for creation.").optional(), item: Key.describe("Existing item this decision belongs to."), question: text("The choice the owner needs to settle, one line."),
@@ -333,7 +424,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("withdraw_card", "Withdraw an open decision card nobody needs any more. The reason is written in the item's log and the card's plan row, if it has one, counts as done. A card the owner has answered is not withdrawn.", { author, session, key: Key.describe("Existing open decision card key."), log: text("Why the card is no longer needed; written in the item's log.") }, a => result(ops.withdrawCard(a)), true);
   register("reply_note", "Answer an owner's note and mark it done. The server stamps repliedAt and records your project as repliedBy.", { author, session, id: text("Existing owner note id found with notes or context."), reply: text("Answer to the owner's note."), replace: z.boolean().describe(`Explicitly replace an existing reply; otherwise an already answered note is refused. Only author ${PROCESS_WRITERS} replace a reply they did not write; everyone else replaces only their own.`).optional() }, a => result(ops.replyNote(a)), true);
   register("create_project", `Configure a new project with its optional repository; accepts any author string when appending last. Only ${PROCESS_WRITERS} may supply after to place it immediately after an existing project in page order. Creation and placement are one commit.`, { author, session, name: text("New unique project name, used by area group fields."), repo: text("Optional repository identifier, e.g. Ming-Research/Halo-wf.").optional(), after: text(`Existing project name this new project should immediately follow; only ${PROCESS_WRITERS}. Omit to append last.`).optional() }, a => result(ops.createProject(a)), true);
-  register("update_project", `Update the project's repository or mainline (only that project, or ${ARCHITECT_WRITER}, may); ${PROCESS_WRITERS} may reorder it with after. All projects derive priority from plans.`, { author, session, name: text("Configured project name."), repo: text("Repository identifier.").optional(), mainline: clearableText("The branch merges land on, when it is not the repository's default branch; the GitHub watch reads its checks. null clears it."), after: text(`Project immediately before it; ${PROCESS_WRITERS} only.`).optional() }, a => result(ops.updateProject(a)), true);
+  register("update_project", `Update the project's repository or mainline (only that project, or ${ARCHITECT_WRITER}, may); ${PROCESS_WRITERS} may reorder it with after.`, { author, session, name: text("Configured project name."), repo: text("Repository identifier.").optional(), mainline: clearableText("The branch merges land on, when it is not the repository's default branch; the GitHub watch reads its checks. null clears it."), after: text(`Project immediately before it; ${PROCESS_WRITERS} only.`).optional() }, a => result(ops.updateProject(a)), true);
   register("close_note", "Close a sent owner note without reply text and record what handled it in its item's log, in one commit.", { author, session, id: text("Owner note id on your project's item or card."), log: text("What handled this note; appended to the item's historical log.") }, a => result(ops.closeNote(a)), true);
   // A glossary write answers with its commit; there is no item row to show.
   const glossaryResult = async (operation: Promise<import("./ops.ts").Result>) => { const res = await operation; return `${res.summary} · commit ${res.commit}`; };
