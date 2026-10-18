@@ -292,11 +292,13 @@ test("the architect's turns (author Architect, session 架构师轮次) write as
   // The same names that fail for the conversation's session fail here: a near miss, another author, the PM.
   const before = store.snapshot(), count = (await store.log()).length;
   const only = (what: string) => rx`^author: only ${what === "change the tag vocabulary" ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
+  // The message is tested, not the error's text, which begins with the class name.
+  const refused = (pattern: RegExp) => (e: unknown) => e instanceof OpError && pattern.test(e.message);
   for (const who of [{ author: architect, session: "架构师轮次x" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架构师 轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }, { author: "PM", session: "架构师轮次" }]) {
-    await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), only("create items"));
-    await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), only("pause or resume an item"));
-    await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), only("change the tag vocabulary"));
-    if (who.author !== author) await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), /item a belongs to project Whitefoot/);
+    await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), refused(only("create items")));
+    await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), refused(only("pause or resume an item")));
+    await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), refused(only("change the tag vocabulary")));
+    if (who.author !== author) await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), refused(/item a belongs to project Whitefoot/));
     assert.deepEqual(store.snapshot(), before);
     assert.equal((await store.log()).length, count);
   }
