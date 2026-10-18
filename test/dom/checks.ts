@@ -442,6 +442,47 @@ export async function checkComments(bp: DomPage, o: Oracle): Promise<string[]> {
   return v;
 }
 
+/** Following up on a comment: select a comment the way the owner does and press c, write, and the saved comment names the one it
+ * follows and is listed right under it (the comments written after the first are still below the thread); following up on that
+ * comment in turn lists the next one under it, one step further in. The thread is read from the stored anchors, and the page's list
+ * must show it as that. (That the steps are indented by the stylesheet is test/dom/styles.ts.) */
+export async function checkThreads(bp: DomPage): Promise<string[]> {
+  const v: string[] = [], store = bp.board.store, target = "it:" + bp.board.gen.witness.commentItem;
+  const idOf = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, "_");
+  const box = (id: string) => bp.doc.getElementById("note-" + idOf(id));
+  const notes = () => Object.entries(store.snapshot().notes).filter(([, n]) => n.target === target).sort(([a, x], [b, y]) => x.at.localeCompare(y.at) || a.localeCompare(b));
+  // The notes that follow a note, and those that follow them, in the order written: what the page must list under it.
+  const thread = (root: string): string[] => notes().filter(([, n]) => n.anchor?.kind === "note" && n.anchor.id === root).flatMap(([id]) => [id, ...thread(id)]);
+  const listed = (root: string): string[] => {
+    const out: string[] = [];
+    for (let e = box(root)?.nextElementSibling; e && e.classList.contains("follow") && e.id.startsWith("note-"); e = e.nextElementSibling) out.push(e.id);
+    return out;
+  };
+  const first = notes().find(([, n]) => n.kind === "comment" && n.reply !== undefined && !n.anchor);
+  if (!first) return ["comment-thread: the generated board has no answered comment on the comment item"];
+  await bp.select(bp.board.gen.witness.commentItem);
+  let parent = first[0];
+  for (const step of [1, 2]) {
+    const where = `following up on ${parent} (step ${step})`;
+    if (!attempt(v, `comment-thread: ${where}`, () => bp.click(box(parent), "the comment"))) return v;
+    bp.key("c"); await bp.settle();
+    const field = bp.doc.getElementById("ed-" + idOf(target));
+    if (!field) { v.push(`comment-thread: ${where} opened no comment field`); return v; }
+    const body = `e2e follow-up ${step} ${Date.now()}`, base = bp.changes();
+    bp.fill(field, body); bp.key("Enter");
+    await bp.waitChanges(base + 1);
+    const made = notes().find(([, n]) => n.text === body);
+    if (!made) { v.push(`comment-thread: ${where} stored no comment`); return v; }
+    if (made[1].anchor?.kind !== "note" || made[1].anchor.id !== parent) { v.push(`comment-thread: ${where} stored the anchor ${JSON.stringify(made[1].anchor)}, not note ${parent}`); return v; }
+    const expected = thread(first[0]).map(id => "note-" + idOf(id)), shown = listed(first[0]);
+    if (JSON.stringify(shown) !== JSON.stringify(expected)) v.push(`comment-thread: ${where}: the comments under ${first[0]} are ${shown.join(",")}, the stored thread is ${expected.join(",")}`);
+    const draft = box(made[0]);
+    if (draft && /关于/.test(text(draft.querySelector(":scope > .anchor")))) v.push(`comment-thread: ${where}: the comment under the one it follows still says what it follows`);
+    parent = made[0];
+  }
+  return v;
+}
+
 /** No empty row under an item's title: every part of the detail after its head row carries text. */
 export async function checkEmptyRows(bp: DomPage, items: string[]): Promise<string[]> {
   const v: string[] = [];

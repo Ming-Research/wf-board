@@ -141,6 +141,41 @@ test("a reference token in an owner note reaches sessions as typed, with the key
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /compare with \[\[it:b\]\] and \[\[q:choice\]\]/);
 });
 
+test("a comment that follows another is read with what it follows, and the session answers it with reply_note", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op }), own = ownerOps(store, () => later);
+  const client = new Client({ name: "Test agent", version: "1" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as Array<{ type: string; text: string }>).filter(c => c.type === "text").map(c => c.text).join("\n");
+  const call = async (name: string, args: Record<string, unknown>) => { const result = await client.callTool({ name, arguments: args }); assert.ok(!result.isError, text(result)); return text(result); };
+  const first = await own.createNote({ target: "it:a", kind: "comment", text: "Why the second step first?" });
+  await own.send();
+  await call("reply_note", { author, id: first.id, reply: "Because the first step needs it." });
+  const second = await own.createNote({ target: "it:a", kind: "comment", text: "And the third?", anchor: { kind: "note", id: first.id } });
+  const plain = await own.createNote({ target: "it:a", kind: "comment", text: "A separate question" });
+  await own.send();
+  // The lines of one note: its own line and the indented lines under it.
+  const entry = (output: string, id: string) => {
+    const lines = output.split("\n"), from = lines.findIndex(l => l.startsWith(id + " "));
+    assert.ok(from >= 0, `${id} is listed in\n${output}`);
+    let to = from + 1;
+    while (lines[to]?.startsWith("  ")) to++;
+    return lines.slice(from, to).join("\n");
+  };
+  for (const output of [await call("notes", { filters: { state: ["sent"] } }), await call("context", { id: "a" })]) {
+    assert.match(entry(output, second.id), new RegExp(`follows note ${first.id}: Why the second step first\\?\\n  its reply: Because the first step needs it\\.`), output);
+    assert.doesNotMatch(entry(output, plain.id), /follows/, "a comment that follows nothing says nothing of it");
+  }
+  const brief = JSON.parse(await call("brief", { project: author })).notes as Array<{ id: string; follows?: { id: string; text: string; reply?: string }; anchor?: unknown }>;
+  assert.deepEqual(brief.find(n => n.id === second.id)!.follows, { id: first.id, text: "Why the second step first?", reply: "Because the first step needs it." });
+  assert.deepEqual(brief.find(n => n.id === second.id)!.anchor, { kind: "note", id: first.id });
+  assert.equal(Object.hasOwn(brief.find(n => n.id === plain.id)!, "follows"), false);
+  await call("reply_note", { author, id: second.id, reply: "Because the third needs the second." });
+  assert.equal(store.snapshot().notes[second.id]!.state, "done");
+  assert.match(await call("notes", { filters: { state: ["done"] } }), /Because the third needs the second\./);
+});
+
 test("MCP set_targets exposes date-free goal edits, all modes and compact context and brief", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Targets client", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();

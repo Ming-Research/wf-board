@@ -73,6 +73,33 @@ test("context exposes the owner chain, compact plan, shared waiters, cards, repl
 });
 
 
+test("a note that follows another carries that note's id, text and reply, cut; an anchor to a log entry or a missing note carries nothing", async t => {
+  const { store } = await board(t), long = "长".repeat(400);
+  const doc = (fields: Record<string, unknown>) => ({ target: "it:a", kind: "comment", at, sentAt: at, state: "sent", ...fields });
+  await store.commit({ author, message: "A thread", puts: [
+    { kind: "note", id: "root", expectRev: null, doc: doc({ text: long, state: "done", reply: "短回复", repliedAt: later, repliedBy: author }) },
+    { kind: "note", id: "unanswered", expectRev: null, doc: doc({ text: "还没答复" }) },
+    { kind: "note", id: "on-root", expectRev: null, doc: doc({ text: "接着", anchor: { kind: "note", id: "root" } }) },
+    { kind: "note", id: "on-unanswered", expectRev: null, doc: doc({ text: "再接着", anchor: { kind: "note", id: "unanswered" } }) },
+    { kind: "note", id: "on-log", expectRev: null, doc: doc({ text: "日志", anchor: { kind: "log", at } }) },
+    { kind: "note", id: "on-missing", expectRev: null, doc: doc({ text: "没了", anchor: { kind: "note", id: "deleted" } }) },
+  ] });
+  const s = store.snapshot(), r = rules(s), byId = (list: Array<{ id: string }>, id: string) => list.find(n => n.id === id) as { id: string; follows?: { id: string; text: string; reply?: string } };
+  const cutOnRoot = (list: Array<{ id: string }>) => {
+    const onRoot = byId(list, "on-root").follows!;
+    assert.equal(onRoot.id, "root"); assert.equal(onRoot.reply, "短回复");
+    assert.ok(onRoot.text.startsWith("长".repeat(160) + " …") && onRoot.text.includes("400 characters in all") && !onRoot.text.includes("长".repeat(161)), "the text is cut to 160 characters and says its length");
+  };
+  // The context of an item lists its latest five notes, so it is checked on the note it surely lists.
+  cutOnRoot(q.context(s, r, "a", { log: 0 }).notes);
+  for (const list of [q.notes(s, { limit: 100 }), q.brief(s, r, author).notes]) {
+    cutOnRoot(list);
+    assert.deepEqual(byId(list, "on-unanswered").follows, { id: "unanswered", text: "还没答复" }, "no reply key when there is none");
+    for (const id of ["on-log", "on-missing"]) assert.equal(Object.hasOwn(byId(list, id), "follows"), false, id);
+  }
+  assert.deepEqual(q.notes(s, { limit: 100 }).find(n => n.id === "on-log")!.anchor, { kind: "log", at }, "the anchor itself is still told");
+});
+
 test("latest five context notes include notes on cards and item, not other targets", async t => {
   const { store } = await board(t);
   await store.commit({ author, message: "More notes", puts: Array.from({ length: 6 }, (_, i) => ({ kind: "note" as const, id: `extra-${i}`, expectRev: null, doc: { target: i === 5 ? "it:other" : "q:choice", kind: "comment", text: `Note ${i}`, at: `2026-10-12T00:00:0${i}Z`, state: "sent" } })) });
