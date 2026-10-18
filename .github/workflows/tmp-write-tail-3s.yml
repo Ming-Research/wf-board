@@ -20,5 +20,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test test/write-trace.test.ts test/replay.test.ts test/budget.test.ts test/journal.test.ts test/stateless.test.ts test/slow-ops.test.ts test/maintenance.test.ts test/store.test.ts test/shutdown.test.ts test/mcp.test.ts test/ops.test.ts test/http.test.ts test/owner-ops.test.ts
