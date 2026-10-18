@@ -9,7 +9,7 @@ import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
 import { Item, Dispatch, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
 import { hashToken } from "../src/credentials.ts";
-import { board, author, asArchitect, asPM } from "./helpers.ts";
+import { board, author, asArchitect, retiredPM } from "./helpers.ts";
 
 const architect = "架构师";
 const start = { author, session: architect, id: "a", role: "工程师" as const, level: 2, model: "Sonnet", effort: "xhigh", agent: "a-worker", agentId: "agent-0001", worktree: "~/dev/wf/worktrees/a", startedAt: "2026-10-16T09:02Z", did: "实现一行" };
@@ -149,18 +149,14 @@ test("the architect, with its session, records on any project's item; without th
   await assert.rejects(() => op.dispatchStart({ ...start, agentId: "agent-0002", id: "other", author: "Architect", session: undefined }), refused(/item other belongs to project Firn/));
 });
 
-test("the PM, by its session or by a credential of its role, starts and ends dispatches on any project's item; a near miss of the session is refused", async t => {
+test("the retired PM starts and ends no dispatch, and a session called PM or a near miss of it has no right to either", async t => {
   const { store, op } = await clocked(t);
-  await op.dispatchStart({ ...start, ...asPM, id: "other" });
-  assert.equal(store.snapshot().items.other!.dispatches![0]!.agentId, "agent-0001");
-  await op.dispatchFinish({ ...finish, ...asPM, id: "other" });
-  assert.equal(store.snapshot().items.other!.dispatches![0]!.finish!.result, "返工后通过");
-  // Over a credential the role decides, whatever session the call carries.
-  const pm = { ...asPM, access: { role: "PM" as const, project: "PM", roots: [] } };
-  await op.dispatchStart({ ...start, ...pm, id: "other", agentId: "agent-0002", agent: "other-worker" });
-  await op.dispatchFinish({ ...finish, ...pm, id: "other", agentId: "agent-0002" });
-  assert.equal(store.snapshot().items.other!.dispatches!.length, 2);
-  for (const session of ["PMx", "pm", undefined]) {
+  for (const who of [{ author: "PM", session: "PM" }, { author: "PM", session: architect }, { author: "PM" }]) {
+    await assert.rejects(() => op.dispatchStart({ ...start, ...who, id: "other" }), refused(retiredPM));
+    await assert.rejects(() => op.dispatchFinish({ ...finish, ...who, id: "other" }), refused(retiredPM));
+  }
+  assert.equal(store.snapshot().items.other!.dispatches, undefined, "nothing was recorded");
+  for (const session of ["PM", "PMx", "pm", undefined]) {
     await assert.rejects(() => op.dispatchStart({ ...start, agentId: "agent-0003", id: "other", author: "Architect", session }), refused(/item other belongs to project Firn/), String(session));
     await assert.rejects(() => op.dispatchFinish({ ...finish, id: "other", author: "Architect", session }), refused(/item other belongs to project Firn/), String(session));
   }

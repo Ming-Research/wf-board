@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { parse, stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { unreadSteps } from "../src/history.ts";
-import { timedWake } from "../src/timed-wake.ts";
+import { architectTimedWake } from "../src/timed-wake.ts";
 import { ACTIVE_WINDOW_MS, ActivityIndex } from "../src/rules.ts";
 import { priorityReport } from "../src/migrate-priority.ts";
 import { board } from "./helpers.ts";
@@ -74,7 +74,7 @@ test("opening with the migration clears the priority from every item that holds 
   assert.deepEqual(news, []);
 });
 
-test("the clearing is bookkeeping: it restarts no clock, starts no active time and is not news to the timed wake", async t => {
+test("the clearing is bookkeeping: it restarts no clock, starts no active time and is not news to the architect's timed wake", async t => {
   const { dir, heldHead } = await withPriority(t);
   // Commit times have a resolution of one second; the clearing must not share the earlier commit's.
   await sleep(1100);
@@ -90,7 +90,7 @@ test("the clearing is bookkeeping: it restarts no clock, starts no active time a
   // A clearing a second after the earlier commit would only lengthen its window, so the end of the last window is read far enough on.
   const windows = index.intervals(Date.parse(held!.at) + 3 * 60 * 60 * 1000);
   assert.equal(windows.at(-1)![1], Date.parse(held!.at) + ACTIVE_WINDOW_MS, "no active window opens or grows at the clearing");
-  const fields = await timedWake(store, s, store.derived.rules(s, Date.now()), { at: held!.at, head: heldHead }, held!.at);
+  const fields = await architectTimedWake(store, s, store.derived.rules(s, Date.now()), { at: held!.at, head: heldHead }, held!.at);
   assert.deepEqual(fields.changed, [], "and the timed wake lists nothing the clearing wrote");
 });
 

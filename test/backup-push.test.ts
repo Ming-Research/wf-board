@@ -2,6 +2,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { BackupPush, BACKUP_LAG_MS } from "../src/backup-push.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
 import { Wake } from "../src/wake.ts";
 
 // The watch on the remote copy of the board's data (docs/design.md, Storage): a push that fails or stalls costs no write any time, so
@@ -30,7 +31,8 @@ function world(t: TestContext) {
   };
   const wake = new Wake({ now: () => w.now });
   const backup = new BackupPush({ store, wake, now: () => w.now });
-  const frames = () => wake.since(0).frames.map(({ n: _n, at: _at, ...frame }) => frame);
+  // The push reaches the architect's stream, the one every push of this kind is put on.
+  const frames = () => wake.agent(ARCHITECT_SESSION).since(0).frames.map(({ n: _n, at: _at, line: _line, ...frame }) => frame);
   /** A round `minutes` after the start of the world; its rejection is the push's failure and is not the test's concern. */
   const round = async (minutes: number) => { w.now = start + minutes * MINUTE; await backup.round().catch(() => {}); };
   return { w, backup, frames, round };

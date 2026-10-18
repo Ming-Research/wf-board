@@ -7,7 +7,7 @@ import { rules } from "../src/rules.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { ARCHITECT_WRITER } from "../src/model.ts";
-import { board, author, architect, asArchitect, asPM, rx } from "./helpers.ts";
+import { board, author, architect, asArchitect, retiredPM, rx } from "./helpers.ts";
 
 const vocabulary = { 健全性: "改动影响程序是否被正确拒绝或接受", 报错信息: "改动影响诊断的措辞或位置" };
 
@@ -19,12 +19,16 @@ async function withTags(t: Parameters<typeof board>[0]) {
 }
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
-test("the PM may not change the tag vocabulary: only the session 架构师 may", async t => {
+test("the retired PM, and a session called PM under another author, may not change the tag vocabulary: only the session 架构师 may", async t => {
   const { store, op } = await withTags(t);
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.setTag({ ...asPM, name: "新标签", meaning: "新" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
-  await refuses(op.renameTag({ ...asPM, name: "健全性", to: "安全" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
-  await refuses(op.removeTag({ ...asPM, name: "报错信息" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
+  const pm = { author: "PM", session: "PM" }, borrowed = { author, session: "PM" };
+  await refuses(op.setTag({ ...pm, name: "新标签", meaning: "新" }), retiredPM);
+  await refuses(op.renameTag({ ...pm, name: "健全性", to: "安全" }), retiredPM);
+  await refuses(op.removeTag({ ...pm, name: "报错信息" }), retiredPM);
+  await refuses(op.setTag({ ...borrowed, name: "新标签", meaning: "新" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
+  await refuses(op.renameTag({ ...borrowed, name: "健全性", to: "安全" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
+  await refuses(op.removeTag({ ...borrowed, name: "报错信息" }), rx`only ${ARCHITECT_WRITER} may change the tag vocabulary`);
   assert.deepEqual(store.snapshot(), before);
   assert.equal((await store.log()).length, count, "a refusal makes no commit");
 });

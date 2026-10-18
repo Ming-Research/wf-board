@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_TURN_SESSION, Key, LONG_LIVED_ROLES, PM_AUTHOR, PM_ROLE, PM_SESSION, RUNNER_SESSION, isArchitectName, isRunnerSession } from "./model.ts";
+import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_TURN_SESSION, Key, LONG_LIVED_ROLES, RUNNER_SESSION, isArchitectName, isRunnerSession } from "./model.ts";
 import type { Access, Item, Snapshot } from "./model.ts";
 
 /**
@@ -13,7 +13,7 @@ import type { Access, Item, Snapshot } from "./model.ts";
  *
  * Two kinds exist. A dispatch credential is issued with the dispatch record (ops dispatchStart) and valid until the dispatch
  * ends; it names the session, the role, the item whose subtree the session works on and the item's project. A long-lived
- * credential belongs to the architect, the PM, the observer or the resource agent; its hash is in a file outside the data directory,
+ * credential belongs to the architect, the observer or the resource agent; its hash is in a file outside the data directory,
  * which the service only reads (the script scripts/credential.ts writes it).
  */
 
@@ -41,9 +41,6 @@ export const LongLived = z.object({
   .refine(c => c.role !== ARCHITECT_ROLE || (c.project === ARCHITECT && isArchitectName(c.session)), `the architect's credential is project ${ARCHITECT}, session ${ARCHITECT_SESSION} or ${ARCHITECT_TURN_SESSION}`)
   // Author Architect from either of these sessions is what the board takes for the architect (model isArchitect); no other role writes under them.
   .refine(c => c.role === ARCHITECT_ROLE || !isArchitectName(c.session), `the session names ${ARCHITECT_SESSION} and ${ARCHITECT_TURN_SESSION} are the architect's alone`)
-  // The PM writes as author PM, the project of its own, from the session PM (model isPM), on the same terms.
-  .refine(c => c.role !== PM_ROLE || (c.project === PM_AUTHOR && c.session === PM_SESSION), `the PM's credential is project ${PM_AUTHOR}, session ${PM_SESSION}`)
-  .refine(c => c.role === PM_ROLE || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`)
   // The runner writes without a credential, from this session (model isRunner); a credential under the name would only blur who wrote.
   .refine(c => !isRunnerSession(c.session), `the session name ${RUNNER_SESSION} is the runner's alone, and the runner has no credential`);
 export type LongLived = z.infer<typeof LongLived>;
@@ -87,7 +84,7 @@ export class CredentialFile {
 export interface Identified { author: string; session: string; access: Access }
 /** The outcome of reading a request's credential: a writer, or why the credential is refused. */
 export type Resolved = { ok: true; who: Identified } | { ok: false; problem: string };
-export const REFUSED = "this connection's credential is not valid (unknown, or revoked when its dispatch ended); ask the PM for a new one, or remove it from the connection's configuration to read the board";
+export const REFUSED = "this connection's credential is not valid (unknown, or revoked when its dispatch ended); ask the architect for a new one, or remove it from the connection's configuration to read the board";
 
 const dispatchIndexes = new WeakMap<object, Map<string, { id: string; item: Item; agent: string; role: Access["role"] }>>();
 /** The open dispatches by the hash of their credential, built once per state of the items. */

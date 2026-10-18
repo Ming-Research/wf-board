@@ -6,10 +6,10 @@ import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
 import { rules } from "../src/rules.ts";
-import { board, asArchitect, asPM, rx } from "./helpers.ts";
+import { board, asArchitect, retiredPM, rx } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
-// What the design (docs/design.md, section 9) reserves for the PM and the architect, written out here and not read from the table.
+// What the design (docs/design.md, section 9) reserves for the architect, written out here and not read from the table.
 const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 // What only the architect may do beyond that (no role has the merge row: the GitHub watch marks it).
 const ARCHITECT_ONLY: Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
@@ -22,12 +22,12 @@ test("each role has the parts the design gives it", () => {
   // Every role sends messages, and a message changes no item: its scope is the sender's own.
   const items = (parts: readonly Part[]) => parts.filter(p => p !== "message.send").map(p => `${p}:board`);
   assert.deepEqual(grants("架构师"), [...items(PARTS.filter(p => p !== "item.merge-row")), "message.send:own"].sort());
-  assert.deepEqual(grants("PM"), [...items(PARTS.filter(p => !ARCHITECT_ONLY.includes(p))), "message.send:own"].sort(), "the PM has the process parts, not the journal, the tag vocabulary or a new project");
+  assert.equal(Object.hasOwn(ACCESS, "PM"), false, "the PM role is gone from the table");
   assert.deepEqual(grants("观察者"), [...items(PARTS.filter(p => !RESERVED.includes(p))), "message.send:own"].sort());
-  assert.deepEqual(ROLES.filter(writesAnyProject), ["架构师", "PM", "观察者", "资源管理"], "the engineer and the review write inside their own project only");
+  assert.deepEqual(ROLES.filter(writesAnyProject), ["架构师", "观察者", "资源管理"], "the engineer and the review write inside their own project only");
 });
 
-test("the writes the code reserves are the parts the table withholds from the observer, and the PM has all but the architect's own", async t => {
+test("the writes the code reserves are the parts the table withholds from the observer, and the architect has them all", async t => {
   const { op } = await board(t);
   const legacy = { author: "Whitefoot", session: "someone" };
   const reserved: Array<[Part, RegExp, () => Promise<unknown>]> = [
@@ -42,10 +42,9 @@ test("the writes the code reserves are the parts the table withholds from the ob
     ["item.runner", rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
   ];
   for (const [part, message, call] of reserved) {
-    await assert.rejects(call, (error: unknown) => error instanceof OpError && message.test(error.message), `${part}: the code refuses an author that is neither the PM nor the architect`);
+    await assert.rejects(call, (error: unknown) => error instanceof OpError && message.test(error.message), `${part}: the code refuses an author that is not the architect`);
     assert.equal(ACCESS["观察者"][part], undefined, `${part}: and the observer's credential has no such part`);
     assert.ok(ACCESS["架构师"][part], `${part}: the architect's has`);
-    assert.equal(ACCESS.PM[part] !== undefined, PROCESS.includes(part), `${part}: the PM's has it exactly when it is a process part`);
   }
 });
 
@@ -198,35 +197,16 @@ test("the resource agent writes any log, and the head and plan of its own record
   await assert.rejects(op.setTargets({ ...who, id: "a", remove: "t" }), (e: unknown) => e instanceof OpError && /may not write/.test(e.message));
 });
 
-test("a credential speaks for the PM by its role, whatever author and session it carries", async t => {
+test("author PM and the session PM carry no right: the author is refused as retired, the session is a name like any other", async t => {
   const { op, store } = await board(t);
   const head = store.snapshot().head;
-  // Author PM from the session PM is what the board takes for the PM when nothing else tells; a credential of another
-  // role is not the PM's, so it has no right over another project's items (`a` belongs to Whitefoot).
-  const engineerAsPM = { ...asPM, access: { role: "工程师" as const, project: "PM", roots: ["a"] } };
-  await assert.rejects(op.appendLog({ ...engineerAsPM, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
-  await assert.rejects(op.createItem({ ...engineerAsPM, key: "n", title: "N", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && /item n: outside the subtree of a, the only items a 工程师 credential writes for item\.create/.test(e.message));
-  assert.equal(store.snapshot().head, head);
-  // The PM's own credential does, with other names than the PM's.
-  await op.appendLog({ author: "Whitefoot", session: "other-name", access: { role: "PM" as const, project: "PM", roots: [] }, id: "a", text: "from the PM" });
-  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "from the PM");
-});
-
-test("the PM's credential does what the process needs in any project, and not what only the architect does", async t => {
-  const { op, store } = await board(t);
-  const who = { ...asPM, access: { role: "PM" as const, project: "PM", roots: [] } };
-  await op.createItem({ ...who, key: "made", title: "Made", accept: "ok", group: "Whitefoot" });
-  await op.setDifficulty({ ...who, id: "made", difficulty: 2, reason: "r" });
-  await op.setPause({ ...who, id: "made", paused: true, reason: "later" });
-  await op.setPause({ ...who, id: "made", paused: false });
-  await op.moveItemProject({ ...who, id: "made", project: "Firn" });
-  await op.setStatus({ ...who, id: "made", status: "cancelled", log: "not needed" });
-  await op.appendLog({ ...who, id: "other", text: "from the PM" });
-  assert.equal(store.snapshot().items.made!.group, "Firn");
-  assert.equal(store.snapshot().items.other!.log.at(-1)!.by, "PM");
-  await assert.rejects(op.journalEntry({ ...who, text: "x" }), (e: unknown) => e instanceof OpError && /journal: a PM credential may not write/.test(e.message));
-  await assert.rejects(op.setTag({ ...who, name: "标签", meaning: "m" }), (e: unknown) => e instanceof OpError && /tag-vocab: a PM credential may not write/.test(e.message));
-  await assert.rejects(op.createProject({ ...who, name: "New" }), (e: unknown) => e instanceof OpError && /project\.create: a PM credential may not write/.test(e.message));
+  // Even a credential that has the right on the item cannot write under the retired author.
+  const engineerAsPM = { author: "PM", session: "PM", access: { role: "工程师" as const, project: "PM", roots: ["a"] } };
+  await assert.rejects(op.appendLog({ ...engineerAsPM, id: "a", text: "x" }), (e: unknown) => e instanceof OpError && retiredPM.test(e.message));
+  // A project author writing from the session PM has a project author's rights: not another project's items, not the process.
+  await assert.rejects(op.appendLog({ author: "Firn", session: "PM", id: "a", text: "x" }), (e: unknown) => e instanceof OpError && /item a belongs to project Whitefoot/.test(e.message));
+  await assert.rejects(op.createItem({ author: "Whitefoot", session: "PM", key: "n", title: "N", accept: "ok", group: "Whitefoot" }), (e: unknown) => e instanceof OpError && rx`only ${PROCESS_WRITERS} may create items`.test(e.message));
+  assert.equal(store.snapshot().head, head, "nothing was written");
 });
 
 test("the architect's credential does what the architect does, in any project", async t => {
@@ -240,10 +220,10 @@ test("the architect's credential does what the architect does, in any project", 
 
 test("the texts that say who may do the process are built from one definition, and rx matches what it is given literally", () => {
   // The definition is pinned once, so that the expected texts built from it elsewhere cannot all agree on a typo.
-  assert.equal(PROCESS_WRITERS, "PM with session PM or Architect with session 架构师");
+  assert.equal(PROCESS_WRITERS, "Architect with session 架构师");
   assert.equal(ARCHITECT_WRITER, "Architect with session 架构师");
-  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only PM with session PM or Architect with session 架构师 may create items"));
-  assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"), "the architect's session alone is another text");
+  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"));
+  assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only PM with session PM or Architect with session 架构师 may create items"), "the text of the time the PM was a writer is another text");
   assert.ok(!rx`a${"."}b`.test("axb"), "an interpolated value matches literally");
 });
 
@@ -342,7 +322,7 @@ test("an engineer cannot rate the item it was started on, only the items below i
   assert.equal(store.snapshot().items.area!.difficulty, 3);
 });
 
-test("a reply is replaced only by the author who wrote it, or by the PM or the architect", async t => {
+test("a reply is replaced only by the author who wrote it, or by the architect", async t => {
   const { op, store } = await board(t);
   // note-1 is on item a and note-2 on the card choice, which belongs to item b: the engineer's subtree holds both.
   const engineerOf = (roots: string[]) => ({ author: "Whitefoot", session: "eng", access: engineer(roots) });
@@ -364,12 +344,9 @@ test("a reply is replaced only by the author who wrote it, or by the PM or the a
   await assert.rejects(op.replyNote({ ...asArchitect, id: "note-2", reply: "没带 replace" }), /already replied by Whitefoot at .*use replace: true/);
   await op.replyNote({ ...asArchitect, id: "note-2", reply: "架构师改写", replace: true });
   assert.deepEqual(wrote("note-2"), ["架构师改写", "Architect"]);
-  // The PM runs the process too: it replaces any reply, but only on purpose; a project author borrowing the PM's or the architect's session does not.
-  await assert.rejects(op.replyNote({ ...asPM, id: "note-2", reply: "没带 replace" }), /already replied by Architect at .*use replace: true/);
-  await op.replyNote({ ...asPM, id: "note-2", reply: "PM 改写", replace: true });
-  assert.deepEqual(wrote("note-2"), ["PM 改写", "PM"]);
-  for (const session of ["PM", "架构师"]) await assert.rejects(op.replyNote({ author: "Whitefoot", session, id: "note-2", reply: "冒名", replace: true }), notOwn("PM"));
-  assert.deepEqual(wrote("note-2"), ["PM 改写", "PM"]);
+  // A project author borrowing the architect's session or the retired PM's does not replace the architect's reply.
+  for (const session of ["PM", "架构师"]) await assert.rejects(op.replyNote({ author: "Whitefoot", session, id: "note-2", reply: "冒名", replace: true }), notOwn("Architect"));
+  assert.deepEqual(wrote("note-2"), ["架构师改写", "Architect"]);
   // Also a reply with no author recorded (an old one) and one by the retired coordinator, which nobody else can replace.
   const seed = async (id: string, repliedBy?: string) => {
     const note = store.snapshot().notes[id]!;
@@ -378,10 +355,8 @@ test("a reply is replaced only by the author who wrote it, or by the PM or the a
   for (const [id, by] of [["note-1", undefined], ["note-2", "总管"]] as const) {
     await seed(id, by);
     await assert.rejects(op.replyNote({ ...engineerOf(["a", "b"]), id, reply: "改", replace: true }), /already replied by .* at .*replaced only by its author/);
-    for (const [who, name] of [[asArchitect, "Architect"], [asPM, "PM"]] as const) {
-      await seed(id, by);
-      await op.replyNote({ ...who, id, reply: "接手", replace: true });
-      assert.deepEqual(wrote(id), ["接手", name]);
-    }
+    await seed(id, by);
+    await op.replyNote({ ...asArchitect, id, reply: "接手", replace: true });
+    assert.deepEqual(wrote(id), ["接手", "Architect"]);
   }
 });

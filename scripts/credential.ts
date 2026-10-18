@@ -1,4 +1,4 @@
-// Issues, lists and revokes the long-lived credentials (the architect's, the PM's, the observer's, the resource agent's) that the board
+// Issues, lists and revokes the long-lived credentials (the architect's, the observer's, the resource agent's) that the board
 // reads from a file outside its data directory; only the service writes the data directory, so this file is written here.
 // The file holds each credential's SHA-256 only, so the token is printed once, when it is issued, and cannot be shown again.
 //
