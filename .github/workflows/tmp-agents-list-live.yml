@@ -20,3 +20,26 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test test/agents.test.ts test/runner-rows.test.ts test/derived.test.ts test/watch.test.ts test/ci-watch.test.ts test/live.test.ts test/web.test.ts test/page-version.test.ts test/dom/agents.test.ts test/dom/agents-spoiled-1.test.ts test/dom/agents-spoiled-2.test.ts test/dom/runner-block.test.ts
+  # The new tests must fail on the source as it was before the rule (the older rows listed any session that wrote, and the
+  # programs' names were left out by a table): the unit test and the page scenario each name their reason.
+  before-rule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git checkout 21f71ee -- src/agents.ts src/model.ts src/watch.ts src/ci-watch.ts
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: |
+          code=0
+          node --test test/agents.test.ts test/dom/agents.test.ts > out.txt 2>&1 || code=$?
+          cat out.txt
+          test "$code" -ne 0
+          grep -q "only the session a dispatch record names has a row" out.txt
+          grep -q "no programmer the board sent out: no list" out.txt
