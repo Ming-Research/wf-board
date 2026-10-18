@@ -19,6 +19,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # The new cases must fail against the owner-ops, route and push guard of the main line.
       - run: |
