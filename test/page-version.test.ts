@@ -27,7 +27,10 @@ async function pageDir(t: { after(fn: () => unknown): void }, files: { html?: st
   return { dir, write, version: async () => pageVersion(await readFile(join(dir, "index.html")), await readFile(join(dir, "dist/app.js")), await library()) };
 }
 
-/** The events of a page's stream, read as they arrive: `next` waits for one event (the comment line that opens the stream is not one). */
+/**
+ * The page events of a page's stream, read as they arrive: `next` waits for one event (the comment line that opens the stream is not
+ * one, and neither is `live`, the runner's beats that the stream also carries; test/live.test.ts reads those).
+ */
 async function stream(t: { after(fn: () => unknown): void }, url: string) {
   const controller = new AbortController(); t.after(() => controller.abort());
   const response = await fetch(url + "/api/events", { signal: controller.signal });
@@ -47,7 +50,7 @@ async function stream(t: { after(fn: () => unknown): void }, url: string) {
     for (let end = text.indexOf("\n\n"); end >= 0; end = text.indexOf("\n\n")) {
       const block = text.slice(0, end); text = text.slice(end + 2);
       const event = /^event: (.+)$/m.exec(block)?.[1], data = /^data: (.+)$/m.exec(block)?.[1];
-      if (event) events.push({ event, data: data ? JSON.parse(data) : undefined });
+      if (event && event !== "live") events.push({ event, data: data ? JSON.parse(data) : undefined });
     }
   }
   return {

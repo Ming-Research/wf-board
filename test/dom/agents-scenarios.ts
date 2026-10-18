@@ -175,7 +175,7 @@ const WITNESSES: Array<{ bug: string; scenario: (t: Hooks, reverts: Revert[]) =>
   },
   {
     bug: "the heading counted every session, not only the running ones",
-    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + running.length', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length')], reason: /nothing runs: the heading counts none/,
+    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (running.length + runner.length)', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (rows.length + runner.length)')], reason: /nothing runs: the heading counts none/,
   },
   {
     bug: "the folded sessions came above the running ones",
