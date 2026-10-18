@@ -51,6 +51,10 @@ jobs:
       - run: npm run build:web
       - run: node --test --test-concurrency=2 test/e2e/page.e2e.ts test/e2e/agents.e2e.ts test/e2e/messages.e2e.ts test/e2e/update.e2e.ts
   profile:
+    strategy:
+      fail-fast: false
+      matrix:
+        file: [agents, witnesses, messages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -60,7 +64,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --cpu-prof --cpu-prof-dir=prof test/dom/page.test.ts 2>&1 | grep -E 'duration_ms|^✔|^  ✔' || true
+      - run: node --cpu-prof --cpu-prof-dir=prof test/dom/${{ matrix.file }}.test.ts 2>&1 | grep -E 'duration_ms|^✔|^  ✔' || true
       - run: |
           cat > summ.mjs <<'JS'
           import { readFileSync, readdirSync } from "node:fs";
@@ -84,7 +88,7 @@ jobs:
           const top = (m, k) => [...m].sort((a, b) => b[1] - a[1]).slice(0, k).map(([n, t]) => `${t.toFixed(0).padStart(7)} ms  ${n}`).join("\n");
           console.log(`total ${total.toFixed(0)} ms`);
           console.log("--- self time by package"); console.log(top(selfPkg, 15));
-          console.log("--- self time by function"); console.log(top(self, 40));
-          console.log("--- inclusive time by function"); console.log(top(incl, 70));
+          console.log("--- self time by function"); console.log(top(self, 25));
+          console.log("--- inclusive time by function"); console.log(top([...incl].filter(([k]) => /test\/|e2e\/|src\/|seed|spawn|startBoard|reset|oracle|burst|JSDOM|eval/.test(k)), 45));
           JS
           node summ.mjs
