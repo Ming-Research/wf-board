@@ -378,12 +378,17 @@ test("what is not a merge row turning done tells nobody: a row naming no PR its 
   await pm.sync();
   assert.equal(had(wake, "b-worker"), 0, "none of these told the holder of b");
   // A waiter that is paused is not waiting on anyone: nothing is told for it, held or not.
-  await op.setPause({ ...asArchitect, id: "b", paused: true });
+  await op.setPause({ ...asArchitect, id: "b", paused: true, reason: "waits for the owner" });
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
   await pm.sync();
   assert.equal(had(wake, "b-worker"), 0, "b is paused");
   assert.equal(had(wake, ARCHITECT_SESSION), 0, "and it is not the architect's to hear of either");
+  // The same row shape once b is open again is told, so the silences above are the conditions' and not a push that never works.
+  await op.setPause({ ...asArchitect, id: "b", paused: false });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await until(() => had(wake, "b-worker") === 1, "the push once b is open");
 });
 
 test("the pools count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {
