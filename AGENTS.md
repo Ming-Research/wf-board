@@ -192,6 +192,7 @@ The shared rules' design-tree section applies; this is how it maps here.
   `~/dev/wf/wf-board-data` (private remote `Ming-Research/wf-board-data`).
   Only the daemon writes it; tests use temporary directories.
 - The daemon binds `127.0.0.1` only.
+- A test copy of the board uses its own port and a temporary data directory, never port 7417 or the board's data.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
 - Board usage for agents lives only in `~/dev/wf/AGENTS.md`, section "Board"
