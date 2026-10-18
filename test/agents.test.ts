@@ -69,21 +69,23 @@ const item = (plan: Plan = [], fields: Partial<Item> = {}) => ({ title: "t", gro
 const dispatch = (agent: string, started: string, fields: Partial<Dispatch> = {}) => ({ agentId: `${agent}-${started}`, agent, role: "工程师", level: 2, model: "Sonnet", started, ...fields }) as unknown as Dispatch;
 const snap = (items: Record<string, Item>, agents: Record<string, AgentTouch[]> = {}) => ({ items, activity: { writes: [], items: {}, agents } }) as unknown as Pick<Snapshot, "items" | "activity">;
 const wrote = (...touches: Array<[string, number]>) => touches.map(([item, m]) => ({ item, at: minutesAgo(m) }));
-const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find(r => r.name === name);
+// The page hands the rows its list of items, each with its key.
+const rowsOf = (s: Pick<Snapshot, "items" | "activity">) => agentRows(s, NOW, Object.entries(s.items).map(([id, it]) => ({ ...it, id })));
+const row = (s: ReturnType<typeof snap>, name: string) => rowsOf(s).find(r => r.name === name);
 // An item whose dispatch records, long ago and unfinished, name the sessions: a session is listed only when a record names it.
 const dispatched = (...names: string[]) => item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
 
 test("a session is listed for six hours after its last write, and the architect's own never is; the name PM is a name like any other", () => {
   const items = { a: item(), named: dispatched("fresh", "edge", "old", "架构师", "PM") };
   const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]), PM: wrote(["a", 2]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["PM", "fresh", "edge"], "newest first; past the window and the architect's session are out");
+  assert.deepEqual(rowsOf(s).map(r => r.name), ["PM", "fresh", "edge"], "newest first; past the window and the architect's session are out");
 });
 
 test("a session no dispatch record names is not listed, whatever it wrote: the programs, the architect's turns and helpers, a hand-started session, a name written by mistake", () => {
   const items = { a: item(), named: dispatched("fresh") };
   const s = snap(items, { fresh: wrote(["a", 5]), "执行程序": wrote(["a", 1]), "架构师轮次": wrote(["a", 1]), "架构师-helper": wrote(["a", 1]), "看板": wrote(["a", 1]), architect: wrote(["a", 1]), observer: wrote(["a", 2]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh"], "only the session a dispatch record names has a row");
-  assert.deepEqual(agentRows(snap({ a: item() }, { observer: wrote(["a", 2]) }), NOW), [], "with no dispatch record at all the list is empty");
+  assert.deepEqual(rowsOf(s).map(r => r.name), ["fresh"], "only the session a dispatch record names has a row");
+  assert.deepEqual(rowsOf(snap({ a: item() }, { observer: wrote(["a", 2]) })), [], "with no dispatch record at all the list is empty");
 });
 
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {
@@ -151,7 +153,7 @@ test("a session whose newest dispatch has ended is out until it writes again; a 
     d: item([], { dispatches: [ended("reused", 300, 200), dispatch("reused", minutesAgo(10))] } as Partial<Item>),
     e: item([], { dispatches: [dispatch("open", minutesAgo(40))] } as Partial<Item>),
   }, { done: wrote(["a", 31]), again: wrote(["b", 5]), grace: wrote(["c", 29.5]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name).sort(), ["again", "open", "reused"]);
+  assert.deepEqual(rowsOf(s).map(r => r.name).sort(), ["again", "open", "reused"]);
   assert.equal(row(s, "again")!.lastKind, "wrote", "wrote after it ended: listed as usual");
   assert.equal(row(s, "done"), undefined, "its own last write was before the end");
   assert.equal(row(s, "grace"), undefined, "a write within a minute of the recorded end is still the session's last: the end may be recorded to the minute");
@@ -191,7 +193,7 @@ test("a step in progress on an item a session touched does not make it running; 
 
 test("a session with no dispatch record has no row, whatever stands on the items it touched", () => {
   const s = snap({ run: doing(), wait: doing("PR 草稿 CI") }, { observer: wrote(["run", 5]), waiter: wrote(["wait", 5]), stopped: wrote(["run", 45]) });
-  assert.deepEqual(agentRows(s, NOW), [], "the steps on its items may be other sessions': nothing names it a programmer the board sent out");
+  assert.deepEqual(rowsOf(s), [], "the steps on its items may be other sessions': nothing names it a programmer the board sent out");
 });
 
 test("a session with an unfinished dispatch that is alive is running, an engineer or a review, with no step in progress", () => {
