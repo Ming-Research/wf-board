@@ -12,7 +12,8 @@
 //   arrives 300 ms late is 300 ms of the clock's time and no real waiting.
 
 import { performance as perf } from "node:perf_hooks";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ import type { Revert } from "../e2e/variant.ts";
 import { compare, judge, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
+const run = promisify(execFile);
 type Fetcher = NonNullable<PageOptions["fetch"]>;
 type Loose = Record<string, any>;
 
@@ -301,14 +303,16 @@ export async function pairedLandings(wins: readonly Press[], wanted: number, eve
 /** The page as one commit had it, built from that commit's `web/` and `src/` in a temporary directory; undefined when the commit is not
  * in this checkout. */
 export async function pageAt(ref: string): Promise<{ script: string; html: string } | undefined> {
-  let tar: Buffer;
-  try { tar = execFileSync("git", ["archive", "--format=tar", ref, "web", "src"], { cwd: ROOT, maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "ignore"] }); } catch { return undefined; }
   const dir = await mkdtemp(join(tmpdir(), "wf-board-base-"));
   try {
-    execFileSync("tar", ["-x", "-C", dir], { input: tar });
+    try { await run("sh", ["-c", 'git archive --format=tar "$1" web src | tar -x -C "$2"', "sh", ref, dir], { cwd: ROOT, maxBuffer: 1 << 20 }); } catch { return undefined; }
     const html = stampPage(await readFile(join(dir, "web/index.html"), "utf8"), undefined);
     return { script: await bundleScript(await readFile(join(dir, "web/app.ts"), "utf8"), join(dir, "web")), html };
   } finally { await rm(dir, { recursive: true, force: true }); }
+}
+/** Whether `web/` and `src/` of this checkout are as they are at `ref`, so that the page is the same and need not be built to tell. */
+export async function sameSourceAs(ref: string): Promise<boolean> {
+  try { await run("git", ["diff", "--quiet", ref, "--", "web", "src"], { cwd: ROOT }); return true; } catch { return false; }
 }
 /** The current page. */
 export async function currentPage(): Promise<{ script: string; html: string }> { return { script: await pageScript(), html: await pageHtml() }; }

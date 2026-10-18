@@ -58,6 +58,8 @@ async function commitTail(dir: string, writes: readonly Tail[]): Promise<void> {
 const SENTENCE = "解释器通过长脚本时，检查器先把计划里每一行的状态算出来，再和上一次的结果比对，只重画变了的部分。";
 
 export async function startLiveBoard(t: { after(fn: () => unknown): void }): Promise<BoardServer> {
+  const began = performance.now(), steps: string[] = [];
+  const lap = (what: string) => steps.push(`${what} ${((performance.now() - began) / 1000).toFixed(1)} s`);
   const dir = await mkdtemp(join(tmpdir(), "wf-board-live-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(1, SCALE);
@@ -68,6 +70,7 @@ export async function startLiveBoard(t: { after(fn: () => unknown): void }): Pro
     doc.head = head;
   }
   const seeded = await seedBoard(dir, gen);
+  lap("generated and written by the store");
   const snap = seeded.store.snapshot(), r = rules(snap);
   const open = Object.keys(snap.items).filter(id => !snap.items[id]!.record && !/^(done|cancelled)$/.test(r.statusOf(id) ?? ""));
   const rnd = prng(4242), pool = Array.from({ length: Math.round(UNREAD_COMMITS * 0.7) }, () => rnd.pick(open));
@@ -96,11 +99,15 @@ export async function startLiveBoard(t: { after(fn: () => unknown): void }): Pro
     latest.set("items/" + id, doc);
     writes.push({ author: it.group, message: "unread: progress", path: `items/${id}.yaml`, doc, at: now + k });
   }
+  lap("unread commits worked out");
   await seeded.store.flushOwner("owner");
   seeded.store.stopMaintenance();
   await commitTail(dir, writes);
+  lap("unread commits made");
   // The store that wrote the board does not know the commits made beside it: the board is opened again, as a daemon starts.
   const store = await Store.open(dir, { maintenance: { every: 1_000_000, log: () => {} } });
+  lap("opened again");
+  console.log(`live board: ${steps.join(", ")}`);
   // The server of the board, with the page of this checkout.
   return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, join(ROOT, "web"));
 }

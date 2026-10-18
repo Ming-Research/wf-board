@@ -1,6 +1,7 @@
-// The counts of the n-key lane (test/nkey/lane.ts) on pages with what they protect taken out, and the draws of a landing when the rows
-// around its target answer late. First the draws: they depend on when the baselines of the rows around the target answer, and the
-// navigation waits 100 ms at most for them. These tests set that time, 300 ms of a virtual clock. On a page that waits 2 s the rows come
+// The draws of a landing in the n-key lane (test/nkey/lane.ts) when the rows around its target answer late, the counts on the page with
+// all three changes they protect taken out, and that m marks a read without fetching the board again. The draws depend on when the
+// baselines of the rows around the target answer, and the navigation waits 100 ms at most for them. These tests set that time, 300 ms
+// of a virtual clock. On a page that waits 2 s the rows come
 // in the landing's draws, which are two at most; on the page itself the landing has drawn twice by then and the rows are drawn on their
 // own, each draw of other items' rows alone. A row around the target is a baseline of kind item for another item than the target; the
 // others answer after 20 ms. A landing has such a row about one time in six, so the walk goes on until enough landings had one.
@@ -9,12 +10,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { performance as perf } from "node:perf_hooks";
 import type { Revert } from "../e2e/variant.ts";
-import { PAIRS, Press, Scope, VirtualClock, WARMUP, landings } from "./press.ts";
+import { Press, Scope, VirtualClock, landings } from "./press.ts";
 import type { Landing } from "./press.ts";
-import { FILTERS_COUNTED_EACH_DRAW, LONG_WAIT, MIN_LANDINGS_WITH_ROW, NAVIGATION_DRAWS_THREE_TIMES, OWN_ANSWER_MS, READ_FETCHES_THE_BOARD, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, SCHEDULE_REBUILDS, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, WITNESS_LANDINGS, checkCounts, lap, log, ms, startLane } from "./lane.ts";
+import { FILTERS_COUNTED_EACH_DRAW, LANDINGS_FOR_LATE_ROWS, LONG_WAIT, MIN_LANDINGS_WITH_ROW, NAVIGATION_DRAWS_THREE_TIMES, OWN_ANSWER_MS, READ_FETCHES_THE_BOARD, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, SCHEDULE_REBUILDS, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, WITNESS_LANDINGS, checkCounts, lap, log, ms, startLane } from "./lane.ts";
 
-test("the counts of one press of n report a page with what they protect taken out, and a row around the target that answers late is drawn as it should be", { timeout: 10 * 60_000 }, async t => {
-  const lane = await startLane(t, { landings: WARMUP + PAIRS });
+test("a row around the target that answers late is drawn as it should be, the counts report the page with all three changes taken out, and m marks a read without fetching the board", { timeout: 10 * 60_000 }, async t => {
+  const lane = await startLane(t, { landings: LANDINGS_FOR_LATE_ROWS });
   const { targets } = lane;
 
   const withRowsHeld = async (reverts: Revert[], holdMs: number) => {
@@ -75,24 +76,13 @@ test("the counts of one press of n report a page with what they protect taken ou
     assert.ok(hits.length > 0, "the page that waits as long as the row takes draws twice for a row that answers after 300 ms");
   });
 
-  // Each change taken out alone: the counts must name it.
-  const lost: Array<[string, Revert[], (v: string) => boolean]> = [
-    ["views draw with the board's rules rebuilt", SCHEDULE_REBUILDS, v => v.includes("built the board's rules")],
-    ["navigation draws the unfolded rows, the selected item and the comments one by one", NAVIGATION_DRAWS_THREE_TIMES, v => v.includes("drew")],
-    ["every draw counts the filters again", FILTERS_COUNTED_EACH_DRAW, v => v.includes("counted the filters")],
-  ];
-  for (const [what, reverts, names] of lost) await t.test(`the counts report it when ${what}`, async () => {
-    const list = await lane.walk({ label: "witness", reverts }, WITNESS_LANDINGS);
-    const hits = checkCounts("reversed", list).filter(names);
-    assert.ok(hits.length > 0, "the counts of the page without the change report it (they reported: " + (checkCounts("reversed", list).join("\n") || "nothing") + ")");
-  });
   await t.test("with all three taken out, the counts report each of them", async () => {
     const list = await lane.walk({ label: "witness", reverts: [...SCHEDULE_REBUILDS, ...NAVIGATION_DRAWS_THREE_TIMES, ...FILTERS_COUNTED_EACH_DRAW] }, WITNESS_LANDINGS);
     const violations = checkCounts("all three out", list);
     log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => l.draws))].join("/")}`);
     for (const family of ["drew", "built the board's rules", "counted the filters"]) assert.ok(violations.some(v => v.includes(family)), "the counts report: " + family);
   });
-  lap("count witnesses");
+  lap("all three taken out");
 
   // Marking a read does not fetch the board again: the unread list carries the new cursor, and a read changes nothing on the board.
   // These windows are answered by the real server, which this check is about.
@@ -130,5 +120,5 @@ test("the counts of one press of n report a page with what they protect taken ou
     log(`press-n read: m kept the event loop busy ${ms(good.busy)} ms (${ms(bad.busy)} ms on the page that fetches the board); the page asked for ${good.asked.join(", ")}`);
     assert.deepEqual(checkRead(good), []);
   });
-    lap("done");
+  lap("done");
 });

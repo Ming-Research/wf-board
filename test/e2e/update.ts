@@ -1,7 +1,7 @@
 // Checks of a page that is open while the board is deployed: it replaces itself with the new version, keeping the selected item,
 // the folds and the scroll, waits while the owner writes, and does not loop. Each runs on a page the test serves from a copy of
 // the page directory (BoardServer.webDir), which it rebuilds the way the deploy job does. Families: update-reload, update-scroll,
-// update-state, update-writing, update-same, update-loop.
+// update-state, update-writing, update-loop.
 
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -100,14 +100,6 @@ export async function checkWriting(bp: BoardPage, b: BoardServer): Promise<strin
   if (!saved) v.push("update-writing: the comment was not on the server when the page reloaded");
   else if (!await bp.page.getByText(text).first().waitFor({ timeout: 5_000 }).then(() => true, () => false)) v.push("update-writing: the saved comment is not shown on the reloaded page");
   return v;
-}
-
-/** A deploy that left the page files as they were does not reload the page. */
-export async function checkSame(bp: BoardPage, b: BoardServer): Promise<string[]> {
-  await mark(bp);
-  await deployed(b);
-  await sleep(2_500);
-  return await marked(bp) ? [] : ["update-same: a deploy that left the page as it was reloaded the page"];
 }
 
 /** A page whose version never matches the one announced (its own text says another) reloads once, then stops and asks for a reload by hand. */

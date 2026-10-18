@@ -28,11 +28,11 @@ import { performance as perf } from "node:perf_hooks";
 import { startLiveBoard } from "../e2e/live-board.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { Press, Scope, Tape, currentPage, landings, pageAt, samePage, writeEvents } from "./press.ts";
+import { Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, writeEvents } from "./press.ts";
 import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
-export const WITNESS_LANDINGS = 8, COUNT_LANDINGS = 12, OWN_ANSWER_MS = 20, ROW_MS = 300, MIN_LANDINGS_WITH_ROW = 3;
+export const WITNESS_LANDINGS = 8, COUNT_LANDINGS = 12, LANDINGS_FOR_LATE_ROWS = 20, OWN_ANSWER_MS = 20, ROW_MS = 300, MIN_LANDINGS_WITH_ROW = 3;
 /** The widest half width of the twin's interval that still counts as this run's noise, as a fraction: 6.1% quiet (the widest of 15
  * comparisons of a page with itself on 5 hosted runners); while writing, measured again (docs/design.md, The n-key lane). */
 export const FLOOR = { quiet: 0.061, writing: 0.061 };
@@ -161,24 +161,27 @@ export interface Lane {
   walk: (how: Omit<OpenHow, "fetch" | "misses">, wanted: number, withEvents?: boolean) => Promise<Landing[]>;
 }
 
+/** The base page to compare the current one with, named by `NKEY_BASE` (the merge base, or the commit before a push to the main line):
+ * the same page when none is named, the commit is not in this checkout or the page did not change. */
+async function pagesToCompare(): Promise<{ changed: boolean; basePage: { page?: { script: string; html: string } } }> {
+  const baseRef = process.env.NKEY_BASE;
+  if (!baseRef) { log("press-n base: none given, so the page is compared with itself"); return { changed: false, basePage: {} }; }
+  if (await sameSourceAs(baseRef)) { log(`press-n base: ${baseRef}, the page is the same as it`); return { changed: false, basePage: {} }; }
+  const [current, older] = await Promise.all([currentPage(), pageAt(baseRef)]);
+  if (!older) { warn("n-key time layer", `the base ${baseRef} is not in this checkout, so the page is compared with itself`); return { changed: false, basePage: {} }; }
+  const changed = !samePage(older, current);
+  log(`press-n base: ${baseRef}, ${changed ? "the page differs from it" : "the page is the same as it"}`);
+  return { changed, basePage: changed ? { page: older } : {} };
+}
+
 /** Seeds the board, records the walk of `landings` landings on the real server, and with `writes` makes a change event of a real write
  * for each landing; the base page is built too when `base` is asked for (the time layer compares with it). */
 export async function startLane(t: { after(fn: () => unknown): void }, want: { landings: number; writes?: boolean; base?: boolean }): Promise<Lane> {
-  const board = await startLiveBoard(t);
+  // The pages are built while the board is seeded: the board's work is in git and in this process, the bundling in esbuild's.
+  const [board, compared] = await Promise.all([startLiveBoard(t), want.base ? pagesToCompare() : undefined]);
   lap(`board seeded (${Object.keys(board.store.snapshot().items).length} items)`);
   assert.ok(Object.keys(board.store.snapshot().items).length >= 1500, "the board has about 1,600 items");
-
-  // The pages: the current one, and the base to compare it with (the same page when none is given or it did not change).
-  let changed = false, basePage: { page?: { script: string; html: string } } = {};
-  if (want.base) {
-    const current = await currentPage();
-    const baseRef = process.env.NKEY_BASE;
-    const older = baseRef ? await pageAt(baseRef) : undefined;
-    if (baseRef && !older) warn("n-key time layer", `the base ${baseRef} is not in this checkout, so the page is compared with itself`);
-    changed = !!older && !samePage(older, current);
-    log(`press-n base: ${baseRef ?? "none given"}, ${changed ? "the page differs from it" : "the page is the same as it"}`);
-    if (changed) basePage = { page: older! };
-  }
+  const changed = compared?.changed ?? false, basePage = compared?.basePage ?? {};
 
   // The first walk, on the real server: its answers are the tape every other window is answered from.
   const tape = new Tape();
