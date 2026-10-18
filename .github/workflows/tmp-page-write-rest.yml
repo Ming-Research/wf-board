@@ -1,0 +1,31 @@
+name: tmp-page-write-rest
+# Temporary, for page-write-rest; removed before the branch is ready.
+on:
+  push:
+    branches: [page-write-rest]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --only-shell chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - run: |
+          echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
+          node --test test/e2e/tmp-probe-page-write.e2e.ts
