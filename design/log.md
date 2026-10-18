@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Let a text write stand when the fields it replaces did not change
+
+Nodes: storage/concurrency
+
+Summary: A text write on a revision that is behind is refused only when a field it replaces changed since; a log line or a plan row added by someone else no longer fails it, and the answer says what changed meanwhile. The refusal on a changed field, a revision that cannot be read back and the switch to or from a record, which rewrites the plan's acceptance rows, are as before. The count (four of six refusals came from a log line) is from the transcripts of two days; the derivation is in docs/design.md, section Data format.
+
 ## 2026-10-18 Run the browser tests after a merge, not in a pull request's full CI
 
 Nodes: testing/ci-time-gate
