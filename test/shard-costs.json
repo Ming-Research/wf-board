@@ -90,5 +90,6 @@
   "test/wake.test.ts": 5.4,
   "test/watch.test.ts": 9.4,
   "test/web.test.ts": 21.6,
-  "test/whole-view.test.ts": 2.5
+  "test/whole-view.test.ts": 2.5,
+  "test/write-trace.test.ts": 8.0
 }
