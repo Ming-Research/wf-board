@@ -4107,12 +4107,17 @@ check ahead of it added to that.
 the shard with the least cost so far, instead of Node's `--test-shard`, because
 that one cuts the sorted list by position and the files take from 0.1 to 30
 seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
-a file is the seconds it took on a hosted runner, kept in `test/shard-costs.json`.
-A file the table does not name costs a default (`DEFAULT_COST`) and is dealt out
-like the rest, so a new test file is run from its first push and never missed.
-The table is brought up to date from the table of seconds per file that every
-shard writes to its job summary (`scripts/test-times-reporter.ts`); the time gate
-names a shard that took more than 1.5 times the mean of the others as the sign.
+a file is the seconds of its own entry in the runner's report, from the start of
+its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
+not the sum of the file's tests, which leaves out loading the file and its hooks:
+`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
+a new test file is run from its first push and never missed. The table is brought
+up to date from the table of seconds per file that every shard writes to its job
+summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
+that took more than 1.5 times the mean of the others as the sign. A shard lists
+its files longest first, which is the order the runner starts them in, three at a
+time.
 A shard's test step is cut at 45 seconds and a single test at 40
 (`--test-timeout`), so that a hung shard or test is named in the log of the red
 run and not only reported as a job that ran long.
@@ -4120,6 +4125,19 @@ run and not only reported as a job that ran long.
 `test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
 and `ops-roles.test.ts`, pause and who may write what), because one of its tests
 alone takes 7 seconds and the file about 28, which kept any shard above the others.
+
+**Measured** (hosted runners, 4 cores, 8 shards, the costs as above): the step
+`tests` of a shard took 14 to 26 seconds, its setup (checkout, Node, `npm ci`, the
+build) 11 to 13, and a run from its start to the end of its last shard 40 to 45
+seconds in 9 of 10 runs of one commit; in the tenth a shard waited 46 seconds for
+a runner (the others 3 to 5) and the run took 70. A shard takes about as long as
+the largest file it holds, and eight files take 13 to 20 seconds each when three
+share a runner, so the costs balance the sums but the floor is the largest file.
+Two settings were tried once each, and neither is worth keeping: 16 shards left
+the longest `tests` step at 20 seconds against 26 for the 8 of that run, and
+`--test-concurrency=6` was no faster than the default 3 (mean 18.9 against 19.4
+seconds over 8 shards). Both differences are inside the spread between runs. The
+next lever is splitting the largest files, as `ops.test.ts` was.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and

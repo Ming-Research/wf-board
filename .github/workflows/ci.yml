@@ -146,7 +146,8 @@ jobs:
           description="full CI $state ($RESULTS)"
           if [ "$state" = success ] && [ "$GATE" != success ]; then
             state=failure
-            description="full CI failure (time gate: ${GATE_TOTAL:-no result} s)"
+            total="${GATE_TOTAL:+$GATE_TOTAL s}"
+            description="full CI failure (time gate: ${total:-no result})"
           fi
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$state" -f context=full-ci \
             -f description="$description" \
