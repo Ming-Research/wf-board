@@ -5,7 +5,7 @@ import { rules } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, at, later, author, architect, asArchitect, asPM, retired, retiredExactly, rx, conf, opt, goalNumbers } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect, asPM, retired, retiredExactly, retiredTextOf, rx, conf, opt, goalNumbers } from "./helpers.ts";
 
 test("Architect pause and resume are atomic, server-stamped and preserve every plan row", async t => {
   const { store, op, dir } = await board(t);
@@ -369,9 +369,10 @@ test("Architect without the session cannot resume paused work in its own project
   assert.equal(rules(store.snapshot()).statusOf("arch-child"), "wip");
 });
 
-test("every write under the retired author 总管 is refused and changes nothing", async t => {
+// Both coordinators are retired: 总管 earlier, and the PM with the PM stream (item board-retire-pm-stream).
+for (const retired of ["总管", "PM"]) test(`every write under the retired author ${retired} is refused and changes nothing`, async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
-  const before = store.snapshot(), count = (await store.log()).length, retired = "总管";
+  const before = store.snapshot(), count = (await store.log()).length;
   assert.ok(before.board.projects.some(p => p.name === retired), "the retired project is still configured, so only the retirement refuses");
   const calls: Record<keyof Ops, () => Promise<unknown>> = {
     createProject: () => op.createProject({ author: retired, name: "New" }),
@@ -408,7 +409,7 @@ test("every write under the retired author 总管 is refused and changes nothing
     sendMessage: () => op.sendMessage({ author: retired, session: "s", to: "架构师", text: "看 a" }),
   };
   for (const [name, call] of Object.entries(calls)) {
-    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, retiredExactly, name); return true; });
+    await assert.rejects(call(), e => { assert.ok(e instanceof OpError, name); assert.match(e.message, new RegExp(`^${rx`${retiredTextOf(retired)}`.source}$`), name); return true; });
     assert.deepEqual(store.snapshot(), before, name);
     assert.deepEqual((await Store.open(dir)).snapshot(), before, name);
     assert.equal((await store.log()).length, count, name);

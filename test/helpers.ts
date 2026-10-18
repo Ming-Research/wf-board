@@ -21,10 +21,12 @@ import type { Credentials } from "../src/credentials.ts";
 export const rx = (strings: TemplateStringsArray, ...values: string[]): RegExp =>
   new RegExp(strings.raw.map((part, i) => part + (i < values.length ? values[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "")).join(""));
 
-/** What a write under the retired author 总管 is told, written out: the process is written as the PM, the rules and the architect's own entries as Architect. */
-export const retiredText = "author 总管: this identity is retired; write the process as PM (session PM), and the rules and the architect's own entries as Architect";
+/** What a write under a retired author (总管, PM) is told, written out: the architect does the process and keeps the rules now. */
+export const retiredTextOf = (name: string) => `author ${name}: this identity is retired; write as Architect (session 架构师), which does the process and keeps the rules`;
+export const retiredText = retiredTextOf("总管");
 export const retired = rx`${retiredText}`;
 export const retiredExactly = new RegExp(`^${retired.source}$`);
+export const retiredPM = rx`${retiredTextOf("PM")}`;
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
