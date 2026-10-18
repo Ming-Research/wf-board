@@ -4048,9 +4048,9 @@ updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
-The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `test`,
-`e2e` and `result`) takes about 12 minutes with its queue, and a change under
-way is pushed many times. A push to a pull request branch therefore does not
+The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
+`test` in 8 shards, `e2e` and `result`) takes about 12 minutes with its queue,
+all of it the browser tests, and a change under way is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
 and changes the test jobs and the job list in `needs` of `result`, which reads
 only the jobs it lists.
@@ -4102,7 +4102,7 @@ only the jobs it lists.
             cache: npm
         - run: npm ci
         # The browser steps of ci.yml's e2e job, from `id: playwright` through
-        # `install-deps`, unchanged.
+        # `playwright install`, unchanged.
         - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         - run: npm run build:web
         # The e2e cases the change touches, picked by test name.
@@ -4116,10 +4116,11 @@ only the jobs it lists.
   the pull request be marked ready; a later push needs a new run.
 - **The main line** runs the full CI on every push, as before.
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
-  `.github/workflows`. It runs in every full CI, ahead of the test jobs, so the
-  last run before a merge stops a temporary workflow that was not deleted
-  within seconds instead of after the tests, and the main line's own run stops
-  one that got in anyway. It costs the happy path about 10 seconds.
+  `.github/workflows`. It runs in every full CI beside the other jobs, so the
+  last run before a merge stops a temporary workflow that was not deleted, and
+  the main line's own run stops one that got in anyway. It once ran ahead of the
+  test jobs so as to fail within seconds; that put its ten seconds on the path of
+  every green run, which the time gate (below) counts.
 - **Status `full-ci`**: a run started by hand is attached to the head commit
   (`gh run list --commit` and the commit's check-run list show it), but it is
   not among the checks a pull request lists, which is what `gh pr checks`, the
@@ -4170,6 +4171,72 @@ request form would still turn green at once on the checks that did run.
 Starting the full CI by a pull request label: a label would have to be added
 and removed for each run, and any other label would start it too. Neither was
 tried; both are rejected on those grounds.
+
+### Sharding the script tests
+
+The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
+full CI as 8 shards, each in a job of its own, beside the type check, which is a
+job of its own too. One runner took 82 to 118 seconds for the suite, and the type
+check ahead of it added to that.
+
+**Decision**: `scripts/test-shard.ts` deals the files out, longest first, each to
+the shard with the least cost so far, instead of Node's `--test-shard`, because
+that one cuts the sorted list by position and the files take from 0.1 to 30
+seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
+a file is the seconds of its own entry in the runner's report, from the start of
+its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
+not the sum of the file's tests, which leaves out loading the file and its hooks:
+`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
+a new test file is run from its first push and never missed. The table is brought
+up to date from the table of seconds per file that every shard writes to its job
+summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
+that took more than 1.5 times the mean of the others as the sign. A shard lists
+its files longest first, which is the order the runner starts them in, three at a
+time.
+A shard's test step is cut at 45 seconds and a single test at 40
+(`--test-timeout`), so that a hung shard or test is named in the log of the red
+run and not only reported as a job that ran long.
+
+`test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
+and `ops-roles.test.ts`, pause and who may write what), because one of its tests
+alone takes 7 seconds and the file about 28, which kept any shard above the others.
+
+**Measured** (hosted runners, 4 cores, 8 shards, the costs as above): the step
+`tests` of a shard took 12 to 26 seconds, the rest of its job (checkout, Node,
+`npm ci`, the build, the start and end of the job) 12 to 16, and a run from its
+start to the end of its last shard 40 to 45 seconds in 9 of 10 runs of one commit; in the tenth a shard waited 46 seconds for
+a runner (the others 3 to 5) and the run took 70. A shard takes about as long as
+the largest file it holds, and eight files take 13 to 20 seconds each when three
+share a runner, so the costs balance the sums but the floor is the largest file.
+Two settings were tried once each, and neither is worth keeping: 16 shards left
+the longest `tests` step at 20 seconds against 26 for the 8 of that run, and
+`--test-concurrency=6` was no faster than the default 3 (mean 18.9 against 19.4
+seconds over 8 shards). Both differences are inside the spread between runs. The
+next lever is splitting the largest files, as `ops.test.ts` was.
+
+**Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
+list of the files of each shard: a new test file would belong to no shard and
+nothing would run it, which the table with a default cost cannot do.
+
+### The time gate
+
+The last job of a full CI started by hand (`result`) reads the run's jobs through
+the Actions API (`scripts/ci-time-gate.ts`) and puts into the run's summary the
+seconds from the start of the run to the end of the job that ended last, a table
+with the wait, the run and the end of each job, and the table of the shards.
+Above 50 seconds the total is yellow, above 60 red (the target is a pull request
+checked within a minute of the push; two runs of one configuration differed by
+13%, so the target is a typical 50 seconds, which leaves the line 20% above).
+It starts from the start of the attempt, not from the creation of the run, so a
+rerun does not count the time before it.
+
+The gate is set to `TIME_GATE=report` in `ci.yml`: the browser tests still take
+minutes on every pull request, so the total is over the line every time and a red
+gate would say nothing. The item that moves them off the pull request's path sets
+`enforce`, and a total over the line then fails `result` and the status
+`full-ci`. The shard table reads the jobs named `test shard N` and their step
+`tests`; when it finds none, the summary says so, which shows a rename.
 
 ### Private content check
 
