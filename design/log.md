@@ -8,6 +8,12 @@ Nodes: wake, wake/routing, wake/architect-stream, wake/liveness, wake/delivery, 
 
 Summary: The PM is retired, but the board still pushed nine kinds of push to the PM's stream, counted the architect's calls as that stream's receipts (so pushes nobody read were marked delivered, and the owner was told "the PM did not answer" whenever the architect's conversation was closed), and let any session write the whole process as author `PM`. The kinds that served only the way the PM worked are no longer made (the PM's timed wake, work that has gone quiet, a review step, a finished item, a session that did not answer, a red pull request, an unnamed pull request), the ones still useful go to the architect (a remote copy that stays behind, a slow operation, a failed deploy or red main line that nobody holds), the PM's stream and its receipts are gone while the alert that the architect's stream is behind stays, the author `PM` is refused like the coordinator, the PM has no credential role, and an item the runner reports on is no longer asked whether its session is there. Pushes fall from 19 kinds to 12. The grounds and the refused alternatives are in the nodes; the derivation is in docs/design.md, section 8, The PM is retired.
 
+## 2026-10-18 Hold the jump to the next unread change in Node, against the base page
+
+Nodes: testing/press-n
+
+Summary: The checks of the jump to the next unread change ran in headless Chromium, held a fixed 0.2 second median and 0.3 second 90th percentile that failed on slow runners, and took most of the browser job. They now run the real page in jsdom in Node with the server's answers recorded once and replayed: the counts (draws, rebuilds of the rules, filter counts, markup written, elements made, each with a page that has the protected part taken out) hold on any machine, and the time is the page of the commit over the page of its base in interleaved pairs with a twin of the base as the control, red only when the interval lies wholly on the slower side and the twin shows the run's noise. The absolute 0.2 seconds no longer fails a pull request; the grounds and the numbers are in the research record.
+
 ## 2026-10-18 Draw the page's diagrams compact
 
 Nodes: page/diagrams/layout
