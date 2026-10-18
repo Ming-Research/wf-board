@@ -4,7 +4,7 @@
 // stylesheet says (`.mermaid-fig svg { width: calc(min(var(--natural), 100%) * var(--zoom, 1)) }`, read from the stylesheet and
 // evaluated here) and is centered when its margin says so, the box scrolls sideways as far as its `overflow-x` allows, and the
 // page scrolls under the box. It is the page's arithmetic (the zoom, the point kept under the cursor, the drag) that the model lets
-// a test see; where a real browser lays the box out is the browser layer's (test/e2e/mermaid.e2e.ts). Docs/design.md, section 11.
+// a test see; where a real browser lays the box out is the browser layer's (test/e2e/browser.e2e.ts). Docs/design.md, section 11.
 
 import type { DomPage } from "./page.ts";
 

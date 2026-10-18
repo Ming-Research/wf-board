@@ -1,6 +1,6 @@
 // The checks of the diagrams on the owner's page, run in a DOM library against a stand-in for the diagram library
 // (test/dom/mermaid-library.ts) and a model of the diagram boxes (test/dom/mermaid-layout.ts). They are the checks of
-// test/e2e/mermaid.e2e.ts whose answer is the page's own doing: what it makes of a block (its state, its error, its toolbar), what it
+// test/e2e/browser.e2e.ts whose answer is the page's own doing: what it makes of a block (its state, its error, its toolbar), what it
 // asks the library, how it zooms and drags, which stylesheet rules it relies on. Each returns its violations, each opening with the
 // family name, so a test can assert none and a witness can assert the one its spoiled page causes. What the real library draws and how
 // a real browser lays a box out are the browser layer's.
@@ -108,7 +108,7 @@ export async function checkStrict({ bp, lib }: Scene): Promise<string[]> {
   return config?.securityLevel === "strict" ? [] : [`mermaid-strict: the page configured the library with security level ${JSON.stringify(config?.securityLevel)}, not "strict"`];
 }
 
-/** The library is asked for a compact drawing: the classic look, 8 px of padding in a box, and 20 px between boxes and between layers (web/mermaid.ts). Whether the layout keeps those gaps is the browser layer's (test/e2e/mermaid-compact.e2e.ts). */
+/** The library is asked for a compact drawing: the classic look, 8 px of padding in a box, and 20 px between boxes and between layers (web/mermaid.ts). Whether the layout keeps those gaps is the browser layer's (`checkCompact` in test/e2e/mermaid-compact.ts, a test of test/e2e/browser.e2e.ts). */
 export async function checkCompact({ bp, lib }: Scene): Promise<string[]> {
   const waited = await settled(bp, 1);
   if (waited) return [`mermaid-config: ${waited}`];

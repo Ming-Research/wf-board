@@ -1,4 +1,4 @@
-// Diagram sources for the mermaid checks (test/e2e/mermaid.e2e.ts, and test/dom/mermaid-*.test.ts, where a stand-in library draws
+// Diagram sources for the mermaid checks (test/e2e/browser.e2e.ts, and test/dom/mermaid-*.test.ts, where a stand-in library draws
 // them). Synthetic: invented text, no board data.
 
 export const fence = (code: string) => "```mermaid\n" + code + "\n```";
@@ -67,7 +67,7 @@ export const PIPELINE = [
 /** A small diagram, a wide one and the tall chart, in one head. */
 export const FIT_HEAD = ["一张窄的：", "", fence(SMALL), "", "一张很宽的：", "", fence(WIDE), "", "一张又高又宽的：", "", fence(PIPELINE)].join("\n");
 
-// The two charts that the compactness checks (test/e2e/mermaid-compact.e2e.ts) draw. Synthetic: every letter of the text is filler, so
+// The two charts that the compactness checks (`checkCompact` in test/e2e/mermaid-compact.ts) draw. Synthetic: every letter of the text is filler, so
 // no board text is in this repository.
 
 /** A flowchart of the shape of the engineer's flow chart on the board, which the page draws too tall and too loose: the same nodes,

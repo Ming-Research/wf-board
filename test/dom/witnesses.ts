@@ -3,7 +3,7 @@
 // must report the family the spoiled thing belongs to. A witness whose edit no longer matches the current file fails loudly; update or
 // retire it then. Most spoilings are small bugs of the kind the check exists for (a click that selects the wrong item, a number that
 // counts one too many); most of the others are the bugs the browser layer's witnesses once showed, which moved here when their checks
-// needed no layout (the ones that need one stay in test/e2e/regressions.e2e.ts). A fix is reversed by a literal edit of the current source.
+// needed no layout (a fact that needs one is a test of test/e2e/browser.e2e.ts, shown to fail on a spoiled page once, in the pull request that adds it). A fix is reversed by a literal edit of the current source.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

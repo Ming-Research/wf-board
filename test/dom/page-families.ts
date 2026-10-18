@@ -1,7 +1,7 @@
 // The owner's page in a DOM library against the real server, on a generated board with the real board's shapes. Every kind of
 // clickable thing must land on what it claims: first on a freshly loaded page per family, then on one page kept open while
 // sessions write elsewhere between the families, so incremental re-renders happen in between. The browser layer keeps what
-// needs a layout (test/e2e/page.e2e.ts); the checks are in test/dom/checks.ts. The families run in several files
+// needs a layout (test/e2e/browser.e2e.ts); the checks are in test/dom/checks.ts. The families run in several files
 // (page-*.test.ts), each with a board and a page of its own, so the files run side by side.
 
 import { test } from "node:test";
