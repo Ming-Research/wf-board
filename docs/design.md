@@ -89,7 +89,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command that writes the repository, which all run through the store's `git()`; the read-only `cat-file` reader and the reads of a one-time conversion start no maintenance); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
@@ -109,13 +109,13 @@ has diverged (an error). Commits written while a push runs go in the next one. O
 runs at a time, and a call made while one runs gets its result. A push beside a write
 is safe because it reads objects and changes one remote-tracking reference, and its
 git runs with automatic maintenance off, so it never starts a repack of its own. The
-other direction is a write's commit starting a repack while a push reads objects. A
-40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
-maintenance triggered by each commit, in the foreground or the background, beside
-back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
-pushes each) there was no error, `git fsck` passed, and the remote's head was an
-ancestor of the local one. A push that did fail would be tried again at the next round
-and, if it kept failing, told by the lag push below.
+other direction is a maintenance step repacking while a push reads objects. Two
+replays of the live board's busiest ten minutes (hosted runner, git 2.55.0, 1652 writes
+each, a step after every 200 commits) ran a push every 3 seconds beside the writes and
+the steps: 396 pushes in all, none failed, `git fsck` passed at the end, and the remote's
+head was an ancestor of the local one (item `data-repo-gc-timing-study`). A push that
+did fail would be tried again at the next round and, if it kept failing, told by the
+lag push below.
 
 A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
 with the network down, never ends. In the queue, it held every write: in CI with a fake
@@ -143,6 +143,49 @@ the last failure's reason. The hour counts from the last time the copy was known
 a push that sent or found nothing to send, or a round that found nothing to send; after a
 start, from the start, since the state is in memory. A copy that is current again and falls
 behind again is told again.
+
+**Maintenance.** The data repository gains loose objects, about 4 for each commit (4.14 on the
+live board), and someone has to pack them. git does it by itself after a commit, at a time and in a
+size the board does not choose: the first such repack on the live repository (9,087 loose objects from
+2,160 commits) held a write for 5,672 ms, over the 3 seconds a write may wait. In the background, the same
+repack deleted an empty object directory while the next `git add` made a temporary file in it, which
+failed 11 of 1,726,480 writes in a reproduction with git alone and none of 2,030,080 without the
+repack (item `e2e-git-tmp-flake-study`). So git's own maintenance is off, and the board runs a step
+itself as a task of the write queue, where it cannot overlap a write.
+
+- **When.** After every `MAINTENANCE_EVERY` (100) commits, counted from the last step. `Store.open` estimates the
+  commits waiting from the loose objects it finds (divided by 4), maintains a backlog of 100 or more before it returns,
+  and so before the daemon listens. A commit queues no second step while one is queued. A step that fails is logged and
+  tried again after 100 more commits. Rejected, with the measurements of item `data-repo-gc-timing-study`: waiting for
+  idle time (the live board's busiest ten minutes of 596 seconds have 105 seconds without a commit and a commit in
+  the others, so the cap on commits would decide anyway), maintaining only at start (the backlog has no bound: a week without a restart is about 20,000 commits and a
+  step of about 60 s, estimated), maintaining at fixed times (a step follows the writes: the busiest ten minutes' 1,566
+  commits would be one step of about 5 s, estimated), and git's own trigger with a lower threshold (it still
+  rewrites the whole repository now and then, and its trigger is out of the board's hands: on the replica it started at 3,436 loose
+  objects and on the live repository not yet at 5,154, for a cause that was not found).
+- **How many.** 100. On a hosted runner, replaying the live board's busiest ten minutes against a copy of its shape
+  (1652 writes each), a step of 100 commits took a median of 240 and 299 ms (two samples) and at most 753 and 734 ms, the slowest
+  write was 631 and 771 ms, and none of the writes took 3 s. A step of 200 took at most 1,065 to 1,699 ms in three samples. In one reproduction of the 10-16
+  repack the replica took 0.69 to 0.95 of the live repository's time, so the live Mac may be up to 1.45 times slower: a step of 100
+  then takes about 1.1 to 1.3 s, under the 2 s line at which a slow write is told to the PM (Time limits), and a step of 200
+  about 1.5 to 2.5 s, which reaches that line.
+- **What a step does.** `git repack -d -l --write-midx` packs every loose object into one new pack;
+  `git commit-graph write --split --reachable` writes the commit-graph (a history query is about 6 times
+  faster with it); and, when the repository had more than 8 packs before the step, `git multi-pack-index expire` and
+  `git multi-pack-index repack --batch-size=16m` merge the small packs in batches of about 16 MB. Over 12,000
+  commits on a synthetic copy a step of 100 took a median of 601 ms and at most 906 ms, and there were at most 10 packs.
+  Rejected: git's own geometric repack for each step (the smallest disk, but a repack of the whole repository every
+  7,300 commits took 3.6 to 4.4 s and grows with the repository), packing without merging (the pack count has no bound: 63
+  after 60 steps), and a `.keep` file on the large packs (every step took 2.2 to 2.6 s).
+
+The cost is disk: the merge in batches finds deltas only inside a batch, so the synthetic copy grew to 134 MB over 12,000 commits
+where git's own way gave 75 MB (from 54 MB), about 4 times per commit. On the live board that is an estimated 80 to 108 MB a
+week more than git's own, not measured there. Each step writes a line to the service log,
+`maintenance 100 commits 301 ms 6 packs 27.5 MB` (commits, time, packs and size after the step), and the start writes
+`startup maintenance: ...` with what it found. The first start after this change has a backlog of about 1,600 commits and a
+step of about 5 s (estimated). Reopen the choice when the service log shows a step over 1.5 s or a write over 2 s, when a week's
+growth is over twice the estimate (then a full repack at start, before listening, once the disk passes a threshold), or when
+the pack count passes 10.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -207,16 +250,11 @@ sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
 
-A commit's automatic repack also runs in the foreground (see Storage). On
-2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
-wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
-runs; the same commit with the repack in the background took 25 to 103 ms). The
-study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
-5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
-has ruled that the board turns git's automatic maintenance off and queues a
-maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
-not yet built); until then the repack stays in the foreground.
+A maintenance step that is running when the signal arrives is not stopped: the commit of the
+reading state waits for it in the write queue, and the shutdown queues no step after the signal
+(`Store.stopMaintenance`). In the replays of Maintenance a step of 100 commits took 753 ms at most
+on a hosted runner. Not measured: a step that runs at the moment of a shutdown on the live Mac, and
+the first step after a long backlog.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in
@@ -1626,7 +1664,9 @@ where the design reaches it.
 - **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
   any more: the status becomes `withdrawn`, the log text goes to the item's
   log, and a row counts as resolved. It is the one way to retire a card;
-  nothing deletes one.
+  nothing deletes one. Cancelling an item withdraws its open cards in the
+  same commit, marked `withdrawnWithItem`; reopening the item restores those
+  marked cards to open, and leaves a card withdrawn by hand withdrawn.
 - **Legacy text.** Cards converted from the earlier form (see
   [Card conversion](#card-conversion)) keep their old `background` in
   `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
@@ -3902,9 +3942,11 @@ on the live board.
   random sequence against a reverse scan of the commits and rebuilt after a
   restart; the rows (window, state words, level, dispatch records and ended
   names) on hand-built snapshots, each boundary on both sides; the page in a
-  fake DOM; and in a real browser the list above the projects, 在树中
-  landing on the tree's row and 返回 coming back, and every tree click still
-  landing with a cell unfolded.
+  fake DOM; the page in a DOM library (the list above the projects, 在树中
+  selecting the tree's row and 返回 coming back, a cell unfolding in place with
+  every tree click still landing, the line of the sessions with no dispatch
+  record); and in a real browser where the list lies and how far the jump
+  scrolls.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
   pull request, when the engineer starts it (below), without the browser tests
   unless the engineer sets the input `browser`; the browser tests run on each
@@ -3915,9 +3957,9 @@ on the live board.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
-### Three test layers
+### Four test layers
 
-The page is tested in three layers. Each catches a class of fault the layer
+The page is tested in four layers. Each catches a class of fault the layer
 below cannot see, and a page bug gets its test in the lowest layer that can.
 
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
@@ -3928,12 +3970,27 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
    board's shapes.
-3. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
+3. **The page in a DOM library** (`test/dom`, run by `npm test`): jsdom runs
+   the real page (`test/dom/page.ts` bundles `web/app.ts` as a script and
+   evaluates it in a window) against the real server on the generated board
+   of layer 4, through Node's real `fetch` and a reader of the real event
+   stream, with no browser. A window has no layout, so its boxes are one box
+   at the top, nothing is under a point and nothing scrolls; what the page
+   decides from positions always says yes. The few checks of style read the
+   stylesheet's cascade (`test/dom/styles.ts`: specificity, order,
+   inheritance, `var()`, the scheme and width media queries) instead of a
+   layout. It runs every check that needs only the page's logic, its DOM
+   and the board's rules: the cost of a browser per check is gone, the page's
+   own draws cost more than in a browser (the parser and the element
+   constructors are JavaScript).
+4. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
    `e2e`): headless Chromium (Playwright) loads the real page from the real
    server (the wiring of `src/main.ts`, in process) on a temporary data
-   repository, so the page talks to the real API and event stream.
+   repository, so the page talks to the real API and event stream. It keeps
+   what needs a layout: where a box lands, how wide it is, what a browser
+   hides, hit-testing and scrolling, and the diagrams.
 
-The third layer exists because five page bugs in one day passed every test of
+The browser layer exists because five page bugs in one day passed every test of
 the first two: saving a comment folded the card's comment list and hid its
 send button; the purple and red numbers jumped to another project's card
 after unrelated re-renders; a card row in a plan jumped to another item
@@ -3964,10 +4021,13 @@ generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
-**The invariants.** `test/e2e/invariants.ts` clicks every kind of clickable
-thing and compares where the page landed with what the element claims,
-computed independently from the stored board with `src/rules.ts` and the
-server's unread history:
+**The invariants.** `test/dom/checks.ts` (the style ones in
+`test/dom/style-checks.ts`) clicks every kind of clickable thing and compares
+where the page landed with what the element claims, computed independently
+from the stored board with `src/rules.ts` and the server's unread history
+(`test/e2e/invariants.ts` holds the oracle and what still needs a browser:
+the layout of a card row in a plan, the visibility of a folded card and the
+alignment of the difficulty chip, in `test/e2e/page.e2e.ts`):
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
@@ -4003,7 +4063,11 @@ server's unread history:
 Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
-new item), so incremental re-renders happen in between.
+new item), so incremental re-renders happen in between. The families run in
+several files (`test/dom/page-*.test.ts`), each with a board and a page of its
+own and short enough to be dealt out to the shards (the longest of the layer's
+13 files takes 27 seconds on a hosted runner, all 13 together 220), so the files
+run side by side.
 
 Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
 log are drawn, with Chinese labels; a block that does not parse shows its code and the
@@ -4069,13 +4133,17 @@ in turn, and a draw made 150 ms slower, with the board quiet and with sessions w
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
 
-**Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
-current page, where it must find nothing, and on the page with a past fix
-reversed in a copy served from a temporary directory, where it must report
-the bug. A fix is reversed by undoing its commit's hunks, or, where later
-work rewrote the lines around it, by a targeted edit that removes just the
-fix. A witness whose edits no longer match the current file fails and is
-updated or retired on purpose.
+**Evidence.** Each check runs on the current page, where it must find
+nothing, and on the page with the thing it guards spoiled, where it must
+report it. In the DOM layer the spoiled page is the source text edited in
+memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles)
+its own, each naming the reason it must fail for. In the browser layer
+`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
+reversed in a copy served from a temporary directory. A fix is reversed by
+undoing its commit's hunks, or, where later work rewrote the lines around it,
+by a targeted edit that removes just the fix. A witness whose edits no longer
+match the current file fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
@@ -4227,9 +4295,14 @@ summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
 that took more than 1.5 times the mean of the others as the sign. A shard lists
 its files longest first, which is the order the runner starts them in, three at a
 time.
-A shard's test step is cut at 45 seconds and a single test at 40
+A shard's test step is cut at 60 seconds and a single test at 40
 (`--test-timeout`), so that a hung shard or test is named in the log of the red
-run and not only reported as a job that ran long.
+run and not only reported as a job that ran long. With the 13 files of `test/dom`
+(section 11, Four test layers) the steps of the 8 shards took 25 to 46 seconds in
+one run, because three files share the four cores and a page file takes 1.2 to 2.3
+times as long among them as alone; a cut at 45 seconds then stopped
+shards in two runs while their tests were passing, and 60 leaves 1.3 times the
+longest step.
 
 `test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
 and `ops-roles.test.ts`, pause and who may write what), because one of its tests

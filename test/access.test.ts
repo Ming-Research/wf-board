@@ -67,7 +67,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
     { parts: ["item.data"], args: { id: "a", rev: 1, data: "d" } }, { parts: ["item.order"], args: { id: "a", rev: 1, order: 1 } },
     { parts: ["item.record"], args: { id: "a", rev: 1, record: true } }, { parts: ["item.head", "item.links"], args: { id: "a", rev: 1, head: "h", reason: "r", links: [] } },
   ],
-  setStatus: [{ parts: ["item.cancel"], args: { id: "a", status: "cancelled", log: "l" } }],
+  setStatus: [{ parts: ["item.cancel", "card.write"], args: { id: "a", status: "cancelled", log: "l" } }],
   setTags: [{ parts: ["item.tags"], args: { id: "a", tags: ["t"] } }],
   setTagsMany: [{ parts: ["item.tags"], args: { items: [{ id: "a", tags: ["t"] }] } }],
   setDifficulty: [{ parts: ["item.difficulty"], args: { id: "a", difficulty: 2, reason: "r" } }],

@@ -20,7 +20,7 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git against them; its push runs beside the write queue, not in it.
+  runs git against them; its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
 - `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
@@ -96,7 +96,12 @@ matches what the artifact board offered.
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
   headless Chromium) and the click invariants; `live-board.ts` makes a board of the live board's weight, and
-  `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11).
+  `press-n.e2e.ts` holds the page to its time limit for n on it (design section 11). `test/dom/` holds the DOM
+  layer: the bundled page in jsdom against the real server on the same generated board (`page.ts` the window,
+  its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
+  and `style-checks.ts` the checks; `witnesses.ts` and the scenario files the pages with one thing spoiled). Each
+  `*.test.ts` there has a board of its own and is kept short enough to be dealt out to the shards (the
+  longest takes 27 seconds on a hosted runner).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand
@@ -138,14 +143,17 @@ matches what the artifact board offered.
   CI's `e2e` job runs it on a main-line push, nightly, and in a run started by hand
   with `browser` set. It needs a Playwright browser and
   is never run on the owner's Mac.
-- Three test layers, each catching what the one before cannot (design
+- Four test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
-  (`test/web.test.ts`), fast but without CSS or layout; the page in a real
-  browser on a generated board (`test/e2e`). A page bug gets its test in the
-  lowest layer that can see it.
-- Every page fix gets a real-browser regression witness
-  (`test/e2e/regressions.e2e.ts`) that reports the bug once the fix is
-  reversed.
+  (`test/web.test.ts`), fast but without CSS or layout; the page in jsdom against
+  the real server on a generated board (`test/dom`, run by `npm test`), for every
+  check that needs no layout; the page in a real browser on the same board
+  (`test/e2e`), for what needs a layout. A page bug gets its test in the lowest
+  layer that can see it.
+- Every page fix gets a witness in the lowest layer that can see its bug: a run
+  on the page with the fix reversed that reports the bug (`test/dom/witnesses.ts`
+  and the scenario files, or `test/e2e/regressions.e2e.ts` for a layout fact).
+  The witnesses of older fixes are still in `regressions.e2e.ts` until they move.
 - `make design-lint` checks the design tree's form and the checker's own tests;
   the `design` workflow runs it on every push. `make design-ready` is the
   readiness check, which the same workflow runs on a pull request that is ready

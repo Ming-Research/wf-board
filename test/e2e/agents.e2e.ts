@@ -1,52 +1,32 @@
-// The agent list in a real browser: it sits above the projects, it keeps the tree's element ids to the tree, and 在树中
-// lands on the item's row in the tree (far below the list) and 返回 comes back. The fake-DOM tests in test/web.test.ts
-// cover what the list says; only layout and scrolling need a browser. Run by CI's e2e job (npm run test:e2e).
+// The agent list in a real browser: it sits above the projects with room of its own, and 在树中 lands on the item's row in the tree (far
+// below the list) with the row in view, and 返回 scrolls back to the list. What the list says, which element ids it uses and what its
+// controls do are checked in a DOM library (test/dom/agents.test.ts); only layout and scrolling need a browser. Run by CI's e2e job
+// (npm run test:e2e).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops } from "../../src/ops.ts";
-import { rules } from "../../src/rules.ts";
 import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
-import type { BoardServer } from "./harness.ts";
-import { oracle, checkTreeRows } from "./invariants.ts";
 
-/** An open item drawn far down the tree, so a jump to its row has to scroll the list. */
-async function farItem(bp: BoardPage, board: BoardServer): Promise<string> {
-  const items = board.store.snapshot().items, rows = await bp.treeRows();
-  const id = [...rows].reverse().find(row => items[row] && !items[row]!.record && items[row]!.group);
-  assert.ok(id, "the generated board draws an open item in the tree");
-  return id;
-}
-const write = (board: BoardServer, session: string, id: string) =>
-  ops(board.store).appendLog({ author: board.store.snapshot().items[id]!.group, session, id, text: `${session} wrote here` });
-// A dispatch record that is unfinished and alive: the session is then running, so the list unfolds its row. A session
-// with no dispatch record (the plain `write`) is never running. The record is written with no session of its own, so the
-// writer adds no row to the list.
-const start = (board: BoardServer, agent: string, id: string) =>
-  ops(board.store).dispatchStart({ author: board.store.snapshot().items[id]!.group, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id` });
-
-test("the agent list is above the projects, and 在树中 lands on the item's tree row and Back returns", async t => {
+test("the agent list lies above the projects, 在树中 scrolls the item's tree row into view and Back scrolls back", async t => {
   const board = await startBoard(t), browser = await launch(t);
   const bp = await BoardPage.open(browser, board, openAll(board));
-  const id = await farItem(bp, board);
-  assert.equal(await bp.page.evaluate(() => getComputedStyle(document.getElementById("agents")!).display), "none", "no session has written yet: no list, and no space for it");
+  const items = board.store.snapshot().items, rows = await bp.treeRows();
+  // An open item drawn far down the tree, so a jump to its row has to scroll the list.
+  const id = [...rows].reverse().find(row => items[row] && !items[row]!.record && items[row]!.group);
+  assert.ok(id, "the generated board draws an open item in the tree");
   const base = await bp.changes();
-  await start(board, "agent-x", id);
+  // A dispatch record that is unfinished and alive: the session is then running, so the list unfolds its row.
+  await ops(board.store).dispatchStart({ author: items[id]!.group, id, role: "工程师", level: 2, model: "Sonnet", agent: "agent-x", agentId: "agent-x-id" });
   await bp.waitChanges(base + 1);
   const row = bp.page.locator('#agents [data-agent="agent-x"]');
   await row.waitFor();
   const layout = await bp.page.evaluate(() => {
-    const agents = document.getElementById("agents")!, areas = document.getElementById("areas")!, header = document.querySelector("header.top")!;
+    const agents = document.getElementById("agents")!, areas = document.getElementById("areas")!;
     const a = agents.getBoundingClientRect(), r = areas.getBoundingClientRect();
-    return {
-      afterHeader: !!(header.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING),
-      beforeProjects: !!(agents.compareDocumentPosition(areas) & Node.DOCUMENT_POSITION_FOLLOWING) && a.bottom <= r.top,
-      drawn: a.height > 0,
-      treeIdsInList: agents.querySelectorAll('[id^="it-"]').length,
-    };
+    return { aboveProjects: a.bottom <= r.top, drawn: a.height > 0 };
   });
-  assert.deepEqual(layout, { afterHeader: true, beforeProjects: true, drawn: true, treeIdsInList: 0 });
-  assert.equal(await bp.page.locator(`[id="it-${id}"]`).count(), 1, "the item's tree element id is the tree's alone");
+  assert.deepEqual(layout, { aboveProjects: true, drawn: true });
 
   const top = await bp.page.evaluate(() => document.getElementById("page-left")!.scrollTop);
   await row.locator(".agitem-tree").first().click();
@@ -58,99 +38,10 @@ test("the agent list is above the projects, and 在树中 lands on the item's tr
     return r.top >= p.top - 1 && r.bottom <= p.bottom + 1 ? "in view" : `row ${r.top}..${r.bottom} outside the list ${p.top}..${p.bottom}`;
   }, id);
   assert.equal(landed, "in view", "the jump scrolls the tree row into view");
-  assert.equal(await bp.selected(), id, "the item is selected, so its detail shows");
-  assert.equal(await bp.page.locator("#backbtn").isVisible(), true, "the jump is remembered");
   const away = await bp.page.evaluate(() => document.getElementById("page-left")!.scrollTop);
   assert.ok(away > top + 500, `the jump scrolled the list well away from the agent list (${top} to ${away})`);
   await bp.page.locator("#backbtn").click();
   await bp.settle();
-  assert.equal(await bp.page.locator("#backbtn").isVisible(), false, "Back returns");
   const back = await bp.page.evaluate(() => document.getElementById("page-left")!.scrollTop);
   assert.ok(Math.abs(back - top) <= 2, `Back scrolls the list back to where the agent list was (${top}, now ${back})`);
-});
-
-test("two sessions on one item each show it, and the tree's element is still found once", async t => {
-  const board = await startBoard(t), browser = await launch(t);
-  const bp = await BoardPage.open(browser, board, openAll(board));
-  const id = await farItem(bp, board);
-  const base = await bp.changes();
-  await start(board, "agent-x", id);
-  // Commit times have a resolution of one second, and rows with the same time sort by name: leave a second between the writes.
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  await start(board, "agent-y", id);
-  await bp.waitChanges(base + 2);
-  await bp.page.locator('#agents [data-agent="agent-y"]').waitFor();
-  assert.deepEqual(await bp.page.locator("#agents .agent").evaluateAll(rows => rows.map(r => (r as HTMLElement).dataset.agent)), ["agent-y", "agent-x"], "newest writer first");
-  assert.equal(await bp.page.locator("#agents .agitem").count(), 2);
-  const ids = await bp.page.locator("#agents .agitem").evaluateAll(cells => cells.map(c => c.id));
-  assert.equal(new Set(ids).size, 2, "each cell has its own id");
-  const all = await bp.page.locator("#agents [id]").evaluateAll(els => els.map(e => e.id));
-  assert.equal(new Set(all).size, all.length, `every id in the list is unique (${all.join(", ")})`);
-  assert.equal(await bp.page.locator(`[id="it-${id}"]`).count(), 1);
-  await bp.page.locator('#agents [data-agent="agent-x"] .agitem-title').first().click();
-  await bp.settle();
-  assert.equal(await bp.selected(), id, "a title click selects the item");
-});
-
-test("a cell unfolds its sub-items in place, the list folds apart from the tree, and every tree click still lands", { timeout: 15 * 60_000 }, async t => {
-  const board = await startBoard(t), browser = await launch(t);
-  const bp = await BoardPage.open(browser, board, openAll(board));
-  const s = board.store.snapshot(), r = rules(s), rows = await bp.treeRows();
-  // An open item that is drawn in the tree together with a sub-item: the same two items then sit in the list and in the tree.
-  const id = rows.find(x => !s.items[x]!.record && s.items[x]!.group && r.children(x).some(c => rows.includes(c)));
-  assert.ok(id, "the generated board draws an item with a drawn sub-item");
-  const child = r.children(id).find(c => rows.includes(c))!;
-  const base = await bp.changes();
-  await start(board, "agent-x", id);
-  await bp.waitChanges(base + 1);
-  const cell = bp.page.locator('#agents [data-agent="agent-x"] .agitem').first();
-  await cell.waitFor();
-  assert.equal(await bp.page.locator("#agents .item").count(), 0, "folded: no item row in the list");
-  await cell.locator(".agitem-caret").click();
-  await bp.settle();
-  const listIds = await bp.page.locator("#agents .item").evaluateAll(els => els.map(e => e.id));
-  assert.ok(listIds.includes(`ag-agent-x--it-${child}`), `the sub-item unfolds under the cell (${listIds.join(", ")})`);
-  assert.ok(listIds.every(x => !x.startsWith("it-")), "no row of the list has an id the tree uses");
-  assert.deepEqual(await bp.treeRows(), rows, "unfolding in the list changes nothing in the tree");
-  assert.equal(await bp.page.locator(`[id="it-${child}"]`).count(), 1, "the tree's row for the sub-item is still found once");
-  // A tree row folds on its own; the list keeps its cell unfolded.
-  const caret = bp.page.locator(`#areas [id="it-${id}"] > .item-row > .caret`);
-  await caret.click();
-  await bp.settle();
-  assert.equal(await bp.page.locator(`#agents [id="ag-agent-x--it-${child}"]`).count(), 1, "folding the tree's row leaves the list's sub-item");
-  await caret.click();
-  await bp.settle();
-  const failures = await checkTreeRows(bp, await oracle(board.store));
-  assert.equal(failures.length, 0, failures.length + " violations:\n" + failures.slice(0, 40).join("\n"));
-  assert.equal(await bp.page.locator(`#agents [id="ag-agent-x--it-${child}"]`).count(), 1, "the unfolded cell survives the tree walk");
-});
-
-test("a session with no dispatch record sits behind 其他 N 个 until the line is opened, and a running one is unfolded above it", async t => {
-  const board = await startBoard(t), browser = await launch(t);
-  const bp = await BoardPage.open(browser, board, openAll(board));
-  const [idle, busy] = (await bp.treeRows()).filter(x => board.store.snapshot().items[x] && !board.store.snapshot().items[x]!.record && board.store.snapshot().items[x]!.group);
-  assert.ok(idle && busy, "the generated board draws two open items");
-  let base = await bp.changes();
-  await write(board, "agent-bare", idle);
-  await bp.waitChanges(base + 1);
-  const toggle = bp.page.locator("#agents .agents-others-toggle");
-  await toggle.waitFor();
-  assert.equal(await bp.page.locator("#agents .agents-toggle").innerText(), "▾ 代理 0", "nothing runs: the heading counts none");
-  assert.equal((await toggle.innerText()).trim(), "▸ 其他 1 个");
-  assert.equal(await bp.page.locator("#agents .agent").count(), 0, "the row of a session with no dispatch record is not drawn while the line is closed");
-  base = await bp.changes();
-  await start(board, "agent-busy", busy);
-  await bp.waitChanges(base + 1);
-  await bp.page.locator('#agents [data-agent="agent-busy"]').waitFor();
-  assert.equal(await bp.page.locator("#agents .agents-toggle").innerText(), "▾ 代理 1");
-  assert.equal(await bp.page.locator('#agents [data-agent="agent-bare"]').count(), 0, "still folded");
-  const order = await bp.page.evaluate(() => {
-    const busy = document.querySelector('#agents [data-agent="agent-busy"]')!, line = document.querySelector("#agents .agents-others-toggle")!;
-    return !!(busy.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING);
-  });
-  assert.equal(order, true, "the running row is above the fold line");
-  await toggle.click();
-  await bp.settle();
-  assert.equal((await toggle.innerText()).trim(), "▾ 其他 1 个");
-  assert.deepEqual(await bp.page.locator("#agents .agent").evaluateAll(els => els.map(e => (e as HTMLElement).dataset.agent)), ["agent-busy", "agent-bare"], "opened: the folded row follows the running one");
 });
