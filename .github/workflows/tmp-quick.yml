@@ -30,3 +30,16 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # The test files the change touches: the rules, the page, the reuse guards of the derived values, and the readers of the ratio.
       - run: node --test test/rules.test.ts test/web.test.ts test/rules-reuse-a.test.ts test/rules-reuse-b.test.ts test/rules-reuse-c.test.ts test/rules-reuse-guards.test.ts test/whole-view.test.ts test/query.test.ts test/dom/page-tree.test.ts test/dom/page-plan.test.ts
+  # Every script test, to find a test elsewhere that reads a check list or the progress of an item an engineer holds.
+  all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm test
