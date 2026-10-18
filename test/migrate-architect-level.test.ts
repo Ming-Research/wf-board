@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { parse, stringify } from "yaml";
@@ -31,7 +31,7 @@ test("a board that still holds the retired level refuses to start and says how t
   const { dir } = await withRetiredLevel(t);
   await assert.rejects(Store.open(dir), (e: unknown) => {
     assert.ok(e instanceof Error);
-    for (const id of RETIRED) assert.match(e.message, new RegExp(`items/${id}\\.yaml: difficulty: .*架构师做.*npm run migrate:architect-level`));
+    for (const id of RETIRED) assert.match(e.message, new RegExp(`items/${id}\\.yaml: difficulty: .*架构师做.*remove the line from the item file`));
     assert.doesNotMatch(e.message, /items\/a\.yaml/, "only the items that hold it are named");
     return true;
   });
@@ -69,19 +69,4 @@ test("the migration runs once: a second start with or without it writes nothing"
   await Store.open(dir);
   await Store.open(dir, { clearArchitectLevel: true });
   assert.equal(await git("rev-parse", "HEAD"), head);
-});
-
-test("the command clears a copy of the data, prints what it did, and needs --data", async t => {
-  const { dir } = await withRetiredLevel(t);
-  const cli = join(import.meta.dirname, "../src/migrate-architect-level-cli.ts");
-  const copy = `${dir}-copy`;
-  await cp(dir, copy, { recursive: true });
-  t.after(() => exec("rm", ["-rf", copy]));
-  const done = await exec(process.execPath, [cli, "--data", copy]);
-  assert.match(done.stdout, /Cleared the retired level from 2 items: area, other/);
-  const again = await exec(process.execPath, [cli, "--data", copy]);
-  assert.match(again.stdout, /Nothing to migrate/);
-  await Store.open(copy);
-  const missing = await exec(process.execPath, [cli]).then(() => undefined, (e: { code: number; stderr: string }) => e);
-  assert.equal(missing?.code, 1); assert.match(missing!.stderr, /Usage: npm run migrate:architect-level -- --data DIR/);
 });

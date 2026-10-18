@@ -48,7 +48,6 @@
   "test/merges.test.ts": 0.9,
   "test/messages.test.ts": 2.8,
   "test/migrate-architect-level.test.ts": 3.0,
-  "test/migrate-cards.test.ts": 1.0,
   "test/migrate-priority.test.ts": 3.9,
   "test/move-project.test.ts": 3.9,
   "test/notice.test.ts": 0.1,
