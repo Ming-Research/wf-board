@@ -33,3 +33,16 @@ jobs:
       - run: node --test test/dom/agents.test.ts
       - run: node --test test/ci-time-gate.test.ts
       - run: make design-lint
+  # The cost of a runner report beside the cost of a tag write (the control), on this tree in one run (design card whole-view-state-store).
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/bench-writes.ts --label "set_tags (control)" --write set_tags
+      - run: node scripts/bench-writes.ts --label "report_state" --write report_state
+      - run: node scripts/bench-writes.ts --label "set_tags (control, again)" --write set_tags

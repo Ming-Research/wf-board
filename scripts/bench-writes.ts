@@ -10,11 +10,12 @@
 // of each change event the page receives, and peak RSS. It also prints the characters of each project's brief on that board.
 //
 // Usage: node scripts/bench-writes.ts [--src <dir>] [--label <text>] [--items N] [--writes N] [--history N]
-//          [--messages N] [--write set_tags|send_message]
+//          [--messages N] [--write set_tags|send_message|report_state]
 //   --src names the src directory to measure (default: this tree's), so the same script measures older code.
 //   --messages seeds N messages between agents (docs/design.md, Messages), and --write send_message replays sending
 //   messages instead of set_tags: what a board holding a year of messages costs to open, to hold, to send to the page
-//   (snapshot bytes, whole and as the page gets it) and per write.
+//   (snapshot bytes, whole and as the page gets it) and per write. --write report_state replays the runner's reports (docs/design.md,
+//   section 5, Runner reports), each a change of state on an item as the architect writes it: the cost of the two reports a turn.
 //   A quick smoke run: --items 150 --writes 50 --history 600.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,7 +38,7 @@ const { values: args } = parseArgs({ options: {
   messages: { type: "string", default: "0" }, write: { type: "string", default: "set_tags" },
 } });
 const MESSAGES = Number(args.messages), WRITE = args.write!;
-if (WRITE !== "set_tags" && WRITE !== "send_message") throw new Error("--write is set_tags or send_message");
+if (WRITE !== "set_tags" && WRITE !== "send_message" && WRITE !== "report_state") throw new Error("--write is set_tags, send_message or report_state");
 const ITEMS = Number(args.items), WRITES = Number(args.writes), HISTORY = Number(args.history), WARMUP = Number(args.warmup);
 const DECISIONS = Number(args.decisions ?? Math.round(ITEMS * 0.4)), NOTES = Number(args.notes ?? Math.round(ITEMS * 0.5));
 const src = resolve(args.src!);
@@ -158,6 +159,9 @@ try {
     const id = data.ids[n % data.ids.length]!;
     const result = WRITE === "send_message"
       ? await client.callTool({ name: "send_message", arguments: { author: data.group.get(id), session: `eng-${id}`, to: "架构师", text: `${id} 的 PR 可以看了，等你验收`, item: id } })
+      : WRITE === "report_state"
+      // Alternating states with a growing cost, so every report changes the item and none is skipped as a repeat.
+      ? await client.callTool({ name: "report_state", arguments: { author: "Architect", session: "架构师", id, state: n % 2 ? "running" : "ci", turns: n, cost: n / 100, note: `第 ${n} 轮` } })
       : await client.callTool({ name: "set_tags", arguments: { author: data.group.get(id), id, tags: [n % 2 ? "健全性" : "报错信息"] } });
     if (result.isError) throw new Error(JSON.stringify(result.content));
   };
