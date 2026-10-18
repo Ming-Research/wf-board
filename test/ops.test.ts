@@ -782,6 +782,24 @@ test("write_card places the row where before and after say, and a row it waits f
   assert.equal(Object.hasOwn(store.snapshot().decisions, "dangling"), false, "a refused placement writes no card");
 });
 
+test("write_card keeps what the row after the card waited for when a record row stands before it", async t => {
+  const { store, op } = await board(t);
+  // A record row is no step: the acceptance row follows "one", the last step before the record row, not the record row.
+  await store.commit({ author: "Fixture", message: "Seed a record", puts: [{ kind: "item", id: "rec", expectRev: null, doc: { title: "记录", group: author, record: true, plan: [], updated: at } }] });
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "one", text: "One", state: "todo" }, { id: "rec", item: "rec", own: false, after: [] }, { id: "accept", accept: true, text: "独立验收通过", state: "todo" },
+  ] });
+  const args = { confidence: conf, author, key: "mid", item: "a", question: "Where?", blocks: "The work stops", options: [opt("Here")] };
+  await op.writeCard(args);
+  const plan = () => store.snapshot().items.a!.plan;
+  assert.deepEqual(plan().map(row => row.id), ["one", "rec", "mid", "accept"]);
+  assert.deepEqual(plan()[2], { id: "mid", card: "mid" }, "the card row follows the step before the record row");
+  assert.deepEqual(plan()[3], { id: "accept", accept: true, text: "独立验收通过", state: "todo", after: ["one", "mid"] }, "the acceptance row still waits for the step before the record row");
+  await op.writeCard({ ...args, rev: 1, blocks: null });
+  assert.deepEqual(plan().map(row => row.id), ["one", "rec", "accept"]);
+  assert.deepEqual(plan()[2], { id: "accept", accept: true, text: "独立验收通过", state: "todo", after: ["one"] }, "and goes back to waiting for it alone");
+});
+
 test("only a card that blocks has a row: a card without blocks has none, setting or clearing blocks on a revision adds or removes the row, and the checks agree", async t => {
   const { store, op } = await board(t);
   const plan = () => store.snapshot().items.a!.plan.map(row => row.id);

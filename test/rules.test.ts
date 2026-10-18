@@ -241,10 +241,12 @@ test("cards and missing targets wait, and only closing the card resolves its row
   for (const status of ["ruled", "withdrawn"] as const) { s.decisions.q!.status = status; assert.equal(rules(s).planRows("waiter")[0]!.state, "resolved"); assert.equal(rules(s).statusOf("waiter"), "todo", "a ruled card is not the item's own work"); }
 });
 
-test("row ratios exclude dropped steps, cancelled owned work and owned records, while shared records count", () => {
+test("row ratios and the progress share exclude dropped steps, cancelled owned work and record rows, owned or shared", () => {
   const s = snapshot({ item: { plan: workPlan([step("done", "done"), step("dropped", "dropped"), own("cancelled"), own("ownedRecord"), shared("sharedRecord"), shared("cancelled-shared")]) }, cancelled: { status: "cancelled" }, ownedRecord: { record: true }, sharedRecord: { record: true }, "cancelled-shared": { status: "cancelled" } });
   const r = rules(s);
-  assert.deepEqual(r.planRatio("item"), { done: 2, total: 4 });
+  // Counted: the done step, the shared cancelled row and the acceptance step; the share has the shared cancelled row out too.
+  assert.deepEqual(r.planRatio("item"), { done: 1, total: 3 });
+  assert.equal(r.progressShare("item"), 0.5);
   assert.deepEqual(r.planRows("item").map(row => row.glyph), ["✓", "✗", "✗", "✓", "✓", "⏸", "○"]);
   assert.equal(r.statusOf("item"), "blocked");
   assert.ok(texts(s, "item").includes("依赖的条目已取消"));

@@ -21,14 +21,19 @@ export function derivePlanOracle(snapshot: Snapshot, now=Date.now()) {
     if(!row.own||status==="blocked"||status==="paused")return "waiting";
     return status==="wip"?"progress":"open";
   }
-  const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":"item"in row&&row.own&&(snapshot.items[row.item]?.record===true||snapshot.items[row.item]?.status==="cancelled");
+  // A record row is no step: left out of the counts whether it is owned or shared, and out of the order, where a row with no
+  // `after` follows the nearest row before it that is not a record row.
+  const recordRow=(row:PlanRow):boolean=>"item"in row&&snapshot.items[row.item]?.record===true;
+  const excludedRow=(row:PlanRow):boolean=>"text"in row?row.state==="dropped":recordRow(row)||row.own&&snapshot.items[row.item]?.status==="cancelled";
   function rowsOf(plan:readonly PlanRow[],trail:Set<string>) {
     const preceding = new Map<string,OracleRowState>(), result:Array<{id:string;state:OracleRowState;ready:boolean;excluded:boolean}>=[];
+    let step:string|undefined;
     for(const row of plan){
       const state=rowState(row,trail);
-      const needs=row.after??result.slice(-1).map(value=>value.id);
+      const needs=row.after??(step===undefined?[]:[step]);
       result.push({id:row.id,state,ready:state!=="resolved"&&needs.every(key=>preceding.get(key)==="resolved"),excluded:excludedRow(row)});
       preceding.set(row.id,state);
+      if(!recordRow(row))step=row.id;
     }
     return result;
   }
@@ -71,7 +76,8 @@ export function derivePlanOracle(snapshot: Snapshot, now=Date.now()) {
     const done=new Map<string,boolean>(),path=new Set([id]);let last=true;
     for(const row of plan.plan){
       if("item"in row&&row.item===id)return (row.after===undefined?[last]:row.after.map(key=>done.get(key)===true)).every(ok=>ok);
-      last=rowResolved(row,path);done.set(row.id,last);
+      const resolved=rowResolved(row,path);done.set(row.id,resolved);
+      if(!recordRow(row))last=resolved;
     }
     return true;
   }
@@ -106,5 +112,5 @@ export function derivePlanOracle(snapshot: Snapshot, now=Date.now()) {
   function open(id:string){const status=statusOf(id);return !!snapshot.items[id]&&status!==undefined&&status!=="done"&&status!=="cancelled";}
   function backlog(id:string){return open(id)&&(owners.get(id)??[]).some(owner=>snapshot.items[owner]?.record);}
   function root(id:string){return !!snapshot.items[id]&&!backlog(id)&&!(waiters.get(id)??[]).some(open);}
-  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,rows:(id:string)=>rows(id,new Set([id])).map(({id,state,ready})=>({id,state,ready}))};
+  return {statusOf,askPending,isOpenWork:open,isBacklog:backlog,isRoot:root,rows:(id:string)=>rows(id,new Set([id])).map(({id,state,ready,excluded})=>({id,state,ready,excluded}))};
 }
