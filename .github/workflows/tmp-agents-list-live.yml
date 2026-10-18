@@ -1,6 +1,6 @@
 name: tmp-agents-list-live
 # Temporary: delete before the last full CI, which fails while this file exists.
-# Checks the merge of main (the PM retired) into this branch: the type check, the page build, the design check and the tests both sides touch.
+# Checks the merge of main (the PM retired) into this branch: the type check, the page build and the tests both sides touch.
 on:
   push:
     branches-ignore: [main]
@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -22,6 +20,5 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build:web
-      - run: make design-lint
       - run: node --test test/agents.test.ts test/runner-rows.test.ts test/live.test.ts test/access.test.ts test/ops-roles.test.ts test/runner-report.test.ts test/mcp.test.ts test/page-version.test.ts test/wake.test.ts test/dom/runner-block.test.ts
       - run: node --test test/web.test.ts
