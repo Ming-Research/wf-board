@@ -1,22 +1,14 @@
 name: ci
 # The full CI. A merge to the main line is checked once, by its push run. On a pull request branch it runs only when the
 # engineer starts it (`gh workflow run ci.yml --ref <branch>`), once the change is done and reviewed; while writing, a push
-# is checked by a temporary workflow tmp-*.yml that runs only what the change touches. The browser tests (job e2e) run on a
-# main-line push, every night, and in a run started by hand only with `-f browser=true`. docs/design.md, section 11, Fast
-# checks while writing. Its result is written to the head commit as the status `full-ci`, because a run started by hand
-# is not among the checks a pull request lists, and `gh pr checks`, the engineer's wait script and the board read that list.
+# is checked by a temporary workflow tmp-*.yml that runs only what the change touches. The browser tests are not in it: they are
+# the workflow browser.yml, which runs after a merge and every night. docs/design.md, section 11, Fast checks while writing.
+# Its result is written to the head commit as the status `full-ci`, because a run started by hand is not among the checks a pull
+# request lists, and `gh pr checks`, the engineer's wait script and the board read that list.
 on:
   push:
     branches: [main]
-  # The browser tests of the main line, whatever was merged that day, so a break that got in is found within a day.
-  schedule:
-    - cron: '17 3 * * *'
   workflow_dispatch:
-    inputs:
-      browser:
-        description: 'Run the browser tests (job e2e) too; a run started by hand skips them without this'
-        type: boolean
-        default: false
 concurrency:
   # A main-line run has a group of its own (its commit), so none is replaced.
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
@@ -64,7 +56,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-  # The script tests in 8 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
+  # The script tests in 16 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
   # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 60 seconds
   # and a test at 40, so that a slow shard or test is named in the log of a red run; the time gate reads the step `tests`.
   test:
@@ -73,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -119,39 +111,13 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
-  # The owner's page in headless Chromium against the real server (test/e2e); the browser is cached by Playwright version. It
-  # takes about 11 minutes, so a run started by hand leaves it out unless the input `browser` is set; the main line and the
-  # nightly run always have it.
-  e2e:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.browser }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - id: playwright
-        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
-      - id: browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
-      # Playwright's own headless shell starts on the runner image without the system packages `--with-deps` would install.
-      - if: steps.browsers.outputs.cache-hit != 'true'
-        run: npx playwright install --only-shell chromium
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: npm run test:e2e
   # Writes the result of a run started by hand to the commit it ran on. A cancelled run's result job writes nothing: the
   # pending its start wrote stands until the next run of the commit. A push to the main line writes nothing; its checks
   # are listed on the commit. `needs` lists every job whose result counts: a project adds each of its test jobs here.
   # It also reads how long the run took (scripts/ci-time-gate.ts) and puts the time of each job into the run's summary.
-  # e2e is skipped in a run started by hand without the input `browser`; no other job is skipped.
   result:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-    needs: [start, no-tmp-workflow, check, test, nkey, e2e]
+    needs: [start, no-tmp-workflow, check, test, nkey]
     runs-on: ubuntu-latest
     permissions:
       statuses: write
@@ -164,14 +130,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      # report: the gate writes its summary and never fails the run. The browser checks are still in the full CI, so the total is
-      # over the line whenever they run; the item that moves them out of the full CI (ci-browser-lane) sets this to enforce, and
-      # a total over 60 seconds then fails the run.
+      # enforce: a total over 60 seconds from the start of the run to the end of its last job fails this step, and then the run and
+      # the status `full-ci` (docs/design.md, section 11, The time gate). The step does not stop the one after it, which writes the
+      # status.
       - id: gate
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          TIME_GATE: report
+          TIME_GATE: enforce
         run: node scripts/ci-time-gate.ts
       - env:
           GH_TOKEN: ${{ github.token }}

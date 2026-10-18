@@ -8,6 +8,12 @@ Nodes: deploy
 
 Summary: The deploy job moved the checkout to the main line's head as soon as it saw it, so a merge whose checks went red afterwards (the main line's `nkey time-writing` check on a merge of 10-18) was live within a minute, while the main line's CI takes 2 to 13 minutes. The job now asks GitHub for the checks on the head it fetched, by the commit's id and with the reading the board's look at the main line uses, and deploys only when all of them passed: a head whose checks are running or have not appeared is waited for at the next run, one with a red check is held until a newer commit passes or the check passes on a rerun, and checks that cannot be read hold the deploy and are pushed once. The head alone decides, so a batch of merges is still one deploy and one restart. The grounds and the refused alternatives (deploying at once, the newest green commit among those not yet live, a branch pointer the CI moves) are in the node; the derivation is in docs/design.md, section 4, Deploying.
 
+## 2026-10-18 Keep the browser tests in one small file that runs after a merge
+
+Nodes: testing, testing/browser-file, testing/ci, testing/ci-shards, testing/ci-time-gate, testing/evidence
+
+Summary: What only a real browser shows is one file of at most 15 tests on one browser, one board and one page, with no spoiled-page variants, held to 90 seconds by its step's `timeout` and to 15 tests by a unit test, and a report of one press of n in a real browser that judges nothing; both run in a workflow of their own after each merge to the main line, every night and by hand, not on a pull request, so the full CI's total is the script tests' and its time gate is enforced instead of only reporting. A fact that needs a layout is shown to fail on a spoiled page once, when its test is written, and the pull request records that run; the witness file of the browser layer is gone. The grounds, the measurements and the refused alternatives are in the browser-file node and docs/design.md, section 11, The browser file. With the browser's checks now in the suite, the script tests are dealt out to sixteen shards instead of eight, because eight took 73 seconds against the time gate's 60 (section 11, Sharding the script tests); the full CI's node no longer gives twelve minutes as its reason for starting by hand.
+
 ## 2026-10-18 Draw the runner's work on the agent list and keep its beats in memory
 
 Nodes: page/agent-list, daemon/live-state

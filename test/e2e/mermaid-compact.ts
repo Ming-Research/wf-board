@@ -1,9 +1,11 @@
-// What the compactness checks of the mermaid diagrams (test/e2e/mermaid-compact.e2e.ts) share: the measurement of one drawn diagram, made in
-// the page, and what it must show. A diagram is compact when it is short, its boxes are as far apart as the page asked and no further, its
-// arrows enter a box from above and run straight a little before it, and nothing it draws covers anything else.
+// The compactness check of the mermaid diagrams (test/e2e/browser.e2e.ts): the measurement of one drawn diagram, made in the page, and what it
+// must show. A diagram is compact when it is short, its boxes are as far apart as the page asked and no further, its arrows enter a box from
+// above and run straight a little before it, and nothing it draws covers anything else. `checkCompact` draws three synthetic charts of the
+// shape of the owner's flow charts (mermaid-charts.ts) in the real library and holds each to that. Docs/design.md, section 7, Diagrams.
 
-import type { BoardPage } from "./harness.ts";
-import { settled } from "./mermaid-checks.ts";
+import type { BoardPage, BoardServer } from "./harness.ts";
+import { settled, setHead, showHead, fence, WAIT } from "./mermaid-checks.ts";
+import { ENGINEER, ENGINEER_OWN, LANES } from "./mermaid-charts.ts";
 
 /** What one drawn diagram measures. Lengths are in the diagram's own units (its view box), whatever size the page draws it at. */
 export interface Measure {
@@ -97,4 +99,28 @@ export function compactViolations(name: string, m: Measure, want: Want): string[
   if (m.labelOnLabel) v.push(`${what}: ${m.labelOnLabel} pairs of edge labels cover each other`);
   if (m.through.length) v.push(`${what}: ${m.through.length} lines cross a box: ${m.through.join(", ")}`);
   return v;
+}
+
+// The sizes the page's compact drawing stays under (measured on these charts in CI: 2406 and 1657 px; the library's own drawing is 3420 and 2477).
+const ENGINEER_WANT: Want = { arrows: 28, height: 2500, gap: 20 };
+const LANES_WANT: Want = { arrows: 17, height: 1900, gap: 20 };
+// The settings block of ENGINEER_OWN asks for 60 px between boxes and layers, and nothing else is asked of the drawing.
+const OWN_WANT: Want = { arrows: 28, gap: 60 };
+const CHARTS = [
+  { name: "role", code: ENGINEER, want: ENGINEER_WANT },
+  { name: "lanes", code: LANES, want: LANES_WANT },
+  { name: "own gaps", code: ENGINEER_OWN, want: OWN_WANT },
+];
+
+/** Each chart is made the head of the item with code in its head, drawn, measured and held to what it must measure. `note` gets each measurement, for the CI log. */
+export async function checkCompact(bp: BoardPage, board: BoardServer, note: (line: string) => void = () => {}, wait = WAIT): Promise<string[]> {
+  const violations: string[] = [];
+  for (const chart of CHARTS) {
+    await showHead(bp, board, (b, id) => setHead(b, id, fence(chart.code)));
+    const m = await measured(bp, wait);
+    if (typeof m === "string") { violations.push(`mermaid-compact (${chart.name}): ${m}`); continue; }
+    note(`${chart.name}: ${JSON.stringify(m)}`);
+    violations.push(...compactViolations(chart.name, m, chart.want));
+  }
+  return violations;
 }
