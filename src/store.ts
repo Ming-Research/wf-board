@@ -28,6 +28,7 @@ import type { NetGitResult } from "./net-git.ts";
 import type { StartupStep } from "./log.ts";
 import { Budget, BudgetError, STARTUP_LIMITS, REQUEST_LIMITS, allowRange, currentBudget, withBudget } from "./budget.ts";
 import { ReadCache } from "./read-cache.ts";
+import { currentTrace, withTrace } from "./write-trace.ts";
 
 /** What `Store.open` takes. `maintenance`: `every` is the commits between maintenance steps (a test passes a small one), `log`
  * receives the line of each step (the service log by default). */
@@ -62,6 +63,12 @@ const run = promisify(execFile);
  * process that repacked by itself would write the data repository outside the queue, and the repack git starts after a large
  * commit deletes empty object directories while the next git add creates a temporary file in one (item e2e-git-tmp-flake). */
 const NO_GIT_MAINTENANCE = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+/** The git command an argument list runs (`commit`), after the `-c name=value` pairs that come first. */
+function gitCommand(args: string[]): string {
+  let i = 0;
+  while (args[i] === "-c") i += 2;
+  return args[i] ?? "";
+}
 /** Commits between two maintenance steps. The size of a step follows this number alone: on a hosted runner a step of 100 commits
  * took 240 to 299 ms at the median and 753 ms at most, against the 3 s a write may wait (item data-repo-gc-timing-study). */
 export const MAINTENANCE_EVERY = 100;
@@ -340,6 +347,9 @@ export class Store {
   private ownerFileExists = false;
   private deferredOwnerWrite = false;
   private queue: Promise<unknown> = Promise.resolve();
+  /** Tasks in the queue that have not ended, and the kind of the one joined last: what a write that joins is told it waits behind. */
+  private waiting = 0;
+  private tail = "";
   private listeners = new Set<(change: Change) => void>();
   private writing = false;
   private readonly blobs: BlobReader;
@@ -379,12 +389,19 @@ export class Store {
 
   private async git(args: string[], author?: string): Promise<string> {
     const slug = author?.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-    const result = await run("git", [...NO_GIT_MAINTENANCE, ...args], {
-      cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
-        ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
-    });
-    return result.stdout;
+    // The call this runs for, if a write is waiting on it: the time before the command is its own step, the command another.
+    const trace = currentTrace();
+    trace?.lap("other");
+    try {
+      const result = await run("git", [...NO_GIT_MAINTENANCE, ...args], {
+        cwd: this.dir, maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, GIT_COMMITTER_NAME: "wf-board", GIT_COMMITTER_EMAIL: "wf-board@wf-board.invalid",
+          ...(author ? { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: `${slug}@wf-board.invalid` } : {}) },
+      });
+      return result.stdout;
+    } finally {
+      trace?.lap(`git ${gitCommand(args)}`);
+    }
   }
 
   /** The budget of the request this read of history serves. With `requireBudget`, a read that runs under none fails here. */
@@ -907,9 +924,18 @@ export class Store {
     return this.state;
   }
 
-  /** A write under the budget of the request that made it; a write made by a timer or at shutdown has none, so it gets its own. */
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const task = this.queue.then(() => currentBudget() ? fn() : withBudget(new Budget("write", REQUEST_LIMITS), fn));
+  /** A write under the budget of the request that made it; a write made by a timer or at shutdown has none, so it gets its own.
+   * `kind` names the task for the write that waits behind it. A task made `onBehalf: false` (the maintenance step, which a commit
+   * queues from inside its own call) serves no call: its git commands belong to no call's steps. */
+  private enqueue<T>(fn: () => Promise<T>, kind = "write", onBehalf = true): Promise<T> {
+    const trace = onBehalf ? currentTrace() : undefined;
+    trace?.lap("before store queue");
+    const ahead = this.waiting++, behind = this.tail;
+    this.tail = kind;
+    const task = this.queue.then(() => {
+      trace?.lap("store queue", ahead ? `${ahead} ahead, behind ${behind}` : undefined);
+      return withTrace(trace, () => currentBudget() ? fn() : withBudget(new Budget("write", REQUEST_LIMITS), fn));
+    }).finally(() => { this.waiting--; });
     this.queue = task.catch(() => {});
     return task;
   }
@@ -1023,6 +1049,8 @@ export class Store {
     if (txn.planConversionReport) paths.push(reportPath);
     const numbersChanged = nextNum !== this.nextNum;
     if (numbersChanged) paths.push(numbersPath);
+    const trace = currentTrace();
+    trace?.lap("validate");
     if ((await this.git(["diff", "--cached", "--name-only"])).trim()) throw new Error("Refusing to commit an already staged index");
     this.writing = true;
     let event: Change;
@@ -1035,6 +1063,7 @@ export class Store {
       }
       if (txn.planConversionReport) { mkdirSync(join(this.dir, "import"), { recursive: true }); atomicWrite(join(this.dir, reportPath), txn.planConversionReport); }
       if (numbersChanged) atomicWrite(join(this.dir, numbersPath), validated(Numbers, { next: nextNum }, numbersPath));
+      trace?.lap("files");
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
       await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : [])], txn.author);
@@ -1095,6 +1124,7 @@ export class Store {
     }
     sealed(next);
     frozen(event);
+    trace?.lap("publish");
     if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
     this.state = next;
     this.scheduleCacheWrite();
@@ -1104,6 +1134,7 @@ export class Store {
     if (ownerChanged) { this.committedOwner = ownerAtCommit; this.ownerInHead = true; }
     // An observer cannot turn a committed transaction into an apparent failure.
     for (const listener of this.listeners) { try { listener(event); } catch { /* observer owns its error handling */ } }
+    trace?.lap("listeners");
     return { commit: next.head, revs };
   }
 
@@ -1133,7 +1164,7 @@ export class Store {
     return this.enqueue(async () => {
       if (!this.ownerPending()) return null;
       return (await this.apply({ author, message: "Save owner reading state" }, true)).commit;
-    });
+    }, "owner state");
   }
 
   /** The loose objects, the packs and the disk they take (KB) in the data repository, as `git count-objects -v` reads them. */
@@ -1148,7 +1179,7 @@ export class Store {
   private queueMaintenance(): Promise<void> | undefined {
     if (this.maintenanceTask) return this.maintenanceTask;
     if (this.maintenanceStopped || this.pending < this.maintenanceEvery) return undefined;
-    const task = this.enqueue(() => this.maintain()).finally(() => { this.maintenanceTask = undefined; });
+    const task = this.enqueue(() => this.maintain(), "maintenance", false).finally(() => { this.maintenanceTask = undefined; });
     this.maintenanceTask = task;
     return task;
   }

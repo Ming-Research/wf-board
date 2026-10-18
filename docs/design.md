@@ -219,7 +219,11 @@ line of the same author with the same text; for `journal_entry`, the same text
 at the end of the head; for `set_status`, also only while the item is in the state the
 call asks for, so a cancel after a reopen is a new decision). The answer is that first
 commit, marked `repeated`. The check reads history under the request's budget; when
-the budget is spent the write is made, at worst once too often. The
+the budget is spent the write is made, at worst once too often. It asks git for the
+item's commits of the last minute (`git log --since`), not for its 20 newest: a log
+limited to one file and asked for 20 commits looks through the whole history for them
+when the file has fewer, which took 2 to 3 s on the live board's 27,666 commits, and the
+write queue waited for it (Time limits, Where a write's time went). The
 rule reads the commit's message and `Session:` trailer and the item as the
 commit left it, so it holds across a restart with nothing kept in memory, and
 one function serves the four writes. A caller that names no session is not
@@ -303,6 +307,46 @@ live board, the times in the log show which ordinary operations exceed them; eac
 is then looked at to see whether it is slow, and the number changed or the
 slowness fixed. No write waits for a push to the remote: the push runs beside the
 write queue (Storage).
+
+**Where a write's time went.** The line of an operation says how long it took, which for a
+write that waits in two queues and runs a handful of git commands is not enough to tell
+what was slow. A write call (a tool that changes the board, a page request of the write
+class) carries a `WriteTrace` (`src/write-trace.ts`) in its async context, and the places
+it waits or works end a step in it: the wait in the operations' own queue (`ops queue`,
+`src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
+queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
+behind: `write`, `owner state` or `maintenance`); the code before the first git command
+(`validate`), the writing of the files (`files`), each git command by its name (`git diff`,
+`git add`, `git commit`, `git show`), the update of the board in memory (`publish`), the
+observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
+each is the time since the one before ended, so they add up to the call. When the call took
+500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
+limits), its ordinary log line carries them after a semicolon:
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git diff 8 ms, git add 14 ms, git commit 2400 ms, ...`.
+A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
+The maintenance step, which a commit queues from inside its own call, belongs to no call and
+adds nothing to any trace. A second line says when the event loop itself was held: a timer
+due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
+`event loop held for N ms`, because a git command's time that is the time of a held loop
+is not git's. The two make the slow tail of the writes readable as one of: waiting in a
+queue, a slow git command, work in the process, or a held loop.
+
+The tail they were made for had a cause that the service log of 10-16 to 10-18 and the data
+repository showed before they were deployed. The log of 10-18 holds 90 writes of 5360 over
+2 s, most between 2.1 and 2.6 s, and nearly every group of them began with an `append_log`
+(the others queued behind it, finishing about 100 ms apart, the time of an ordinary write).
+Not the cause, measured in that log: a push (the 3 percent of slow writes that overlapped
+one against 0.3 percent of the others) and a held event loop (40 of the last 60 slow writes
+answered another request meanwhile). The cause is the retry check above: for a session that
+appends to an item written in the last minute it ran `git log --max-count=20 -- items/<id>.yaml`
+inside the operations' queue. On the live repository (27,666 commits, measured with that
+command) it took 2.06 s for an item with 104 commits, most of them old, 2.43 s for one with 19 and
+3.02 s for one with 11, against 0.14 s for an item whose 20 newest commits are recent; the
+slow lines of the service log for the first two items read 2116 and 2584 ms. With `--since` of the last minute it took 20 to 36 ms. A version conflict
+(`versionAt`) read an item's whole path history the same way; it now asks for the
+`current.rev - rev + 1` newest commits, which is as far back as the revision it was written
+against, as the request budget rule below says it reads. Both costs grow with the history,
+which gains thousands of commits a day.
 
 **Why at the entries.** The request handler and `register` are the places every
 operation already passes. A timer inside each tool or route would miss the next

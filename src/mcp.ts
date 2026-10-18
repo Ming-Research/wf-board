@@ -14,6 +14,7 @@ import type { Wake } from "./wake.ts";
 import type { Resolved } from "./credentials.ts";
 import { summarize, toolClass } from "./slow-ops.ts";
 import type { SlowOps } from "./slow-ops.ts";
+import { WriteTrace, withTrace } from "./write-trace.ts";
 import { Budget, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 import { PREAMBLE, selectSections, splitHead, summarizeHead } from "./head-sections.ts";
@@ -268,6 +269,8 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: !write, destructiveHint: write } }, async a => {
       // Every tool call is timed here, the one entry all tools pass through (docs/design.md, section 4, Time limits).
       const timed = slow?.start({ name: `tool ${name}`, cls: toolClass(name, write) });
+      // A write's log line says where its time went (src/write-trace.ts).
+      const trace = write ? new WriteTrace() : undefined;
       let outcome = "ok";
       try {
         if (credential && !credential.ok) throw new Error(credential.problem);
@@ -283,12 +286,12 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
         const caller = credential?.ok ? credential.who.session : typeof args.session === "string" ? args.session.trim() : undefined;
         if (caller) wake?.liveness.see(caller);
         // Each call reads history under a budget of its own, so one that asks for too much fails alone (docs/design.md, section 4, Request budgets).
-        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => fn(args as z.output<z.ZodObject<S>>)) + (notes.length ? `\nnote: ${notes.join("; ")}` : "");
+        const answer = await withBudget(new Budget(`tool ${name}`, budget), () => withTrace(trace, () => fn(args as z.output<z.ZodObject<S>>))) + (notes.length ? `\nnote: ${notes.join("; ")}` : "");
         const pushed = caller && wake ? wake.footer(caller) : "";
         return { content: [{ type: "text" as const, text: pushed ? `${answer}\n\n${pushed}` : answer }] };
       }
       catch (error) { outcome = "error"; return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
-      finally { timed?.(outcome, () => summarize(a)); }
+      finally { timed?.(outcome, () => summarize(a), trace && (() => trace.finish())); }
     });
   }
   register("projects", "Find the project matching your repository: its name, repo, area and open work counts.", {}, () => JSON.stringify(q.projects(read().snapshot)));

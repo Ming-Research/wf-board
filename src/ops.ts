@@ -13,6 +13,7 @@ import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
 import type { LiveRole } from "./live.ts";
+import { currentTrace } from "./write-trace.ts";
 
 export class OpError extends Error {}
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
@@ -290,7 +291,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     // newest version, the first one below the wanted revision means it is not in the history. Neither case reads on.
     try {
       if (rev <= current.rev) {
-        const versions = await store.log({ kind, id });
+        // Each write raised the revision by one, so the version wanted is the `current.rev - rev + 1`th newest commit of the
+        // document, and git is asked for no more. Asked for all of them, it looks through the whole history for the commits of a
+        // document that has few: 2 to 3 s with 27,666 commits, with every other write waiting (item write-tail-3s).
+        const versions = await store.log({ kind, id, limit: current.rev - rev + 1 });
         allowRange(versions.length);
         for (const commit of versions) {
           const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
@@ -374,7 +378,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (RETIRED_AUTHORS.includes(a.author)) throw new OpError(`author ${a.author}: this identity is retired; write as ${ARCHITECT} (session ${ARCHITECT_SESSION}), which does the process and keeps the rules`);
   }
   function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
+    // Where the call's time goes is told in its log line (src/write-trace.ts): the wait here, then the checks before the commit.
+    const trace = currentTrace();
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
+      trace?.lap("ops queue");
       const partList = typeof parts === "string" ? [parts] : parts;
       checkWriter(a, partList);
       for (;;) {
@@ -443,6 +450,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
             }
           }
         }
+        trace?.lap("check");
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
           return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(work.note === undefined ? {} : { note: work.note }) };
@@ -549,7 +557,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     // Any write of this window left the item updated in it, so an item last updated before the window has no earlier write to find.
     if (!who || !(Date.parse(at) - Date.parse(it.updated) <= REPEAT_MS)) return undefined;
     try {
-      for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
+      // Only the commits of the last minute can be the first write, so git is asked for those. Asked for the item's 20 newest
+      // commits, it looks through the whole history for the rest when the item has fewer: 2 to 3 s with 27,666 commits, with every
+      // other write waiting (item write-tail-3s). A commit is dated after the `updated` of the item it left, which is within the minute.
+      const since = new Date(Date.parse(at) - REPEAT_MS).toISOString();
+      for (const commit of await store.log({ kind: "item", id, since, limit: 20 })) {
         if (commit.session !== who || commit.message !== message) continue;
         const doc = await store.show("item", id, commit.commit) as Item | null;
         if (!doc) continue;

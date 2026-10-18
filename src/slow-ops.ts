@@ -8,6 +8,9 @@ export type OperationClass = keyof typeof TIME_LIMITS_MS;
 export const OPERATION_LIMITS_MS: Readonly<Record<string, number>> = { "POST /api/read": 300 };
 /** How long after telling the architect of an operation that operation is only logged. */
 export const TELL_AGAIN_MS = 60 * 60_000;
+/** From this time on, a write's log line carries where its time went (src/write-trace.ts): a quarter of the write class's limit,
+ * so the writes that queued a slow one are in the log too. A starting value, like the limits. */
+export const STEPS_FROM_MS = 500;
 
 /** What is timed: `name` is the operation's identity, which the one-hour rule and the push go by; `cls` its class, or none for
  * an operation held to no limit; `label` what its log line says in place of the name, when that tells more. */
@@ -90,6 +93,8 @@ export interface Timing extends Operation {
   result: string;
   /** Its parameters as one line, asked for only when the operation was slow. */
   params?: () => string;
+  /** Where its time went, as one line (`WriteTrace.finish`), asked for only when it took `STEPS_FROM_MS` or more. */
+  steps?: () => string;
 }
 export interface SlowOpsOptions {
   /** Where a slow operation is told to the architect; without it a slow operation is only logged. */
@@ -115,15 +120,18 @@ export class SlowOps {
     for (const frame of this.wake?.kept() ?? []) if (frame.event === "slow-op" && typeof frame.op === "string") this.told.set(frame.op, Date.parse(frame.at));
   }
 
-  /** Starts timing an operation; the returned function ends it with how it ended and, for the log of a slow one, its parameters. */
-  start(operation: Operation): (result: string, params?: () => string) => void {
+  /** Starts timing an operation; the returned function ends it with how it ended and, for the log of a slow one, its parameters
+   * and, for the log of one that took long, where its time went. */
+  start(operation: Operation): (result: string, params?: () => string, steps?: () => string) => void {
     const from = performance.now();
-    return (result, params) => this.record({ ...operation, ms: performance.now() - from, result, params });
+    return (result, params, steps) => this.record({ ...operation, ms: performance.now() - from, result, params, steps });
   }
 
-  record({ name, cls, label = name, ms: exact, result, params }: Timing): void {
+  record({ name, cls, label = name, ms: exact, result, params, steps }: Timing): void {
     const ms = Math.round(exact);
-    console.info(`${label} ${result} ${ms} ms`);
+    let where = "";
+    if (ms >= STEPS_FROM_MS) try { where = steps?.() ?? ""; } catch { /* the steps are a convenience; the line is still worth writing */ }
+    console.info(`${label} ${result} ${ms} ms${where ? `; ${where}` : ""}`);
     const limit = OPERATION_LIMITS_MS[name] ?? (cls === undefined ? undefined : this.limits[cls]);
     if (limit === undefined || ms <= limit) return;
     let detail = "";
