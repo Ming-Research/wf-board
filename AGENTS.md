@@ -81,8 +81,6 @@ matches what the artifact board offered.
   `src/ci-source.ts`, `src/ci-watch.ts`: the look at the checks of the PRs the open items name every 30 seconds, with
   conditional REST requests, and the message to the engineer when a PR's checks have finished (design section 8,
   The look at the checks);
-  `src/billing.ts`, `src/usage-watch.ts`: the look at the Actions billing every half hour (the month's account of
-  the included minutes, the usage line of the timed wake, the usage pushes). All are in `docs/design.md`, section 8.
 - `src/convert.ts`: one-time conversion of the claude.ai artifact export.
 - `src/convert-plans.ts`: one-time, lossless conversion from the old item
   structure to provisional plans, with an independent preservation check.
