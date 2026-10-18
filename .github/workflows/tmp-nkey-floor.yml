@@ -1,0 +1,30 @@
+name: tmp-nkey-floor
+# TEMPORARY (item ci-script-nkey): the noise floor of the n-key time layer, measured on hosted runners. A push whose commit message
+# holds [floor] runs each time part on 5 runners with 3 rounds, whatever the twin shows. Removed before the pull request is ready.
+on:
+  push:
+    branches: [ci-script-nkey]
+jobs:
+  floor:
+    if: contains(github.event.head_commit.message, '[floor]')
+    name: floor ${{ matrix.part }} ${{ matrix.run }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [time-quiet, time-writing]
+        run: [1, 2, 3, 4, 5]
+    env:
+      NKEY_FLOOR: 3
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts

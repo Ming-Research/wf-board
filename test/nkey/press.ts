@@ -339,8 +339,8 @@ export interface PhaseResult {
   ratios: Record<string, Interval>;
   /** The window each ratio is against. */
   versus: Record<string, string>;
-  /** The twin's interval after each round (the pairs of that round and the rounds before it). */
-  twins: Interval[];
+  /** The twin's interval over each round's pairs alone. */
+  alone: Interval[];
   /** `sound`: the twin's interval holds 1 within `floor`; per window other than base and twin the verdict. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
@@ -354,8 +354,10 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
   let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false;
-  const twins: Interval[] = [];
-  while (rounds < ROUNDS && !sound) {
+  const alone: Interval[] = [];
+  // A run that sets the noise floor makes this many rounds whatever the twin shows, and reads each round's own interval.
+  const forced = Number(process.env.NKEY_FLOOR ?? 0);
+  while (rounds < (forced || ROUNDS) && (forced > 0 || !sound)) {
     rounds++;
     const scope = new Scope();
     try {
@@ -364,12 +366,12 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
       const lands = await pairedLandings(open, WARMUP + PAIRS, events);
       first ??= lands;
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
+      alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[windows[0]!.label]!.slice(WARMUP).map(l => l.busy)));
     } finally { await scope.close(); }
     ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
     sound = twinIsSound(ratios.twin!, floor);
-    twins.push(ratios.twin!);
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
   const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, twins, sound, verdicts, misses };
+  return { first: first!, busy, rounds, ratios, versus, alone, sound, verdicts, misses };
 }
