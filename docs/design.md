@@ -2606,9 +2606,9 @@ does not make it unread.
 
 ### Agent list
 
-Above the projects and below the summary, the page lists the agent sessions that
-wrote to the board lately: one row per session name, then the two items it
-wrote to last. The owner reads it to see which work has someone on it, at which
+Above the projects and below the summary, the page lists the programmers the board
+sent out (the sessions a dispatch record names) that wrote to the board lately: one
+row per session name, then the two items it wrote to last. The owner reads it to see which work has someone on it, at which
 level, and whether that someone is working, waiting or has gone quiet.
 
 - **Data.** Only the board's own records: the per-session index of section 5
@@ -2627,27 +2627,27 @@ level, and whether that someone is working, waiting or has gone quiet.
   needs the in-progress row to know whose item it is. The dispatch records are
   read because they give the level a session was started at and the time it
   started, before it has written anything (a reviewer may never write).
-- **Who is listed.** A session whose last activity is at most six hours old.
-  Activity is a write with its session name, or the start of a dispatch record
-  naming it (`agent`), whichever is later; a reviewer that only reads has a row
-  from its start. The PM's and the architect's own sessions are left out: on 2026-10-16 the architect's made
-  521 of the 1158 board writes since 00:00 UTC and would head the list every
-  time. A name
-  whose newest dispatch record has ended is not listed until it writes again
-  more than a minute after the recorded end (the end may be recorded to the
-  minute); names are reused (one item's study and its implementation are both
-  named after the item), so the newest record decides. The programs' session
-  names are left out too (`isProgramSession`): the runner (`执行程序`), the
-  architect's turns it starts (`架构师轮次`) and the board itself (`看板`, the
-  name of the watch that marks merge rows and tells of checks). They write
-  for the board and are no agent; on 2026-10-18 three of the five rows behind
-  「其他 5 个」 were these (the board's own, the runner's own, an architect turn
-  that had answered ten minutes before), and the other two a name used by mistake
-  and an old session. A turn that ends is thus gone from the list, and the one
-  running is drawn under the work that asks it (the runner's block). A name used
-  by mistake is listed as it is, so whoever wrote it sees it: the board cannot tell it from a session the owner
-  started by hand, and the owner rules whether the list should show only
-  sessions that hold a dispatch record.
+- **Who is listed.** A session that a dispatch record names (`agent`) and whose
+  last activity is at most six hours old. Activity is a write with its session
+  name, or the start of that record, whichever is later; a reviewer that only
+  reads has a row from its start. The PM's and the architect's own sessions are
+  left out: on 2026-10-16 the architect's made 521 of the 1158 board writes since
+  00:00 UTC and would head the list every time. A name whose newest dispatch
+  record has ended is not listed until it writes again more than a minute after
+  the recorded end (the end may be recorded to the minute); names are reused (one
+  item's study and its implementation are both named after the item), so the
+  newest record decides. A session no dispatch record names is not listed,
+  whatever it wrote. The board has no PM any more: only the architect and the
+  programmers the board sends out work on it, and a dispatch is recorded for each
+  of those. What else writes is no such programmer: on 2026-10-18 three of the five
+  rows behind 「其他 5 个」 were programs (the board's own, the runner's own, an
+  architect turn that had answered ten minutes before), and the other two a name
+  used by mistake and an old session. None of them has a dispatch record, so none
+  is listed, and no table of program names is kept: a name written by mistake and
+  the architect's helper sessions are left out by the same rule. A turn that ends is
+  gone from the list, and the one running is drawn under the work that asks it (the
+  runner's block). A session the owner started by hand (the observer) is not
+  listed either; its writes are in the logs of the items it wrote to.
 - **The runner's block.** Above those rows, one row for each piece of work the
   runner holds (`runnerRows`, `src/runner-rows.ts`): an open, unpaused item that
   carries a runner report and has an unfinished engineer dispatch that began with
@@ -2673,9 +2673,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   the report says a turn runs, the architect's while it says the work asks the
   architect), so a turn that ended is gone from the row at the next report
   without the beat having to be cleared. The older rows leave out the sessions
-  the runner holds, and the programs' session names (`isProgramSession`), the
-  runner's own among them, which wrote only the reports and lines it makes for the
-  runner's block; so no session is drawn twice. The whole view is not changed: it
+  the runner holds, so no session is drawn twice. The whole view is not changed: it
   answers what is left and who has nobody, by item, and the architect reads it
   too; the two repeat a job on purpose, and say the same words with the same
   limits because both call the same function and table. Rejected: folding the
@@ -2685,10 +2683,7 @@ level, and whether that someone is working, waiting or has gone quiet.
 - **A row.** Name; level; state word; how long ago it wrote (「N 分钟前写过」,
   or 「N 分钟前起」 when the last activity is a dispatch start); its two items.
   The level is the one in the newest dispatch record naming the session, which
-  is what it was started at (「审查 3 级」 for a review); with no record, the
-  difficulty (1 to 5) of the newest of its items that has a step in progress
-  and a difficulty in that range: an unrated item is passed over for an older
-  item that has one.
+  is what it was started at (「审查 3 级」 for a review).
 - **State word.** Read from the steps in progress on its two items, never from
   the host. A step with `waits` text: 「在等：」 and that text, whatever the
   time (the text is the session's own); amber when it has not written for over
@@ -2719,9 +2714,8 @@ level, and whether that someone is working, waiting or has gone quiet.
   the push's holder). So an engineer just started or waiting for the merge with
   every row done, and a review still being read, are running although they
   marked no step, and 「可能停了」 stays expanded, being the exception the owner most
-  needs to see. Nothing else makes a row running. A session with no dispatch
-  record (the observer, one opened by hand) or whose dispatch has ended is
-  folded, even when the items it touched have a step in progress: those steps
+  needs to see. Nothing else makes a row running. A session whose
+  dispatch has ended is folded, even when the items it touched have a step in progress: those steps
   are another session's, and its state word is still read from them. A review is
   not given a shorter bound than the window, so a review nobody closed out stays
   expanded until six hours after its last activity, which is when Status stops

@@ -3,7 +3,6 @@ import { dirname } from "node:path";
 import { holderOf } from "./dispatch.ts";
 import type { CheckReading } from "./github.ts";
 import type { CiSource } from "./ci-source.ts";
-import { BOARD_SESSION } from "./model.ts";
 import { OpError } from "./ops.ts";
 import type { Ops } from "./ops.ts";
 import { prKey } from "./query.ts";
@@ -80,7 +79,7 @@ export class CiWatch {
   constructor(o: CiWatchOptions) {
     this.o = o;
     this.now = o.now ?? Date.now;
-    this.session = o.session ?? BOARD_SESSION;
+    this.session = o.session ?? "看板";
     // A state file that cannot be read costs one baseline look (what is finished by then is not told), never the watch.
     if (o.stateFile) {
       try {

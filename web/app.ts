@@ -1715,7 +1715,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
   }
-  // The agent list: one row per session that wrote to the board lately, with the two items it touched last (src/agents.ts,
+  // The agent list: one row per session the board dispatched that wrote to it lately, with the two items it touched last (src/agents.ts,
   // docs/design.md "Agent list"). Everything shown is what sessions declared by writing; nothing is observed, and the
   // state word is inferred, so every row carries how long ago the session wrote. Only the running rows are unfolded; the
   // others sit behind one line, 「其他 N 个」, that the reader opens.
@@ -1732,7 +1732,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let liveBeats: LiveEntry[] = [];
   function runnerRowsNow() { return cached("runnerRows", () => runnerRows(snapshot, derived, liveBeats, Date.now())); }
   // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
-  function agentLevel(r: AgentRow) { return r.level === undefined ? "" : (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
+  function agentLevel(r: AgentRow) { return (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
   const AGENT_STATE_TITLES: Record<string, string> = {
     working: "它有进行中的行，30 分钟内写过看板。这是从写看板推出来的，不是看到它在干活",
     "maybe-stopped": "它有进行中的行，超过 30 分钟没写看板，也没写在等什么。可能停了，也可能在读代码或等 CI",
@@ -1789,8 +1789,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     box.dataset.agent = r.name;
     const head = el("div", "agent-head");
     head.appendChild(el("span", "agent-name", esc(r.name)));
-    const level = agentLevel(r);
-    if (level) head.appendChild(el("span", "tagchip diffchip", esc(level))).title = r.role ? "起这个会话时定的等级（派活记录）" : "它最近碰过的、有进行中的行的条目的难度";
+    head.appendChild(el("span", "tagchip diffchip", esc(agentLevel(r)))).title = "起这个会话时定的等级（派活记录）";
     const state = agentState(r); if (state) head.appendChild(state);
     head.appendChild(el("span", "agent-ago", agoText(r.lastAt) + (r.lastKind === "started" ? "起" : "写过"))).title = r.lastKind === "started" ? "派活记录里的开始时间；它还没写过看板" : "它最近一次写看板的时间";
     box.appendChild(head);
@@ -1840,7 +1839,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function agentOthers(rows: AgentRow[]) {
     const box = el("li", "agent-others"), toggle = el("button", "agents-others-toggle", (othersOpen ? "▾ " : "▸ ") + "其他 " + rows.length + " 个");
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(othersOpen));
-    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的，和派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
+    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
     toggle.addEventListener("click", () => { othersOpen = !othersOpen; try { localStorage.setItem("board-agents-others", othersOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     box.appendChild(toggle);
     if (othersOpen) { const list = el("ul", "agent-list"); rows.forEach(r => list.appendChild(agentRow(r))); box.appendChild(list); }
@@ -1886,7 +1885,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     }
     if (!rows.length) return;
     if (runner.length) host.appendChild(el("h3", "agents-sub", "其他会话"));
-    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。没有派活记录的、派活已收尾的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。派活已收尾的会话折在最后；没有派活记录的会话不列。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
     running.forEach(r => list.appendChild(agentRow(r)));
     if (others.length) list.appendChild(agentOthers(others));
