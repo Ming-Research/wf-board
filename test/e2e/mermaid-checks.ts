@@ -3,9 +3,10 @@
 
 import { ops } from "../../src/ops.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
-import { PIPELINE } from "./mermaid-charts.ts";
+import { fence, FIT_HEAD, SMALL, WIDE } from "./mermaid-charts.ts";
 
-export const fence = (code: string) => "```mermaid\n" + code + "\n```";
+// The sources are in mermaid-charts.ts; the checks of the browser layer and the regression witnesses ask for them here.
+export { fence, FIT_HEAD, SMALL, WIDE };
 
 /** Writes `head` as the head of item `id`. */
 export async function setHead(board: BoardServer, id: string, head: string) {
@@ -74,8 +75,3 @@ export async function checkFit(bp: BoardPage, wait: number): Promise<string[]> {
   return v;
 }
 export type Figure = Awaited<ReturnType<typeof figures>>["figs"][number];
-
-export const WIDE = "flowchart LR\n  " + Array.from({ length: 30 }, (_, i) => `N${i}[第${i}步]`).join(" --> ");
-export const SMALL = "flowchart LR\n  A[甲] --> B[乙]";
-/** A small diagram, a wide one and the tall chart, in one head. */
-export const FIT_HEAD = ["一张窄的：", "", fence(SMALL), "", "一张很宽的：", "", fence(WIDE), "", "一张又高又宽的：", "", fence(PIPELINE)].join("\n");

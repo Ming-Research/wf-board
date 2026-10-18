@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Check the page's diagrams in the DOM layer against a stand-in library
+
+Nodes: testing
+
+Summary: The checks of the page's diagrams that are the page's own doing (states and errors of a block, when and how often the library is asked for, the strict level, repaint, ids, zoom, drag, toolbar, theme) run in jsdom against a stand-in for the diagram library and a model of the diagram boxes, with each check's spoiled page, instead of in headless Chromium; the browser layer keeps what only the real library and a real layout show. The file took 190 seconds of the browser job on a hosted runner; the 42 checks moved run in two files of the DOM layer (docs/design.md, section 11, Four test layers). The grounds and the refused alternatives are in the node.
+
 ## 2026-10-18 Let a text write stand when the fields it replaces did not change
 
 Nodes: storage/concurrency

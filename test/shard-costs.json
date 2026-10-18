@@ -21,6 +21,8 @@
   "test/dom/agents-spoiled-1.test.ts": 17.4,
   "test/dom/agents-spoiled-2.test.ts": 21.5,
   "test/dom/agents.test.ts": 22.9,
+  "test/dom/mermaid-page.test.ts": 20.0,
+  "test/dom/mermaid-view.test.ts": 20.0,
   "test/dom/messages.test.ts": 16.4,
   "test/dom/page-cards.test.ts": 33.9,
   "test/dom/page-filters-after.test.ts": 33.8,
