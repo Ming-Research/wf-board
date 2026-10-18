@@ -2463,7 +2463,7 @@ test("plans keep cancelled owned rows and missing targets while backlinks omit o
   const p=await page(s,unread("item","area"));
   const row=rowOf(p,"area").children[0]!, head=wideHead(p);
   assert.ok(row.classList.contains("tree-row"),"tree rows opt into the one-line layout");
-  assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","counts"]);
+  assert.deepEqual(row.children.map(e=>e.className),["caret","item-head","progress-band","counts"],"area is in progress, so its row carries the band");
   for (const cls of ["st","item-title","newtag","waittag"]) assert.ok(head.children.some(e=>e.classList.contains(cls)),cls+" stays in the same head");
   assert.equal(head.querySelector(".item-title")!.title,s.items.area!.title);
   const css=await readFile("web/index.html","utf8");
@@ -3528,7 +3528,7 @@ test("plan steps show all states, elapsed days and acceptance; prose precedes co
   const p=await page(s,[],null,undefined,{now:()=>Date.parse("2026-10-12T12:00:00Z")}); await expand(p);
   assert.deepEqual(item(p).querySelectorAll(".plan-row .g").map(e=>e.innerHTML),["✓","●","○","✗","○"]);
   assert.match(markup(planRow(p,"child","done")),/Deliver parser #42 · 10-06/); assert.match(markup(planRow(p,"child","doing")),/Validate replies · 6 天 · 等 CI/); assert.match(markup(planRow(p,"child","drop")),/Old approach · Superseded/);
-  assert.equal(rowOf(p).querySelector(".steps-ratio")!.innerHTML,"1/4"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
+  assert.equal(rowOf(p).querySelector(".steps-ratio"),null,"a tree row in progress shows its band, not the count"); assert.equal(item(p).querySelector(".steps-ratio")!.innerHTML,"1/4");
   const body=item(p).querySelector(".body")!, progress=body.children.findIndex(e=>e.className === "plan"), comments=body.children.findIndex(e=>e.className === "item-comments"), prose=body.children.findIndex(e=>e.className === "rich"), logs=body.children.findIndex(e=>e.className === "log");
   // Owner, 2026-10-13: plan, then the head, then the item's comments, then the log.
   assert.ok(progress>=0 && prose === progress+1 && comments === prose+1 && logs === comments+1);
@@ -4622,3 +4622,26 @@ test("an item with part done and nobody on it is 停滞: its chip, the parent's 
   assert.equal(rowOf(p,"child"), undefined, "and drops the one in progress");
 });
 
+test("a tree row in progress carries a band as wide as its plan's share, and a parent counts its child in progress", async () => {
+  const p = await page(snapshot(), []); await expand(p);
+  // child's plan: one row in progress (½) and the acceptance step (0), so ¼; area's only counted row is child, so ¼ too.
+  const bandOf = (id: string) => rowOf(p, id).querySelector(".progress-band") as Element | null;
+  const shareOf = (id: string) => parseFloat((bandOf(id) as unknown as { style: Record<string, string> }).style["--p"]!);
+  assert.ok(bandOf("child"), "a wip row carries its band");
+  assert.equal(shareOf("child"), 0.25);
+  assert.equal(shareOf("child"), rules(nativeSnapshot()).progressShare("child"), "the page draws the share the rules compute");
+  assert.equal(shareOf("area"), 0.25, "the parent's band counts its child in progress at half");
+  assert.equal(rowOf(p, "child").querySelector(".steps-ratio"), null, "the band replaces the count on the tree row");
+});
+
+
+test("a row in progress or idle draws its band, and a row not started draws none", async () => {
+  const s = nativeSnapshot();
+  const base = s.items.child!;
+  s.items.idle = {...base, title: "Idle", plan: planWork([planStep("one", "One", "done"), planStep("two", "Second step")])};
+  s.items.fresh = {...base, title: "Fresh", plan: planWork([planStep("one", "First step")])};
+  s.items.area!.plan = planWork([ownedRow("child"), ownedRow("idle"), ownedRow("fresh")]);
+  const p = await page(s, []); await expand(p);
+  assert.ok(rowOf(p, "idle").querySelector(".progress-band"), "an idle row draws its band");
+  assert.equal(rowOf(p, "fresh").querySelector(".progress-band"), null, "a todo row draws no band");
+});

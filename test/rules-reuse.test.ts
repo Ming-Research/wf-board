@@ -27,7 +27,7 @@ function answers(r: Rules, s: Snapshot): string {
   const ids = Object.keys(s.items).sort();
   return JSON.stringify([r.areas(), [...ids].sort(r.compareCandidates), [...ids].sort(r.compareSiblings),
     Object.keys(s.decisions).sort().map(key => [key, r.cardChecks(key), r.cardWaiting(key), r.cardBlocking(key), r.cardDependents(key)]),
-    ids.map(id => [id, r.item(id), r.statusOf(id), r.checks(id), r.refusals(id), r.planRows(id), r.planGroups(id), r.planRatio(id),
+    ids.map(id => [id, r.item(id), r.statusOf(id), r.checks(id), r.refusals(id), r.planRows(id), r.planGroups(id), r.planRatio(id), r.progressShare(id),
       r.planRows(id).map(row => "text" in row.row ? r.stepLine(row.row) : null), r.depsOf(id), r.dependents(id), r.isNeeded(id),
       r.canStart(id), r.startable(id), r.progress(id), r.stalledBelow(id), r.blockingBelow(id), r.nonBlockingBelow(id), r.pausedBy(id),
       r.isPaused(id), r.isOpenWork(id), r.isRoot(id), r.isBacklog(id), r.isLeaf(id), r.children(id), r.ancestors(id), r.lineOf(id),
