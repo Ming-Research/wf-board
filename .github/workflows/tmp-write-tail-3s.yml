@@ -1,0 +1,24 @@
+name: tmp-write-tail-3s
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The type check and the tests that touch the write path: the new trace tests, the log line of a timed operation, and the
+# store, the operations, the tools and the page server that the trace passes through.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-write-tail-3s-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/write-trace.test.ts test/slow-ops.test.ts test/maintenance.test.ts test/store.test.ts test/shutdown.test.ts test/mcp.test.ts test/ops.test.ts test/http.test.ts test/owner-ops.test.ts

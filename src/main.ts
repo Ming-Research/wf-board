@@ -17,6 +17,7 @@ import { CiWatch } from "./ci-watch.ts";
 import { BackupPush } from "./backup-push.ts";
 import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
 import { SlowOps } from "./slow-ops.ts";
+import { watchLoop } from "./loop-watch.ts";
 import { CredentialFile, Credentials, defaultCredentialsPath } from "./credentials.ts";
 
 async function main() {
@@ -53,6 +54,8 @@ async function main() {
   const ci = new CiWatch({ store, ops: op, ci: restSource({ token: ghToken }), stateFile: await store.localFile("state/ci-watch.json") });
   // Times every page request and tool call, and tells the architect of those over their limit (docs/design.md, section 4, Time limits).
   const slow = new SlowOps({ wake });
+  // Tells when the event loop was held for long, which a write's slow git command may be the sign of (src/loop-watch.ts).
+  watchLoop();
   const credentials = new Credentials(credentialFile);
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
   lap("create wake, watch and server");
