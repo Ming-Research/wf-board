@@ -8,6 +8,12 @@ Nodes: page/agent-list, daemon/live-state
 
 Summary: The agent list read only what sessions write to the board, so the work the runner holds (turns of a minute to ten, waits for CI, a card or the architect) was invisible between writes, and the owner could not tell whether it was running. The list now draws each piece of work the runner holds from the runner's report on the item and the engineer's dispatch record, in the whole view's words and limits, and leaves those sessions out of the older rows, which now list only the sessions a dispatch record names: the board has no PM any more, and the runner, the architect's turns it starts and the board itself, which the older list showed as agents, have no dispatch record. For the inside of a turn the runner beats about every 30 seconds, and the board keeps the newest beat for each turn in the daemon's memory only, with no commit, and sends it to the open pages as an event; a beat not repeated for 90 seconds is shown as silent. The grounds and the refused alternatives (a commit for each action, the report renewed every five minutes, the board asking the runner) are in the two nodes; the derivation is in docs/design.md, section 7, Agent list and The live view of a turn.
 
+## 2026-10-18 Close a plain pick's note in the commit that rules its card
+
+Nodes: cards, wake/routing
+
+Summary: A pick the owner sent on the page ruled its card at once, but its note, which says only which option was chosen, stayed `sent`, so the architect closed it by hand and the runner started an engineer turn to read it. The commit that rules the card now also writes that note `done` when it says nothing but the option; a pick with the owner's words, or one sent after its card was ruled otherwise, stays `sent`. The note push no longer carries a plain pick, so `card-ruled` goes to the session holding the card's item and, when nobody holds it, to the architect for a pick sent on the page. The grounds and the refused alternatives are in the two nodes; the derivation is in docs/design.md, section 5, Decision cards, Ruling, and section 8, A card ruled.
+
 ## 2026-10-18 Hold the jump to the next unread change in Node, against the base page
 
 Nodes: testing/press-n

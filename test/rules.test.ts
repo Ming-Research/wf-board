@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -854,6 +854,14 @@ test("whether an owned item's turn has come does not depend on which item was as
   const zFirst = rules(build());
   assert.deepEqual([idFirst.statusOf("z"), zFirst.statusOf("z")], ["todo", "todo"]);
   assert.deepEqual([idFirst.progress("z").behind, zFirst.progress("z").behind], [false, false]);
+});
+
+test("a plain pick is a choice note that says nothing but its option", () => {
+  assert.equal(isPlainPick({ kind: "choice", choice: "A", text: "选 A" }), true);
+  assert.equal(isPlainPick({ kind: "choice", choice: "A", text: "" }), true, "an empty text has no words");
+  assert.equal(isPlainPick({ kind: "choice", choice: "A", text: "选 A，先补测试" }), false, "any added word is the owner's");
+  assert.equal(isPlainPick({ kind: "choice", choice: "B", text: "选 A" }), false, "the text names another option than the pick");
+  assert.equal(isPlainPick({ kind: "comment", text: "选 A" }), false, "only a choice note can be a pick");
 });
 
 // The big steps of an engineer's plan (the engineer rules, The plan's stages): rows whose id names a stage. The acceptance
