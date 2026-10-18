@@ -8,6 +8,12 @@ Nodes: testing, testing/browser-file, testing/ci-time-gate, testing/evidence
 
 Summary: What only a real browser shows is one file of at most 15 tests on one browser, one board and one page, with no spoiled-page variants, held to 90 seconds by its step's `timeout` and to 15 tests by a unit test, and a report of one press of n in a real browser that judges nothing; both run in a workflow of their own after each merge to the main line, every night and by hand, not on a pull request, so the full CI's total is the script tests' and its time gate is enforced instead of only reporting. A fact that needs a layout is shown to fail on a spoiled page once, when its test is written, and the pull request records that run; the witness file of the browser layer is gone. The grounds, the measurements and the refused alternatives are in the browser-file node and docs/design.md, section 11, The browser file.
 
+## 2026-10-18 Draw the page's diagrams compact
+
+Nodes: page/diagrams/layout
+
+Summary: A synthetic role chart was drawn 3420 px high and a chart with three lanes 2477 px, boxes filling 16% of the drawing, and the page's gap settings did nothing because ELK does not read them. The page now asks the library for the classic look, 8 px of padding in a box and 20 px between boxes and between layers, and the bundled library entry wraps the call that hands each graph to ELK so that ELK takes those gaps from the diagram's configuration on the graph and every subgraph, keeping a 12 px straight run before an arrowhead; the role chart comes out 2406 px and the lanes 1657 px, every arrow entering from above. The grounds and the refused alternatives are in the node; the measurements are in docs/design.md, section 7, Diagrams.
+
 ## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
 
 Nodes: responsibility/identities, wake, wake/architect-stream, items

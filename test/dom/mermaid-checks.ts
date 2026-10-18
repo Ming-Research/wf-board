@@ -108,6 +108,15 @@ export async function checkStrict({ bp, lib }: Scene): Promise<string[]> {
   return config?.securityLevel === "strict" ? [] : [`mermaid-strict: the page configured the library with security level ${JSON.stringify(config?.securityLevel)}, not "strict"`];
 }
 
+/** The library is asked for a compact drawing: the classic look, 8 px of padding in a box, and 20 px between boxes and between layers (web/mermaid.ts). Whether the layout keeps those gaps is the browser layer's (`checkCompact` in test/e2e/mermaid-compact.ts, a test of test/e2e/browser.e2e.ts). */
+export async function checkCompact({ bp, lib }: Scene): Promise<string[]> {
+  const waited = await settled(bp, 1);
+  if (waited) return [`mermaid-config: ${waited}`];
+  const config = lib().configs.at(-1), got = JSON.stringify({ look: config?.look, flowchart: config?.flowchart });
+  const want = JSON.stringify({ look: "classic", flowchart: { look: "classic", padding: 8, nodeSpacing: 20, rankSpacing: 20 } });
+  return got === want ? [] : [`mermaid-config: the page configured the library with ${got}, not ${want}`];
+}
+
 /** The head the repaint check writes: a new line before the blocks and a new diagram after them. */
 export const REPAINT_HEAD = (head: string) => "新写了一段。\n\n" + head + "\n\n" + fence("flowchart TD\n  P[甲] --> Q[乙]");
 /** A live update repaints the item: its diagrams, the old ones and a new one, are diagrams again after it. */

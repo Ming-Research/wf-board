@@ -5,7 +5,7 @@
 // test/browser-limits.test.ts holds the count) and 90 seconds (the workflow's `timeout`), run after a merge to the main line and every
 // night (.github/workflows/browser.yml). A test is added here only when a script cannot see the fact, and the pull request says why.
 // A new test is shown to fail on a page with the thing it guards spoiled, once, in the pull request that adds it.
-// The checks are in invariants.ts (the page's layout), browser-checks.ts and mermaid-checks.ts; each test only picks the page's state for one.
+// The checks are in invariants.ts (the page's layout), browser-checks.ts, mermaid-checks.ts and mermaid-compact.ts; each test only picks the page's state for one.
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ import type { BoardServer } from "./harness.ts";
 import type { Hooks } from "./board-server.ts";
 import { oracle, checkFullWidth, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout, checkProgressBands } from "./invariants.ts";
 import { checkSmoke, planItems, cardSample, checkAgentList, checkMessages } from "./browser-checks.ts";
+import { checkCompact } from "./mermaid-compact.ts";
 import { WAIT, showHead, atNarrow, checkLibrary, checkFitWindows, checkZoom, checkActual, checkKeep, checkColors, seedPipeline, seedOne } from "./mermaid-checks.ts";
 
 const LONG = { timeout: 5 * 60_000 };
@@ -108,4 +109,9 @@ test("labels and lines read in the light and the dark scheme, and a change of sc
   const { board, bp } = await open();
   await showHead(bp, board, seedOne);
   none(await checkColors(bp, WAIT));
+});
+
+test("a role's chart, a chart with lanes and one with its own gaps are drawn short, 20 px or the asked gap apart, with arrows entering from above and nothing covering anything", LONG, async t => {
+  const { board, bp } = await open();
+  none(await checkCompact(bp, board, line => t.diagnostic(line)));
 });

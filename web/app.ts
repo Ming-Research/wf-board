@@ -2219,9 +2219,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
+    // A plan read by stages (docs/design.md, How the page shows a plan) shows the stage the item is at on its tree row, and counts
+    // stages where the row has no band; the detail and the agent list keep the count of rows.
+    const stages = !detail && !m && !ended(it) ? derived.stages(it.id) : undefined;
+    if (stages?.current) head.appendChild(el("span", "stage-tag", esc(stages.current.label))).title = "现在在大步骤「" + stages.current.label + "」，大步骤做完 " + stages.done + "/" + stages.total;
     // A tree row that draws the band shows no count of its done rows: the band already says how far it is.
     if (it.plan.length && !(share > 0)) {
-      const ratio = derived.planRatio(it.id);
+      const ratio = stages ?? derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }
     if (!detail) head.querySelector<HTMLElement>(".item-title")!.title=plain(it.title);

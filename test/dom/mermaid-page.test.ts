@@ -12,7 +12,7 @@ import { startBoard } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { fence, GOOD, HEAD, OWN, PIPELINE } from "../e2e/mermaid-charts.ts";
-import { scene, setHead, addLog, checkHead, checkLog, checkLazy, checkStrict, checkRepaint, checkIds, checkOwn, checkColors, checkTheme, checkKeep } from "./mermaid-checks.ts";
+import { scene, setHead, addLog, checkHead, checkLog, checkLazy, checkStrict, checkCompact, checkRepaint, checkIds, checkOwn, checkColors, checkTheme, checkKeep } from "./mermaid-checks.ts";
 import type { Scene } from "./mermaid-checks.ts";
 import { SPOILED } from "./mermaid-spoiled.ts";
 
@@ -63,6 +63,9 @@ test("the owner's page draws a mermaid block with the stand-in library and keeps
 
   await t.test("the page configures the library with the strict security level", async st => none(await on(st, seedOne, [], checkStrict)));
   await t.test("the same check on a page that asks for the loose security level reports the level", async st => caught(await on(st, seedOne, [SPOILED.loose], checkStrict), /^mermaid-strict: the page configured the library with security level "loose", not "strict"/));
+
+  await t.test("the page configures the library for a compact drawing: the classic look, padding 8 and gaps of 20", async st => none(await on(st, seedOne, [], checkCompact)));
+  await t.test("the same check on a page that asks the library for nothing of the look and the gaps reports the configuration", async st => caught(await on(st, seedOne, [SPOILED.noCompact], checkCompact), /^mermaid-config: the page configured the library with \{\}, not/));
 
   await t.test("a diagram is a diagram again after a live update repaints its item", async st => none(await on(st, seedHead, [], sc => checkRepaint(sc, HEAD))));
   await t.test("the same check on a page that draws only its first render reports the code left behind", async st => {
