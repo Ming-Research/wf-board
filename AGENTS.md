@@ -94,7 +94,7 @@ matches what the artifact board offered.
   tests call directly), bundled by esbuild. `mermaid.ts` draws the ```mermaid
   blocks of board text as diagrams; the library itself is `mermaid-entry.ts`
   bundled as a file of its own, `dist/mermaid.js`, which the page loads only
-  when it shows a block (design section 7, Diagrams).
+  when it shows a block and which also makes ELK keep the gaps the page asks for (design section 7, Diagrams).
 - `test/`: `node --test` suites; fixtures are synthetic. Real board data
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded

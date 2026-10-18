@@ -2527,9 +2527,27 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden). The library draws with its
-own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
-the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
+diagram stands in for its code (the code stays in the page, hidden). The page asks the library
+for a compact drawing: the classic look (the default look writes a larger padding into every box and draws a
+decision as a hexagon about 95 px high), 8 px of padding in a box, and 20 px between boxes and between layers
+(`flowchart.nodeSpacing` and `flowchart.rankSpacing`). ELK, the layout the library draws flowcharts and the
+state, class and ER diagrams with, does not read those two settings, only dagre does: the library writes
+its own gaps into the graph it hands ELK, 40 px between boxes and layers at the top, and in a subgraph 50 px
+between boxes and a 30 px straight run before an arrow. The bundled entry (`web/mermaid-entry.ts`) therefore
+wraps the call that hands the graph to ELK (`layout` of elkjs, which the library calls once for each diagram).
+The wrapper reads the two settings from the configuration in force for that diagram, which is the
+page's with the diagram's own frontmatter over it, and sets them as ELK's gaps between boxes and between layers
+on the graph and on every subgraph in it; the library's own unscoped name for a subgraph's gap between boxes is
+removed, since ELK reads both names as one option and the two values would compete. It also keeps a straight
+run of 12 px before an arrowhead (a shorter one leaves the head on a bend; at a total gap of 12 the run was
+3 px) and 10 px between lines that run side by side. In the CI's browser the synthetic role chart goes from 3420 to 2406 px high (30% less) and a chart with three lanes from 2477 to 1657 px (33% less), every arrow still entering a box from above (other fonts give other sizes: the study measured 3214 to 2430 and 2443 to 1801). Dagre, which reads the settings, draws the role chart 12% shorter again (2124 px) but 10 of its 28 arrows enter a box from the side. The classic look alone saves 16% (3420 to 2868 px), and ELK's layering and edge-merging settings change the height by at most 4% and some widen the drawing. The
+wrapper reaches ELK because the library calls it through elkjs's `layout`; should the library move ELK into a
+web worker or leave elkjs, the wrapper stops acting, the gap between layers returns to 40 px and the
+browser check fails (the library would then be patched instead). The settings a diagram brings in a frontmatter
+block at its start win over the page's, as they do wherever mermaid is used: the page does not strip them,
+and a block that asks for 60 px gets 60. A state, class or ER diagram is drawn by ELK too and takes the same
+two settings of `flowchart`, not its own; a diagram that asks for `layout: dagre` keeps dagre, which reads them. A sequence diagram is not drawn by
+ELK and keeps its own spacing. Its width on the page
 is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
 width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
 nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
@@ -4270,7 +4288,8 @@ the diagram's frame with its items in order, the hint at the right and the frame
 it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand, a
 shade at the edge with more) and the toolbar and the bar read in both color schemes; a
 view survives a live update that leaves the source alone and a changed source starts
-at the default size. The stand-in is what the page depends on of the library and nothing
+at the default size; the page configures the library for a compact drawing (the classic look,
+padding 8, gaps of 20). The stand-in is what the page depends on of the library and nothing
 more: the same text gives the same drawing, its ids and their references begin with the id
 the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
 page's. The widths come from the model of the boxes, not from a layout; the model also
@@ -4288,7 +4307,17 @@ window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in t
 an enlarged diagram can be scrolled to both its ends (and two page variants where it cannot),
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
 a view and the page's scroll survive a live update (and a variant that draws the diagrams
-after the scroll is restored); labels and lines read in both color schemes. A diagram that never appears
+after the scroll is restored); labels and lines read in both color schemes. The compactness of a drawing
+has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2406 px high
+against the library's own 3420) and a synthetic chart with three lanes (17 arrows, 1657 px against
+2477) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
+for a chart whose settings block asks for 60); no arrow enters a box from the side and each runs at
+least 6 px straight before its head; no edge label covers a box or another label and no line crosses
+a box that is not its end. The check runs on pages with one part taken out (the wrapper around ELK,
+the wrapper's reading of the diagram's gaps, the 12 px run, the page's configuration, and a page that
+asks for dagre), where it reports the height, the gap, the arrows from the side or a line through a box; and on
+hand-made drawings, one wrong in one way each, to show that the measurement sees a side entry,
+a short run, a label on a box, labels on each other, a line through a box, a gap and a height. A diagram that never appears
 can only be observed by waiting, so the wait is short, and the reported line must say what was
 waited for and what the page held, not a bare timeout or a page that did not start.
 

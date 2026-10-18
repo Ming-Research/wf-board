@@ -6,7 +6,7 @@
 // its sizes, its colours, how it parses, what it makes of hostile text) is the browser layer's (test/e2e/mermaid.e2e.ts).
 
 /** What the page gives `initialize`. */
-export interface Config { startOnLoad?: boolean; securityLevel?: string; theme?: string; suppressErrorRendering?: boolean; fontFamily?: string }
+export interface Config { startOnLoad?: boolean; securityLevel?: string; theme?: string; suppressErrorRendering?: boolean; fontFamily?: string; look?: string; flowchart?: { look?: string; padding?: number; nodeSpacing?: number; rankSpacing?: number } }
 /** One drawing the page asked for. */
 export interface Drawn { id: string; text: string; config: Config }
 
