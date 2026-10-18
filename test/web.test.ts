@@ -4523,6 +4523,18 @@ test("agent list: an unfolded sub-item row repaints at once when what it shows c
 const updateLine = (p: Awaited<ReturnType<typeof page>>) => { const line = p.roots.get("update-banner")!; return line.hidden || !line.textContent ? null : line.textContent; };
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+test("a page opened again with the stored state shows the same selected item and the same unfolded rows", async () => {
+  const storage = new Map<string, string>(), s = snapshot();
+  const first = await page(s, [], null, undefined, { storage });
+  await wideCaret(first).click(); await first.flush(); await selectWide(first, "child");
+  const rows = (p: typeof first) => p.all().filter(e => /^it-/.test(e.id)).map(e => e.id);
+  const before = rows(first);
+  assert.ok(before.includes("it-child") && detailItem(first, "child"), "the child row is unfolded and its detail selected");
+  const again = await page(s, [], null, undefined, { storage });
+  assert.deepEqual(rows(again), before, "the rows of the tree are the same after the reload");
+  assert.ok(rowOf(again, "child").classList.contains("selected") && detailItem(again, "child")!.classList.contains("cur"), "the same item is selected after the reload");
+});
+
 // The scenarios below take the fixes to reverse: the tests run them on the page as it is, the witnesses at the end of the group on the
 // page with one fix reversed, where the scenario must fail with the family named in its message.
 async function reloadAndScroll(reverts: Revert[] = []) {

@@ -58,6 +58,7 @@
   "test/migrate-architect-level.test.ts": 3.0,
   "test/migrate-priority.test.ts": 3.9,
   "test/move-project.test.ts": 3.9,
+  "test/nkey/stats.test.ts": 0.3,
   "test/notice.test.ts": 0.1,
   "test/notify.test.ts": 0.4,
   "test/ops-roles.test.ts": 18.9,

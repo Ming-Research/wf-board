@@ -8,6 +8,12 @@ Nodes: page/agent-list, daemon/live-state
 
 Summary: The agent list read only what sessions write to the board, so the work the runner holds (turns of a minute to ten, waits for CI, a card or the architect) was invisible between writes, and the owner could not tell whether it was running. The list now draws each piece of work the runner holds from the runner's report on the item and the engineer's dispatch record, in the whole view's words and limits, and leaves those sessions out of the older rows, which now list only the sessions a dispatch record names: the board has no PM any more, and the runner, the architect's turns it starts and the board itself, which the older list showed as agents, have no dispatch record. For the inside of a turn the runner beats about every 30 seconds, and the board keeps the newest beat for each turn in the daemon's memory only, with no commit, and sends it to the open pages as an event; a beat not repeated for 90 seconds is shown as silent. The grounds and the refused alternatives (a commit for each action, the report renewed every five minutes, the board asking the runner) are in the two nodes; the derivation is in docs/design.md, section 7, Agent list and The live view of a turn.
 
+## 2026-10-18 Hold the jump to the next unread change in Node, against the base page
+
+Nodes: testing/press-n
+
+Summary: The checks of the jump to the next unread change ran in headless Chromium, held a fixed 0.2 second median and 0.3 second 90th percentile that failed on slow runners, and took most of the browser job. They now run the real page in jsdom in Node with the server's answers recorded once and replayed: the counts (draws, rebuilds of the rules, filter counts, markup written, elements made, each with a page that has the protected part taken out) hold on any machine, and the time is the page of the commit over the page of its base in interleaved pairs with a twin of the base as the control, red only when the interval lies wholly on the slower side and the twin shows the run's noise. The absolute 0.2 seconds no longer fails a pull request; the grounds and the numbers are in the research record.
+
 ## 2026-10-18 Draw the page's diagrams compact
 
 Nodes: page/diagrams/layout
