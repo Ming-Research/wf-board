@@ -438,8 +438,7 @@ export class Wake extends NumberedLog {
 
   /** Number, keep and send one event to the stream its kind routes it to: the PM's; the architect's; the stream of the session
    * holding the item the route names (the PM's when nobody holds it, the architect's with `otherwise`); or the stream of the
-   * session the route names. The fields
-   * must be exactly those the kind lists. */
+   * session the route names. The fields must be exactly those the kind lists. */
   push(event: WakeKind, fields: Record<string, unknown>): WakeFrame {
     checked(event, fields);
     const to = WAKE_KINDS[event].to as WakeRoute;
