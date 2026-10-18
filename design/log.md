@@ -7,6 +7,11 @@ Newest first. One entry for each pull request that changes the tree: a dated tit
 Nodes: testing, testing/browser-file, testing/ci-time-gate, testing/evidence
 
 Summary: What only a real browser shows is one file of at most 15 tests on one browser, one board and one page, with no spoiled-page variants, held to 90 seconds by its step's `timeout` and to 15 tests by a unit test, and a report of one press of n in a real browser that judges nothing; both run in a workflow of their own after each merge to the main line, every night and by hand, not on a pull request, so the full CI's total is the script tests' and its time gate is enforced instead of only reporting. A fact that needs a layout is shown to fail on a spoiled page once, when its test is written, and the pull request records that run; the witness file of the browser layer is gone. The grounds, the measurements and the refused alternatives are in the browser-file node and docs/design.md, section 11, The browser file.
+## 2026-10-18 Hold the jump to the next unread change in Node, against the base page
+
+Nodes: testing/press-n
+
+Summary: The checks of the jump to the next unread change ran in headless Chromium, held a fixed 0.2 second median and 0.3 second 90th percentile that failed on slow runners, and took most of the browser job. They now run the real page in jsdom in Node with the server's answers recorded once and replayed: the counts (draws, rebuilds of the rules, filter counts, markup written, elements made, each with a page that has the protected part taken out) hold on any machine, and the time is the page of the commit over the page of its base in interleaved pairs with a twin of the base as the control, red only when the interval lies wholly on the slower side and the twin shows the run's noise. The absolute 0.2 seconds no longer fails a pull request; the grounds and the numbers are in the research record.
 
 ## 2026-10-18 Draw the page's diagrams compact
 

@@ -14,6 +14,7 @@
     "test": "node --test 'test/**/*.test.ts'",
     "test:e2e": "npm run build:web && node --test test/e2e/browser.e2e.ts",
     "test:press-n-report": "npm run build:web && node --test test/e2e/press-n-report.e2e.ts",
+    "test:nkey": "node --test --test-concurrency=1 'test/nkey/*.nkey.ts'",
     "build:web": "esbuild web/app.ts --bundle --format=esm --target=es2022 --outfile=web/dist/app.js && esbuild web/mermaid-entry.ts --bundle --format=esm --target=es2022 --minify --outfile=web/dist/mermaid.js"
   },
   "dependencies": {

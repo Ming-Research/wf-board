@@ -101,8 +101,12 @@ matches what the artifact board offered.
   board generator with the real board's shapes, the harness (real server,
   headless Chromium) and the layout checks; `browser.e2e.ts` is the one small file of tests that need a real browser
   (at most 15, which `test/browser-limits.test.ts` holds), and `live-board.ts` makes a board of the live board's weight
-  for `press-n-report.e2e.ts`, which reports the time of n in a real browser and judges nothing (design section 11,
-  The browser file). `test/dom/` holds the DOM
+  for `press-n-report.e2e.ts`, which reports the time of n in a real browser and judges nothing, and for the n-key lane (design section 11,
+  The browser file). `test/nkey/`
+  holds the n-key lane (`*.nkey.ts`, not picked by `npm test`; design section 11, The n-key lane): the real page in jsdom on that board,
+  the counts of one press of n and its time against the page of the base, in four files (`counts`, `witnesses`, `time-quiet`,
+  `time-writing`) that are four jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
+  and the pairs, `stats.ts` the interval and the verdict (`stats.test.ts` runs in `npm test`). `test/dom/` holds the DOM
   layer: the bundled page in jsdom against the real server on the same generated board (`page.ts` the window,
   its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
   and `style-checks.ts` the checks; `witnesses.ts` and the scenario files the pages with one thing spoiled; `mermaid-library.ts`
@@ -139,7 +143,7 @@ matches what the artifact board offered.
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
-  three on every main-line merge (`npm test` as 8 shards at once), and on a pull
+  three on every main-line merge (`npm test` as 8 shards at once), with the four jobs of the n-key lane beside them, and on a pull
   request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
   pushes in between are
   checked by a temporary `tmp-*.yml` workflow that runs what
@@ -147,6 +151,9 @@ matches what the artifact board offered.
   file is added, renamed or becomes much slower, bring `test/shard-costs.json` up
   to date from the per-file table in the shards' summaries; the time gate names a
   shard that runs over 1.5 times the others.
+- `npm run test:nkey` runs the n-key lane (all four files, one after the other; CI runs each as a job of its own, `node --test
+  test/nkey/<part>.nkey.ts`, with `NKEY_BASE` naming the commit whose page the time layer compares with, the merge base or the commit before a
+  push to the main line). It needs no browser but is made for hosted runners: a timing run on the owner's Mac says nothing about them.
 - `npm run test:e2e` builds the page and runs the browser file in headless Chromium,
   `npm run test:press-n-report` the report of n's time. The `browser` workflow
   (`browser.yml`) runs both on a main-line push, nightly, and when started by hand
