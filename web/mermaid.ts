@@ -48,12 +48,16 @@ function scroller(from: Element): Element {
   return document.scrollingElement ?? document.documentElement;
 }
 
+function setLabel(b: HTMLButtonElement, title: string) {
+  b.textContent = title;
+  b.title = title;
+  b.setAttribute("aria-label", title);
+}
+
 function button(text: string, title: string, click: () => void): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
-  b.textContent = text;
-  b.title = title;
-  b.setAttribute("aria-label", title);
+  setLabel(b, text);
   b.addEventListener("click", click);
   return b;
 }
@@ -62,6 +66,8 @@ function button(text: string, title: string, click: () => void): HTMLButtonEleme
 function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLElement {
   const svg = fig.querySelector("svg")!;
   let zoom = 1;
+  /** The 缩放到 100% button, which turns into 缩到框宽 while the diagram is at its own size. */
+  let full: HTMLButtonElement | undefined;
   /** How large the diagram is drawn, as a share of its own width. */
   const percent = document.createElement("span");
   percent.className = "mermaid-percent";
@@ -73,6 +79,12 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     // A diagram in a folded section has no width; its percentage is read again when the section opens (the box's size changes).
     const drawn = svg.getBoundingClientRect().width, own = svg.viewBox.baseVal.width;
     if (drawn && own) percent.textContent = Math.round(drawn / own * 100) + "%";
+    if (full) setLabel(full, Math.abs(zoom - ownSize()) < 0.01 ? "缩到框宽" : "缩放到 100%");
+  };
+  /** The zoom at which the diagram is drawn at its own size: the box is narrower than the diagram, so the zoom makes up for the shrinking. */
+  const ownSize = () => {
+    const own = svg.viewBox.baseVal.width, shown = Math.min(own, fig.clientWidth);
+    return own && shown ? own / shown : 1;
   };
   const remember = () => { if (zoom === 1 && fig.scrollLeft === 0) views.delete(source); else views.set(source, { zoom, left: fig.scrollLeft }); };
   /** Sets the zoom; the point of the diagram that is at `at` on the screen stays there. */
@@ -133,6 +145,10 @@ function viewer(block: HTMLElement, fig: HTMLElement, source: string): HTMLEleme
     percent,
     button("+", "放大", () => set(zoom * STEP, middle())),
     button("适应宽度", "适应宽度", () => { set(1, middle()); fig.scrollLeft = 0; }),
+    full = button("缩放到 100%", "缩放到 100%", () => {
+      // Back to the width of the box when the diagram is at its own size already; the diagram's own size otherwise.
+      if (Math.abs(zoom - ownSize()) < 0.01) { set(1, middle()); fig.scrollLeft = 0; } else set(ownSize(), middle());
+    }),
     hint,
   );
   return bar;
