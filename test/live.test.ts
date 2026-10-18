@@ -48,8 +48,8 @@ test("a beat that does not say what a beat must is refused in the rule's own wor
     [{ ...ok, turn: 1.5 }, /turn: give a whole number/],
     [{ ...ok, turnSeconds: -1 }, /turnSeconds: give a whole number, 0 or more/],
     [{ ...ok, idleSeconds: -3 }, /idleSeconds: give a whole number, 0 or more/],
-    [{ ...ok, action: "x".repeat(81) }, /action: give one nonempty line of at most 80 characters/],
-    [{ ...ok, action: "  \n " }, /action: give one nonempty line/],
+    [{ ...ok, action: "x".repeat(81) }, /action: give one line of at most 80 characters/],
+    [{ ...ok, action: "  \n " }, /action: provide nonempty text after trimming/],
     [{ ...ok, id: "missing" }, /choose an existing item/],
     [{ ...ok, id: "other" }, /item other belongs to project Firn/],
   ];

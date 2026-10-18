@@ -737,7 +737,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const turn = whole(a.turn, "turn", 1), turnSeconds = whole(a.turnSeconds, "turnSeconds", 0), idleSeconds = a.idleSeconds === undefined ? undefined : whole(a.idleSeconds, "idleSeconds", 0);
       // The action is one line, like a report's note: a reporter's line breaks become spaces rather than a refusal.
       const action = a.action?.replace(/\s+/g, " ").trim();
-      if (action !== undefined && ([...action].length > LIVE_ACTION_MAX || !action)) throw new OpError(`action: give one nonempty line of at most ${LIVE_ACTION_MAX} characters`);
+      if (action !== undefined && [...action].length > LIVE_ACTION_MAX) throw new OpError(`action: give one line of at most ${LIVE_ACTION_MAX} characters`);
       const at = now(), back = (seconds: number) => new Date(Date.parse(at) - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
       live.put({ role: a.role, item: a.id, turn, turnStartedAt: back(turnSeconds), ...(idleSeconds === undefined ? {} : { lastActionAt: back(idleSeconds) }), ...(action === undefined ? {} : { action }), at });
       return `live ${a.role} ${a.id} turn ${turn} · kept in memory only, no commit`;

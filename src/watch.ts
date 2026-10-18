@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { BOARD_SESSION } from "./model.ts";
 import type { PlanStep, Snapshot } from "./model.ts";
 import { changesSection, mergeRowDone } from "./rules.ts";
 import type { Rules } from "./rules.ts";
@@ -134,7 +135,7 @@ export class GithubWatch {
   constructor(o: WatchOptions) {
     this.o = o;
     this.now = o.now ?? Date.now;
-    this.session = o.session ?? "看板";
+    this.session = o.session ?? BOARD_SESSION;
     // What the kept events already told the PM is not told again, so a restart neither repeats nor forgets a push.
     for (const frame of o.wake.since(0).frames) { const key = pushKey(frame.event, frame); if (key) this.announced.add(key); }
     // A state file that cannot be read costs one early look, never the watch.

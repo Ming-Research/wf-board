@@ -3,7 +3,7 @@
 // never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
 import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, ARCHITECT_TURN_SESSION, answersPushes, isRunnerSession } from "./model.ts";
+import { AGENT_TOUCHES, answersPushes, isProgramSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -82,7 +82,7 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
 
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when it wrote to the board or was
- * started by a dispatch record within AGENT_WINDOW_MS, except the PM's, the architect's and the runner's own, and except one whose newest
+ * started by a dispatch record within AGENT_WINDOW_MS, except the PM's, the architect's and the programs' (`isProgramSession`), and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
  */
 export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number): AgentRow[] {
@@ -99,8 +99,8 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   const names = new Set([...Object.keys(s.activity?.agents ?? {}), ...started.keys()]);
   const rows: AgentRow[] = [];
   for (const name of names) {
-    // The PM, the architect and the runner's own sessions are not rows: the runner's work and the architect's turns it starts are drawn from its reports.
-    if (answersPushes({ session: name }) || isRunnerSession(name) || name.trim() === ARCHITECT_TURN_SESSION) continue;
+    // The PM and the architect, and the programs (the runner, the architect's turns it starts, the board itself), are not rows: the runner's work and the architect's turns are drawn from its reports.
+    if (answersPushes({ session: name }) || isProgramSession(name)) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const dispatches = started.get(name) ?? [];
     const newest = dispatches.reduce<Started | undefined>((a, b) => !a || Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a, undefined);

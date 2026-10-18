@@ -2593,8 +2593,18 @@ level, and whether that someone is working, waiting or has gone quiet.
   whose newest dispatch record has ended is not listed until it writes again
   more than a minute after the recorded end (the end may be recorded to the
   minute); names are reused (one item's study and its implementation are both
-  named after the item), so the newest record decides. A name used by mistake
-  is listed as it is, so whoever wrote it sees it.
+  named after the item), so the newest record decides. The programs' session
+  names are left out too (`isProgramSession`): the runner (`执行程序`), the
+  architect's turns it starts (`架构师轮次`) and the board itself (`看板`, the
+  name of the watch that marks merge rows and tells of checks). They write
+  for the board and are no agent; on 2026-10-18 three of the five rows behind
+  「其他 5 个」 were these (the board's own, the runner's own, an architect turn
+  that had answered ten minutes before), and the other two a name used by mistake
+  and an old session. A turn that ends is thus gone from the list, and the one
+  running is drawn under the work that asks it (the runner's block). A name used
+  by mistake is listed as it is, so whoever wrote it sees it: the board cannot tell it from a session the owner
+  started by hand, and the owner rules whether the list should show only
+  sessions that hold a dispatch record.
 - **The runner's block.** Above those rows, one row for each piece of work the
   runner holds (`runnerRows`, `src/runner-rows.ts`): an open, unpaused item that
   carries a runner report and has an unfinished engineer dispatch that began with
@@ -2620,8 +2630,8 @@ level, and whether that someone is working, waiting or has gone quiet.
   the report says a turn runs, the architect's while it says the work asks the
   architect), so a turn that ended is gone from the row at the next report
   without the beat having to be cleared. The older rows leave out the sessions
-  the runner holds, and the runner's own two session names (`执行程序`,
-  `架构师轮次`), which wrote only the reports and lines it makes for the
+  the runner holds, and the programs' session names (`isProgramSession`), the
+  runner's own among them, which wrote only the reports and lines it makes for the
   runner's block; so no session is drawn twice. The whole view is not changed: it
   answers what is left and who has nobody, by item, and the architect reads it
   too; the two repeat a job on purpose, and say the same words with the same

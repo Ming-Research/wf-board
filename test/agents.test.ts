@@ -77,6 +77,13 @@ test("a session is listed for six hours after its last write, and the architect'
   assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's and the PM's sessions are out");
 });
 
+test("the programs' own session names are no agents: the runner, the architect's turns it starts and the board itself, however they are spaced", () => {
+  const items = { a: item() };
+  const s = snap(items, { fresh: wrote(["a", 5]), "执行程序": wrote(["a", 1]), "架构师轮次": wrote(["a", 1]), "看板": wrote(["a", 1]), " 看板 ": wrote(["a", 1]), "  执行程序": wrote(["a", 1]) });
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh"], "a name that reads like a program's but is another word stays a session");
+  assert.deepEqual(agentRows(snap(items, { "看板2": wrote(["a", 1]), "执行程序x": wrote(["a", 1]) }), NOW).map(r => r.name), ["执行程序x", "看板2"]);
+});
+
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {
   const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }, { id: "accept", text: "ok", state: "todo" }]);
   const s = snap({ idle: item([{ id: "w", text: "work", state: "done" }]), run: doing(), wait: doing("PR 草稿 CI") }, {
