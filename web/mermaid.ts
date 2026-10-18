@@ -16,6 +16,11 @@ const LIBRARY: string = "/mermaid.js";
 /** The zoom is a factor of the default size (1: the diagram at its own size, or shrunk to the width of the text when that is wider). */
 const MIN_ZOOM = 0.5, MAX_ZOOM = 6, STEP = 1.25;
 
+/** What the page asks of the library so that a diagram takes little room: the classic look, which reads the padding in a box (the default
+ * look writes a larger one), and 20 px between boxes and between layers. A settings block at the start of a diagram wins over these.
+ * The gaps reach ELK only through web/mermaid-entry.ts. */
+const COMPACT = { look: "classic", flowchart: { look: "classic", padding: 8, nodeSpacing: 20, rankSpacing: 20 } };
+
 let library: Promise<Mermaid> | undefined;
 function load(): Promise<Mermaid> {
   library ??= import(LIBRARY).then((module: { default: Mermaid }) => module.default, (error: unknown) => { library = undefined; throw error; });
@@ -210,6 +215,7 @@ function draw(block: HTMLElement) {
         // A syntax error is reported here, in the block, not as a picture of a bomb added to the end of the page.
         suppressErrorRendering: true,
         fontFamily: getComputedStyle(document.body).fontFamily,
+        ...COMPACT,
       });
       const { svg } = await mermaid.render(id, source);
       drawn.set(key, { svg, id });

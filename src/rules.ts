@@ -271,8 +271,12 @@ export interface Rules {
   planRows(id: string): DerivedPlanRow[];
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
-  /** The share of an item's plan that is done, 0 to 1, with a row in progress counting half (docs/design.md, How the page shows a plan). */
+  /** The share of an item's plan that is done, 0 to 1, with a row in progress counting half (docs/design.md, How the page shows a plan).
+   * A plan read by stages counts only its stage rows: this is the share of `stages`. */
   progressShare(id: string): number;
+  /** Where the item stands among the big steps of its plan. Undefined unless the plan has a research row and an impl row: older plans
+   * give merge, impl and accept to ordinary rows, and they keep counting every row (docs/design.md, How the page shows a plan). */
+  stages(id: string): StageInfo | undefined;
   compareSiblings(a: string, b: string): number;
   /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. */
   compareCandidates(a: string, b: string): number;
@@ -311,6 +315,71 @@ export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.
 export function reviewRequested(item: { plan: PlanRow[] } | undefined): string | undefined {
   const step = item?.plan.find(isReviewStep);
   return step && "text" in step && step.state === "doing" ? step.text : undefined;
+}
+/**
+ * The big steps of an engineer's plan, in the order of the flow, with the name the left tree shows for each. The ids and names are
+ * fixed by the engineer rules (The plan's stages); `review` is not one of them, since this version has no review.
+ */
+export const STAGES = [
+  { kind: "research", name: "研究" }, { kind: "impl", name: "实现" }, { kind: "ci", name: "完整 CI" },
+  { kind: "accept", name: "验收" }, { kind: "merge", name: "合入" }, { kind: "verify", name: "线上验证" },
+] as const;
+export type StageKind = (typeof STAGES)[number]["kind"];
+/** The stages every engineer plan has: the others depend on a pull request (ci, merge) or on going live (verify). */
+const REQUIRED_STAGES: readonly StageKind[] = ["research", "impl", "accept"];
+/** The label of the check on an engineer's item whose plan lacks a stage or has the stages out of order. */
+export const STAGE_FORMAT_LABEL = "大步骤格式";
+/** A stage id, with the round that going back appends after the first: `impl`, `impl-2`, `impl-3`. */
+const STAGE_ID = /^(research|impl|ci|accept|merge|verify)(?:-([2-9]|[1-9]\d+))?$/;
+/**
+ * The stage a plan row is, or undefined. Only a step without the acceptance mark can be one: `accept` is also the id older plans
+ * give their acceptance step, and that step is not the stage of that name (docs/design.md, How the page shows a plan).
+ */
+export function stageOf(row: PlanRow): { kind: StageKind; round: number } | undefined {
+  if (!("text" in row) || row.accept) return undefined;
+  const m = STAGE_ID.exec(row.id);
+  return m ? { kind: m[1] as StageKind, round: m[2] ? Number(m[2]) : 1 } : undefined;
+}
+/**
+ * What is wrong with the stage rows of a plan an engineer holds, in words for the check, or nothing when it is right: a stage
+ * every plan has is missing, the first rows of the stages are out of the order of the flow, or the rounds of one stage do not
+ * follow each other. The rows of a round after the first may stand anywhere after the first round's, so only first rows are ordered.
+ */
+export function stageProblems(plan: readonly PlanRow[]): string[] {
+  const stages = plan.flatMap(row => { const stage = stageOf(row); return stage ? [{ id: row.id, ...stage }] : []; });
+  const out: string[] = [];
+  const missing = REQUIRED_STAGES.filter(kind => !stages.some(s => s.kind === kind));
+  if (missing.length) {
+    const marked = missing.includes("accept") && plan.some(row => "text" in row && row.accept && row.id === "accept");
+    out.push(`缺 ${missing.join("、")} 的大步骤行${marked ? "（id 是 accept 的行带着验收标记，是验收行；accept 这一步要另写一行，不带验收标记）" : ""}`);
+  }
+  const order: string[] = STAGES.map(s => s.kind), firsts = new Map<StageKind, string>(), last = new Map<StageKind, { id: string; round: number }>();
+  for (const s of stages) {
+    if (!firsts.has(s.kind)) firsts.set(s.kind, s.id);
+    const before = last.get(s.kind);
+    if (before && before.round >= s.round) out.push(`${before.id} 排在 ${s.id} 前面，同一步的轮次要往下增`);
+    last.set(s.kind, { id: s.id, round: s.round });
+  }
+  const seen = [...firsts];
+  for (let i = 1; i < seen.length; i++) {
+    const [earlier, later] = [seen[i - 1]!, seen[i]!];
+    if (order.indexOf(earlier[0]) > order.indexOf(later[0])) { out.push(`${earlier[1]} 排在 ${later[1]} 前面，大步骤的顺序是 ${order.join("、")}`); break; }
+  }
+  return out;
+}
+/** Whether an engineer holds the item: an engineer dispatch that has not ended, or a runner report that is not yet done. */
+function heldByEngineer(it: Item): boolean {
+  return (it.dispatches ?? []).some(d => d.role === "工程师" && !d.finish) || (it.runner !== undefined && it.runner.state !== "done");
+}
+/** Where an item stands among the stages of its plan; see `Rules.stages`. */
+export interface StageInfo {
+  /** The stages that count (all but the dropped ones) and how many of them are done. */
+  done: number;
+  total: number;
+  /** The share of them that is done, 0 to 1, a stage in progress counting half. */
+  share: number;
+  /** The stage the item is at: the first in progress, else the first not done. None when every stage is done. */
+  current: { id: string; kind: StageKind; round: number; label: string } | undefined;
 }
 // These are the page's actual ANSWER prefixes (approve is 同意, not 批准).
 const ANSWER = { approve: "同意：", done: "已完成：" };
@@ -771,7 +840,22 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const rows = planRows(id).filter(row => !row.excluded);
     return { done: rows.filter(row => row.state === "resolved").length, total: rows.length };
   }
+  function stageInfo(id: string): StageInfo | undefined {
+    return cached("stages", id, () => {
+      const entries = planRows(id).flatMap(entry => { const stage = stageOf(entry.row); return stage ? [{ entry, ...stage }] : []; });
+      if (!entries.some(e => e.kind === "research") || !entries.some(e => e.kind === "impl")) return undefined;
+      const counted = entries.filter(e => !e.entry.excluded), open = counted.filter(e => e.entry.state !== "resolved");
+      const at = open.find(e => e.entry.state === "progress") ?? open[0], name = STAGES.find(s => s.kind === at?.kind)?.name;
+      return {
+        done: counted.length - open.length, total: counted.length,
+        share: counted.length ? counted.reduce((sum, e) => sum + (e.entry.weight ?? 0), 0) / counted.length : 0,
+        current: at && name ? { id: at.entry.row.id, kind: at.kind, round: at.round, label: at.round > 1 ? `${name}·${at.round}` : name } : undefined,
+      };
+    });
+  }
   function progressShare(id: string): number {
+    const stages = stageInfo(id);
+    if (stages) return stages.share;
     const rows = planRows(id).filter(row => !row.excluded && row.weight !== null);
     return rows.length ? rows.reduce((sum, row) => sum + row.weight!, 0) / rows.length : 0;
   }
@@ -1098,6 +1182,11 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
         if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        // An engineer's plan has the big steps the engineer rules name, in order: the board reads progress and the current step from them.
+        if (isOpenWork(id) && heldByEngineer(it)) {
+          const problems = stageProblems(it.plan);
+          if (problems.length) out.push({ text: `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`, label: STAGE_FORMAT_LABEL });
+        }
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
         if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
@@ -1154,6 +1243,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   if (rebuilt !== null) { now = asked; memo.clear(); }
   const made: Rules = {
     stepDays, stepLine, planRatio, progressShare,
+    stages: id => { const info = stageInfo(id); return info && { ...info, current: info.current && { ...info.current } }; },
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),

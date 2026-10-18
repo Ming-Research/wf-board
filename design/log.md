@@ -8,6 +8,12 @@ Nodes: cards, wake/routing
 
 Summary: A pick the owner sent on the page ruled its card at once, but its note, which says only which option was chosen, stayed `sent`, so the architect closed it by hand and the runner started an engineer turn to read it. The commit that rules the card now also writes that note `done` when it says nothing but the option; a pick with the owner's words, or one sent after its card was ruled otherwise, stays `sent`. The note push no longer carries a plain pick, so `card-ruled` goes to the session holding the card's item and, when nobody holds it, to the architect for a pick sent on the page. The grounds and the refused alternatives are in the two nodes; the derivation is in docs/design.md, section 5, Decision cards, Ruling, and section 8, A card ruled.
 
+## 2026-10-18 Draw the page's diagrams compact
+
+Nodes: page/diagrams/layout
+
+Summary: A synthetic role chart was drawn 3420 px high and a chart with three lanes 2477 px, boxes filling 16% of the drawing, and the page's gap settings did nothing because ELK does not read them. The page now asks the library for the classic look, 8 px of padding in a box and 20 px between boxes and between layers, and the bundled library entry wraps the call that hands each graph to ELK so that ELK takes those gaps from the diagram's configuration on the graph and every subgraph, keeping a 12 px straight run before an arrowhead; the role chart comes out 2406 px and the lanes 1657 px, every arrow entering from above. The grounds and the refused alternatives are in the node; the measurements are in docs/design.md, section 7, Diagrams.
+
 ## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
 
 Nodes: responsibility/identities, wake, wake/architect-stream, items
