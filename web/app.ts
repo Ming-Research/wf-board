@@ -1,6 +1,8 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
+import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
+import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
 import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
 import type { ActivityDelta, PreviousRules, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
@@ -1831,6 +1833,76 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (others.length) list.appendChild(agentOthers(others));
     host.appendChild(list);
   }
+  // The whole view (docs/design.md, section 6, The whole view): every open work item by what is being done about it, drawn from the
+  // function the architect's tool reads, so the two agree. Each kind lists the rows the tool's default answer lists and opens to more.
+  // Folded to its heading until the reader opens it: opened, the block is a screen tall and would push the agent list and the tree down.
+  let wholeOpen = false;
+  try { wholeOpen = localStorage.getItem("board-whole") === "open"; } catch (e) {}
+  const wholeAll = new Set<Bucket>();
+  let wholeSignature = "";
+  function wholeViewNow() { return cached("wholeView", () => wholeView(snapshot, derived, Date.now())); }
+  function wholeItem(id: string, title: string, project: string) {
+    const button = el("button", "whole-title", inline(title));
+    button.type = "button"; button.title = plain(title) + "（" + project + "）";
+    button.addEventListener("click", () => { selectItem(id); setCurrent(itemBox(id)); });
+    return button;
+  }
+  function wholeRowEl(x: WholeRow, now: number) {
+    const li = el("li", "whole-row");
+    li.dataset.item = x.id;
+    li.appendChild(wholeItem(x.id, x.title, x.project));
+    li.appendChild(el("span", "whole-project", esc(x.project)));
+    li.appendChild(el("span", "whole-what", esc(x.what)));
+    if (x.since !== undefined) li.appendChild(el("span", "whole-age", esc(spanText(now - x.since) + (x.limit ? "（门槛 " + spanText(x.limit) + "）" : ""))));
+    if (x.from === "runner" && x.started !== undefined) li.appendChild(el("span", "whole-age", esc("共 " + spanText(now - x.started) + (x.turns === undefined ? "" : "，" + x.turns + " 轮") + (x.cost === undefined ? "" : " $" + x.cost.toFixed(2)))));
+    return li;
+  }
+  function wholeParkedEl(x: ParkedRow, now: number) {
+    const li = el("li", "whole-row");
+    li.dataset.item = x.id;
+    li.appendChild(wholeItem(x.id, x.title, x.project));
+    li.appendChild(el("span", "whole-project", esc(x.project)));
+    li.appendChild(el("span", "whole-what", esc("下面 " + x.count + " 件")));
+    li.appendChild(el("span", "whole-age", esc("暂停 " + spanText(now - x.at) + (x.reason ? "：" + x.reason : ""))));
+    return li;
+  }
+  function renderWhole() {
+    const host = get("whole"); if (!host) return;
+    const view = wholeViewNow(), now = view.now;
+    const total = (b: Bucket) => view.projects.reduce((n, p) => n + p.byBucket[b], 0), remaining = view.projects.reduce((n, p) => n + p.remaining, 0);
+    const kindRows = (b: Bucket): Array<WholeRow | ParkedRow> => b === "parked" ? view.parked : view.rows.filter(x => x.bucket === b);
+    const shown = (b: Bucket) => kindRows(b).slice(0, wholeAll.has(b) ? EXPANDED_ROWS : BUCKET_ROWS[b]);
+    // What is drawn: the totals, and when open, the rows shown with their ages as the reader reads them.
+    const signature = JSON.stringify([wholeOpen, [...wholeAll], BUCKETS.map(total), view.projects.map(p => [p.project, p.remaining, p.backlog]),
+      wholeOpen ? BUCKETS.map(b => [kindRows(b).length, shown(b).map(x => "bucket" in x ? [x.id, x.title, x.what, x.since === undefined ? null : spanText(now - x.since), x.limit ?? null, x.turns ?? null, x.cost ?? null] : [x.id, x.title, x.count, x.reason, spanText(now - x.at)])]) : 0]);
+    if (signature === wholeSignature) return;
+    wholeSignature = signature;
+    host.hidden = !remaining;
+    host.innerHTML = "";
+    if (!remaining) return;
+    const toggle = el("button", "whole-toggle", (wholeOpen ? "▾ " : "▸ ") + "全貌 · 没做完 " + remaining + " 件" + (total("overdue") ? " · 等太久 " + total("overdue") : "") + (total("unattended") ? " · 没人管 " + total("unattended") : ""));
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", String(wholeOpen)); toggle.title = wholeOpen ? "收起全貌" : "展开全貌";
+    toggle.addEventListener("click", () => { wholeOpen = !wholeOpen; try { localStorage.setItem("board-whole", wholeOpen ? "open" : "closed"); } catch (e) {} renderNow("whole"); });
+    host.appendChild(el("h2", "whole-head")).appendChild(toggle);
+    if (!wholeOpen) return;
+    host.appendChild(el("p", "whole-note", "没做完的工作条目，按在做什么分成五类，最该看的在前。状态来自执行程序每轮的报告、会话的派活记录和计划；待选里的活不算在内。"));
+    for (const b of BUCKETS) {
+      const all = kindRows(b);
+      if (!all.length) continue;
+      host.appendChild(el("h3", "whole-kind " + b, esc(BUCKET_TEXT[b] + " " + total(b) + (b === "parked" ? "（" + all.length + " 处暂停）" : ""))));
+      const list = el("ul", "whole-list");
+      shown(b).forEach(x => list.appendChild("bucket" in x ? wholeRowEl(x, now) : wholeParkedEl(x, now)));
+      host.appendChild(list);
+      const open = wholeAll.has(b), more = all.length - shown(b).length;
+      if (more > 0 || open && all.length > BUCKET_ROWS[b]) {
+        const button = el("button", "whole-more", open ? "收起" : "还有 " + more + (b === "parked" ? " 处暂停" : " 件") + "，多列一些");
+        button.type = "button"; button.dataset.kind = b; button.setAttribute("aria-expanded", String(open));
+        button.addEventListener("click", () => { if (open) wholeAll.delete(b); else wholeAll.add(b); renderNow("whole"); });
+        host.appendChild(button);
+      }
+    }
+    host.appendChild(el("p", "whole-projects", esc("各项目还剩：" + view.projects.map(p => p.project + " " + p.remaining + " 件" + (p.backlog ? "（待选 " + p.backlog + "）" : "")).join(" · "))));
+  }
   // The messages agents send each other (docs/design.md, Messages): a button at the top right that counts those that came since
   // the list was last open, and the list, newest first, which new messages join as they arrive.
   let messagesOpen = false, messagesSignature = "";
@@ -2631,7 +2703,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       waitingOrder=order;
       for (const root of [get("areas"),get("item-detail")]) for (const button of elements(root).filter(e => e.dataset.stop)) button.replaceWith(nextButton(button.dataset.stop!));
     }
-    renderHeader(); renderAgents(); renderMessages(); renderSend(); renderMenu();
+    renderHeader(); renderWhole(); renderAgents(); renderMessages(); renderSend(); renderMenu();
     get("item-detail").scrollTop=paneTop;
     if (anchor) { const e = get(anchor.id); if (e) {
       const s="pane" in anchor && anchor.pane ? detailScroller() : listScroller();

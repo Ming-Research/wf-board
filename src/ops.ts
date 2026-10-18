@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
-import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectSession, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
@@ -34,6 +34,8 @@ export interface Ops {
   dispatchStart(a: { author: string; session?: string; access?: Access; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
   /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
+  /** The runner's report on the work on an item (docs/design.md, section 5, Runner reports): replaces the item's `runner`, stamps `since` and `at`, and writes nothing when the report changes nothing. */
+  reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
@@ -679,6 +681,29 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const d = parse(Dispatch, { ...withoutCredential, finish });
       return { ...it, updated: at, dispatches: list.map((x, n) => n === i ? d : x), log: [...it.log, entry(a.author, at, finishLogLine(d, old.finish !== undefined))] };
     }, false, ` ${a.agentId}`),
+    reportState: a => edit(a, "item.runner", "report_state", (it, _s, at) => {
+      onlyProcessWithoutCredential(a, "report the runner's state on an item");
+      if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
+      const problem = runnerReportProblem(a);
+      if (problem) throw new OpError(problem);
+      if (a.cost !== undefined && (!Number.isFinite(a.cost) || a.cost < 0)) throw new OpError("cost: give the cost so far in US dollars, zero or more");
+      // The note is one line: a reporter's line breaks (a failure's text, say) become spaces rather than a refusal.
+      const before = it.runner, note = a.note?.replace(/\s+/g, " ").trim();
+      // The work waits on the same thing as in the last report: only then does `since` stay.
+      const sameWait = before !== undefined && before.state === a.state && before.to === a.to && isDeepStrictEqual(before.cards, a.cards) && isDeepStrictEqual(before.items, a.items);
+      const turns = a.turns ?? before?.turns, cost = a.cost === undefined ? before?.cost : milliDollars(a.cost) / 1000;
+      const since = sameWait && before ? before.since : at;
+      // The work cannot have begun after it entered its state: a start time a moment ahead of the board's clock is cut back to it.
+      const given = a.startedAt === undefined ? before?.started ?? at : dispatchTime(a.startedAt, at, "startedAt"), started = Date.parse(given) > Date.parse(since) ? since : given;
+      const next = parse(RunnerReport, {
+        state: a.state, since, at, started,
+        ...(a.to === undefined ? {} : { to: a.to }), ...(a.cards === undefined ? {} : { cards: a.cards }), ...(a.items === undefined ? {} : { items: a.items }),
+        ...(note === undefined ? {} : { note }), ...(turns === undefined ? {} : { turns }), ...(cost === undefined ? {} : { cost }),
+      });
+      // A report that repeats the last one changes nothing, and `at` is the time of the last change: no commit for it.
+      if (before !== undefined && isDeepStrictEqual({ ...next, at: before.at }, before)) return it;
+      return { ...it, updated: at, runner: next };
+    }, false, ` ${a.state}`),
     setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];

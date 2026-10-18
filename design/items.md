@@ -10,3 +10,9 @@ Rejected:
 - A separate document for the tag vocabulary: rejected because every rename or removal would also have to write that extra file in the same commit.
 - Difficulty written into the text of a plan row: rejected because the unit dispatched to an agent is the item, not a row.
 - A level table on the board: rejected because the rules map levels to agents, outside the board.
+
+Decision: The state the runner last reported for the work on an item is one field of the item, `runner`, replaced by each report, where the board sets the times from its own clock, `since` stays while the state, the party asked, the cards and the items waited for stay the same, a report identical to the stored one writes no commit, and only the PM and the architect write it, and the field is historical detail that is never news to the owner, because the whole view reads the state of every open item at once and a report is the current state and not a history, so a log entry per report would grow the item without bound while a document kind of its own would change the store's reads and writes, the snapshot, the events and the page, and the runner is part of the PM's process ([Runner reports](../docs/design.md#5-data-format)), instead of a log entry for each report or a document kind for the runner's state.
+
+Rejected:
+- A log entry for each report: rejected because a report at every turn start and end would grow the item without bound, and the whole view needs only the current state.
+- A document kind for the runner's state: rejected because it would change the store's reads and writes, the snapshot, the events and the page for a field of one item.

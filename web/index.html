@@ -141,6 +141,22 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .message-who { color: var(--ink); font-weight: 600; }
 .message-ago { margin-left: auto; }
 .message-text { font-size: 13.5px; overflow-wrap: anywhere; }
+.whole { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.whole[hidden] { display: none; }
+.whole-head { margin: 0; font-size: 15px; }
+.whole-toggle { font: inherit; font-weight: 700; background: none; border: 0; padding: 0; color: var(--ink); cursor: pointer; text-align: left; }
+.whole-note { margin: 0; font-size: 12px; color: var(--muted); max-width: 68ch; }
+.whole-kind { margin: 6px 0 0; font-size: 13px; }
+.whole-kind.overdue { color: var(--amber); }
+.whole-kind.unattended { color: var(--ask); }
+.whole-list { list-style: none; margin: 0; padding: 0 0 0 14px; display: flex; flex-direction: column; gap: 1px; }
+.whole-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; min-width: 0; font-size: 13.5px; }
+.whole-title { font: inherit; text-align: left; background: none; border: 0; border-radius: 4px; padding: 1px 4px; color: var(--ink); cursor: pointer; min-width: 0; overflow-wrap: anywhere; }
+.whole-title:hover { background: var(--accent-soft); }
+.whole-project, .whole-age { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.whole-what { font-size: 12.5px; overflow-wrap: anywhere; }
+.whole-more { align-self: flex-start; font: inherit; font-size: 12.5px; background: none; border: 0; padding: 0 0 0 14px; color: var(--muted); cursor: pointer; }
+.whole-projects { margin: 4px 0 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .agents { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .agents[hidden] { display: none; }
 .agents-head { margin: 0; font-size: 15px; }
@@ -551,6 +567,8 @@ details.refsec > .refbody p { margin: 0; }
       <nav class="nav" id="nav" aria-label="板块"></nav>
     </div>
   </header>
+
+  <section class="whole" id="whole" aria-label="全貌" hidden></section>
 
   <section class="agents" id="agents" aria-label="代理" hidden></section>
 

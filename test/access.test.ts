@@ -10,7 +10,7 @@ import { board, asArchitect, asPM, rx } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
 // What the design (docs/design.md, section 9) reserves for the PM and the architect, written out here and not read from the table.
-const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "dispatch.start", "dispatch.finish"];
+const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 // What only the architect may do beyond that (no role has the merge row: the GitHub watch marks it).
 const ARCHITECT_ONLY: Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: Part[] = [...PROCESS, ...ARCHITECT_ONLY];
@@ -39,6 +39,7 @@ test("the writes the code reserves are the parts the table withholds from the ob
     ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
     ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
     ["item.title", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
+    ["item.runner", rx`only ${PROCESS_WRITERS} may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
   ];
   for (const [part, message, call] of reserved) {
     await assert.rejects(call, (error: unknown) => error instanceof OpError && message.test(error.message), `${part}: the code refuses an author that is neither the PM nor the architect`);
@@ -59,6 +60,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   journalEntry: [{ parts: ["journal"], args: { text: "t" } }],
   dispatchStart: [{ parts: ["dispatch.start"], args: { id: "a", role: "工程师", level: 2, model: "m", agent: "g", agentId: "i" } }],
   dispatchFinish: [{ parts: ["dispatch.finish"], args: { id: "a", agentId: "i", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 1 } }],
+  reportState: [{ parts: ["item.runner"], args: { id: "a", state: "running" } }],
   setPlan: [{ parts: ["item.plan"], args: { id: "a", remove: "r" } }],
   setTargets: [{ parts: ["item.targets"], args: { id: "a", remove: "r" } }],
   updateItem: [

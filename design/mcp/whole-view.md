@@ -1,0 +1,8 @@
+Decision: The whole view puts every open work item that is not in a backlog and is not a container for open sub-items into exactly one of five kinds, deciding by the runner's report first, then by a live engineer session, then by the plan, in one function that the `whole_view` tool prints and the owner's page draws, because an item must have one answer wherever it is read, the runner's report is the freshest word about what the work is doing, and two functions would let the architect's counts and the owner's drift apart ([The whole view](../../docs/design.md#finding-things)), instead of the architect assembling the picture from `overview`, `list` and `candidates`, or a page block with a classification of its own.
+
+Decision: The answer lists at most eight rows of each kind (four for pauses) and counts the rest, `bucket` widens one kind to forty rows and `project` narrows every count to one project, and how long a state may last before an item is overdue is one object of provisional limits, because the answer must stay within 6000 characters on a board of the live board's size so that it floods no context, and the limits have not been measured against real data, which will show which are wrong ([The whole view](../../docs/design.md#finding-things)), instead of listing every open item or fixing the limits as rules.
+
+Rejected:
+- The architect assembling the picture from existing tools: rejected because it costs several large calls and no existing tool reads what the runner is doing.
+- A page block with its own classification: rejected because the page's counts would drift from the tool's.
+- Listing every open item: rejected because on a board of the live board's size it would fill the caller's context.
