@@ -165,8 +165,8 @@ export interface Counted {
   innerHtml: number; created: number;
 }
 const noCounts = (): Counted => ({ draws: 0, rules: 0, full: [], filters: 0, baselines: 0, scopes: [], innerHtml: 0, created: 0 });
-/** One press that moved to another item. */
-export interface Landing extends Counted { item: string; busy: number }
+/** One press that moved to another item; `press` is the number of the press (from 0) in its window. */
+export interface Landing extends Counted { item: string; busy: number; press: number }
 
 /** How far the clock is moved on while a press settles: the late answers and waits of a landing are within it. */
 const HORIZON_MS = 1000;
@@ -263,14 +263,14 @@ export class Press {
 }
 
 /** Presses n in `win` until it has landed on `wanted` other items (a press inside the item shown does not count). `events` gives press
- * k its change event. `progress` says how many have landed, for a test that sets the time of answers per landing, and may end the walk
+ * k its change event, when it has one. `progress` says how many have landed, for a test that sets the time of answers per landing, and may end the walk
  * early with `done`. */
-export async function landings(win: Press, wanted: number, events?: readonly string[], progress?: { landed: number; done?: () => boolean }): Promise<Landing[]> {
+export async function landings(win: Press, wanted: number, events?: readonly (string | undefined)[], progress?: { landed: number; done?: () => boolean }): Promise<Landing[]> {
   const out: Landing[] = [];
   for (let presses = 0; out.length < wanted && !progress?.done?.() && presses < 8 * wanted; presses++) {
     if (events && win.presses >= events.length) throw new Error(`the walk made ${win.presses} presses and there are only ${events.length} change events for them`);
     const was = win.selected(), r = await win.press(events?.[win.presses]);
-    if (r.item !== null && r.item !== was) out.push({ item: r.item, busy: r.busy, ...r.counted });
+    if (r.item !== null && r.item !== was) out.push({ item: r.item, busy: r.busy, press: win.presses - 1, ...r.counted });
     if (progress) progress.landed = out.length;
   }
   return out;
@@ -278,7 +278,7 @@ export async function landings(win: Press, wanted: number, events?: readonly str
 
 /** Presses n in each window in turn, the order rotating press by press, until every window has landed `wanted` other items on the same
  * presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
-export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly string[]): Promise<Record<string, Landing[]>> {
+export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[]): Promise<Record<string, Landing[]>> {
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
   for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
@@ -287,7 +287,7 @@ export async function pairedLandings(wins: readonly Press[], wanted: number, eve
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
       const r = await win.press(events?.[win.presses]);
-      got.push([win.label, r.item !== null && r.item !== was[win.label] ? { item: r.item, busy: r.busy, ...r.counted } : null]);
+      got.push([win.label, r.item !== null && r.item !== was[win.label] ? { item: r.item, busy: r.busy, press: win.presses - 1, ...r.counted } : null]);
       was[win.label] = r.item;
     }
     // A pair counts only if every window moved to another item.
@@ -344,7 +344,7 @@ export interface PhaseResult {
 /** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval shows this
  * run's noise within `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
  * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against base. */
-export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly string[]): Promise<PhaseResult> {
+export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
   let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false;

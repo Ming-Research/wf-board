@@ -23,7 +23,7 @@ jobs:
       matrix:
         include:
           - { name: counts, file: counts, base: merge-base }
-          - { name: late, file: late, base: merge-base }
+          - { name: witnesses, file: witnesses, base: merge-base }
           - { name: time-quiet, file: time-quiet, base: merge-base }
           - { name: time-writing, file: time-writing, base: merge-base }
           - { name: time-quiet-changed, file: time-quiet, base: older }
@@ -40,7 +40,7 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: Select the base page
         run: |
-          if [ "${{ matrix.base }}" = older ]; then base=$(git rev-list --first-parent origin/main -n 40 | tail -1); else base=$(git merge-base origin/main HEAD); fi
+          if [ "${{ matrix.base }}" = older ]; then base=$(git rev-parse 253c9b5~1); else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
           git log --oneline -1 "$base"
       - run: node --test --test-concurrency=1 test/nkey/${{ matrix.file }}.nkey.ts

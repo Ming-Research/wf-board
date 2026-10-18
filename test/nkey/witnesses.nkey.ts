@@ -1,4 +1,5 @@
-// The draws of a landing in the n-key lane (test/nkey/lane.ts) depend on when the baselines of the rows around its target answer: the
+// The counts of the n-key lane (test/nkey/lane.ts) on pages with what they protect taken out, and the draws of a landing when the rows
+// around its target answer late. First the draws: they depend on when the baselines of the rows around the target answer, and the
 // navigation waits 100 ms at most for them. These tests set that time, 300 ms of a virtual clock. On a page that waits 2 s the rows come
 // in the landing's draws, which are two at most; on the page itself the landing has drawn twice by then and the rows are drawn on their
 // own, each draw of other items' rows alone. A row around the target is a baseline of kind item for another item than the target; the
@@ -6,12 +7,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { performance as perf } from "node:perf_hooks";
 import type { Revert } from "../e2e/variant.ts";
 import { PAIRS, Press, Scope, VirtualClock, WARMUP, landings } from "./press.ts";
 import type { Landing } from "./press.ts";
-import { LONG_WAIT, MIN_LANDINGS_WITH_ROW, OWN_ANSWER_MS, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, checkCounts, lap, log, startLane } from "./lane.ts";
+import { FILTERS_COUNTED_EACH_DRAW, LONG_WAIT, MIN_LANDINGS_WITH_ROW, NAVIGATION_DRAWS_THREE_TIMES, OWN_ANSWER_MS, READ_FETCHES_THE_BOARD, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, SCHEDULE_REBUILDS, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, WITNESS_LANDINGS, checkCounts, lap, log, ms, startLane } from "./lane.ts";
 
-test("a row around the target that answers late, and the checks that notice a page that waits wrongly", { timeout: 10 * 60_000 }, async t => {
+test("the counts of one press of n report a page with what they protect taken out, and a row around the target that answers late is drawn as it should be", { timeout: 10 * 60_000 }, async t => {
   const lane = await startLane(t, { landings: WARMUP + PAIRS });
   const { targets } = lane;
 
@@ -72,5 +74,61 @@ test("a row around the target that answers late, and the checks that notice a pa
     const hits = lateRowsViolations(list, rows);
     assert.ok(hits.length > 0, "the page that waits as long as the row takes draws twice for a row that answers after 300 ms");
   });
-  lap("done");
+
+  // Each change taken out alone: the counts must name it.
+  const lost: Array<[string, Revert[], (v: string) => boolean]> = [
+    ["views draw with the board's rules rebuilt", SCHEDULE_REBUILDS, v => v.includes("built the board's rules")],
+    ["navigation draws the unfolded rows, the selected item and the comments one by one", NAVIGATION_DRAWS_THREE_TIMES, v => v.includes("drew")],
+    ["every draw counts the filters again", FILTERS_COUNTED_EACH_DRAW, v => v.includes("counted the filters")],
+  ];
+  for (const [what, reverts, names] of lost) await t.test(`the counts report it when ${what}`, async () => {
+    const list = await lane.walk({ label: "witness", reverts }, WITNESS_LANDINGS);
+    const hits = checkCounts("reversed", list).filter(names);
+    assert.ok(hits.length > 0, "the counts of the page without the change report it (they reported: " + (checkCounts("reversed", list).join("\n") || "nothing") + ")");
+  });
+  await t.test("with all three taken out, the counts report each of them", async () => {
+    const list = await lane.walk({ label: "witness", reverts: [...SCHEDULE_REBUILDS, ...NAVIGATION_DRAWS_THREE_TIMES, ...FILTERS_COUNTED_EACH_DRAW] }, WITNESS_LANDINGS);
+    const violations = checkCounts("all three out", list);
+    log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => l.draws))].join("/")}`);
+    for (const family of ["drew", "built the board's rules", "counted the filters"]) assert.ok(violations.some(v => v.includes(family)), "the counts report: " + family);
+  });
+  lap("count witnesses");
+
+  // Marking a read does not fetch the board again: the unread list carries the new cursor, and a read changes nothing on the board.
+  // These windows are answered by the real server, which this check is about.
+  const readOnce = async (reverts: Revert[]) => {
+    const scope = new Scope();
+    try {
+      const asked: string[] = [];
+      const win = await Press.open(scope, lane.board, {
+        label: "read", reverts, stream: "server",
+        fetch: async (url, init) => { if (url.pathname.startsWith("/api/")) asked.push((init?.method ?? "GET") + " " + url.pathname); return fetch(url, init); },
+      });
+      const unreadNow = () => Number((win.page.$("#unread-row .sbtn.s-new")?.textContent ?? "").match(/\d+/)?.[0] ?? 0);
+      const [landed] = await landings(win, 1);
+      const unreadBefore = unreadNow();
+      asked.length = 0;
+      const from = perf.eventLoopUtilization();
+      win.page.key("m");
+      await win.page.settle();
+      return { landed, asked: [...asked], busy: perf.eventLoopUtilization(from).active, unreadBefore, unreadAfter: unreadNow() };
+    } finally { await scope.close(); }
+  };
+  const checkRead = (r: Awaited<ReturnType<typeof readOnce>>): string[] => {
+    const v: string[] = [], count = (what: string) => r.asked.filter(a => a === what).length;
+    if (count("POST /api/read") !== 1) v.push(`press-n read: m sent ${count("POST /api/read")} reads, not 1 (${r.asked.join(", ")})`);
+    if (count("GET /api/unread") < 1) v.push("press-n read: the page did not ask for the unread list after the read");
+    if (count("GET /api/snapshot") !== 0) v.push(`press-n read: the page fetched the whole board ${count("GET /api/snapshot")} times after a read`);
+    if (!(r.unreadAfter < r.unreadBefore)) v.push(`press-n read: the unread number was ${r.unreadBefore} before m and ${r.unreadAfter} after`);
+    return v;
+  };
+  await t.test("m refreshes the unread list and does not fetch the board again, and the check reports a page that does", async () => {
+    const bad = await readOnce(READ_FETCHES_THE_BOARD);
+    const hits = checkRead(bad).filter(v => v.includes("fetched the whole board"));
+    assert.ok(hits.length > 0, "the check reports a page that fetches the board (it reported: " + (checkRead(bad).join("\n") || "nothing") + ")");
+    const good = await readOnce([]);
+    log(`press-n read: m kept the event loop busy ${ms(good.busy)} ms (${ms(bad.busy)} ms on the page that fetches the board); the page asked for ${good.asked.join(", ")}`);
+    assert.deepEqual(checkRead(good), []);
+  });
+    lap("done");
 });

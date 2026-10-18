@@ -38,7 +38,7 @@ export const WITNESS_LANDINGS = 8, COUNT_LANDINGS = 12, OWN_ANSWER_MS = 20, ROW_
 export const FLOOR = { quiet: 0.061, writing: 0.061 };
 /** What one press that lands writes, the median over the landings of the first walk: characters assigned to innerHTML and elements
  * made. A page that writes more is red; a change to the page that moves them changes the numbers here, and the pull request says why. */
-const WRITES = { innerHtml: Number.POSITIVE_INFINITY, created: Number.POSITIVE_INFINITY };
+const WRITES = { innerHtml: 33873, created: 756 };
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
 export const ms = (x: number) => x.toFixed(0);
@@ -146,8 +146,9 @@ export interface Lane {
   tape: Tape;
   /** The items the first walk landed on, in order: the walk every window repeats. */
   targets: string[];
-  /** Change events of real writes, each against the commit before it. */
-  events: string[];
+  /** Change events of real writes, each against the commit before it, by the number of the press that lands and takes it (a press
+   * that stays inside the item shown has none); the presses of every window are those of the first walk. */
+  events: Array<string | undefined>;
   /** Whether the current page differs from the base page. */
   changed: boolean;
   /** `cand` when it does, else `base`: the window that holds the current page in a time phase. */
@@ -160,9 +161,9 @@ export interface Lane {
   walk: (how: Omit<OpenHow, "fetch" | "misses">, wanted: number, withEvents?: boolean) => Promise<Landing[]>;
 }
 
-/** Seeds the board, records the walk of `landings` landings on the real server, and writes `events` change events; the base page is
- * built too when `base` is asked for (the time layer compares with it). */
-export async function startLane(t: { after(fn: () => unknown): void }, want: { landings: number; events?: number; base?: boolean }): Promise<Lane> {
+/** Seeds the board, records the walk of `landings` landings on the real server, and with `writes` makes a change event of a real write
+ * for each landing; the base page is built too when `base` is asked for (the time layer compares with it). */
+export async function startLane(t: { after(fn: () => unknown): void }, want: { landings: number; writes?: boolean; base?: boolean }): Promise<Lane> {
   const board = await startLiveBoard(t);
   lap(`board seeded (${Object.keys(board.store.snapshot().items).length} items)`);
   assert.ok(Object.keys(board.store.snapshot().items).length >= 1500, "the board has about 1,600 items");
@@ -181,22 +182,25 @@ export async function startLane(t: { after(fn: () => unknown): void }, want: { l
 
   // The first walk, on the real server: its answers are the tape every other window is answered from.
   const tape = new Tape();
-  let targets: string[] = [];
+  let targets: string[] = [], landed: number[] = [];
   {
     const scope = new Scope();
     try {
       const recorder = await Press.open(scope, board, { label: "recorder", fetch: tape.recorder() });
       const walk = await landings(recorder, want.landings);
       assert.equal(walk.length, want.landings, `n reached ${want.landings} other items`);
-      targets = walk.map(l => l.item);
+      targets = walk.map(l => l.item); landed = walk.map(l => l.press);
     } finally { await scope.close(); }
   }
   lap(`walk recorded (${tape.size} answers, ${(tape.bytes / 1e6).toFixed(1)} MB)`);
   // The premise of every number: a board as big as the live one, with a long unread list.
   const snapshotBytes = tape.sizeOf("/api/snapshot") ?? 0;
   assert.ok(snapshotBytes >= 12e6, `the snapshot is ${(snapshotBytes / 1e6).toFixed(1)} MB, as heavy as the live board's (about 15 MB)`);
-  const events = want.events ? await writeEvents(board, want.events) : [];
-  if (want.events) lap(`${events.length} change events written`);
+  const events: Array<string | undefined> = [];
+  if (want.writes) {
+    (await writeEvents(board, landed.length)).forEach((data, k) => { events[landed[k]!] = data; });
+    lap(`${landed.length} change events written`);
+  }
 
   const open: Lane["open"] = (scope, how) => { const player = tape.player(); return Press.open(scope, board, { ...how, fetch: player.fetch, misses: player.misses }); };
   const currentLabel = changed ? "cand" : "base";
