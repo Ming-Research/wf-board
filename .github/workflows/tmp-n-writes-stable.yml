@@ -1,0 +1,19 @@
+name: tmp-n-writes-stable
+# Temporary quick check for the item n-writes-stable while writing; deleted before the full CI.
+on:
+  push:
+    branches: [n-writes-stable]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # One file at a time, so each file's own seconds show for the shard table.
+      - run: for f in test/rules-reuse-a.test.ts test/rules-reuse-b.test.ts test/rules-reuse-c.test.ts test/rules-reuse-guards.test.ts; do s=$(date +%s.%N); node --test "$f" || exit 1; echo "SECONDS $f $(echo "$(date +%s.%N) - $s" | bc)"; done
