@@ -1,7 +1,7 @@
 // The agent list on the page in a DOM library: it sits above the projects, it keeps the tree's element ids to the tree, and 在树中
 // selects the item and 返回 comes back; a cell unfolds its sub-items in place, the list folds apart from the tree, a session whose
 // dispatch has ended sits behind 其他 N 个, and a session with no dispatch record has no row. The fake-DOM tests in test/web.test.ts cover what the list says; the browser layer keeps
-// where it lies and how far the jump scrolls (test/e2e/agents.e2e.ts). Each scenario also runs on a page with one thing spoiled,
+// where it lies and how far the jump scrolls (test/e2e/browser.e2e.ts). Each scenario also runs on a page with one thing spoiled,
 // where it must fail for the reason it states.
 
 import { test } from "node:test";

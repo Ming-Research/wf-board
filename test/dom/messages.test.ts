@@ -1,6 +1,6 @@
 // The list of messages on the page in a DOM library: its button opens the list, a message sent while the page is open appears in it,
 // and its item link selects the item. Where the button sits and how the list lies over the page are facts of the stylesheet
-// (test/dom/styles.test.ts); that nothing covers the list needs a layout (test/e2e/messages.e2e.ts). The scenario also runs on a page
+// (test/dom/styles.test.ts); that nothing covers the list needs a layout (test/e2e/browser.e2e.ts). The scenario also runs on a page
 // with one thing spoiled, where it must fail for the reason it states.
 
 import { test } from "node:test";

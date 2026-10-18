@@ -4214,9 +4214,10 @@ the board.
   record); and in a real browser where the list lies and how far the jump
   scrolls.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
-  pull request, when the engineer starts it (below), without the browser tests
-  unless the engineer sets the input `browser`; the browser tests run on each
-  main-line merge and nightly; a temporary quick
+  pull request, when the engineer starts it (below); the browser file and a
+  report of the time of n in a real browser in a workflow of their own
+  (`.github/workflows/browser.yml`) on each main-line merge, nightly and by
+  hand (below, The browser file); a temporary quick
   workflow for the pushes in between; the benchmarks run by hand as a
   workflow (`.github/workflows/bench.yml`): the write-path benchmark reports and never fails the run,
   and the history-query benchmark fails it when a check fails.
@@ -4255,12 +4256,14 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
    untouched), and the diagram boxes are laid out by a small model
    (`test/dom/mermaid-layout.ts`) whose widths are the page's own stylesheet
    evaluated for a box of given width.
-4. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
-   `e2e`): headless Chromium (Playwright) loads the real page from the real
-   server (the wiring of `src/main.ts`, in process) on a temporary data
-   repository, so the page talks to the real API and event stream. It keeps
-   what needs a layout: where a box lands, how wide it is, what a browser
-   hides, hit-testing and scrolling, and what the real diagram library draws.
+4. **The page in a real browser** (`test/e2e/browser.e2e.ts`,
+   `npm run test:e2e`, the workflow `browser.yml`): headless Chromium
+   (Playwright) loads the real page from the real server (the wiring of
+   `src/main.ts`, in process) on a temporary data repository, so the page
+   talks to the real API and event stream. It keeps what needs a layout: where
+   a box lands, how wide it is, what a browser hides, hit-testing and
+   scrolling, and what the real diagram library draws, in one small file that
+   runs after a merge and not on a pull request (The browser file, below).
 
 The browser layer exists because five page bugs in one day passed every test of
 the first two: saving a comment folded the card's comment list and hid its
@@ -4298,8 +4301,9 @@ localStorage and unfold every tree row.
 where the page landed with what the element claims, computed independently
 from the stored board with `src/rules.ts` and the server's unread history
 (`test/e2e/invariants.ts` holds the oracle and what still needs a browser:
-the layout of a card row in a plan, the visibility of a folded card and the
-alignment of the difficulty chip, in `test/e2e/page.e2e.ts`):
+the right column's widths, the layout of a card row in a plan, the visibility
+of a folded card, the progress bands and the alignment of the difficulty chip,
+in `test/e2e/browser.e2e.ts`):
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
@@ -4368,26 +4372,21 @@ the one part it protects taken out by an edit applied while the page is bundled
 (`test/dom/mermaid-spoiled.ts`), where it must report the part's absence.
 
 What only the real library and a real layout show stays in
-`test/e2e/mermaid.e2e.ts`: a head's diagram has its Chinese labels and a size, and the library's
+`test/e2e/browser.e2e.ts` (the checks are in `test/e2e/mermaid-checks.ts`): a head's diagram has its Chinese labels and a size, and the library's
 error under a bad block; hostile text (a script in a label, a `javascript:` link) leaves nothing
 that runs under the strict level; the real library names the ids and line markers so that a
 second copy of a diagram has none in common with the first; the settings in a diagram's own
 frontmatter win over the page's in the real library; a diagram is as wide as itself or its box at a
 window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in the box or the page;
-an enlarged diagram can be scrolled to both its ends (and two page variants where it cannot),
+an enlarged diagram can be scrolled to both its ends,
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
-a view and the page's scroll survive a live update (and a variant that draws the diagrams
-after the scroll is restored); labels and lines read in both color schemes. The compactness of a drawing
-has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2406 px high
-against the library's own 3420) and a synthetic chart with three lanes (17 arrows, 1657 px against
-2477) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
-for a chart whose settings block asks for 60); no arrow enters a box from the side and each runs at
-least 6 px straight before its head; no edge label covers a box or another label and no line crosses
-a box that is not its end. The check runs on pages with one part taken out (the wrapper around ELK,
-the wrapper's reading of the diagram's gaps, the 12 px run, the page's configuration, and a page that
-asks for dagre), where it reports the height, the gap, the arrows from the side or a line through a box; and on
-hand-made drawings, one wrong in one way each, to show that the measurement sees a side entry,
-a short run, a label on a box, labels on each other, a line through a box, a gap and a height. A diagram that never appears
+a view and the page's scroll survive a live update; labels and lines read in both color schemes; and a drawing is
+compact: a synthetic role chart (28 arrows, 2406 px high against the library's own 3420) and a synthetic chart
+with three lanes (17 arrows, 1657 px against 2477) stay under 2500 and 1900 px high; their boxes are as far apart
+as the page asked, 20 px (60 px for a chart whose settings block asks for 60); no arrow enters a box from the side
+and each runs at least 6 px straight before its head; no edge label covers a box or another label and no line
+crosses a box that is not its end (`checkCompact` in `test/e2e/mermaid-compact.ts`, which holds the measurement).
+The file keeps no page with a part taken out and no hand-made drawing (the section "The browser file"). A diagram that never appears
 can only be observed by waiting, so the wait is short, and the reported line must say what was
 waited for and what the page held, not a bare timeout or a page that did not start.
 
@@ -4403,11 +4402,11 @@ so no test reads the repository's history. In the DOM layer `test/dom/witnesses.
 (agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
 naming the reason it must fail for; the fixes of the page's update run in the
 fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
-because a window has no page reload. The browser layer keeps only the
-witnesses of facts that need a box, in `test/e2e/regressions.e2e.ts`: the
-right column's widths, a plan's card row squeezed by its pick, and the diagram
-fitted to its box. A witness whose edit no longer matches the current file
-fails and is updated or retired on purpose.
+because a window has no page reload. A witness whose edit no longer matches
+the current file fails and is updated or retired on purpose. The browser file
+keeps no witness: a test of a fact that needs a box is shown to fail once, when
+it is written, on a page with the thing it guards spoiled (The browser file,
+below).
 
 ### The n-key lane
 
@@ -4465,22 +4464,22 @@ verdict on made-up pairs whose answer is known.
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 8 shards, `nkey` in 4 parts, `e2e` and `result`) takes about 12 minutes with its queue,
-nearly all of it the browser tests, which a run started by hand leaves out
-unless it is given the input `browser`; a change under way is pushed many times. A push to a pull request branch therefore does not
+`test` in 16 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
+last check (The time gate), and the browser tests are not in it; a change under way
+is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
 and changes the test jobs and the job list in `needs` of `result`, which reads
 only the jobs it lists.
 
 - **While writing**, the engineer adds a temporary workflow
   `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
-  that runs only what the change touches: the test files and e2e cases it
+  that runs only what the change touches: the test files and browser tests it
   changed or affects, with the type check when it touches shared types. The
   push result is listed on the pull request like any push check. Wait for it
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
-  skeleton, whose setup steps are those of the `test` and `e2e` jobs of
-  `ci.yml`: keep each step the selected tests need and drop the others:
+  skeleton, whose setup steps are those of the `test` job of `ci.yml` and the
+  `layout` job of `browser.yml`: keep each step the selected tests need and drop the others:
 
   ```yaml
   name: tmp-quick
@@ -4505,7 +4504,7 @@ only the jobs it lists.
         - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         # The test files the change touches.
         - run: node --test test/watch.test.ts
-    e2e:
+    browser:
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
@@ -4514,12 +4513,12 @@ only the jobs it lists.
             node-version: 24
             cache: npm
         - run: npm ci
-        # The browser steps of ci.yml's e2e job, from `id: playwright` through
-        # `playwright install`, unchanged.
+        # The browser steps of browser.yml's `layout` job, from `id: playwright`
+        # through `playwright install`, unchanged.
         - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         - run: npm run build:web
-        # The e2e cases the change touches, picked by test name.
-        - run: node --test --test-name-pattern='the messages button' test/e2e/messages.e2e.ts
+        # The browser tests the change touches, picked by test name.
+        - run: node --test --test-name-pattern='the list of messages' test/e2e/browser.e2e.ts
   ```
 
 - **At the end**, once the change is done and reviewed: merge the main line
@@ -4527,8 +4526,8 @@ only the jobs it lists.
   `gh workflow run ci.yml --ref <branch>` and wait with
   `wait-ci.mjs <owner/repo> <PR> <sha>`. Green on the head commit is what lets
   the pull request be marked ready; a later push needs a new run.
-- **The main line** runs the full CI on every push, as before, with the browser
-  tests, which also run every night.
+- **The main line** runs the full CI on every push, as before; the browser file
+  runs beside it in its own workflow (below).
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
   `.github/workflows`. It runs in every full CI beside the other jobs, so the
   last run before a merge stops a temporary workflow that was not deleted, and
@@ -4549,7 +4548,7 @@ only the jobs it lists.
   go, and the wait script and the board would read the run itself.
   `ci-mark.yml` would need another way to tell a pull request that never had
   a full CI, because such a pull request still lists neither `test` nor
-  `e2e`.
+  `check`.
 
   The status is written in three places. `ci-mark.yml` writes `full-ci` as
   pending on every pull request push, unless the commit already has one. The
@@ -4589,7 +4588,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 8 shards, each in a job of its own, beside the type check, which is a
+full CI as 16 shards (8 until the checks of the browser moved into the suite), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -4634,6 +4633,20 @@ the longest `tests` step at 20 seconds against 26 for the 8 of that run, and
 seconds over 8 shards). Both differences are inside the spread between runs. The
 next lever is splitting the largest files, as `ops.test.ts` was.
 
+**Measured again** (hosted runners, 4 cores, 18 October 2026, after the checks of the
+browser had moved into the suite: 90 files, 906 seconds of file time): with the 8 shards the step `tests` took 33 to 56
+seconds (mean 45.5) and the job of the slowest shard 68, so a full CI took 73 seconds
+against the line of 60, with the table's costs out of date (a file such as `page-numbers` held
+at 20 seconds took 30). With the costs brought up to date from the shards' tables, 12
+shards left the longest job at 61 seconds (`tests` 20 to 45) and 16 shards at 51
+(`tests` 17 to 35, wait for a runner 3). Three runs of the 16 side by side gave the longest
+job 46, 49 and 50 seconds, `tests` 16 to 34, the waits 4 at most, so a full CI of 16
+shards is about 50 to 54 seconds from the push. What is left is the floor of the largest
+files, 25 to 33 seconds each among two others (`page-cards`, `page-tree`, `page-filters-after`,
+the three `rules-reuse` files, `page-numbers`, `page-plan`): more shards do not shorten
+a shard that holds one of them, and a typical 50 seconds needs those files split. The
+costs in the table are the mean of four runs of the 16.
+
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
 nothing would run it, which the table with a default cost cannot do.
@@ -4650,12 +4663,94 @@ checked within a minute of the push; two runs of one configuration differed by
 It starts from the start of the attempt, not from the creation of the run, so a
 rerun does not count the time before it.
 
-The gate is set to `TIME_GATE=report` in `ci.yml`: a run started by hand with
-`browser` set still runs the browser tests, which take minutes, so its total is
-over the line and a red gate would say nothing. The item that moves the browser
-checks out of the full CI sets `enforce`, and a total over the line then fails `result` and the status
-`full-ci`. The shard table reads the jobs named `test shard N` and their step
+The gate is set to `TIME_GATE=enforce` in `ci.yml`: a total over the line fails
+the gate's step, and `result` writes the status `full-ci` as failed and ends the
+run red. It only reported while the browser tests were a job of the full CI, whose
+minutes put every total over the line. The shard table reads the jobs named `test shard N` and their step
 `tests`; when it finds none, the summary says so, which shows a rename.
+
+### The browser file
+
+`test/e2e/browser.e2e.ts` is the browser layer, apart from one report below: 15
+tests on one headless Chromium, one generated board and one page, each test
+clearing the viewer's state and loading the page again. Its checks are in
+`test/e2e/invariants.ts` (the page's layout), `browser-checks.ts`,
+`mermaid-checks.ts` and `mermaid-compact.ts`, so that a test only picks the page's state for one of them.
+It holds what a script cannot see:
+
+- the page loads, a click opens an item, and the page does not scroll sideways;
+- the right column's blocks fill their boxes and the page does not scroll
+  sideways, in windows 2400, 1500 and 700 px wide;
+- a plan's card rows keep the link to their question 20 px wide or more and a
+  click brings the card into the pane; a closed card shows only its line while
+  folded; the progress bands are as wide as the plan's share in both color
+  schemes; the difficulty chip lies on the tags' line, below the title;
+- the agent list lies above the projects, 在树中 scrolls the item's tree row
+  into view and 返回 scrolls back; nothing covers the list of messages;
+- the real diagram library: the head's diagrams, the error under a bad block,
+  hostile text that runs nothing, the ids of a diagram drawn twice, a diagram's own
+  frontmatter; the fit to the box at windows 1500 and 700 px wide; zoom, wheel,
+  both ends and drag; the 60%, 90% and 100% buttons in a narrow column; the view
+  kept through a live update; labels and lines in both color schemes; three synthetic
+  charts drawn compact (short, the gaps the page asked, arrows entering from above,
+  nothing covering anything).
+
+**Limits.** At most 15 tests, so that a script keeps what it can see: a test is
+added only when no script can see the fact, and the pull request that adds it
+says why. `test/browser-limits.test.ts` counts the `test(` calls of the file,
+each on a line of its own so that a loop cannot declare many, and fails a pull
+request that goes over. At most 90 seconds: the step runs under `timeout 90` and
+a red run says so. Neither limit is a measurement of the page; both keep the file
+what it is for.
+
+**Where it runs.** `.github/workflows/browser.yml`, two jobs side by side: `layout`
+(the file) and `press-n` (the report below). It runs on each push to the main
+line, every night at 03:17 UTC, and by hand with
+`gh workflow run browser.yml --ref <branch>` once the workflow is on the main
+line, because GitHub offers a workflow to start by hand only from there. It is
+not on a pull request's path, so a pull request is checked by the script tests
+alone and the full CI's time gate holds. A layout break that reaches the main line
+is fixed on the main line; the red run of the merge's commit is where it shows.
+Most of the bugs of this kind that the witness comments of the former browser job
+name were found by the owner or a reviewer, not by that job (75 merged pull
+requests and 45 witness comments read for the research of the CI's time).
+
+**No variants.** The former browser job ran each of its witnesses on the current page
+and on a page with the fix reversed, which doubled the tests and the time; this file
+runs each test once. A test is shown to fail once, when it is written, by serving the
+page with a literal edit applied as it is bundled (the same replacement as the spoiled
+pages of the DOM layer, `test/e2e/variant.ts`) and running the check on it: the pull
+request that adds the test records that run, a line for each test with the edit and the
+violation it reported. Nothing of that stays in the repository, so a change to the
+stylesheet does not leave edits that no longer match.
+
+**Measured** (hosted runner, ubuntu-latest, one run on 18 October 2026): the 15 tests
+took 48.2 s together: the plan's card rows 13 s, the compact drawing 9 s, the right
+column's widths 8 s, the real library's head, hostile text, ids and frontmatter 4.5 s, a
+closed card's fold 4.6 s, the page's load and click 2.5 s, the fit at two windows 1.7 s,
+zoom 1.6 s, the view kept through an update 1.7 s, the size buttons 1.4 s, and the
+other five under 1 s each. The job, with its checkout, `npm ci`, the build and the
+browser from the cache, took 63 s.
+
+**The time of n in a real browser** is reported, never judged
+(`test/e2e/press-n-report.e2e.ts`, `npm run test:press-n-report`, the job `press-n`): the
+main thread's busy time from the key until the page is quiet, over 30 presses of n on
+a board of the live board's weight (`test/e2e/live-board.ts`), with the board quiet and
+the page's minute tick held still, to the log and to the job's summary. One run measured
+the median at 95 ms, the 90th percentile at 130 ms and the longest at 181 ms (against
+the former limits of 200 and 300 ms), in 38 s with the board built. The number is for
+reading over the days; a fixed limit on it turned red with the runner (a hosted
+runner's speed differs by up to a factor of two between jobs): 19 of the 56 red runs of
+the former job between 16 and 17 October failed on the time limits of n alone.
+
+**Rejected**: the browser file on a pull request's path (its job took 63 s against the
+60 s that a pull request's whole run may take, and two runs of one configuration
+differ by 13%); no browser layer (nothing else sees a width, a place or a hit); the
+browser tests as a job of the full CI that some runs leave out (a run started by hand
+then has no browser result unless it asks, and the time gate could only report); a
+page with the fix reversed for each test on every run, or in a second file for the
+night (the first doubles the file past its limits, the second goes out of date unseen
+while nobody runs it).
 
 ### Private content check
 

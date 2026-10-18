@@ -103,7 +103,10 @@ matches what the artifact board offered.
   never enters this repository. `test/fake-ssh.ts` stands in for ssh (a connection
   that is delayed or never answers) for the tests of pushes and of the deploy job's fetch. `test/e2e/` holds the browser layer: a seeded
   board generator with the real board's shapes, the harness (real server,
-  headless Chromium) and the click invariants; `live-board.ts` makes a board of the live board's weight, for the n-key lane. `test/nkey/`
+  headless Chromium) and the layout checks; `browser.e2e.ts` is the one small file of tests that need a real browser
+  (at most 15, which `test/browser-limits.test.ts` holds), and `live-board.ts` makes a board of the live board's weight
+  for `press-n-report.e2e.ts`, which reports the time of n in a real browser and judges nothing, and for the n-key lane (design section 11,
+  The browser file). `test/nkey/`
   holds the n-key lane (`*.nkey.ts`, not picked by `npm test`; design section 11, The n-key lane): the real page in jsdom on that board,
   the counts of one press of n and its time against the page of the base, in four files (`counts`, `witnesses`, `time-quiet`,
   `time-writing`) that are four jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
@@ -114,7 +117,7 @@ matches what the artifact board offered.
   the stand-in for the diagram library the page loads by address, `mermaid-layout.ts` the model of the diagram boxes, and
   `mermaid-checks.ts`, `mermaid-spoiled.ts` and `mermaid-*.test.ts` the diagram checks and their spoiled pages; `changed-blocks.test.ts` and `width-caps*.ts` the stylesheet checks of the changed-block bar and of the right column's widths). Each
   `*.test.ts` there has a board of its own and is kept short enough to be dealt out to the shards (the
-  longest takes 27 seconds on a hosted runner).
+  longest takes about 33 seconds on a hosted runner).
 - `scripts/bench-writes.ts`: the write-path benchmark (CPU and garbage
   collection per write, change-event bytes, peak memory) on a synthetic board
   of the live board's size; the `bench` workflow runs it by hand
@@ -134,7 +137,7 @@ matches what the artifact board offered.
   11). It reads only added lines, paths, commit messages and the pull request's
   title and body, and prints the rule and place, never the matched text.
 - `scripts/test-shard.ts` with `test/shard-costs.json`, `scripts/test-times-reporter.ts`
-  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 8
+  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 16
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
   summary, and the time gate in the run's last job (design section 11, Sharding the
@@ -144,9 +147,9 @@ matches what the artifact board offered.
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
-  three on every main-line merge (`npm test` as 8 shards at once), with the four jobs of the n-key lane beside them, and on a pull
-  request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`,
-  with `-f browser=true` to include the browser tests); pushes in between are
+  three on every main-line merge (`npm test` as 16 shards at once), with the four jobs of the n-key lane beside them, and on a pull
+  request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
+  pushes in between are
   checked by a temporary `tmp-*.yml` workflow that runs what
   the change touches (design section 11, Fast checks while writing). When a test
   file is added, renamed or becomes much slower, bring `test/shard-costs.json` up
@@ -155,10 +158,11 @@ matches what the artifact board offered.
 - `npm run test:nkey` runs the n-key lane (all four files, one after the other; CI runs each as a job of its own, `node --test
   test/nkey/<part>.nkey.ts`, with `NKEY_BASE` naming the commit whose page the time layer compares with, the merge base or the commit before a
   push to the main line). It needs no browser but is made for hosted runners: a timing run on the owner's Mac says nothing about them.
-- `npm run test:e2e` builds the page and drives it in headless Chromium;
-  CI's `e2e` job runs it on a main-line push, nightly, and in a run started by hand
-  with `browser` set. It needs a Playwright browser and
-  is never run on the owner's Mac.
+- `npm run test:e2e` builds the page and runs the browser file in headless Chromium,
+  `npm run test:press-n-report` the report of n's time. The `browser` workflow
+  (`browser.yml`) runs both on a main-line push, nightly, and when started by hand
+  (`gh workflow run browser.yml --ref <branch>`, once the workflow is on `main`); they are not
+  in the full CI. They need a Playwright browser and are never run on the owner's Mac.
 - Four test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
   (`test/web.test.ts`), fast but without CSS or layout; the page in jsdom against
@@ -168,9 +172,12 @@ matches what the artifact board offered.
   layer that can see it.
 - Every page fix gets a witness in the lowest layer that can see its bug: a run
   on the page with the fix reversed (a literal text edit, `test/e2e/variant.ts`)
-  that reports the bug (`test/dom/witnesses.ts` and the scenario files,
-  `test/web.test.ts` for the page's update, or `test/e2e/regressions.e2e.ts` for
-  a layout fact). No test reads git history.
+  that reports the bug (`test/dom/witnesses.ts` and the scenario files, or
+  `test/web.test.ts` for the page's update). A fact only a real browser shows goes
+  into the browser file (`test/e2e/browser.e2e.ts`: at most 15 tests, no
+  reversed-fix variants of its own); a test added or changed there is shown to
+  fail once on a page with the thing it guards spoiled, and its pull request
+  records that run. No test reads git history.
 - `make design-lint` checks the design tree's form and the checker's own tests;
   the `design` workflow runs it on every push. `make design-ready` is the
   readiness check, which the same workflow runs on a pull request that is ready
