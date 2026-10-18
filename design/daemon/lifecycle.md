@@ -1,0 +1,5 @@
+Decision: On a stop signal the daemon refuses new work with a 503 that tells the client to retry, ends its push streams and a running push at once, lets running requests finish for two seconds, commits the owner's reading state locally and exits without pushing to the remote, because a push takes longer than the five seconds launchd allows before it kills the process (the job's exit timeout, which `launchctl print` reports as 5) and the data is already committed locally, so the remote copy is only a backup that the next start's first push brings up to date ([Stopping](../../docs/design.md#4-architecture)), instead of pushing on shutdown; launchd waits one second after the last start before it restarts the daemon, because a redeploy that has to be rolled back must not wait for launchd's default ten-second throttle.
+
+Rejected:
+- Pushing on shutdown: rejected because a push takes 4 to 7 seconds, more than the five seconds launchd allows, so it would be killed unfinished.
+- launchd's default restart throttle of ten seconds: rejected because it would hold up a redeploy that has to be rolled back.

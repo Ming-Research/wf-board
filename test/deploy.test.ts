@@ -138,9 +138,14 @@ for (const [name, files, restarts] of [
   ["the license", { "LICENSE": "new" }, false],
   ["the agent instructions", { "AGENTS.md": "new" }, false],
   ["the workflows", { ".github/workflows/ci.yml": "new" }, false],
+  ["the design tree", { "design/log.md": "new", "design/storage.md": "new" }, false],
+  ["the submodule list", { ".gitmodules": "new" }, false],
+  ["the Makefile", { "Makefile": "new" }, false],
   ["a root docs file not listed", { "CHANGELOG.md": "new" }, true],
   ["a file whose name starts with the readme", { "README.mdx": "new" }, true],
   ["a file whose name starts with the license", { "LICENSE.ts": "new" }, true],
+  ["a file whose name starts with the Makefile", { "Makefile.ts": "new" }, true],
+  ["a file whose name starts with the design directory's", { "design.ts": "new" }, true],
   ["the job's own script", { "scripts/deploy.ts": "new" }, true],
   ["packages", { "package.json": "{}" }, true],
   ["one source file among docs", { "docs/design.md": "new", "src/main.ts": "new" }, true],
@@ -303,6 +308,35 @@ test("an untracked file in the checkout does not stop a deploy", async t => {
   r.land({ "src/a.ts": "a" }, "A");
   assert.equal(await deploy(), "deployed");
   assert.equal(w.restarts, 1);
+});
+
+test("a submodule checked out in the checkout does not make it look edited by hand when a merge moves its pointer", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  // A submodule repository with two commits; the main line holds it at the first and later moves the pointer to the second.
+  const sub = join(r.dir, "skill");
+  sh(r.dir, "init", "-q", "-b", BRANCH, sub);
+  writeFileSync(join(sub, "f"), "1"); sh(sub, "add", "f"); sh(sub, "commit", "-q", "-m", "one");
+  const one = sh(sub, "rev-parse", "HEAD");
+  writeFileSync(join(sub, "f"), "2"); sh(sub, "commit", "-q", "-am", "two");
+  const two = sh(sub, "rev-parse", "HEAD");
+  const allow = ["-c", "protocol.file.allow=always"];
+  sh(r.seed, ...allow, "submodule", "add", "-q", sub, "design/skill");
+  sh(join(r.seed, "design/skill"), "checkout", "-q", one);
+  r.publish("Add the submodule");
+  assert.equal(await deploy(), "deployed");
+  // Whoever initializes the submodule in the checkout (a check that needs it) leaves the checkout clean.
+  sh(r.checkout, ...allow, "submodule", "update", "--init", "-q");
+  assert.equal(sh(r.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  sh(join(r.seed, "design/skill"), "fetch", "-q", "origin");
+  sh(join(r.seed, "design/skill"), "checkout", "-q", two);
+  r.publish("Move the submodule pointer (#2)");
+  assert.equal(await deploy(), "deployed");
+  // The merge moved the pointer and left the submodule's own files behind: git status calls that a change, and the job must not.
+  assert.match(sh(r.checkout, "status", "--porcelain", "--untracked-files=no"), /design\/skill/);
+  const later = r.land({ "src/a.ts": "a" }, "A (#3)");
+  assert.equal(await deploy(), "deployed", "a pointer left behind by a merge is not an edit by hand");
+  assert.equal(r.head(), later);
+  assert.equal(w.posts.at(-1)!.event, "deployed");
 });
 
 test("a checkout with a commit the main line lacks, or on another branch, is not moved", async t => {
@@ -634,10 +668,10 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
   }
   const readers: string[] = [];
   for (const file of [...loaded].sort()) if (/\b(readFile|readFileSync|createReadStream|readdir|readdirSync|openSync)\b/.test(await readFile(join(src, file), "utf8"))) readers.push(file);
-  // http.ts reads the page files, store.ts the board's data directory, wake.ts, liveness.ts, watch.ts, ci-watch.ts and usage-watch.ts their state files
+  // http.ts reads the page files, store.ts the board's data directory, wake.ts, liveness.ts, watch.ts, ci-watch.ts their state files
   // (kept in that directory), credentials.ts the credentials file (kept outside the checkout and the data directory). A module that reads the checkout itself, such as docs/ or a template, would make a change there need a
   // restart: NO_RESTART (src/deploy.ts) must change first.
-  assert.deepEqual(readers, ["ci-watch.ts", "credentials.ts", "http.ts", "liveness.ts", "store.ts", "usage-watch.ts", "wake.ts", "watch.ts"]);
+  assert.deepEqual(readers, ["ci-watch.ts", "credentials.ts", "http.ts", "liveness.ts", "store.ts", "wake.ts", "watch.ts"]);
   const http = await readFile(join(src, "http.ts"), "utf8");
   // The one read of a file in http.ts is pageFile, and it is asked for the page files only: the page, its bundle and the diagram library.
   assert.deepEqual([...http.matchAll(/readFile\(([^)]*\))\)?/g)].map(m => m[1]), ["join(deps.webDir, name)"]);

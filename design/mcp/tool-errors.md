@@ -1,0 +1,4 @@
+Decision: The board turns off the MCP SDK's own check of a tool's arguments (it overrides a private method of the pinned SDK) and checks the arguments in each handler instead, answering a mistake in plain words with the tool's parameter table and an example call, and reading a parameter name the tool lacks as the known equivalent it has, with a note saying so, because 18 of 88 `create_item`, 10 of 290 `set_plan` and 8 of 263 `update_item` calls were refused for a wrong name with no working name given ([A call the tool refuses](../../docs/design.md#lean-replies)), instead of the SDK's own error, which names no working parameter.
+
+Rejected:
+- Loosening the schema so that the SDK accepts the call: rejected because it would drop the list of required parameters that the client is shown, and the SDK would still check nested values.

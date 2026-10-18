@@ -1,0 +1,4 @@
+Decision: Every write the page makes has an eight-second deadline and is never retried automatically, a dropped live connection refuses writes until a live connection and a snapshot reload restore the state, controls show a pending state at once and restore the authoritative state with a visible error when a write fails, sending waits for the pending draft writes and stops if one fails, and an edit conflict is returned and never retried with a newer revision, because the server may already have applied a write that timed out, and a choice that is displayed at once must not be missing from what is sent ([The page](../../docs/design.md#7-the-page)), instead of retrying a timed-out write automatically.
+
+Rejected:
+- Retrying a timed-out write automatically: rejected because the server may already have applied it.

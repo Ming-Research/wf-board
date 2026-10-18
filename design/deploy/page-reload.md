@@ -1,0 +1,5 @@
+Decision: The page's version is a hash of the files the daemon serves for it, filled into the page and announced to every open page when the deploy job reports that it finished, and a page served with another version replaces itself at once, or, while the owner is writing, shows a line and replaces itself when the writing is done, keeping its scroll positions, and does not reload again toward a version that left it on another version less than a minute ago, because the hash changes exactly when a page loaded now would differ, and a page and a daemon that disagree about the version would otherwise reload without end ([Deploying](../../docs/design.md#4-architecture), [Updating the page](../../docs/design.md#updating-the-page)), instead of a commit id as the version or a page that asks the daemon for the version on a timer.
+
+Rejected:
+- The commit id as the page version: rejected because every deploy, for documents or tests too, would reload every open page.
+- Pages asking the daemon for the version on a timer: rejected because a page would wait up to a period for a new version and every open page would carry a timer.
