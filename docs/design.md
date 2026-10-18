@@ -4265,9 +4265,14 @@ summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
 that took more than 1.5 times the mean of the others as the sign. A shard lists
 its files longest first, which is the order the runner starts them in, three at a
 time.
-A shard's test step is cut at 45 seconds and a single test at 40
+A shard's test step is cut at 60 seconds and a single test at 40
 (`--test-timeout`), so that a hung shard or test is named in the log of the red
-run and not only reported as a job that ran long.
+run and not only reported as a job that ran long. With the 13 files of `test/dom`
+(section 11, Four test layers) the steps of the 8 shards took 25 to 46 seconds in
+one run, because three files share the four cores and a page file takes 1.2 to 2.3
+times as long among them as alone; a cut at 45 seconds then stopped
+shards in two runs while their tests were passing, and 60 leaves 1.3 times the
+longest step.
 
 `test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
 and `ops-roles.test.ts`, pause and who may write what), because one of its tests
