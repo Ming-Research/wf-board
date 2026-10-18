@@ -290,6 +290,48 @@ test("completed acceptance before delivery does not complete the item or raise a
   assert.deepEqual(rules(s).planRatio("a"), { done: 3, total: 3 });
 });
 
+test("progressShare counts a done row whole, a row in progress half, and leaves dropped rows out", () => {
+  const s = snapshot({ a: {}, b: {} });
+  s.items.a!.plan = [step("one", "done"), step("two", "done"), accept("doing")];
+  assert.equal(rules(s).progressShare("a"), 5 / 6, "two done and one in progress: 2.5 of 3 rows");
+  s.items.a!.plan = [step("one", "done"), step("two", "dropped"), accept("todo")];
+  assert.equal(rules(s).progressShare("a"), 0.5, "a dropped row is not in the count");
+});
+
+test("progressShare counts a sub-item row by its status, shared or owned, and a card by its ruling", () => {
+  const s = snapshot({ a: {}, b: {} }, { q: {} });
+  s.items.b!.plan = [step("work", "doing"), accept()];
+  s.items.a!.plan = [shared("b"), accept()];
+  assert.equal(rules(s).progressShare("a"), 0.25, "a shared sub-item in progress counts half");
+  s.items.b!.plan = [step("work", "done"), accept("done")];
+  assert.equal(rules(s).progressShare("a"), 0.5, "a shared sub-item done counts whole");
+  s.items.a!.plan = [{ id: "q", card: "q", after: [] }, accept()];
+  assert.equal(rules(s).progressShare("a"), 0, "an open card counts nothing");
+  s.decisions.q!.status = "ruled";
+  assert.equal(rules(s).progressShare("a"), 0.5, "a ruled card counts whole");
+});
+
+test("progressShare weighs each kind of sub-item by its status, and leaves a cancelled one out of the share", () => {
+  const s = snapshot({ a: {}, w: {}, d: {}, i: {}, t: {}, c: { status: "cancelled" }, r: { record: true } });
+  s.items.w!.plan = [step("work", "doing"), accept()];
+  s.items.d!.plan = [step("work", "done"), accept("done")];
+  s.items.i!.plan = [step("work", "done"), accept()];
+  s.items.t!.plan = [step("work"), accept()];
+  // The item's plan is the given rows plus the acceptance step, which counts 0 while it is todo.
+  const share = (rows: PlanRow[]) => { s.items.a!.plan = [...rows, accept()]; return rules(s).progressShare("a"); };
+  assert.equal(share([own("w")]), 0.25, "an owned sub-item in progress counts half of its row");
+  assert.equal(share([own("d")]), 0.5, "an owned sub-item done counts whole");
+  assert.equal(share([own("i")]), 0.25, "an owned sub-item idle counts half");
+  assert.equal(share([own("t")]), 0, "an owned sub-item not started counts nothing");
+  assert.equal(share([shared("r")]), 0.5, "a shared record counts whole");
+  assert.equal(share([own("c")]), 0, "an owned cancelled sub-item is left out of the share");
+  s.items.a!.plan = [shared("c"), accept()];
+  assert.equal(rules(s).progressShare("a"), 0, "a shared cancelled sub-item is left out too: it does not lift the share of an open acceptance step");
+  s.items.a!.plan = [shared("c"), accept("done")];
+  assert.equal(rules(s).progressShare("a"), 1, "with the done acceptance step alone the share is whole");
+  assert.equal(rules(s).planRatio("a").total, 2, "the plan ratio keeps counting a shared cancelled row, as before");
+});
+
 test("only-acceptance and placeholder checks inspect every acceptance scenario", () => {
   const s = snapshot({ a: {} });
   s.items.a!.plan = [step("work", "done"), accept("done"), { ...accept(), id: "scenario", text: "（转换时没找到完成条件，待补）" }];

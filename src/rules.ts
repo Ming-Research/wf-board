@@ -265,6 +265,8 @@ export interface Rules {
   planRows(id: string): DerivedPlanRow[];
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
   planRatio(id: string): { done: number; total: number };
+  /** The share of an item's plan that is done, 0 to 1, with a row in progress counting half (docs/design.md, How the page shows a plan). */
+  progressShare(id: string): number;
   compareSiblings(a: string, b: string): number;
   /** The default order of the candidates list, for reading and not a choice: more open dependents first; then the earlier item number. */
   compareCandidates(a: string, b: string): number;
@@ -279,6 +281,8 @@ export interface DerivedPlanRow {
   glyph: string;
   dropped: boolean;
   excluded: boolean;
+  /** How much the row adds to its plan's progress share: done 1, in progress ½, else 0; null when the row is left out of the share (a cancelled sub-item). */
+  weight: number | null;
 }
 /** What an item waits on (docs/design.md, Status). */
 export interface Progress {
@@ -705,18 +709,28 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return include ? ordered() : cached("areas", "", ordered);
   }
-  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded"> & { paused?: boolean } {
-    if ("text" in row) return {
-      state: row.state === "doing" ? "progress" : row.state === "todo" ? "open" : "resolved",
-      dropped: row.state === "dropped", excluded: row.state === "dropped",
-    };
-    if ("card" in row) return { state: !s.decisions[row.card] || s.decisions[row.card]?.status === "open" ? "waiting" : "resolved", dropped: false, excluded: false };
+  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded" | "weight"> & { paused?: boolean } {
+    if ("text" in row) {
+      // The state is read once: the walk is bounded per snapshot (test/rules.test.ts, shared diamonds).
+      const { state } = row;
+      return {
+        state: state === "doing" ? "progress" : state === "todo" ? "open" : "resolved",
+        dropped: state === "dropped", excluded: state === "dropped",
+        weight: state === "done" ? 1 : state === "doing" ? 0.5 : 0,
+      };
+    }
+    if ("card" in row) {
+      const open = !s.decisions[row.card] || s.decisions[row.card]?.status === "open";
+      return { state: open ? "waiting" : "resolved", dropped: false, excluded: false, weight: open ? 0 : 1 };
+    }
     const target = item(row.item);
-    if (!target) return { state: "waiting", dropped: false, excluded: false };
-    if (target.record) return { state: "resolved", dropped: false, excluded: row.own };
+    if (!target) return { state: "waiting", dropped: false, excluded: false, weight: 0 };
+    if (target.record) return { state: "resolved", dropped: false, excluded: row.own, weight: 1 };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
     const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
-    return { state, dropped, excluded: dropped, paused: status === "paused" };
+    // A sub-item counts as its status says, shared or owned: done whole, in progress or idle half; a cancelled one is left out of the share.
+    const weight = status === "cancelled" ? null : status === "done" ? 1 : status === "wip" || status === "idle" ? 0.5 : 0;
+    return { state, dropped, excluded: dropped, paused: status === "paused", weight };
   }
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
     const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
@@ -736,6 +750,10 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   function planRatio(id: string): { done: number; total: number } {
     const rows = planRows(id).filter(row => !row.excluded);
     return { done: rows.filter(row => row.state === "resolved").length, total: rows.length };
+  }
+  function progressShare(id: string): number {
+    const rows = planRows(id).filter(row => !row.excluded && row.weight !== null);
+    return rows.length ? rows.reduce((sum, row) => sum + row.weight!, 0) / rows.length : 0;
   }
   function planGroups(id: string): Array<{ start: number; end: number; level: number }> {
     const rows = planRows(id), groups: Array<{ start: number; end: number; level: number }> = [];
@@ -1073,7 +1091,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   return {
-    stepDays, stepLine, planRatio,
+    stepDays, stepLine, planRatio, progressShare,
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
     stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),

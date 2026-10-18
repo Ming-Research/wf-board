@@ -895,3 +895,72 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
   await bp.settle();
   return v;
 }
+
+// The left tree's band behind each row in progress or idle: as wide as the plan's share, its gradient sized to the whole row
+// (so the colour at any point is the colour that point has across the row), and no band on the other rows. Both colour
+// schemes (docs/design.md, How the page shows a plan).
+export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], page = bp.page;
+  // Only items whose tree row is rendered: a row under a folded parent is not in the page.
+  const shown = new Set(await page.evaluate(() => [...document.querySelectorAll('[id^="it-"]')].map(e => e.id.slice(3))));
+  const ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && shown.has(id));
+  const withStatus = (status: string) => ids.find(id => o.r.statusOf(id) === status);
+  const part = withStatus("wip"), idle = withStatus("idle"), todo = withStatus("todo");
+  if (!part) v.push("progress-band: the board has no item in progress");
+  if (!todo) v.push("progress-band: the board has no todo item");
+  // Statuses that must carry no band. The generated board must have an item of each; cancelled is not among them, because
+  // the tree hides a cancelled item that has no open work under it (test/e2e/board-gen.ts), so no tree row can show it.
+  // The tree hides a done item with no open work under it, so a done item can be absent from the page; the board itself must have one.
+  const plainStatuses = ["todo", "done", "blocked", "paused"];
+  const allIds = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record);
+  for (const status of plainStatuses) if (!allIds.some(id => o.r.statusOf(id) === status)) v.push(`progress-band: the board has no item with status ${status}`);
+  const plain = plainStatuses.map(withStatus).filter((id): id is string => !!id);
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const id of [part, idle, ...plain]) {
+      if (!id) continue;
+      const status = o.r.statusOf(id);
+      const got = await page.evaluate((key: string) => {
+        const row = document.getElementById("it-" + key)?.querySelector<HTMLElement>(":scope > .item-row.tree-row") ?? null;
+        const band = row?.querySelector<HTMLElement>(":scope > .progress-band") ?? null;
+        // The colours the page's gradient stops resolve to in this scheme, read through probe elements.
+        const probe = (name: string) => { const e = document.createElement("span"); e.style.backgroundColor = "var(" + name + ")"; document.body.appendChild(e); const c = getComputedStyle(e).backgroundColor; e.remove(); return c; };
+        const style = band ? getComputedStyle(band) : null;
+        return {
+          row: !!row, rowWidth: row ? row.getBoundingClientRect().width : 0, from: probe("--prog-from"), to: probe("--prog-to"),
+          count: !!row?.querySelector(".steps-ratio"),
+          band: band && style ? { width: band.getBoundingClientRect().width, image: style.backgroundImage, size: style.backgroundSize } : null,
+        };
+      }, id);
+      if (!got.row) { v.push(`progress-band (${scheme}): ${id} has no tree row`); continue; }
+      // A row with a band shows no count of its done rows; a row without one keeps the count, where it has a plan.
+      if (status !== "wip" && status !== "idle") {
+        if (got.band) v.push(`progress-band (${scheme}): ${id} (${status}) carries a band`);
+        if (o.s.items[id]!.plan.length && !got.count) v.push(`progress-band (${scheme}): ${id} (${status}) has no count of its rows`);
+        continue;
+      }
+      if (got.count) v.push(`progress-band (${scheme}): ${id} (${status}) shows a count next to its band`);
+      if (!got.band) { v.push(`progress-band (${scheme}): ${id} (${status}) carries no band`); continue; }
+      const want = o.r.progressShare(id), ratio = got.band.width / got.rowWidth;
+      if (Math.abs(ratio - want) > 0.01) v.push(`progress-band (${scheme}): ${id} is ${(ratio * 100).toFixed(1)}% of the row wide, not the plan's ${(want * 100).toFixed(1)}%`);
+      // Chromium returns background-size as a percentage of the band: the gradient spans the band's width times that, which must be the row's width.
+      const [first = ""] = got.band.size.split(" "), gradient = first.endsWith("%") ? got.band.width * parseFloat(first) / 100 : parseFloat(first);
+      if (Math.abs(gradient - got.rowWidth) > 1) v.push(`progress-band (${scheme}): ${id}'s gradient is ${gradient.toFixed(1)}px wide, not the row's ${got.rowWidth}px`);
+      const { image } = got.band, fromAt = image.indexOf(got.from), toAt = image.indexOf(got.to);
+      if (!image.includes("linear-gradient") || fromAt < 0 || toAt <= fromAt) v.push(`progress-band (${scheme}): ${id}'s gradient does not run from ${got.from} to ${got.to}: ${image}`);
+    }
+  }
+  // A selected row keeps its highlight: its band is drawn at 45 % opacity, and an unselected band at full opacity.
+  if (part) {
+    await bp.select(part);
+    const got = await page.evaluate((key: string) => {
+      const box = document.getElementById("it-" + key);
+      const band = box?.querySelector<HTMLElement>(":scope > .item-row.tree-row > .progress-band") ?? null;
+      return { selected: !!box?.classList.contains("selected"), opacity: band ? getComputedStyle(band).opacity : null };
+    }, part);
+    if (!got.selected) v.push(`progress-band: ${part} is not marked selected after it was selected`);
+    if (got.opacity !== "0.45") v.push(`progress-band: the selected row ${part} draws its band at opacity ${got.opacity}, not 0.45`);
+  }
+  await page.emulateMedia({ colorScheme: "light" });
+  return v;
+}
