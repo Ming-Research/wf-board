@@ -179,11 +179,14 @@ const WITNESSES: Witness[] = [
   },
 ];
 
-test("each page check reports the spoiled page it guards against", async t => {
-  const board = await startBoard(t);
-  for (const w of WITNESSES) await t.test(`${w.family}: ${w.bug}`, async () => {
-    const bp = await DomPage.open(t, board, { storage: w.storage?.(board) ?? openAll(board), reverts: w.reverts });
-    const v = [...await w.run(bp, board), ...bp.errors.map(e => "page-error: " + e)];
-    assert.ok(v.some(line => line.startsWith(w.family)), `the check reports ${w.family} on the spoiled page, it reported ${v.length} lines, first: ${JSON.stringify(v.slice(0, 2))}`);
+/** The witnesses at the positions `part` of `of` takes, on a board of their own, so the files that run them go side by side. */
+export function witnessTests(part: number, of: number) {
+  test(`each page check reports the spoiled page it guards against (part ${part + 1} of ${of})`, async t => {
+    const board = await startBoard(t);
+    for (const w of WITNESSES.filter((_, k) => k % of === part)) await t.test(`${w.family}: ${w.bug}`, async () => {
+      const bp = await DomPage.open(t, board, { storage: w.storage?.(board) ?? openAll(board), reverts: w.reverts });
+      const v = [...await w.run(bp, board), ...bp.errors.map(e => "page-error: " + e)];
+      assert.ok(v.some(line => line.startsWith(w.family)), `the check reports ${w.family} on the spoiled page, it reported ${v.length} lines, first: ${JSON.stringify(v.slice(0, 2))}`);
+    });
   });
-});
+}

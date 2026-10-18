@@ -48,25 +48,36 @@ function families(bp: DomPage, board: BoardServer): Record<string, [string, (o: 
   };
 }
 
+/** Which of the two passes a file runs: the families each on a freshly loaded page, and again on a page kept open while writes land. */
+export interface PageRun { chips?: boolean; passes?: Array<"fresh" | "after"> }
+
 /** One test file's share of the page's checks: the families `keys`, each on a freshly loaded page and then on a page kept open
- * while a burst of writes lands elsewhere before it; with `chips`, also the small checks of tags, rows and comments. */
-export function pageTests(title: string, keys: string[], chips = false) {
+ * while a burst of writes lands elsewhere before it; with `chips`, also the small checks of tags, rows and comments. Each file has
+ * a board of its own, and a file stays within the time one hosted-runner job gives a test file (docs/design.md, section 11). */
+export function pageTests(title: string, keys: string[], { chips = false, passes = ["fresh", "after"] }: PageRun = {}) {
   test(title, { timeout: 5 * 60_000 }, async t => {
     const board = await startBoard(t), w = board.gen.witness;
     const bp = await DomPage.open(t, board, { storage: openAll(board) });
-    const all = families(bp, board), picked = keys.map(k => all[k] ?? assert.fail("no family " + k));
-    for (const [name, family] of picked) await t.test("fresh page: " + name, async () => {
+    const all = families(bp, board), order = Object.keys(all);
+    const picked = keys.map(k => ({ round: order.indexOf(k) + 1, name: all[k]?.[0] ?? assert.fail("no family " + k), family: all[k]![1] })).sort((a, b) => a.round - b.round);
+    if (passes.includes("fresh")) for (const { name, family } of picked) await t.test("fresh page: " + name, async () => {
       await bp.reset(openAll(board));
       none(await run(bp, async () => family(await oracle(board.store))));
     });
-    // One page stays open; before each family a burst of writes lands on other items.
-    await bp.reset(openAll(board));
-    let round = 0;
-    for (const [name, family] of picked) await t.test("after writes elsewhere: " + name, async () => {
-      const base = bp.changes(), n = await burst(board, ++round);
-      await bp.waitChanges(base + n);
-      none(await run(bp, async () => family(await oracle(board.store))));
-    });
+    // One page stays open. A family sees the writes of its place in the full order: before it the bursts of the families ahead of it
+    // have landed (only the bursts are replayed for a family that is not here), so the page has applied as many incremental updates
+    // as when all the families ran in one file.
+    if (passes.includes("after")) {
+      await bp.reset(openAll(board));
+      let landed = 0;
+      for (const { round, name, family } of picked) await t.test("after writes elsewhere: " + name, async () => {
+        const base = bp.changes();
+        let n = 0;
+        while (landed < round) n += await burst(board, ++landed);
+        await bp.waitChanges(base + n);
+        none(await run(bp, async () => family(await oracle(board.store))));
+      });
+    }
     if (!chips) return;
     await t.test("no empty row under an item's title", async () => {
       await bp.reset(openAll(board));

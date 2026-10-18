@@ -3949,8 +3949,9 @@ Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
 new item), so incremental re-renders happen in between. The families run in
-three files (`test/dom/page-*.test.ts`), each with a board and a page of its
-own, so the files run side by side.
+several files (`test/dom/page-*.test.ts`), each with a board and a page of its
+own and none longer than 40 seconds on a hosted runner, so the files can be
+dealt out to parallel jobs and run side by side.
 
 Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
 log are drawn, with Chinese labels; a block that does not parse shows its code and the
@@ -4005,8 +4006,8 @@ unread list and does not fetch the board.
 **Evidence.** Each check runs on the current page, where it must find
 nothing, and on the page with the thing it guards spoiled, where it must
 report it. In the DOM layer the spoiled page is the source text edited in
-memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.test.ts`
-holds one per page check, and each scenario file (agents, messages, styles)
+memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles)
 its own, each naming the reason it must fail for. In the browser layer
 `test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
 reversed in a copy served from a temporary directory. A fix is reversed by
