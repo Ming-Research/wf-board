@@ -89,7 +89,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command the store runs); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command that writes the repository, which all run through the store's `git()`; the read-only `cat-file` reader and the reads of a one-time conversion start no maintenance); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
