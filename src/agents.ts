@@ -3,7 +3,7 @@
 // the items), never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
 import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, answersPushes } from "./model.ts";
+import { AGENT_TOUCHES, isArchitectSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -69,7 +69,7 @@ export function liveDispatches(s: Pick<Snapshot, "items"> & { activity?: Snapsho
 
 /**
  * Whether the runner holds the work of a dispatch: it is an engineer's, not ended, and the item carries a runner report that began
- * with it. A report left from an earlier job does not make a session started later (one the PM started, say) the runner's. The runner's block of
+ * with it. A report left from an earlier job does not make a session started later (one started by hand, say) the runner's. The runner's block of
  * the list draws these sessions (src/runner-rows.ts), so the rows read from the board's own writes leave them out.
  */
 export function runnerHolds(it: Pick<Item, "runner"> | undefined, d: Dispatch): boolean {
@@ -82,7 +82,7 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
 
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when a dispatch record names it and it wrote to the
- * board or was started by that record within AGENT_WINDOW_MS, except the PM's and the architect's, and except one whose newest
+ * board or was started by that record within AGENT_WINDOW_MS, except the architect's, and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
  * A session no dispatch record names is no programmer the board sent out (the runner, the architect's turns, the board itself, a hand-started
  * session, a name written by mistake) and is not listed.
@@ -100,8 +100,8 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   }
   const rows: AgentRow[] = [];
   for (const [name, dispatches] of started) {
-    // The PM and the architect are not rows. The programs (the runner, the architect's turns it starts, the board itself) have no dispatch record, so they are not either: the runner's work and the architect's turns are drawn from its reports.
-    if (answersPushes({ session: name })) continue;
+    // The architect is not a row. The programs (the runner, the architect's turns it starts, the board itself) have no dispatch record, so they are not either: the runner's work and the architect's turns are drawn from its reports.
+    if (isArchitectSession(name)) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const newest = dispatches.reduce((a, b) => Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a);
     const lastWrite = wrote[0] ? Date.parse(wrote[0].at) : -Infinity;

@@ -1,13 +1,13 @@
 // The items an engineer could be started on, and how many engineers are working in each pool: read from the whole board, so
-// the PM does not collect them or count sessions itself. The board lists candidates in a default order and does not choose
-// among them, and it holds no limit: the PM compares the working count with the owner's numbers. The architect chooses. docs/design.md, section 6, "The candidates read", gives the reasons for each rule.
+// nobody has to collect them or count sessions itself. The board lists candidates in a default order and does not choose
+// among them, and it holds no limit: the architect compares the working count with the owner's numbers and chooses. docs/design.md, section 6, "The candidates read", gives the reasons for each rule.
 
 import { openDispatches, holderOf } from "./dispatch.ts";
 import type { Difficulty, Dispatch, Snapshot } from "./model.ts";
 import { isReviewStep, waitsOnRun } from "./rules.ts";
 import type { Rules } from "./rules.ts";
 
-/** The two pools of engineers. The board holds no limit on either: the owner gives the PM the numbers, and the PM compares them with the working count. */
+/** The two pools of engineers. The board holds no limit on either: the owner gives the architect the numbers, and the architect compares them with the working count. */
 export const POOLS = [
   { pool: "1", text: "1 级", covers: (level: number) => level === 1 },
   { pool: "2+", text: "2 级以上", covers: (level: number) => level >= 2 },
@@ -38,7 +38,7 @@ export interface Candidates { pools: PoolView[] }
 const poolOf = (level: number): Pool => POOLS.find(p => p.covers(level))!.pool;
 
 /** The candidates in the default order: the startable items nobody holds. `startable` is the one definition of what can start; an
- * item with an open engineer dispatch is held even when its session is gone (the PM takes it over; it is not started again). */
+ * item with an open engineer dispatch is held even when its session is gone (the architect takes it over; it is not started again). */
 function candidateIds(s: Snapshot, r: Rules): string[] {
   return Object.keys(s.items).filter(id => r.startable(id) && holderOf(s, id) === undefined).sort(r.compareCandidates);
 }

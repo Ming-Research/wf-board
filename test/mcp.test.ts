@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, formatChanges } from "../src/mcp.ts";
 import { INSTRUCTIONS } from "../src/instructions.ts";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, author, architect, asArchitect, later, retired, rx } from "./helpers.ts";
+import { board, author, architect, asArchitect, later, retired, retiredPM, rx } from "./helpers.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 
 test("changes output stops at the limit and says how many documents it left out", () => {
@@ -295,7 +295,7 @@ test("MCP creates acceptance, adopts children, moves owners and cancels or reope
   const reopened = await client.callTool({ name: "set_status", arguments: { ...asArchitect, id: "new", status: "open", log: "Resume" } }); assert.equal(reopened.isError, undefined, text(reopened)); assert.equal(store.snapshot().items.new!.status, undefined);
 });
 
-test("MCP moves an item and what it owns to another project, and only the PM or the architect may", async t => {
+test("MCP moves an item and what it owns to another project, and only the architect may", async t => {
   const { client, text, store } = await connected(t);
   const tool = (await client.listTools()).tools.find(tool => tool.name === "move_item_project")!;
   assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "id", "project", "session"]);
@@ -365,7 +365,7 @@ test("MCP re-evaluates active time without a new commit and exposes record creat
   assert.equal(store.snapshot().head, head, "crossing the active-time threshold changes no document or commit");
 });
 
-test("MCP set_pause is for the PM and the architect only, and paused status works in list and overview", async t => {
+test("MCP set_pause is for the architect only, and paused status works in list and overview", async t => {
   const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
   const client = new Client({ name: "Pause test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await server.connect(st); await client.connect(ct);
@@ -392,7 +392,7 @@ test("MCP set_pause is for the PM and the architect only, and paused status work
   assert.ok(!resumed.isError, text(resumed)); assert.equal(store.snapshot().items.area!.paused, undefined);
 });
 
-test("MCP names the PM and Architect on the tools it reserves, lets them write another project's item, and refuses 总管 with the tool error", async t => {
+test("MCP names the architect on the tools it reserves, lets it write another project's item, and refuses 总管 and PM with the tool error", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   for (const name of ["set_status", "set_pause"]) assert.match(tools.find(tool => tool.name === name)!.description!, rx`[Oo]nly author ${PROCESS_WRITERS}`, name);
   // The engineer writes these two inside its own subtree (its credential), so they name the process writers as the ones who write anywhere.
@@ -409,6 +409,8 @@ test("MCP names the PM and Architect on the tools it reserves, lets them write a
   assert.equal(sessionless.isError, true); assert.match(text(sessionless), rx`item other belongs to project Whitefoot.*only ${PROCESS_WRITERS} write other projects' items`); assert.deepEqual(store.snapshot(), before);
   const retiredCall = await client.callTool({ name: "append_log", arguments: { author: "总管", id: "other", text: "Retired" } });
   assert.equal(retiredCall.isError, true); assert.match(text(retiredCall), retired); assert.deepEqual(store.snapshot(), before);
+  const retiredPMCall = await client.callTool({ name: "append_log", arguments: { author: "PM", session: "PM", id: "other", text: "Retired" } });
+  assert.equal(retiredPMCall.isError, true); assert.match(text(retiredPMCall), retiredPM); assert.deepEqual(store.snapshot(), before);
 });
 
 test("context and graph accept a short number, rows show it, and an exact key wins over a number", async t => {

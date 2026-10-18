@@ -73,10 +73,10 @@ const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find
 // An item whose dispatch records, long ago and unfinished, name the sessions: a session is listed only when a record names it.
 const dispatched = (...names: string[]) => item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
 
-test("a session is listed for six hours after its last write, and the architect's and the PM's own never are", () => {
+test("a session is listed for six hours after its last write, and the architect's own never is; the name PM is a name like any other", () => {
   const items = { a: item(), named: dispatched("fresh", "edge", "old", "架构师", "PM") };
   const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]), PM: wrote(["a", 2]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's and the PM's sessions are out");
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["PM", "fresh", "edge"], "newest first; past the window and the architect's session are out");
 });
 
 test("a session no dispatch record names is not listed, whatever it wrote: the programs, the architect's turns and helpers, a hand-started session, a name written by mistake", () => {

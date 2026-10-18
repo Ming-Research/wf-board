@@ -10,7 +10,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { LiveStore } from "../src/live.ts";
 import type { LiveEntry } from "../src/live.ts";
 import { PROCESS_WRITERS } from "../src/model.ts";
-import { board, server, asArchitect, asPM, author, rx } from "./helpers.ts";
+import { board, server, asArchitect, author, rx } from "./helpers.ts";
 
 // A board whose clock the test sets, so a beat's stamps can be told from the moment it arrived.
 async function clocked(t: Parameters<typeof board>[0], now = "2026-10-18T09:00:00Z") {
@@ -63,10 +63,9 @@ test("a beat that does not say what a beat must is refused in the rule's own wor
   assert.equal(live.all().find(e => e.role === "架构师")!.action, "读 条目 a");
 });
 
-test("the writers are those of the runner's report: the PM, the architect and the runner; every other role and writer is refused", async t => {
+test("the writers are those of the runner's report: the architect and the runner; every other role and writer is refused", async t => {
   const { op, live } = await clocked(t);
   const beat = { id: "a", role: "工程师" as const, turn: 1, turnSeconds: 1 };
-  await op.reportLive({ ...asPM, ...beat });
   await op.reportLive({ ...asArchitect, ...beat });
   await op.reportLive({ ...runner, ...beat });
   await op.reportLive({ ...runner, session: "  执行程序  ", ...beat });
@@ -75,9 +74,9 @@ test("the writers are those of the runner's report: the PM, the architect and th
     await assert.rejects(() => op.reportLive({ author, ...(session === undefined ? {} : { session }), ...beat }), refused(rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report a turn's live state`), String(session));
   }
   for (const role of ["工程师", "审查", "观察者", "资源管理"] as const) {
-    await assert.rejects(() => op.reportLive({ ...asPM, access: { role, project: "Whitefoot", roots: ["a"] }, ...beat }), refused(/item\.runner: a .* credential may not write this part/), role);
+    await assert.rejects(() => op.reportLive({ ...asArchitect, access: { role, project: "Whitefoot", roots: ["a"] }, ...beat }), refused(/item\.runner: a .* credential may not write this part/), role);
   }
-  await op.reportLive({ ...asPM, access: { role: "PM", project: "PM", roots: [] }, ...beat });
+  await op.reportLive({ ...asArchitect, access: { role: "架构师", project: "Architect", roots: [] }, ...beat });
   assert.equal(live.all().length, again, "refused beats kept nothing");
 });
 

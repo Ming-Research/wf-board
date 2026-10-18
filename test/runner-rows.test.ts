@@ -54,7 +54,7 @@ test("a report counts only with the job's own open engineer dispatch, on open an
     job("finished", { state: "ci" }, started, { dispatches: [dispatch("finished", started, { finish: { ended: ago(5) } as Dispatch["finish"] })] }),
     // A review is not the runner's engineer.
     job("review", { state: "ci" }, started, { dispatches: [dispatch("review", started, { role: "审查" })] }),
-    // A session the PM started hours after the report began is not the job the report speaks of.
+    // A session started on the item hours after the report began is not the job the report speaks of.
     job("later", { state: "ci" }, ago(600), { dispatches: [dispatch("later", ago(30))] }),
     job("closed", { state: "ci" }, started),
     job("paused", { state: "ci" }, started),

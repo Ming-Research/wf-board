@@ -1,4 +1,4 @@
-// Dispatch records: the agent sessions the PM (or the architect) started on items. A dispatch lives on its item (`Item.dispatches`);
+// Dispatch records: the agent sessions the architect or the runner started on items. A dispatch lives on its item (`Item.dispatches`);
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
@@ -142,8 +142,6 @@ export function openDispatchesOf(it: Pick<Item, "dispatches"> | undefined): Disp
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
-/** Whether a reviewer session has an open dispatch on the item: a review the engineer resumes itself, not one the PM starts. */
-export const hasReviewer = (s: Pick<Snapshot, "items">, item: string): boolean => openDispatches(s, item).some(d => d.role === "审查");
 /** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
 export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   const out = new Set<string>();

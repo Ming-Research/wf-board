@@ -22,10 +22,14 @@ import type { Credentials } from "../src/credentials.ts";
 export const rx = (strings: TemplateStringsArray, ...values: string[]): RegExp =>
   new RegExp(strings.raw.map((part, i) => part + (i < values.length ? values[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "")).join(""));
 
-/** What a write under the retired author 总管 is told, written out: the process is written as the PM, the rules and the architect's own entries as Architect. */
-export const retiredText = "author 总管: this identity is retired; write the process as PM (session PM), and the rules and the architect's own entries as Architect";
+/** What a write under a retired author (总管, PM) is told, written out: the architect does the process and keeps the rules now. */
+export const retiredTextOf = (name: string) => `author ${name}: this identity is retired; write as Architect (session 架构师), which does the process and keeps the rules`;
+export const retiredText = retiredTextOf("总管");
 export const retired = rx`${retiredText}`;
 export const retiredExactly = new RegExp(`^${retired.source}$`);
+export const retiredPM = rx`${retiredTextOf("PM")}`;
+/** The refusal of a write under either retired author. */
+export const retiredAny = new RegExp(`(?:${retired.source}|${retiredPM.source})`);
 
 export const at = "2026-10-11T01:02:03Z";
 export const later = "2026-10-11T02:03:04Z";
@@ -37,19 +41,15 @@ export const opt = (text: string, recommended = false) => ({ text, detail: `What
 /** The target numbers of a goal, as set_targets takes them. */
 export const goalNumbers = { id: "style", goal: "apollo11 样式计算耗时", target: "≤ 1 倍 Chromium", current: "12 倍 Chromium", baseline: "Chromium 同机同页" };
 export const author = "Whitefoot";
-/** The architect's author name and session: together the writer that does what the board reserves for the architect (the journal, the tag vocabulary) and everything the PM does. */
+/** The architect's author name and session: together the writer that does what the board reserves for the architect (the journal, the tag vocabulary) and the process. */
 export const architect = "Architect";
 export const architectSession = "架构师";
 export const asArchitect = { author: architect, session: architectSession };
-/** The PM writes as author PM (a project of its own) from the session PM: it creates, cancels and retitles items, but writes no journal and changes no tag vocabulary. */
-export const pmAuthor = "PM";
-export const pmSession = "PM";
-export const asPM = { author: pmAuthor, session: pmSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: pmAuthor }] } });
+  const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: "PM" }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
   const item = (title: string, fields: object = {}) => ({ title, group: author, difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
   await store.commit({ author: "Fixture", message: "Seed synthetic board", puts: [
@@ -67,11 +67,11 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
   return { dir, store, live, op: ops(store, () => later, { live }) };
 }
 
-/** The daemon's pieces over a fresh board, listening on a free port; `wake` and `timedWakeMs` reach the wake channel. */
-export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; timedWakeMs?: number; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; ci?: (fixture: Awaited<ReturnType<typeof board>>) => CiWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
+/** The daemon's pieces over a fresh board, listening on a free port; `wake` and `architectTimedWakeMs` reach the wake channel. */
+export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; ci?: (fixture: Awaited<ReturnType<typeof board>>) => CiWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, live: fixture.live, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, timedWakeMs: extra.timedWakeMs, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
+  const http = createHttpServer({ store, ops: op, live: fixture.live, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
@@ -83,20 +83,7 @@ export async function server(t: Parameters<typeof board>[0], extra: { now?: () =
   return { ...fixture, http, url, api, port: address.port };
 }
 
-/** A client of the wake stream: every frame it receives, and `sync`, which returns once the server has sent all it had. */
-export async function wakeSocket(t: { after(fn: () => void): void }, url: string, after?: number) {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/wake" + (after === undefined ? "" : "?after=" + after));
-  t.after(() => socket.terminate());
-  const frames: Array<Record<string, unknown>> = [];
-  socket.on("message", data => frames.push(JSON.parse(data.toString())));
-  await once(socket, "open");
-  // The server sends its connected frame in the same step as the upgrade; ping/pong is the wire-order barrier after it.
-  const sync = async () => { const pong = once(socket, "pong"); socket.ping(); await pong; };
-  await sync();
-  return { frames, sync, socket, events: () => frames.filter(f => typeof f.n === "number") };
-}
-
-/** A client of an agent's wake stream, `/wake/<name>`, like wakeSocket. */
+/** A client of an agent's wake stream, `/wake/<name>`: every frame it receives, and `sync`, which returns once the server has sent all it had. */
 export async function agentSocket(t: { after(fn: () => void): void }, url: string, name: string) {
   const socket = new WebSocket(url.replace("http:", "ws:") + "/wake/" + encodeURIComponent(name));
   t.after(() => socket.terminate());

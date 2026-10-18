@@ -9,7 +9,7 @@ import { brief, context, list } from "../src/query.ts";
 import { unreadSteps, piecesOf } from "../src/history.ts";
 import { describeChanges } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { board, author, at, architect, architectSession, asArchitect, asPM, retired, rx } from "./helpers.ts";
+import { board, author, at, architect, architectSession, asArchitect, retiredAny, rx } from "./helpers.ts";
 
 const refuses = (call: Promise<unknown>, message: RegExp) => assert.rejects(call, e => { assert.ok(e instanceof OpError, String(e)); assert.match(e.message, message); return true; });
 
@@ -41,26 +41,25 @@ test("a record cannot carry a difficulty, in the schema and by conversion to a r
   await refuses(op.setDifficulty({ ...asArchitect, id: "a", difficulty: 2, reason: "记录没有" }), /a record has no difficulty/);
 });
 
-test("only the PM (author PM, session PM) or Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
+test("only Architect from the session 架构师 sets a difficulty, on an item of any project, and a refusal changes nothing", async t => {
   const { store, op } = await withArchitect(t);
   const before = store.snapshot(), count = (await store.log()).length;
   const refusal = rx`only ${PROCESS_WRITERS} may set an item's difficulty`;
-  // A project author, a project author borrowing the architect's or the PM's session, the architect's project from another
-  // session, from none or from the PM's, the PM's project without its session or with the architect's, and the retired
-  // coordinator are all refused.
-  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }, { author: architect, session: "PM" }, { author: "PM" }, { author: "PM", session: architectSession }]) {
+  // A project author, a project author borrowing the architect's session or the retired PM's, and the architect's project from
+  // another session or from none are all refused.
+  for (const who of [{ author }, { author: "Firn" }, { author, session: architectSession }, { author, session: "PM" }, { author: architect }, { author: architect, session: "另一个会话" }, { author: architect, session: "PM" }]) {
     await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), refusal);
     await refuses(op.setDifficultyMany({ ...who, items: [{ id: "a", difficulty: 3, reason: "r" }] }), refusal);
   }
-  await refuses(op.setDifficulty({ author: "总管", id: "a", difficulty: 3, reason: "r" }), retired);
+  // The retired coordinator and the retired PM are refused as retired, whatever session they write from.
+  for (const who of [{ author: "总管" }, { author: "PM" }, { author: "PM", session: "PM" }, { author: "PM", session: architectSession }]) await refuses(op.setDifficulty({ ...who, id: "a", difficulty: 3, reason: "r" }), retiredAny);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
   // The architect's own project is not the items' project: ownership does not apply.
   await op.setDifficulty({ ...asArchitect, id: "a", difficulty: 4, reason: "Whitefoot 的条目" });
   await op.setDifficulty({ ...asArchitect, id: "other", difficulty: 5, reason: "Firn 的条目" });
   assert.equal(store.snapshot().items.a!.difficulty, 4); assert.equal(store.snapshot().items.other!.difficulty, 5);
-  // The PM rates as well, one item and many.
-  await op.setDifficulty({ ...asPM, id: "a", difficulty: 5, reason: "PM 评" });
-  await op.setDifficultyMany({ ...asPM, items: [{ id: "other", difficulty: 1, reason: "PM 评多个" }] });
+  // The architect rates many at once as well.
+  await op.setDifficultyMany({ ...asArchitect, items: [{ id: "a", difficulty: 5, reason: "评多个" }, { id: "other", difficulty: 1, reason: "评多个" }] });
   assert.equal(store.snapshot().items.a!.difficulty, 5); assert.equal(store.snapshot().items.other!.difficulty, 1);
 });
 
@@ -422,7 +421,7 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   assert.match(tools.find(x => x.name === "brief")!.description!, /next tasks \(only items rated 1–5/);
   for (const name of ["create_item", "set_difficulty"]) assert.match(tools.find(x => x.name === name)!.description!, /engineer\b.*own subtree/, `${name} says where an engineer may use it`);
   assert.match(tools.find(x => x.name === "set_difficulty")!.description!, /never that item itself/, "set_difficulty says the root is not the engineer's to rate");
-  assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, rx`Only author ${PROCESS_WRITERS} replace a reply they did not write; everyone else replaces only their own`, "reply_note says whose reply replace may overwrite");
+  assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, rx`Only author ${PROCESS_WRITERS} replaces a reply it did not write; everyone else replaces only their own`, "reply_note says whose reply replace may overwrite");
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
   const made = await call("create_item", { ...asArchitect, key: "m1", group: author, title: "经工具建的", accept: "通过", difficulty: 2 });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);

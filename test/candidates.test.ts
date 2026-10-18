@@ -14,7 +14,7 @@ import { candidates, candidatesText, candidatesUnder, POOLS, GROUP_OVER } from "
 import type { CandidateGroup, Candidate } from "../src/candidates.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import { seedBoard } from "./e2e/seed.ts";
-import { asArchitect, asPM } from "./helpers.ts";
+import { asArchitect } from "./helpers.ts";
 
 const NOW = () => new Date().toISOString();
 const STALE = "2026-10-01T00:00Z";
@@ -34,7 +34,7 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   /** An engineer dispatch on an item; a stale one is open but its session has long been silent. */
   const engineer = async (id: string, level: number, startedAt?: string) => {
     agents++;
-    await op.dispatchStart({ ...asPM, id, role: "工程师", level, model: "Sonnet", agent: `eng-${agents}`, agentId: `agent-${agents}`, ...(startedAt ? { startedAt } : {}) });
+    await op.dispatchStart({ ...asArchitect, id, role: "工程师", level, model: "Sonnet", agent: `eng-${agents}`, agentId: `agent-${agents}`, ...(startedAt ? { startedAt } : {}) });
     return `eng-${agents}`;
   };
   const snapshot = () => store.snapshot();
@@ -172,7 +172,7 @@ test("an item is a candidate only when a root needs it, it can start, it is rate
   assert.equal(r.statusOf("stale"), "todo", "no live session, so the board shows it as todo");
   assert.equal(r.startable("stale"), true, "and startable by the rules of status alone");
   assert.deepEqual(ids(b.pool("2+").listed), ["ok"], "only ok");
-  assert.equal(b.pool("2+").working, 1, "the stopped session keeps its slot until the PM closes its dispatch");
+  assert.equal(b.pool("2+").working, 1, "the stopped session keeps its slot until its dispatch is closed");
   assert.equal(b.pool("2+").more, 0);
 });
 

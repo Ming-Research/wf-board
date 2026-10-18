@@ -17,7 +17,7 @@ import { wholeView, wholeViewText, spanText, limitOf, BUCKETS, BUCKET_ROWS, WAIT
 import type { Bucket, WholeView } from "../src/whole-view.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import type { Generated } from "./e2e/board-gen.ts";
-import { asArchitect, asPM } from "./helpers.ts";
+import { asArchitect } from "./helpers.ts";
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -38,14 +38,14 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
   const child = (key: string, owner: string, extra: Record<string, unknown> = {}) => item(key, { owner, after: [], ...extra });
   /** The runner's report on `id`, written at `time`. */
-  const report = (id: string, time: number, args: Record<string, unknown>) => at(time, () => op.reportState({ ...asPM, id, ...args } as Parameters<typeof op.reportState>[0]));
-  const session = (id: string, agent: string, startedAt: number) => op.dispatchStart({ ...asPM, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id`, startedAt: iso(startedAt) });
+  const report = (id: string, time: number, args: Record<string, unknown>) => at(time, () => op.reportState({ ...asArchitect, id, ...args } as Parameters<typeof op.reportState>[0]));
+  const session = (id: string, agent: string, startedAt: number) => op.dispatchStart({ ...asArchitect, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id`, startedAt: iso(startedAt) });
   /** The view at `now`, and the kind of each item in it. */
   const view = (now = base) => { const s = store.snapshot(), v = wholeView(s, rules(s, now), now); return { v, kind: Object.fromEntries(v.rows.map(x => [x.id, x.bucket])) as Record<string, Bucket>, s }; };
   return { store, op, base, at, item, child, report, session, view };
 }
 
-test("a report the runner writes itself, from its own session as the item's project, decides the item's kind like the PM's does", async t => {
+test("a report the runner writes itself, from its own session as the item's project, decides the item's kind like the architect's does", async t => {
   const b = await empty(t), { base } = b;
   await b.item("held"); await b.session("held", "held-eng", base - 15 * MIN);
   await b.item("asking");
