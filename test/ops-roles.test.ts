@@ -318,7 +318,8 @@ test("every session name that starts with 架构师 (author Architect) writes as
     await op.appendLog({ ...who, id: "a", text: `Written by ${session.trim()}` });
     assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: `Written by ${session.trim()}` });
     // What the board reserves for the architect alone.
-    await op.setTag({ ...who, name: `标签${n}`, meaning: "测试用" });
+    // Limited to the item's own project: a tag for every project would be required on the next item made for Firn.
+    await op.setTag({ ...who, name: `标签${n}`, meaning: "测试用", projects: [author] });
     await op.updateProject({ ...who, name: "Whitefoot", repo: "Org/Changed" });
     await op.setStatus({ ...who, id: key, status: "cancelled", log: "Not needed" });
     const commit = await lastCommit();
