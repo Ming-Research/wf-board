@@ -18,7 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts test/liveness.test.ts test/dispatch.test.ts test/stateless.test.ts test/tags.test.ts test/move-project.test.ts test/access.test.ts test/runner-report.test.ts test/mcp.test.ts
+      - run: node --test test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts test/liveness.test.ts test/dispatch.test.ts test/stateless.test.ts test/tags.test.ts test/move-project.test.ts test/access.test.ts test/runner-report.test.ts test/mcp.test.ts test/whole-view.test.ts
   # The new and changed tests must fail on the source without the change (the whole of src/ as on main) and on
   # each of the one-line mistakes that would give the turns the architect's pushes.
   witness:
@@ -28,7 +28,7 @@ jobs:
       matrix:
         include:
           - name: src as on main
-            tests: test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts
+            tests: test/credentials.test.ts test/ops-roles.test.ts test/journal.test.ts test/wake.test.ts test/wake-agents.test.ts test/runner-report.test.ts test/whole-view.test.ts test/access.test.ts
             mutate: |
               git checkout origin/main -- src
           - name: the turns' name answers the PM's stream
@@ -43,6 +43,14 @@ jobs:
             tests: test/wake-agents.test.ts
             mutate: |
               perl -0pi -e 's/(footer\(name: string\): string \{\n\s+const stream = this\.agents\.get\()name\)/$1name === "架构师轮次" ? ARCHITECT_SESSION : name)/' src/wake.ts
+          - name: the runner is refused its report
+            tests: test/runner-report.test.ts test/whole-view.test.ts
+            mutate: |
+              sed -i 's/!who.access \&\& !mayRunProcess(who) \&\& !isRunner(who)/!who.access \&\& !mayRunProcess(who)/' src/ops.ts
+          - name: the runner may do the rest of the process
+            tests: test/runner-report.test.ts
+            mutate: |
+              sed -i 's/if (!who.access) onlyProcess(who, what);/if (!who.access \&\& !isRunner(who)) onlyProcess(who, what);/' src/ops.ts
           - name: the architect's timed wake leaves out the turns' writes
             tests: test/wake.test.ts
             mutate: |

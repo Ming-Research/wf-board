@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isPMSession, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isPMSession, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -133,6 +133,13 @@ function onlyProcess(who: Writer, what: string): void {
  */
 function onlyProcessWithoutCredential(who: Writer, what: string): void {
   if (!who.access) onlyProcess(who, what);
+}
+/**
+ * The runner's report (`report_state`) among writers that carry no credential: the process, or the runner from its own session
+ * (model `isRunner`). A write over a credential is asked of the role's parts instead.
+ */
+function onlyProcessOrRunnerWithoutCredential(who: Writer, what: string): void {
+  if (!who.access && !mayRunProcess(who) && !isRunner(who)) throw new OpError(`author: only ${PROCESS_WRITERS}, or the runner from the session ${RUNNER_SESSION}, may ${what}`);
 }
 /** A difficulty as the log line writes it: the level, or 未评. */
 const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : String(difficulty);
@@ -652,6 +659,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
         if (isArchitectName(a.agent) || isPMSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the PM's or the architect's session name; a dispatch's credential under it would be taken for theirs`);
+        if (isRunnerSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the runner's session name, which no dispatch carries`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
           if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
@@ -682,7 +690,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { ...it, updated: at, dispatches: list.map((x, n) => n === i ? d : x), log: [...it.log, entry(a.author, at, finishLogLine(d, old.finish !== undefined))] };
     }, false, ` ${a.agentId}`),
     reportState: a => edit(a, "item.runner", "report_state", (it, _s, at) => {
-      onlyProcessWithoutCredential(a, "report the runner's state on an item");
+      onlyProcessOrRunnerWithoutCredential(a, "report the runner's state on an item");
       if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
       const problem = runnerReportProblem(a);
       if (problem) throw new OpError(problem);

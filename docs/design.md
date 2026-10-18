@@ -772,9 +772,13 @@ log:
   - Historical detail, like the log and the dispatches: `withoutHistoricalDetail` drops
     `runner` before any owner-facing comparison, so a report is never news to the owner.
     The page shows no report of its own; the whole view (section 7) draws what it says.
-  - Only the PM and the architect write it (`item.runner`, section 9): the runner is part of the
-    PM's process and reports with the PM's credential, so the part is one of the process parts
-    and no engineer, reviewer or observer credential carries it.
+  - Only the PM and the architect write it over a credential (`item.runner`, section 9), so the
+    part is one of the process parts and no engineer, reviewer or observer credential carries
+    it. The runner has no credential: it writes without one, from the session `执行程序`, as the
+    author of the item's project, and the board lets that session do this one part
+    (`isRunner`, section 9, The runner). Its first reports were all refused (the service log
+    held a `tool report_state` error for each), because the check had only the PM and the
+    architect in mind.
   - A record has no runner report: it has no work to report on.
 - **Projects.** Every item stores its project in `group`; an item's project
   changes only through `move_item_project`, which moves the item and everything it owns
@@ -2166,7 +2170,7 @@ author `总管` is refused by every tool.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
-| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the PM and the architect (`item.runner`); not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
+| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the PM and the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -3497,6 +3501,40 @@ with a message naming `PM` (session `PM`) for the process and `Architect` for th
 and the architect's own entries. Store migrations commit under `总管`
 directly and do not pass through it; the historical authors stay as written.
 
+**The runner.** The runner is the resident program that starts the engineers' turns and
+reports their state on the items (item `runner-mvp`). It has no credential. It calls the board
+as the author of the project of the item it touches, from the session `执行程序`
+(`RUNNER_SESSION` in `src/model.ts`). Three kinds of its calls and what the board does with them:
+
+- `report_state` is a part of the process (`item.runner`), which without a credential only the
+  PM and the architect could write; every report was refused. The board now takes the
+  session `执行程序` over no credential for the runner (`isRunner`), and that session may do this
+  one part. The name is read only when no credential is carried, as the PM's and the
+  architect's are; it is reserved like them (no credential file entry and no dispatch carries
+  it), and it is no push session: `answersPushes` does not know it, so its calls answer
+  nothing on the PM's stream, and the board makes no stream for it. Anything else of the
+  process (creating, rating, pausing, cancelling, retitling) is still refused to it.
+- `dispatch_start` and `dispatch_finish` pass without a credential. They carry no process
+  check: without a credential they check the item's project (the author is the item's project,
+  as for `append_log`; the tool table in section 6 says so), and over a credential the table
+  gives `dispatch.start` and `dispatch.finish` to the PM and the architect alone. They
+  should stay as they are for a writer with no credential: an author that writes without a
+  credential may already change everything on its own project's items, and a dispatch issues
+  a credential limited to the subtree of that one item (below), so nothing is enlarged. When
+  the path without a credential is removed, the runner needs a credential for these two.
+- `append_log` and `send_message` are any project's author and any session's, as for every
+  writer.
+
+Decision: the runner is known by its session name, the same device as the PM's and the
+architect's names. Rejected: a role and a credential of its own for the runner, because the
+runner stays refused until the owner has issued a token and put it in the runner's
+configuration, and the path without a credential would still need a rule for it until that
+path is removed (it can be added beside the name, and the two do not conflict); opening the
+report to every project author without a credential, because any session could then write a
+false state on any item of its project, and the whole view reads it to say what each item
+waits for; the PM's credential, because every one of the runner's calls would answer the
+PM's stream and hide the PM's silence, and it would carry all the PM's rights for one part.
+
 There is no inbox. Work another project needs is not filed into that
 project: the session that needs it reports it to the PM, who creates the
 item in the project that delivers it and joins it to the needing item by a
@@ -3567,12 +3605,12 @@ the writer from it.
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session names `架构师`, `架构师轮次` and `PM`** are the architect's and the PM's alone: without a
+- **The session names `架构师`, `架构师轮次`, `PM` and `执行程序`** are the architect's, the PM's and the runner's alone: without a
   credential the board takes author `Architect` writing from `架构师` or `架构师轮次` for the architect, and
   author `PM` writing from `PM` for the PM (section 6), and skips the process checks for them. A
-  file entry of another role under any of the names is refused, so is an entry of the architect's role
+  file entry of another role under any of the names is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
   under another name or in another project than `Architect`, an entry of the PM's role under another
-  name or in another project than `PM`, and so is `dispatch_start` for an agent of any of the names
+  name or in another project than `PM`, and so is `dispatch_start` for an agent of any of the four names
   (spaces around it are ignored, as everywhere the board compares it). The conversation's credential
   and the turns' credential are two entries side by side. With a credential, a
   write is the architect's or the PM's when the credential's role is, whatever names it carries; what

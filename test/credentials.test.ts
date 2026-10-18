@@ -65,6 +65,8 @@ test("the file's entries are checked: a role of its own, the architect and the P
     ["the architect's turn session name for the resource agent", { ...ok, role: "资源管理", session: "架构师轮次" }],
     ["the architect's turn session name for the PM", { ...ok, role: "PM", session: "架构师轮次", project: "PM" }],
     ["the architect's turn in another project", { ...ok, role: "架构师", session: "架构师轮次", project: "Firn" }],
+    ["the runner's session name for another role", { ...ok, session: "执行程序" }],
+    ["the runner's session name for the architect", { ...ok, role: "架构师", session: "执行程序", project: "Architect" }],
     ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "PM" }],
     ["the PM in the architect's project", { ...ok, role: "PM", session: "PM", project: "Architect" }],
     ["the PM in another project", { ...ok, role: "PM", session: "PM", project: "Firn" }],

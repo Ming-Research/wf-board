@@ -438,6 +438,8 @@ export const ARCHITECT = "Architect";
 export const ARCHITECT_SESSION = "架构师";
 /** The session name of the turns the runner starts to answer an engineer: the architect's write rights and none of the architect's pushes (docs/design.md, section 9). */
 export const ARCHITECT_TURN_SESSION = "架构师轮次";
+/** The session name the runner writes from: the resident program that starts the engineers' turns and reports their state (docs/design.md, sections 5 and 9). It writes as the author of the item's project and has no credential. */
+export const RUNNER_SESSION = "执行程序";
 /** The author name of the PM: a project of its own, with no repository, that holds the PM's records; a configured project like any other. */
 export const PM_AUTHOR = "PM";
 /** The session name the PM writes from, as author `PM`. */
@@ -466,6 +468,12 @@ export const isArchitect = (who: Writer): boolean =>
 export const isPM = (who: Writer): boolean =>
   who.access ? who.access.role === PM_ROLE : who.author === PM_AUTHOR && isPMSession(who.session);
 /**
+ * Whether a write is the runner's: from the session 「执行程序」 over no credential. It may report the runner's state on an item
+ * (ops `reportState`) and nothing else the process does; it takes no pushes (`answersPushes` knows no such name). Over a credential
+ * the names are not read, as for the PM and the architect.
+ */
+export const isRunner = (who: Writer): boolean => !who.access && isRunnerSession(who.session);
+/**
  * Whether a write may do the process: change any project's items, cards and note replies, create and cancel items, set their
  * difficulty, pause, move and retitle them, place projects in the page order (ops `onlyProcess`). The PM does it, and the
  * architect, which keeps every right it had.
@@ -477,6 +485,8 @@ export const isArchitectSession = (session: string | undefined): boolean => sess
 export const isArchitectName = (session: string | undefined): boolean => isArchitectSession(session) || session?.trim() === ARCHITECT_TURN_SESSION;
 /** Whether a session name is the PM's, ignoring spaces around it. */
 export const isPMSession = (session: string | undefined): boolean => session?.trim() === PM_SESSION;
+/** Whether a session name is the runner's, ignoring spaces around it. */
+export const isRunnerSession = (session: string | undefined): boolean => session?.trim() === RUNNER_SESSION;
 /** Whether a call answers the pushes (docs/design.md, section 8): from the PM's or the architect's session, or over a credential of the PM's role or of the architect's role under the architect's session; the runner's turns (`ARCHITECT_TURN_SESSION`) never do. */
 export const answersPushes = (call: { role: string; session: string } | { session?: string }): boolean =>
   "role" in call ? call.role === PM_ROLE || (call.role === ARCHITECT_ROLE && isArchitectSession(call.session)) : isPMSession(call.session) || isArchitectSession(call.session);

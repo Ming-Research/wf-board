@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_TURN_SESSION, Key, LONG_LIVED_ROLES, PM_AUTHOR, PM_ROLE, PM_SESSION, isArchitectName } from "./model.ts";
+import { ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_TURN_SESSION, Key, LONG_LIVED_ROLES, PM_AUTHOR, PM_ROLE, PM_SESSION, RUNNER_SESSION, isArchitectName, isRunnerSession } from "./model.ts";
 import type { Access, Item, Snapshot } from "./model.ts";
 
 /**
@@ -43,7 +43,9 @@ export const LongLived = z.object({
   .refine(c => c.role === ARCHITECT_ROLE || !isArchitectName(c.session), `the session names ${ARCHITECT_SESSION} and ${ARCHITECT_TURN_SESSION} are the architect's alone`)
   // The PM writes as author PM, the project of its own, from the session PM (model isPM), on the same terms.
   .refine(c => c.role !== PM_ROLE || (c.project === PM_AUTHOR && c.session === PM_SESSION), `the PM's credential is project ${PM_AUTHOR}, session ${PM_SESSION}`)
-  .refine(c => c.role === PM_ROLE || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`);
+  .refine(c => c.role === PM_ROLE || c.session !== PM_SESSION, `the session name ${PM_SESSION} is the PM's alone`)
+  // The runner writes without a credential, from this session (model isRunner); a credential under the name would only blur who wrote.
+  .refine(c => !isRunnerSession(c.session), `the session name ${RUNNER_SESSION} is the runner's alone, and the runner has no credential`);
 export type LongLived = z.infer<typeof LongLived>;
 export const CredentialsFile = z.object({ credentials: z.array(LongLived) }).strict().superRefine((file, ctx) => {
   for (const key of ["session", "hash"] as const) if (new Set(file.credentials.map(c => c[key])).size !== file.credentials.length) ctx.addIssue(`two credentials have the same ${key}`);

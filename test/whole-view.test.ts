@@ -45,6 +45,19 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   return { store, op, base, at, item, child, report, session, view };
 }
 
+test("a report the runner writes itself, from its own session as the item's project, decides the item's kind like the PM's does", async t => {
+  const b = await empty(t), { base } = b;
+  await b.item("held"); await b.session("held", "held-eng", base - 15 * MIN);
+  await b.item("asking");
+  // The runner has no credential: the author is the item's project, the session its own name.
+  await b.at(base - 30 * MIN, () => b.op.reportState({ author: "Whitefoot", session: "执行程序", id: "asking", state: "ask", to: "architect", turns: 2, cost: 1 }));
+  await b.at(base - 5 * MIN, () => b.op.reportState({ author: "Whitefoot", session: "执行程序", id: "held", state: "ci", note: "Ming-Research/wf-board#100 的 CI" }));
+  const { v } = b.view(base), row = (id: string) => v.rows.find(x => x.id === id)!;
+  assert.deepEqual([row("asking").bucket, row("asking").from], ["waiting", "runner"], "the report, not the plan, puts it among the waiting");
+  assert.deepEqual([row("held").bucket, row("held").from], ["waiting", "runner"], "and the report decides before a live session does");
+  assert.equal(row("held").what, "等 CI：Ming-Research/wf-board#100 的 CI");
+});
+
 test("each open work item falls into the one kind its situation gives, and what the runner reports decides before the plan does", async t => {
   const b = await empty(t), { base } = b;
   // The runner's reports, each with the time it entered its state.

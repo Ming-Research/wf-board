@@ -39,7 +39,7 @@ test("the writes the code reserves are the parts the table withholds from the ob
     ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
     ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
     ["item.title", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
-    ["item.runner", rx`only ${PROCESS_WRITERS} may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
+    ["item.runner", rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
   ];
   for (const [part, message, call] of reserved) {
     await assert.rejects(call, (error: unknown) => error instanceof OpError && message.test(error.message), `${part}: the code refuses an author that is neither the PM nor the architect`);
