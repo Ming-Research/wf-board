@@ -2,8 +2,9 @@
 // pull request. The deploy pushes and the red-main-line push go to the session holding that item (docs/design.md, The wake streams).
 
 import { holderOf } from "./dispatch.ts";
-import type { Snapshot } from "./model.ts";
-import { knownRepos, prKey, pullsIn } from "./query.ts";
+import type { Item, Snapshot } from "./model.ts";
+import { knownRepos, mergePullsIn, prKey, pullsIn } from "./query.ts";
+import type { PrId } from "./query.ts";
 import { changesSection } from "./rules.ts";
 
 /** The pull request numbers a main-line commit subject names: a merge commit ("Merge pull request #7 from …") or a squash
@@ -36,4 +37,19 @@ export function deliveries(s: Snapshot, repo: string, subjects: readonly string[
 export function tellFirst(s: Snapshot, found: readonly Delivery[]): Delivery[] {
   const held = found.filter(d => holderOf(s, d.item) !== undefined);
   return held.length ? held : found.slice(0, 1);
+}
+
+/** The pull requests whose merge turned a merge row of an item done between two versions of it: of the rows open in `before`
+ * and done in `after`, the pull requests that counted for each in `before` (rules countedPulls). The board's look at GitHub
+ * marks the row, and so may a session by hand; a row that names no counted pull request is not a merge row, and a dropped
+ * row did not turn done. */
+export function newlyMerged(s: Snapshot, before: Item | null, after: Item | null): PrId[] {
+  if (!before || !after) return [];
+  const repos = knownRepos(s), out = new Map<string, PrId>();
+  for (const row of before.plan) {
+    const now = after.plan.find(r => r.id === row.id);
+    if (!("text" in row) || !now || !("text" in now) || now.state !== "done") continue;
+    for (const pr of mergePullsIn(s, before.head, row, repos)) out.set(prKey(pr), pr);
+  }
+  return [...out.values()];
 }

@@ -36,9 +36,9 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 test("every kind says where it goes, and a holder or session route names one of the kind's own fields", () => {
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) {
-    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true } | "pm" | "architect" | undefined;
+    const to = (spec as { to?: unknown }).to as { holder?: string; session?: string; only?: true; otherwise?: "architect" } | "pm" | "architect" | undefined;
     const field = typeof to === "object" && to !== null ? to.holder ?? to.session : undefined;
-    const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only") : [];
+    const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only" && k !== "otherwise") : [];
     assert.ok(to === "pm" || to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
   // The routes the PM rules rest on: what the PM has to act on goes to the PM; what a session holding an item has to act on, to it.
@@ -50,6 +50,8 @@ test("every kind says where it goes, and a holder or session route names one of 
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS["main-red"].to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
+  assert.deepEqual(WAKE_KINDS["card-ruled"].to, { holder: "item", only: true }, "a ruling is for the session holding the card's item alone: the architect has the owner's note");
+  assert.deepEqual(WAKE_KINDS["dep-merged"].to, { holder: "waiter", otherwise: "architect" });
   assert.equal("pr-ready" in WAKE_KINDS, false, "a pull request that can merge is the engineer's to merge, not pushed");
   assert.equal("dispatch" in WAKE_KINDS, false, "the board pushes no offers: the PM compares the candidates with its own limits");
 });
@@ -75,6 +77,8 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   "no-answer": { session: L, item: L, project: L, title: L, since: L },
   // A message's text is refused above MESSAGE_TEXT_LIMIT when it is sent, so its longest is that; the rest is any length.
   message: { message: L, from: L, project: L, to: L, item: L, text: "长".repeat(MESSAGE_TEXT_LIMIT) },
+  "card-ruled": { card: L, item: L, project: L, title: L, choice: L, option: L, ruling: L },
+  "dep-merged": { item: L, project: L, title: L, prs: many, waiter: L },
 };
 
 test("one line of any push holds at most LINE_LIMIT characters, starts with its number and label, and is what the frame carries", () => {
@@ -88,6 +92,7 @@ test("one line of any push holds at most LINE_LIMIT characters, starts with its 
   }
   // A short push is shown whole, so nothing is cut that fits.
   assert.equal(new AgentStream("eng").push("item-done", done("c1", "p1")).line, "#1 子条目做完 · it:c1（Whitefoot） · 子条目 · 等它的：it:p1");
+  assert.equal(new AgentStream("eng").push("dep-merged", { item: "a", project: "Whitefoot", title: "中文检查", prs: ["Ming-Research/Whitefoot#7", "Ming-Research/Whitefoot#8"], waiter: "b" }).line, "#1 等的活合入了 · it:a（Whitefoot） · Ming-Research/Whitefoot#7、Ming-Research/Whitefoot#8 已合入 · 等它的：it:b · 中文检查");
 });
 
 test("a message's line keeps its whole text and cuts only what comes before it", () => {
@@ -121,6 +126,17 @@ test("each agent's stream numbers, keeps and replays on its own, a holder route 
   assert.deepEqual(again.agent("工程师甲").pending().frames.map(f => f.n), [1, 2]);
   assert.equal(again.agent("工程师甲").push("item-done", done("c5", "p1")).n, 3, "numbering goes on after a restart");
   assert.equal(again.latest(), 1, "the PM's numbers are its own");
+});
+
+test("a push for a waiter goes to the session holding the waiter, else to the architect's stream, and not to the PM's", () => {
+  const wake = new Wake({ now: () => T0 });
+  wake.routeBy(item => ({ held: "工程师甲" })[item as "held"]);
+  const merged = (waiter: string) => ({ item: "a", project: "Whitefoot", title: "中文检查", prs: ["Ming-Research/Whitefoot#7"], waiter });
+  wake.push("dep-merged", merged("held"));
+  wake.push("dep-merged", merged("nobody"));
+  assert.deepEqual(wake.agent("工程师甲").pending().frames.map(f => f.waiter), ["held"]);
+  assert.deepEqual(wake.agent(ARCHITECT_SESSION).pending().frames.map(f => f.waiter), ["nobody"], "nobody holds the waiter: the architect is told, since an item nobody holds is the architect's to start");
+  assert.deepEqual(wake.since(0).frames, [], "the PM's stream gets neither");
 });
 
 test("a push routed to the session of the PM goes to the PM's stream, to the session of the architect to its own agent stream, and no stream is made under the PM's name", async t => {
@@ -303,6 +319,78 @@ test("an item becoming done tells the session holding each open item that waits 
   await pm.sync();
   assert.equal(wake.agent("b-worker").latest(), 1, "a done item is announced once");
   assert.deepEqual(pm.events().filter(f => f.event === "item-done"), [], "nobody holds area, so no push is made for it");
+});
+
+/** The fixture's item a with an open merge row that names a PR its 改动 section names too, and item b waiting on it by a shared row. */
+async function openMergeRow(op: Awaited<ReturnType<typeof server>>["op"], store: Awaited<ReturnType<typeof server>>["store"], text = "合入 Ming-Research/Whitefoot#7") {
+  await op.updateItem({ author: "Whitefoot", id: "a", rev: store.snapshot().items.a!.rev, head: "背景\n\n## 改动\n\nMing-Research/Whitefoot#7", reason: "name the PR" });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge", text, state: "doing" } });
+}
+/** How many pushes a stream has had, 0 for a stream nobody has made (asking for one makes it). */
+const had = (wake: Wake, name: string) => wake.hasAgent(name) ? wake.agent(name).latest() : 0;
+const merged = (op: Awaited<ReturnType<typeof server>>["op"]) => op.markMerged({ author: "Whitefoot", session: "看板", id: "a", row: "merge", merged: [{ repo: "Ming-Research/Whitefoot", number: 7 }], log: "Ming-Research/Whitefoot#7 已在 GitHub 合入" });
+
+test("a merge row turning done tells the session holding each open item that waits on it by a shared row, once, and not the owner", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op, store } = await server(t, { wake });
+  // Item a is owned by area, which nobody holds, and shared by b, which an engineer holds.
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
+  const pm = await wakeSocket(t, url);
+  await openMergeRow(op, store);
+  await pm.sync();
+  assert.equal(had(wake, "b-worker"), 0, "an open merge row tells nobody");
+  await merged(op);
+  await until(() => had(wake, "b-worker") === 1, "the dep-merged push");
+  const [frame] = wake.agent("b-worker").pending().frames;
+  assert.deepEqual({ ...frame, at: undefined, line: undefined }, { n: 1, at: undefined, event: "dep-merged", item: "a", project: "Whitefoot", title: "中文检查", prs: ["Ming-Research/Whitefoot#7"], waiter: "b", line: undefined });
+  await op.appendLog({ ...asArchitect, id: "a", text: "a later write to the item" });
+  await pm.sync();
+  assert.equal(had(wake, "b-worker"), 1, "told once");
+  assert.equal(had(wake, ARCHITECT_SESSION), 0, "the holder was told, so the architect is not");
+  assert.deepEqual(pm.events().filter(f => f.event === "dep-merged"), [], "area owns a and nobody holds it: an owner's row is not a wait, and the PM is not told");
+});
+
+test("a merge row turning done tells the architect of an open waiter nobody holds, and a row marked done by hand counts", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op, store } = await server(t, { wake });
+  const pm = await wakeSocket(t, url);
+  await openMergeRow(op, store);
+  // By hand, as a session may: the same row, done.
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await until(() => had(wake, ARCHITECT_SESSION) === 1, "the dep-merged push to the architect");
+  await pm.sync();
+  const [frame] = wake.agent(ARCHITECT_SESSION).pending().frames;
+  assert.deepEqual([frame!.event, frame!.item, frame!.waiter, frame!.prs], ["dep-merged", "a", "b", ["Ming-Research/Whitefoot#7"]]);
+  assert.deepEqual(pm.events().filter(f => f.event === "dep-merged"), [], "not the PM's");
+});
+
+test("what is not a merge row turning done tells nobody: a row naming no PR its 改动 section names, a dropped row, a waiter that is done or paused", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { url, op, store } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
+  const pm = await wakeSocket(t, url);
+  // A PR the 改动 section does not name, and a row that does not say 合入.
+  await openMergeRow(op, store, "合入 Ming-Research/Whitefoot#8");
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge", text: "合入 Ming-Research/Whitefoot#8", state: "done" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "check", text: "确认 Ming-Research/Whitefoot#7 没问题", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "check", text: "确认 Ming-Research/Whitefoot#7 没问题", state: "done" } });
+  // A dropped row did not merge.
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "later", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "later", text: "合入 Ming-Research/Whitefoot#7", state: "dropped", reason: "不做了" } });
+  await pm.sync();
+  assert.equal(had(wake, "b-worker"), 0, "none of these told the holder of b");
+  // A waiter that is paused is not waiting on anyone: nothing is told for it, held or not.
+  await op.setPause({ ...asArchitect, id: "b", paused: true, reason: "waits for the owner" });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await pm.sync();
+  assert.equal(had(wake, "b-worker"), 0, "b is paused");
+  assert.equal(had(wake, ARCHITECT_SESSION), 0, "and it is not the architect's to hear of either");
+  // The same row shape once b is open again is told, so the silences above are the conditions' and not a push that never works.
+  await op.setPause({ ...asArchitect, id: "b", paused: false });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await until(() => had(wake, "b-worker") === 1, "the push once b is open");
 });
 
 test("the pools count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {

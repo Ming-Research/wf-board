@@ -89,7 +89,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command that writes the repository, which all run through the store's `git()`; the read-only `cat-file` reader and the reads of a one-time conversion start no maintenance); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
@@ -109,13 +109,13 @@ has diverged (an error). Commits written while a push runs go in the next one. O
 runs at a time, and a call made while one runs gets its result. A push beside a write
 is safe because it reads objects and changes one remote-tracking reference, and its
 git runs with automatic maintenance off, so it never starts a repack of its own. The
-other direction is a write's commit starting a repack while a push reads objects. A
-40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
-maintenance triggered by each commit, in the foreground or the background, beside
-back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
-pushes each) there was no error, `git fsck` passed, and the remote's head was an
-ancestor of the local one. A push that did fail would be tried again at the next round
-and, if it kept failing, told by the lag push below.
+other direction is a maintenance step repacking while a push reads objects. Two
+replays of the live board's busiest ten minutes (hosted runner, git 2.55.0, 1652 writes
+each, a step after every 200 commits) ran a push every 3 seconds beside the writes and
+the steps: 396 pushes in all, none failed, `git fsck` passed at the end, and the remote's
+head was an ancestor of the local one (item `data-repo-gc-timing-study`). A push that
+did fail would be tried again at the next round and, if it kept failing, told by the
+lag push below.
 
 A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
 with the network down, never ends. In the queue, it held every write: in CI with a fake
@@ -143,6 +143,49 @@ the last failure's reason. The hour counts from the last time the copy was known
 a push that sent or found nothing to send, or a round that found nothing to send; after a
 start, from the start, since the state is in memory. A copy that is current again and falls
 behind again is told again.
+
+**Maintenance.** The data repository gains loose objects, about 4 for each commit (4.14 on the
+live board), and someone has to pack them. git does it by itself after a commit, at a time and in a
+size the board does not choose: the first such repack on the live repository (9,087 loose objects from
+2,160 commits) held a write for 5,672 ms, over the 3 seconds a write may wait. In the background, the same
+repack deleted an empty object directory while the next `git add` made a temporary file in it, which
+failed 11 of 1,726,480 writes in a reproduction with git alone and none of 2,030,080 without the
+repack (item `e2e-git-tmp-flake-study`). So git's own maintenance is off, and the board runs a step
+itself as a task of the write queue, where it cannot overlap a write.
+
+- **When.** After every `MAINTENANCE_EVERY` (100) commits, counted from the last step. `Store.open` estimates the
+  commits waiting from the loose objects it finds (divided by 4), maintains a backlog of 100 or more before it returns,
+  and so before the daemon listens. A commit queues no second step while one is queued. A step that fails is logged and
+  tried again after 100 more commits. Rejected, with the measurements of item `data-repo-gc-timing-study`: waiting for
+  idle time (the live board's busiest ten minutes of 596 seconds have 105 seconds without a commit and a commit in
+  the others, so the cap on commits would decide anyway), maintaining only at start (the backlog has no bound: a week without a restart is about 20,000 commits and a
+  step of about 60 s, estimated), maintaining at fixed times (a step follows the writes: the busiest ten minutes' 1,566
+  commits would be one step of about 5 s, estimated), and git's own trigger with a lower threshold (it still
+  rewrites the whole repository now and then, and its trigger is out of the board's hands: on the replica it started at 3,436 loose
+  objects and on the live repository not yet at 5,154, for a cause that was not found).
+- **How many.** 100. On a hosted runner, replaying the live board's busiest ten minutes against a copy of its shape
+  (1652 writes each), a step of 100 commits took a median of 240 and 299 ms (two samples) and at most 753 and 734 ms, the slowest
+  write was 631 and 771 ms, and none of the writes took 3 s. A step of 200 took at most 1,065 to 1,699 ms in three samples. In one reproduction of the 10-16
+  repack the replica took 0.69 to 0.95 of the live repository's time, so the live Mac may be up to 1.45 times slower: a step of 100
+  then takes about 1.1 to 1.3 s, under the 2 s line at which a slow write is told to the PM (Time limits), and a step of 200
+  about 1.5 to 2.5 s, which reaches that line.
+- **What a step does.** `git repack -d -l --write-midx` packs every loose object into one new pack;
+  `git commit-graph write --split --reachable` writes the commit-graph (a history query is about 6 times
+  faster with it); and, when the repository had more than 8 packs before the step, `git multi-pack-index expire` and
+  `git multi-pack-index repack --batch-size=16m` merge the small packs in batches of about 16 MB. Over 12,000
+  commits on a synthetic copy a step of 100 took a median of 601 ms and at most 906 ms, and there were at most 10 packs.
+  Rejected: git's own geometric repack for each step (the smallest disk, but a repack of the whole repository every
+  7,300 commits took 3.6 to 4.4 s and grows with the repository), packing without merging (the pack count has no bound: 63
+  after 60 steps), and a `.keep` file on the large packs (every step took 2.2 to 2.6 s).
+
+The cost is disk: the merge in batches finds deltas only inside a batch, so the synthetic copy grew to 134 MB over 12,000 commits
+where git's own way gave 75 MB (from 54 MB), about 4 times per commit. On the live board that is an estimated 80 to 108 MB a
+week more than git's own, not measured there. Each step writes a line to the service log,
+`maintenance 100 commits 301 ms 6 packs 27.5 MB` (commits, time, packs and size after the step), and the start writes
+`startup maintenance: ...` with what it found. The first start after this change has a backlog of about 1,600 commits and a
+step of about 5 s (estimated). Reopen the choice when the service log shows a step over 1.5 s or a write over 2 s, when a week's
+growth is over twice the estimate (then a full repack at start, before listening, once the disk passes a threshold), or when
+the pack count passes 10.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -207,16 +250,11 @@ sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
 
-A commit's automatic repack also runs in the foreground (see Storage). On
-2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
-wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
-runs; the same commit with the repack in the background took 25 to 103 ms). The
-study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
-5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
-has ruled that the board turns git's automatic maintenance off and queues a
-maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
-not yet built); until then the repack stays in the foreground.
+A maintenance step that is running when the signal arrives is not stopped: the commit of the
+reading state waits for it in the write queue, and the shutdown queues no step after the signal
+(`Store.stopMaintenance`). In the replays of Maintenance a step of 100 commits took 753 ms at most
+on a hosted runner. Not measured: a step that runs at the moment of a shutdown on the live Mac, and
+the first step after a long backlog.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in
@@ -1630,11 +1668,14 @@ where the design reaches it.
   choice?, ruling?)` is for a decision the owner made in chat: it takes the
   option chosen, the owner's own words, or both, and the words are kept in
   `ruling` for the design log's approval line. A card ruled in words alone has
-  no `choice`.
+  no `choice`. Either way the board tells the session
+  holding the card's item with a `card-ruled` push (section 8, A card ruled).
 - **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
   any more: the status becomes `withdrawn`, the log text goes to the item's
   log, and a row counts as resolved. It is the one way to retire a card;
-  nothing deletes one.
+  nothing deletes one. Cancelling an item withdraws its open cards in the
+  same commit, marked `withdrawnWithItem`; reopening the item restores those
+  marked cards to open, and leaves a card withdrawn by hand withdrawn.
 - **Legacy text.** Cards converted from the earlier form (see
   [Card conversion](#card-conversion)) keep their old `background` in
   `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
@@ -2622,7 +2663,8 @@ does with a push, and how it listens, is in its rules and in
 **Where a push goes.** The kinds table gives each kind `to`: `pm`, the
 PM's stream; `architect`, the stream of the session 「架构师」, an agent's stream like any other; `{holder: <field>}`, the stream of the session holding
 the item that field names, and the PM's when nobody holds it or the field is null (`only: true` on it: a push
-for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it); or
+for a holder alone, not made when nobody holds the item; the caller asks `Wake.holds` first and `push` refuses it;
+`otherwise: "architect"` on it: the architect's stream instead of the PM's when nobody holds the item); or
 `{session: <field>}`, the stream of the session that field names, the
 PM's when it names the PM. A session
 *holds* an item while an engineer dispatch record on the item (section 5)
@@ -2638,12 +2680,12 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Eighteen kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Nineteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `note` and `timed-architect`,
-which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` and
-`ask-alive`, which go to a holder; and `message`, which goes to its recipient:
+which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, `dep-merged`,
+`ask-alive` and `card-ruled`, which go to a holder; and `message`, which goes to its recipient:
 
 - an owner note, to the architect: a note becomes `sent`, on any project's item or
   card, so the owner's comments on an engineer's item reach the architect too. Every kind
@@ -2681,14 +2723,43 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done` a
   board makes the pushes (Deploys and the red main line, below);
 - an item that became done (`item-done`), to the session holding each open item
   that waits on it; when nobody holds that item nothing is pushed;
+- an item whose merge row became done (`dep-merged`), to the session holding each open item
+  that waits on it by a shared row, and to the architect for one nobody holds (A merge
+  a waiter waits on, below);
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
-- a message one agent sent another (`message`; Messages, below).
+- a message one agent sent another (`message`; Messages, below);
+- a card that was ruled (`card-ruled`): an open card became ruled, whether the owner
+  sent a choice on the page or a session recorded one with `rule_card`. It goes to
+  the session holding the card's item, which may be stopped on the card; when
+  nobody holds the item nothing is pushed (A card ruled, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
+
+**A card ruled.** The owner's pick on the page reaches the architect as a `note`
+(a sent choice note also rules the card), and the engineer rules had the architect
+forward it to the session stopped on the card. One ruling was never forwarded, and
+the engineer holding its item stayed stopped for two days. So the board tells that
+session itself, from the one place both ways of ruling a card pass: the change in
+which an open card becomes ruled, not the note, since a decision recorded with
+`rule_card` has no note. A card's plan row stands only in its own item's plan
+(section 5, Decision cards), so the session waiting on a card is the one holding its
+item. The frame carries the card's key and question, the key and name of the option
+chosen and the owner's words, so the line says what was decided without a read of the
+board; runs of white space in the question, the option's name and the words are one
+space, so the line stays one line. Nothing is pushed when nobody holds the item: the
+owner's pick has already reached the architect as the note, and a ruling a session
+recorded was made by a session that knows it. A card that is withdrawn, or written
+again while open, is not ruled and pushes nothing. Rejected: leaving it to the
+architect to forward, which rests on one session remembering and is what failed;
+pushing to the PM when nobody holds the item, which hands the PM a message it can
+only pass on while the architect already has the note; pushing the owner's note
+itself to the holder, which would send every comment and explain request on the item
+to the engineer before the architect has judged it, and says nothing of the option
+chosen.
 
 **Free slots are the PM's to count.** The board holds no limit per pool and pushes no
 offer, so no push says a slot is free. The PM compares the working count and the candidates
@@ -2719,6 +2790,24 @@ when none does. The job names at most `MAX_CHANGES` commits in a request and cou
 request only a later commit names of a deploy that carried more gets no push. Rejected: pushing every deploy to the PM to forward, which hands
 the PM a message it can only pass on; telling the engineer of the last commit only, which
 misses the others a deploy carried.
+
+**A merge a waiter waits on.** An item that waits on another by a shared row is held up by that item until
+it is done, but the work it waits for is often only the item's merge: an engineer stacked on a pull request, or
+about to rebase on it, goes on at the merge, while the item stays open until its later steps (the deploy, the live
+check) are done, and `item-done` is not pushed before. So a merge row turning done (Watching GitHub, Merge rows;
+marked by the look at GitHub or by a session by hand) is pushed as `dep-merged`, once for the change that did it
+(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a row open before and done
+after, with the pull requests that counted for it before; a dropped row, a row naming no counted pull request
+and an item written new push nothing), to each open, unpaused item with a *shared* row on the item (`dependents`
+without `own`), one push for each. A session holding the waiter gets it; when nobody does it goes to the
+architect, who starts or hands on the work nobody holds (the PM would only pass it on), and an item that is
+paused is not told. An owner's row on a part is not a wait: the owner learns of the part at `item-done`, and
+an owner that nobody holds would send the architect a line for every merge of every part. `item-done` is
+unchanged, and an item whose last row is its merge row produces both pushes. The kind is one entry in the
+table, route `{holder: "waiter", otherwise: "architect"}`, and a restart repeats nothing, since a push is made by the write
+that turned the row done and is not read from the state. Rejected: pushing only the holders, which leaves an item that nobody holds waiting until the
+architect's patrol; telling the PM, which can only pass it on; telling the owners of the item as well, as above;
+pushing at `item-done` only, which is after the point the waiter needed to go on.
 
 **Address.** A client opens a WebSocket to
 `ws://127.0.0.1:<port>/wake?after=<n>` (the running daemon uses port 7417).
@@ -2763,9 +2852,11 @@ the forms the server sends:
 | `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the PM, naming the first |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
+| `{n, at, event:"dep-merged", item, project, title, prs, waiter}` | A merge row of `item` turned done, whether the board marked it after GitHub reported the pull requests merged or a session did by hand. One event for each open, unpaused item `waiter` with a shared row on `item`; it goes to the stream of the session holding `waiter`, and to the architect's stream when nobody does. `prs` lists the pull requests that counted for the row, as `Owner/Name#N`, and `item`, `project` and `title` are the item whose row turned done. Nothing is pushed for an owner's row, a dropped row, a row that names no counted pull request, or a paused `waiter`. Made by the write that turned the row done, so a restart announces nothing |
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |
+| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream, and nothing is pushed when nobody holds the item (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
@@ -3895,9 +3986,11 @@ on the live board.
   random sequence against a reverse scan of the commits and rebuilt after a
   restart; the rows (window, state words, level, dispatch records and ended
   names) on hand-built snapshots, each boundary on both sides; the page in a
-  fake DOM; and in a real browser the list above the projects, 在树中
-  landing on the tree's row and 返回 coming back, and every tree click still
-  landing with a cell unfolded.
+  fake DOM; the page in a DOM library (the list above the projects, 在树中
+  selecting the tree's row and 返回 coming back, a cell unfolding in place with
+  every tree click still landing, the line of the sessions with no dispatch
+  record); and in a real browser where the list lies and how far the jump
+  scrolls.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
   pull request, when the engineer starts it (below), without the browser tests
   unless the engineer sets the input `browser`; the browser tests run on each
@@ -3908,9 +4001,9 @@ on the live board.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
-### Three test layers
+### Four test layers
 
-The page is tested in three layers. Each catches a class of fault the layer
+The page is tested in four layers. Each catches a class of fault the layer
 below cannot see, and a page bug gets its test in the lowest layer that can.
 
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
@@ -3921,12 +4014,27 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
    board's shapes.
-3. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
+3. **The page in a DOM library** (`test/dom`, run by `npm test`): jsdom runs
+   the real page (`test/dom/page.ts` bundles `web/app.ts` as a script and
+   evaluates it in a window) against the real server on the generated board
+   of layer 4, through Node's real `fetch` and a reader of the real event
+   stream, with no browser. A window has no layout, so its boxes are one box
+   at the top, nothing is under a point and nothing scrolls; what the page
+   decides from positions always says yes. The few checks of style read the
+   stylesheet's cascade (`test/dom/styles.ts`: specificity, order,
+   inheritance, `var()`, the scheme and width media queries) instead of a
+   layout. It runs every check that needs only the page's logic, its DOM
+   and the board's rules: the cost of a browser per check is gone, the page's
+   own draws cost more than in a browser (the parser and the element
+   constructors are JavaScript).
+4. **The page in a real browser** (`test/e2e`, `npm run test:e2e`, CI job
    `e2e`): headless Chromium (Playwright) loads the real page from the real
    server (the wiring of `src/main.ts`, in process) on a temporary data
-   repository, so the page talks to the real API and event stream.
+   repository, so the page talks to the real API and event stream. It keeps
+   what needs a layout: where a box lands, how wide it is, what a browser
+   hides, hit-testing and scrolling, and the diagrams.
 
-The third layer exists because five page bugs in one day passed every test of
+The browser layer exists because five page bugs in one day passed every test of
 the first two: saving a comment folded the card's comment list and hid its
 send button; the purple and red numbers jumped to another project's card
 after unrelated re-renders; a card row in a plan jumped to another item
@@ -3957,10 +4065,13 @@ generated too.
 Viewer state is part of the shape: the tests fold comment lists in
 localStorage and unfold every tree row.
 
-**The invariants.** `test/e2e/invariants.ts` clicks every kind of clickable
-thing and compares where the page landed with what the element claims,
-computed independently from the stored board with `src/rules.ts` and the
-server's unread history:
+**The invariants.** `test/dom/checks.ts` (the style ones in
+`test/dom/style-checks.ts`) clicks every kind of clickable thing and compares
+where the page landed with what the element claims, computed independently
+from the stored board with `src/rules.ts` and the server's unread history
+(`test/e2e/invariants.ts` holds the oracle and what still needs a browser:
+the layout of a card row in a plan, the visibility of a folded card and the
+alignment of the difficulty chip, in `test/e2e/page.e2e.ts`):
 
 - a tree row's title selects that item and shows its detail;
 - in a plan, an item row goes to its item and 返回 comes back; a card row
@@ -3996,7 +4107,11 @@ server's unread history:
 Each family runs on a freshly loaded page, then again on one page kept open
 while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
-new item), so incremental re-renders happen in between.
+new item), so incremental re-renders happen in between. The families run in
+several files (`test/dom/page-*.test.ts`), each with a board and a page of its
+own and short enough to be dealt out to the shards (the longest of the layer's
+13 files takes 27 seconds on a hosted runner, all 13 together 220), so the files
+run side by side.
 
 Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
 log are drawn, with Chinese labels; a block that does not parse shows its code and the
@@ -4062,13 +4177,17 @@ in turn, and a draw made 150 ms slower, with the board quiet and with sessions w
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
 
-**Evidence.** `test/e2e/regressions.e2e.ts` runs the relevant check on the
-current page, where it must find nothing, and on the page with a past fix
-reversed in a copy served from a temporary directory, where it must report
-the bug. A fix is reversed by undoing its commit's hunks, or, where later
-work rewrote the lines around it, by a targeted edit that removes just the
-fix. A witness whose edits no longer match the current file fails and is
-updated or retired on purpose.
+**Evidence.** Each check runs on the current page, where it must find
+nothing, and on the page with the thing it guards spoiled, where it must
+report it. In the DOM layer the spoiled page is the source text edited in
+memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles)
+its own, each naming the reason it must fail for. In the browser layer
+`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
+reversed in a copy served from a temporary directory. A fix is reversed by
+undoing its commit's hunks, or, where later work rewrote the lines around it,
+by a targeted edit that removes just the fix. A witness whose edits no longer
+match the current file fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
@@ -4220,9 +4339,14 @@ summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
 that took more than 1.5 times the mean of the others as the sign. A shard lists
 its files longest first, which is the order the runner starts them in, three at a
 time.
-A shard's test step is cut at 45 seconds and a single test at 40
+A shard's test step is cut at 60 seconds and a single test at 40
 (`--test-timeout`), so that a hung shard or test is named in the log of the red
-run and not only reported as a job that ran long.
+run and not only reported as a job that ran long. With the 13 files of `test/dom`
+(section 11, Four test layers) the steps of the 8 shards took 25 to 46 seconds in
+one run, because three files share the four cores and a page file takes 1.2 to 2.3
+times as long among them as alone; a cut at 45 seconds then stopped
+shards in two runs while their tests were passing, and 60 leaves 1.3 times the
+longest step.
 
 `test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
 and `ops-roles.test.ts`, pause and who may write what), because one of its tests

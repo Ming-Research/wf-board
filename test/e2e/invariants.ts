@@ -7,7 +7,6 @@ import { ops } from "../../src/ops.ts";
 import { placedCards, rules } from "../../src/rules.ts";
 import type { Rules } from "../../src/rules.ts";
 import { unreadSteps } from "../../src/history.ts";
-import { difficultyText } from "../../src/model.ts";
 import type { Snapshot } from "../../src/model.ts";
 import type { Store } from "../../src/store.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
@@ -69,19 +68,6 @@ async function landing(bp: BoardPage): Promise<string> {
 }
 /** The item a wait belongs to. */
 function homeOf(o: Oracle, wait: string): string | undefined { return wait.startsWith("ask:") ? wait.slice(4) : o.s.decisions[wait.slice(2)]?.item; }
-
-/** Every tree row's title selects that item and shows its detail. */
-export async function checkTreeRows(bp: BoardPage, _o: Oracle): Promise<string[]> {
-  const v: string[] = [];
-  for (const id of await bp.treeRows()) {
-    if (!await attempt(v, `tree-row ${id}`, () => bp.head(id).locator(".item-title").click())) continue;
-    await bp.settle();
-    const sel = await bp.selected();
-    if (sel !== id) v.push(`tree-row: clicking ${id}'s title selected ${sel}`);
-    else if (!await bp.page.locator(`#item-detail [id="detail-it-${q(id)}"].cur`).count()) v.push(`tree-row: ${id} selected but its detail is not the current selection`);
-  }
-  return v;
-}
 
 /** Plan rows in an item's detail: an item row goes to its item and Back returns; a card row goes to that card in the
  * body without changing the selected item; a step row selects the step and keeps the item. */
@@ -273,30 +259,6 @@ export async function checkCardBox(bp: BoardPage, o: Oracle, cards: string[], fr
   return v;
 }
 
-/** The 被依赖 rows of an item's detail list exactly its open dependents through shared rows; each selects its item and
- * Back returns. */
-export async function checkDependents(bp: BoardPage, o: Oracle, items: string[]): Promise<string[]> {
-  const v: string[] = [], page = bp.page;
-  for (const x of items) {
-    const ws = o.r.dependents(x).filter(d => !d.own).map(d => d.id).filter(id => o.s.items[id] && o.r.statusOf(id) !== "cancelled");
-    await bp.select(x);
-    const rows = page.locator("#item-detail .deplists .deprow");
-    const n = await rows.count();
-    if (n !== ws.length) { v.push(`dep-row: ${x} lists ${n} dependents, expected ${ws.length} (${ws.join(",")})`); continue; }
-    for (let i = 0; i < n; i++) {
-      if (await bp.selected() !== x) await bp.select(x);
-      if (!await attempt(v, `dep-row ${x}#${i}`, () => rows.nth(i).click())) continue;
-      await bp.settle();
-      const got = await bp.selected();
-      if (got !== ws[i]) { v.push(`dep-row: ${x}'s dependent row ${i} selected ${got}, expected ${ws[i]}`); continue; }
-      if (!await attempt(v, `back to ${x}`, () => page.locator("#backbtn").click())) continue;
-      await bp.settle();
-      if (await bp.selected() !== x) v.push(`back: after following dependent ${ws[i]} from ${x}, 返回 selected ${await bp.selected()}`);
-    }
-  }
-  return v;
-}
-
 /** The purple and red numbers after each tree title equal the waits in that item's owned subtree; clicking a number as
  * many times as it says visits each of those waits once, each in its own item. */
 export async function checkBadges(bp: BoardPage, o: Oracle): Promise<string[]> {
@@ -321,26 +283,6 @@ export async function checkBadges(bp: BoardPage, o: Oracle): Promise<string[]> {
       if (!sameSet(visited, expected) && visited.every(w => expected.includes(w))) v.push(`badge-landing: ${expected.length} clicks on ${id}'s ${name} number visited ${[...new Set(visited)].join(",")}, missing ${expected.filter(w => !visited.includes(w)).join(",")}`);
     }
   }
-  return v;
-}
-
-/** The header's 阻塞 and 决策卡 numbers, and the wait panel's rows, cover exactly the board's waits. */
-export async function checkWaitPanel(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], page = bp.page, blocking = o.blocking(), plain = o.plainCards();
-  const label = async (cls: string) => { const b = page.locator("#summary .sbtn." + cls); return await b.count() ? Number((await b.textContent())!.match(/\d+/)![0]) : 0; };
-  if (await label("s-block") !== blocking.length) v.push(`wait-count: 阻塞 says ${await label("s-block")}, the board has ${blocking.length} blocking waits`);
-  if (await label("s-wait") !== plain.length) v.push(`wait-count: 决策卡 says ${await label("s-wait")}, the board has ${plain.length} waiting cards`);
-  const rows = page.locator("#wait-panel .waitrow"), n = await rows.count();
-  if (n !== blocking.length) v.push(`wait-count: the wait panel has ${n} rows for ${blocking.length} blocking waits`);
-  const seen: string[] = [];
-  for (let i = 0; i < n; i++) {
-    if (!await attempt(v, `wait-row ${i}`, () => rows.nth(i).click())) continue;
-    await bp.settle();
-    const got = await landing(bp); seen.push(got);
-    if (!blocking.includes(got)) v.push(`wait-landing: wait panel row ${i} went to ${got}, not a blocking wait`);
-    else if (await bp.selected() !== homeOf(o, got)) v.push(`wait-landing: wait panel row ${i} showed ${got} but selected ${await bp.selected()}`);
-  }
-  if (n === blocking.length && !sameSet(seen, blocking)) v.push(`wait-landing: the wait panel rows reached ${seen.join(",")}, the blocking waits are ${blocking.join(",")}`);
   return v;
 }
 
@@ -415,66 +357,6 @@ export async function checkWrap(bp: BoardPage, o: Oracle): Promise<string[]> {
     await page.keyboard.press("ArrowRight"); await bp.settle();
     const sel = await bp.selected(), cards = await bp.currentCards();
     if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
-  }
-  return v;
-}
-
-const STATUS_LABELS: Record<string, string> = { 进行中: "wip", 卡住: "blocked", 暂停: "paused", 停滞: "idle", 未开始: "todo", 完成: "done", 取消: "cancelled" };
-/** Each project's filter buttons: the number on a button counts its matches in that project; pressed, the tree shows
- * every match whose owners are in the project, undimmed, and dims or hides everything else of the project. */
-export async function checkFilters(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], page = bp.page, tags = new Set((o.s.board.tags ?? []).map(t => t.name));
-  for (const { name: g } of o.s.board.projects) {
-    const section = page.locator(`#areas section.group[data-group="${q(g)}"]`);
-    if (!await section.count()) continue;
-    const labels = await section.locator(".grp-filters .sbtn").allTextContents();
-    for (const text of labels) {
-      const m = text.match(/^(.*) (\d+)$/); if (!m) continue;
-      const [, label, count] = m as unknown as [string, string, string];
-      // The number counts every item of the project the filter names; pressed, a tag or check filter keeps only the
-      // open ones among them (closed items show under the status filters).
-      const status = STATUS_LABELS[label], ended = (id: string) => /^(done|cancelled)$/.test(o.r.statusOf(id) ?? "");
-      const counted: ((id: string) => boolean) | undefined = status ? id => o.r.statusOf(id) === status
-        : label === "需核对" ? id => o.r.checks(id).length > 0 : tags.has(label) ? id => !!o.s.items[id]!.tags?.includes(label) : undefined;
-      if (!counted) continue;
-      const pred = status ? counted : (id: string) => counted(id) && !ended(id);
-      const all = Object.keys(o.s.items).filter(id => o.s.items[id]!.group === g && counted(id)), ids = all.filter(pred);
-      if (Number(count) !== all.length) v.push(`filter-count: ${g} 「${label}」 says ${count}, the project has ${all.length}`);
-      const button = () => page.locator(`#areas section.group[data-group="${q(g)}"] .grp-filters .sbtn`, { hasText: new RegExp("^" + label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " \\d+$") }).first();
-      if (!await attempt(v, `filter ${g} ${label}`, () => button().click())) continue;
-      await bp.settle();
-      const rows = await page.evaluate(() => [...document.querySelectorAll("#areas .item")].map(e => ({ id: e.id.slice(3), ctx: e.classList.contains("ctx") })));
-      const shown = new Set(rows.filter(row => !row.ctx).map(row => row.id));
-      for (const row of rows) if (!row.ctx && o.s.items[row.id]?.group === g && !pred(row.id)) v.push(`filter-sound: ${g} 「${label}」 shows ${row.id} undimmed, which does not match`);
-      for (const id of ids) if (o.r.ancestors(id).every(a => o.s.items[a]!.group === g) && !shown.has(id)) v.push(`filter-complete: ${g} 「${label}」 hides its match ${id}`);
-      if (!await attempt(v, `unfilter ${g} ${label}`, () => button().click())) continue;
-      await bp.settle();
-    }
-  }
-  return v;
-}
-
-/** The "/" search finds an item or card by its short number first, and choosing it shows that item, or that card in its item. */
-export async function checkSearch(bp: BoardPage, o: Oracle, seed = 7): Promise<string[]> {
-  const v: string[] = [], page = bp.page, r = prng(seed), w = bp.board.gen.witness;
-  const items = Object.keys(o.s.items), cards = Object.keys(o.s.decisions);
-  const targets: Array<["item" | "card", string]> = [
-    ...[...new Set([...Array.from({ length: 10 }, () => r.pick(items)), ...items.filter(id => o.r.statusOf(id) === "done").slice(0, 3), ...items.filter(id => o.s.items[id]!.record)])].map(id => ["item", id] as ["item", string]),
-    ...[...new Set([w.multiPlanCard, w.donePlanCard, w.otherPlanCard, w.recordCard, w.commentCard, ...Array.from({ length: 5 }, () => r.pick(cards))])].map(id => ["card", id] as ["card", string]),
-  ];
-  for (const [kind, key] of targets) {
-    const doc = kind === "item" ? o.s.items[key]! : o.s.decisions[key]!, title = kind === "item" ? o.s.items[key]!.title : o.s.decisions[key]!.question.split("\n")[0]!;
-    if (!await attempt(v, `search ${key}`, () => bp.search("#" + doc.num))) continue;
-    const first = page.locator("#search .searchrow").first();
-    if (!(await first.textContent() ?? "").includes(title.replace(/[*`]/g, ""))) { v.push(`search: #${doc.num} does not list ${kind} ${key} first`); await page.keyboard.press("Escape"); continue; }
-    await page.keyboard.press("Enter"); await bp.settle();
-    const sel = await bp.selected();
-    if (kind === "item" && sel !== key) v.push(`search: choosing item ${key} selected ${sel}`);
-    if (kind === "card") {
-      const home = o.s.decisions[key]!.item;
-      if (o.s.items[home] && sel !== home) v.push(`search: choosing card ${key} selected item ${sel}, its home is ${home}`);
-      if (!(await bp.currentCards()).includes(key)) v.push(`search: choosing card ${key} did not show it as the current card`);
-    }
   }
   return v;
 }
@@ -641,72 +523,6 @@ export async function checkSharedSection(bp: BoardPage, b: BoardServer): Promise
   now = b.store.snapshot();
   if (rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: removing the shared row left the dependency");
   v.push(...await sectionViolations(bp, rules(now), now.items));
-  return v;
-}
-
-/** Tag chips name the item's tags, and their text contrasts with what is behind it at least 4.5:1 (WCAG AA), in
- * light and dark themes. Chips in dimmed rows (a context row of a filter, a closed item on the path to open work) are
- * faded on purpose and left out. */
-export async function checkTagChips(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], page = bp.page;
-  const texts = await page.evaluate(() => [...document.querySelectorAll("#areas .item")].map(e => ({ id: e.id.slice(3), tags: [...e.querySelectorAll(":scope > .item-row .tagchip")].map(t => t.textContent) })));
-  for (const { id, tags } of texts) if (JSON.stringify(tags) !== JSON.stringify(o.s.items[id]?.tags ?? [])) v.push(`tag-text: ${id}'s chips say ${tags.join(",")}, its tags are ${(o.s.items[id]?.tags ?? []).join(",")}`);
-  for (const scheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme: scheme });
-    const low = await page.evaluate(() => {
-      const rgba = (c: string) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1]!.split(/[\s,/]+/).filter(Boolean).map(Number); return { r: p[0]!, g: p[1]!, b: p[2]!, a: p.length > 3 ? p[3]! : 1 }; };
-      const lum = (c: { r: number; g: number; b: number }) => { const f = (x: number) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
-      const over = (top: { r: number; g: number; b: number; a: number }, under: { r: number; g: number; b: number }) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a) });
-      const out: string[] = [];
-      for (const chip of document.querySelectorAll<HTMLElement>(".tagchip")) {
-        if (!chip.offsetParent) continue;
-        let faded = false, layers: Array<{ r: number; g: number; b: number; a: number }> = [];
-        for (let e: Element | null = chip; e; e = e.parentElement) {
-          const st = getComputedStyle(e);
-          if (Number(st.opacity) < 1) faded = true;
-          const bg = rgba(st.backgroundColor);
-          if (bg && bg.a > 0) { layers.push(bg); if (bg.a >= 1) break; }
-        }
-        if (faded) continue;
-        let base = { r: 255, g: 255, b: 255 };
-        if (!layers.length || layers.at(-1)!.a < 1) base = (() => { const c = rgba(getComputedStyle(document.body).backgroundColor); return c ? { r: c.r, g: c.g, b: c.b } : base; })();
-        for (const layer of layers.reverse()) base = over(layer, base);
-        const fg = rgba(getComputedStyle(chip).color)!, text = over(fg, base);
-        const [a, b] = [lum(text), lum(base)].sort((x, y) => y - x);
-        const ratio = (a! + 0.05) / (b! + 0.05);
-        if (ratio < 4.5) out.push(`${chip.closest("[id]")?.id ?? "?"} 「${chip.textContent}」 ${ratio.toFixed(2)}:1 (${getComputedStyle(chip).color} on rgb(${Math.round(base.r)}, ${Math.round(base.g)}, ${Math.round(base.b)}))`);
-      }
-      return out;
-    });
-    for (const l of low) v.push(`tag-contrast (${scheme}): ${l}`);
-  }
-  await page.emulateMedia({ colorScheme: "light" });
-  return v;
-}
-
-/** The detail's difficulty chip says the item's difficulty (「难度 N」), sits on the line under the title
- * beside the tags, and an unrated item has none. Checked on an item of each kind that also has tags. */
-export async function checkDifficultyChip(bp: BoardPage, o: Oracle): Promise<string[]> {
-  const v: string[] = [], page = bp.page;
-  const work = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && o.r.isOpenWork(id) && o.s.items[id]!.tags?.length);
-  const kinds: Array<[string, (d: unknown) => boolean]> = [["rated 1–5", d => typeof d === "number"], ["unrated", d => d === undefined]];
-  for (const [kind, matches] of kinds) {
-    const id = work.find(id => matches(o.s.items[id]!.difficulty));
-    if (!id) { v.push(`difficulty-chip: the board has no open tagged item that is ${kind}`); continue; }
-    await bp.select(id);
-    const got = await page.evaluate(() => {
-      const box = document.querySelector("#item-detail > .item"), top = (e: Element | null | undefined) => e ? e.getBoundingClientRect().top : null;
-      const chip = box?.querySelector(".item-tags .diffchip"), tag = box?.querySelector(".item-tags .tagchip:not(.diffchip)"), title = box?.querySelector(".item-title");
-      return { text: chip?.textContent ?? null, chipTop: top(chip), tagTop: top(tag), titleBottom: title ? title.getBoundingClientRect().bottom : null, count: box?.querySelectorAll(".diffchip").length ?? 0 };
-    });
-    const d = o.s.items[id]!.difficulty, want = d === undefined ? null : difficultyText(d);
-    if (got.text !== want) v.push(`difficulty-chip: ${id} (${kind}) shows ${JSON.stringify(got.text)}, its difficulty says ${JSON.stringify(want)}`);
-    if (got.count !== (want === null ? 0 : 1)) v.push(`difficulty-chip: ${id} (${kind}) has ${got.count} chips`);
-    if (want !== null && got.chipTop !== null && got.tagTop !== null) {
-      if (Math.abs(got.chipTop - got.tagTop) > 2) v.push(`difficulty-chip: ${id}'s chip is not on its tags' line (${got.chipTop} against ${got.tagTop})`);
-      if (got.titleBottom !== null && got.chipTop < got.titleBottom - 1) v.push(`difficulty-chip: ${id}'s chip is not below its title (${got.chipTop} against ${got.titleBottom})`);
-    }
-  }
   return v;
 }
 
@@ -893,6 +709,66 @@ export async function checkFullWidth(bp: BoardPage): Promise<string[]> {
   }
   await bp.page.setViewportSize({ width: 1500, height: 1000 });
   await bp.settle();
+  return v;
+}
+
+// The checks below are what the page's checks in a DOM library (test/dom/checks.ts) cannot say because they need a layout: where a box
+// lands, how wide it is, what a browser hides. They run the same walks as the checks they were split from.
+
+/** In an item's plan, the link of a card row keeps at least 20 px (a long pick must not squeeze it), and a click on it brings the card
+ * into the item's pane. Violations start with "plan-card-row". */
+export async function checkPlanCardLayout(bp: BoardPage, o: Oracle, items: string[]): Promise<string[]> {
+  const v: string[] = [], page = bp.page;
+  for (const x of items) {
+    for (const row of o.s.items[x]!.plan) {
+      if (!("card" in row)) continue;
+      if (await bp.selected() !== x) await bp.select(x);
+      if (await bp.selected() !== x) { v.push(`plan: could not select ${x}`); break; }
+      const card = row.card, sel = `#item-detail [id="${q("plan-" + encodeURIComponent(JSON.stringify([x, row.id])))}"]`;
+      const goWidth = await page.locator(sel + " .plan-main a").first().evaluate(a => a.getBoundingClientRect().width);
+      if (goWidth < 20) { v.push(`plan-card-row: in ${x}'s plan, the question of card ${card} is squeezed to ${Math.round(goWidth)} px by the rest of its row`); continue; }
+      if (!await attempt(v, `plan-card-row ${x}→${card}`, () => page.locator(sel + " .plan-main a").first().click())) continue;
+      await bp.settle();
+      if (await bp.selected() !== x) continue;
+      if (!await page.evaluate(c => { const e = document.getElementById("q-" + c), pane = document.getElementById("item-detail"); if (!e || !pane) return false; const a = e.getBoundingClientRect(), b = pane.getBoundingClientRect(); return a.bottom > b.top && a.top < b.bottom; }, card)) v.push(`plan-card-row: in ${x}'s plan, clicking card ${card} did not bring the card into view`);
+    }
+  }
+  return v;
+}
+
+/** A closed card shows one line: what is under its line is not displayed while the line is folded, and is once the line is clicked.
+ * Violations start with "card-fold". */
+export async function checkCardFold(bp: BoardPage, o: Oracle, cards: string[]): Promise<string[]> {
+  const v: string[] = [];
+  for (const card of cards) {
+    const d = o.s.decisions[card]!;
+    if (d.status === "open") continue;
+    if (await bp.selected() !== d.item) await bp.select(d.item);
+    const box = bp.page.locator(`#item-detail [id="q-${q(card)}"]`), fold = box.locator("details.cardfold");
+    if (await fold.count() !== 1) { v.push(`card-fold: ${d.status} card ${card} has ${await fold.count()} folds`); continue; }
+    if (await fold.evaluate(e => (e as HTMLDetailsElement).open)) continue;
+    if (await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows what is under its line while folded`);
+    if (!await attempt(v, `card-fold ${card}`, async () => { await box.locator("details.cardfold > summary").dispatchEvent("click"); await bp.settle(); })) continue;
+    if (!await box.locator(".cardbody").isVisible()) v.push(`card-fold: ${d.status} card ${card} shows nothing under its line once the line is clicked`);
+  }
+  return v;
+}
+
+/** The detail's difficulty chip lies on the line of the tags and below the title. Checked on an open tagged item with a rating.
+ * Violations start with "difficulty-chip". */
+export async function checkDifficultyChipLayout(bp: BoardPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [];
+  const id = Object.keys(o.s.items).find(x => !o.s.items[x]!.record && o.r.isOpenWork(x) && o.s.items[x]!.tags?.length && typeof o.s.items[x]!.difficulty === "number");
+  if (!id) return ["difficulty-chip: the board has no open tagged item that is rated"];
+  await bp.select(id);
+  const got = await bp.page.evaluate(() => {
+    const box = document.querySelector("#item-detail > .item"), top = (e: Element | null | undefined) => e ? e.getBoundingClientRect().top : null;
+    const chip = box?.querySelector(".item-tags .diffchip"), tag = box?.querySelector(".item-tags .tagchip:not(.diffchip)"), title = box?.querySelector(".item-title");
+    return { chipTop: top(chip), tagTop: top(tag), titleBottom: title ? title.getBoundingClientRect().bottom : null };
+  });
+  if (got.chipTop === null || got.tagTop === null) return [`difficulty-chip: ${id} shows no chip beside its tags`];
+  if (Math.abs(got.chipTop - got.tagTop) > 2) v.push(`difficulty-chip: ${id}'s chip is not on its tags' line (${got.chipTop} against ${got.tagTop})`);
+  if (got.titleBottom !== null && got.chipTop < got.titleBottom - 1) v.push(`difficulty-chip: ${id}'s chip is not below its title (${got.chipTop} against ${got.titleBottom})`);
   return v;
 }
 

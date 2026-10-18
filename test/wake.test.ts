@@ -186,6 +186,52 @@ test("a sent note is pushed to the architect's stream with a number whatever pro
   assert.deepEqual(pm.events(), [], "none of the owner's notes goes to the PM's stream: explain requests and a choice on a card included");
 });
 
+test("a card ruled on the page or with rule_card is pushed to the session holding its item, as one line naming the card and the pick or the owner's words; nobody holding it, a withdrawn card and a rewritten open card push nothing, and the architect's note is as before", async t => {
+  const { url, api, op } = await server(t);
+  const card = { author, item: "b", confidence: { reason: "判断" }, options: [{ text: "先做", detail: "先做它" }, { text: "后做", detail: "后做它" }] };
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-b" });
+  const worker = await agentSocket(t, url, "b-worker"), star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
+  const pushed = () => worker.events().map(({ at, line, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), [frame, line]));
+  // The owner picks an option on the page: the card becomes ruled in the commit that sends the note.
+  await api("/api/notes", { target: "q:choice", kind: "choice", text: "选 B", choice: "B" });
+  await api("/api/send", {});
+  await worker.sync(); await star.sync();
+  assert.deepEqual(pushed(), [[
+    { n: 1, event: "card-ruled", card: "choice", item: "b", project: "Whitefoot", title: "中文方案？", choice: "B", option: "另一选项", ruling: null },
+    "#1 卡裁了 · it:b（Whitefoot） · q:choice · 选 B「另一选项」 · 中文方案？",
+  ]], "the holder is told which card and which option");
+  assert.deepEqual(star.events().map(f => [f.event, f.target]), [["note", "q:choice"]], "and the architect keeps its note");
+  // A decision made in chat and recorded with rule_card: the owner's words, with or without an option.
+  await op.writeCard({ ...card, key: "words", question: "先做哪个？" });
+  await op.writeCard({ ...card, key: "both", question: "两个都说了？" });
+  await op.ruleCard({ author, key: "words", ruling: "主人说先做" });
+  await op.ruleCard({ author, key: "both", choice: "A", ruling: "按第一个做" });
+  await worker.sync();
+  assert.deepEqual(pushed().slice(1), [
+    [{ n: 2, event: "card-ruled", card: "words", item: "b", project: "Whitefoot", title: "先做哪个？", choice: null, option: null, ruling: "主人说先做" }, "#2 卡裁了 · it:b（Whitefoot） · q:words · 原话：主人说先做 · 先做哪个？"],
+    [{ n: 3, event: "card-ruled", card: "both", item: "b", project: "Whitefoot", title: "两个都说了？", choice: "A", option: "先做", ruling: "按第一个做" }, "#3 卡裁了 · it:b（Whitefoot） · q:both · 选 A「先做」 · 原话：按第一个做 · 两个都说了？"],
+  ]);
+  assert.equal(star.events().length, 1, "a ruling recorded by a session is not an owner's note");
+  // A card that is withdrawn, or written again while open, is not ruled.
+  await op.writeCard({ ...card, key: "drop", question: "不要了？" });
+  await op.writeCard({ ...card, key: "drop", rev: 1, question: "改一下？" });
+  await op.withdrawCard({ author, key: "drop", log: "不需要了" });
+  // Nobody holds item `a`: its ruling pushes the architect's note and nothing to a holder.
+  await op.writeCard({ ...card, key: "lonely", item: "a", question: "没人拿着？" });
+  await api("/api/notes", { target: "q:lonely", kind: "choice", text: "选 A", choice: "A" });
+  await api("/api/send", {});
+  await op.writeCard({ ...card, key: "quiet", item: "a", question: "没人拿着，口头裁？" });
+  await op.ruleCard({ author, key: "quiet", ruling: "口头" });
+  // An item whose engineer dispatch has ended is held by no one either.
+  await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-b", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 0.1, reports: 0, kickbacks: 0 });
+  await op.writeCard({ ...card, key: "late", question: "晚了？" });
+  await op.ruleCard({ author, key: "late", choice: "B" });
+  await worker.sync(); await star.sync(); await pm.sync();
+  assert.equal(pushed().length, 3, "no more than the three rulings of a held item");
+  assert.deepEqual(star.events().map(f => [f.event, f.target]), [["note", "q:choice"], ["note", "q:lonely"]]);
+  assert.deepEqual(pm.events(), [], "the PM is told of none of it");
+});
+
 test("only the kinds in the table are pushed: not a blocking card, an ask or a format check", async t => {
   const { url, store, op } = await server(t);
   const star = await wakeSocket(t, url);
