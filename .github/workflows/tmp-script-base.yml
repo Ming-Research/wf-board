@@ -64,4 +64,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test test/dom/${{ matrix.file }}.test.ts 2>&1 | grep -E '^ℹ (tests|pass|fail|duration)|^✔|^✖|^  ✖'
+      - run: |
+          status=0
+          node --test test/dom/${{ matrix.file }}.test.ts > out.txt 2>&1 || status=$?
+          grep -E '^ℹ (tests|pass|fail|duration)|^✔|^✖|^  ✖' out.txt || true
+          exit $status
