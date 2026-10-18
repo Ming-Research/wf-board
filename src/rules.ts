@@ -22,6 +22,12 @@ export function noteTextProblem(note: Pick<Note, "kind" | "text">): string | und
   return note.kind === "comment" && !note.text.trim() ? "A comment needs text" : undefined;
 }
 
+/** A choice note that says nothing but the pick: the page writes "选 A" for option A, and an empty text counts as that. Any other
+ * text is the owner's own words, which someone has to read (docs/design.md, Decision cards, Ruling). */
+export function isPlainPick(note: Pick<Note, "kind" | "text" | "choice">): boolean {
+  return note.kind === "choice" && (!note.text || note.text === "选 " + note.choice);
+}
+
 /**
  * The text of an item's 改动 section, where the board reads which PRs the item is about (docs/design.md, Watching GitHub).
  * It starts at a `## 改动` heading, or at a line that is `**改动**` with or without a colon after it (text after the colon
