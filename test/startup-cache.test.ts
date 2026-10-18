@@ -227,9 +227,9 @@ test("a start reports each step with its time", async t => {
   const { dir } = await setup(t);
   await rm(await cacheFile(dir));
   const scan = await open(dir);
-  assert.deepEqual(scan.steps.map(s => s.step), ["read documents", "check board", "number documents", "startup cache refused", "read git log", "replay activity", "replay pauses", "write startup cache"]);
+  assert.deepEqual(scan.steps.map(s => s.step), ["read documents", "check board", "number documents", "startup cache refused", "read git log", "replay activity", "replay pauses", "write startup cache", "maintenance"]);
   const cached = await open(dir);
-  assert.deepEqual(cached.steps.map(s => s.step), ["read documents", "check board", "number documents", "read startup cache", "read git log", "replay activity", "replay pauses", "write startup cache"]);
+  assert.deepEqual(cached.steps.map(s => s.step), ["read documents", "check board", "number documents", "read startup cache", "read git log", "replay activity", "replay pauses", "write startup cache", "maintenance"]);
   assert.equal(cached.steps.find(s => s.step === "read git log")!.detail, "0 commits after the cache");
 });
 
@@ -439,7 +439,7 @@ test("the daemon's log carries the time on every line and the time of each start
   await started.stop();
   assert.ok(started.lines.length > 5);
   for (const line of started.lines) assert.match(line, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /, "every line starts with its time");
-  for (const step of ["read documents", "check board", "number documents", "read startup cache", "read git log", "replay activity", "replay pauses", "write startup cache", "open store", "create wake, watch and server", "listening"]) {
+  for (const step of ["read documents", "check board", "number documents", "read startup cache", "read git log", "replay activity", "replay pauses", "write startup cache", "maintenance", "open store", "create wake, watch and server", "listening"]) {
     assert.ok(started.lines.some(line => line.includes(`startup ${step}:`)), `the log has the step ${step}`);
   }
 });

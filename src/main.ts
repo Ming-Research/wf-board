@@ -61,9 +61,9 @@ async function main() {
   let stopping = false;
   // Stopping must fit in the 5 seconds launchd allows, and a push takes 4 to 7 seconds. So the owner's reading state is committed
   // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
-  // what this run left.
+  // what this run left. A maintenance step that is running ends first (at most about a second); none is started after the signal.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop();
+    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
     server.close(error => {
       void (async () => {
         if (error) throw error;

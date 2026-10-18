@@ -89,7 +89,7 @@ SDK.
 **Storage.** The data is a git working tree, `wf-board-data` beside the wf-board checkout (`~/dev/wf/wf-board-data` with the checkout at `~/dev/wf/wf-board`; `WF_BOARD_DATA` overrides it), with the
 private remote `Ming-Research/wf-board-data`. The server is the only writer:
 each logical operation is one commit whose author is the writing project (or
-`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance runs in the foreground of that commit (`gc.autoDetach` and `maintenance.autoDetach` are off), so no git process writes the data repository outside the write queue. The server pushes to the remote when
+`owner` for an owner operation) and whose message summarizes the operation. git's automatic maintenance is off (`gc.auto=0` and `maintenance.auto=false` on every git command that writes the repository, which all run through the store's `git()`; the read-only `cat-file` reader and the reads of a one-time conversion start no maintenance); the board maintains the repository itself, as a task of the write queue (Maintenance), so no git process writes the data repository outside the write queue. The server pushes to the remote when
 it has new commits: first 60 seconds after it starts listening, then at most
 every ten minutes. The 60 seconds date from when a push held the write queue and the agents
 that reconnect after a restart catch up on writes in the first seconds; a push no longer
@@ -109,13 +109,13 @@ has diverged (an error). Commits written while a push runs go in the next one. O
 runs at a time, and a call made while one runs gets its result. A push beside a write
 is safe because it reads objects and changes one remote-tracking reference, and its
 git runs with automatic maintenance off, so it never starts a repack of its own. The
-other direction is a write's commit starting a repack while a push reads objects. A
-40-second CI run (git 2.55.0, fake ssh) committed continuously with automatic
-maintenance triggered by each commit, in the foreground or the background, beside
-back-to-back pushes: in all four combinations (1333 to 1439 commits and 485 to 498
-pushes each) there was no error, `git fsck` passed, and the remote's head was an
-ancestor of the local one. A push that did fail would be tried again at the next round
-and, if it kept failing, told by the lag push below.
+other direction is a maintenance step repacking while a push reads objects. Two
+replays of the live board's busiest ten minutes (hosted runner, git 2.55.0, 1652 writes
+each, a step after every 200 commits) ran a push every 3 seconds beside the writes and
+the steps: 396 pushes in all, none failed, `git fsck` passed at the end, and the remote's
+head was an ancestor of the local one (item `data-repo-gc-timing-study`). A push that
+did fail would be tried again at the next round and, if it kept failing, told by the
+lag push below.
 
 A push takes 4.1 to 6.6 seconds (five pushes in the service log of 2026-10-16) and,
 with the network down, never ends. In the queue, it held every write: in CI with a fake
@@ -143,6 +143,49 @@ the last failure's reason. The hour counts from the last time the copy was known
 a push that sent or found nothing to send, or a round that found nothing to send; after a
 start, from the start, since the state is in memory. A copy that is current again and falls
 behind again is told again.
+
+**Maintenance.** The data repository gains loose objects, about 4 for each commit (4.14 on the
+live board), and someone has to pack them. git does it by itself after a commit, at a time and in a
+size the board does not choose: the first such repack on the live repository (9,087 loose objects from
+2,160 commits) held a write for 5,672 ms, over the 3 seconds a write may wait. In the background, the same
+repack deleted an empty object directory while the next `git add` made a temporary file in it, which
+failed 11 of 1,726,480 writes in a reproduction with git alone and none of 2,030,080 without the
+repack (item `e2e-git-tmp-flake-study`). So git's own maintenance is off, and the board runs a step
+itself as a task of the write queue, where it cannot overlap a write.
+
+- **When.** After every `MAINTENANCE_EVERY` (100) commits, counted from the last step. `Store.open` estimates the
+  commits waiting from the loose objects it finds (divided by 4), maintains a backlog of 100 or more before it returns,
+  and so before the daemon listens. A commit queues no second step while one is queued. A step that fails is logged and
+  tried again after 100 more commits. Rejected, with the measurements of item `data-repo-gc-timing-study`: waiting for
+  idle time (the live board's busiest ten minutes of 596 seconds have 105 seconds without a commit and a commit in
+  the others, so the cap on commits would decide anyway), maintaining only at start (the backlog has no bound: a week without a restart is about 20,000 commits and a
+  step of about 60 s, estimated), maintaining at fixed times (a step follows the writes: the busiest ten minutes' 1,566
+  commits would be one step of about 5 s, estimated), and git's own trigger with a lower threshold (it still
+  rewrites the whole repository now and then, and its trigger is out of the board's hands: on the replica it started at 3,436 loose
+  objects and on the live repository not yet at 5,154, for a cause that was not found).
+- **How many.** 100. On a hosted runner, replaying the live board's busiest ten minutes against a copy of its shape
+  (1652 writes each), a step of 100 commits took a median of 240 and 299 ms (two samples) and at most 753 and 734 ms, the slowest
+  write was 631 and 771 ms, and none of the writes took 3 s. A step of 200 took at most 1,065 to 1,699 ms in three samples. In one reproduction of the 10-16
+  repack the replica took 0.69 to 0.95 of the live repository's time, so the live Mac may be up to 1.45 times slower: a step of 100
+  then takes about 1.1 to 1.3 s, under the 2 s line at which a slow write is told to the PM (Time limits), and a step of 200
+  about 1.5 to 2.5 s, which reaches that line.
+- **What a step does.** `git repack -d -l --write-midx` packs every loose object into one new pack;
+  `git commit-graph write --split --reachable` writes the commit-graph (a history query is about 6 times
+  faster with it); and, when the repository had more than 8 packs before the step, `git multi-pack-index expire` and
+  `git multi-pack-index repack --batch-size=16m` merge the small packs in batches of about 16 MB. Over 12,000
+  commits on a synthetic copy a step of 100 took a median of 601 ms and at most 906 ms, and there were at most 10 packs.
+  Rejected: git's own geometric repack for each step (the smallest disk, but a repack of the whole repository every
+  7,300 commits took 3.6 to 4.4 s and grows with the repository), packing without merging (the pack count has no bound: 63
+  after 60 steps), and a `.keep` file on the large packs (every step took 2.2 to 2.6 s).
+
+The cost is disk: the merge in batches finds deltas only inside a batch, so the synthetic copy grew to 134 MB over 12,000 commits
+where git's own way gave 75 MB (from 54 MB), about 4 times per commit. On the live board that is an estimated 80 to 108 MB a
+week more than git's own, not measured there. Each step writes a line to the service log,
+`maintenance 100 commits 301 ms 6 packs 27.5 MB` (commits, time, packs and size after the step), and the start writes
+`startup maintenance: ...` with what it found. The first start after this change has a backlog of about 1,600 commits and a
+step of about 5 s (estimated). Reopen the choice when the service log shows a step over 1.5 s or a write over 2 s, when a week's
+growth is over twice the estimate (then a full repack at start, before listening, once the disk passes a threshold), or when
+the pack count passes 10.
 
 **Running.** A launchd agent starts the daemon at login and restarts it on
 exit, one second after the last start (`ThrottleInterval`; launchd's default of
@@ -207,16 +250,11 @@ sends what this run left. A push still running when the signal arrives is ended
 at once, its group killed as in Storage, so it neither delays the local commit of
 the reading state nor keeps the process alive.
 
-A commit's automatic repack also runs in the foreground (see Storage). On
-2026-10-16, on a GitHub-hosted Ubuntu runner with git 2.55.0, a commit that
-wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
-runs; the same commit with the repack in the background took 25 to 103 ms). The
-study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
-5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
-has ruled that the board turns git's automatic maintenance off and queues a
-maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
-not yet built); until then the repack stays in the foreground.
+A maintenance step that is running when the signal arrives is not stopped: the commit of the
+reading state waits for it in the write queue, and the shutdown queues no step after the signal
+(`Store.stopMaintenance`). In the replays of Maintenance a step of 100 commits took 753 ms at most
+on a hosted runner. Not measured: a step that runs at the moment of a shutdown on the live Mac, and
+the first step after a long backlog.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in
@@ -489,6 +527,24 @@ derivation design that replaced this:
   carrying its unfinished dispatch records are reached too. A change of elapsed
   time alone is left to the minute timers, which rescan and repaint everything
   as before; a session's six-hour window running out is such a change.
+- The page builds its rules again for each live change, from the Rules
+  object before it (`rules`' `previous`): a change that wrote only items, in
+  no field a status reads (`STATUS_FIELDS`), keeps every derived value and
+  drops only the checks and stalled counts of the items it can reach — the
+  written items and those whose clock or pause spans moved, their owners,
+  the items they wait on (a pause check names its waiter's title) and that
+  wait on them, and the items whose doing step names one of them or an owner
+  of it, each with its owners. Within one minute it answers for the time of the
+  first build, as the shared rules do. It derives everything from scratch for
+  another change, in a new minute, when a write stamped before that time
+  widens the active time (the store's times have whole seconds, and every
+  stalled check reads the active time), and when a session's write moves it
+  into or out of its window (status reads it). `test/rules-reuse.test.ts`
+  holds it against a derivation from nothing after random writes on a board of
+  the live board's size, and each guard taken out of a copy must fail it. A log
+  write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
+  runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
+  write there is a new snapshot, rebuilt as before.
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
@@ -2276,7 +2332,10 @@ minute tick (elapsed times move with the clock). A click, a fold, a filter, an u
 mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
 indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
 until the data changes: the counts on every project's filter buttons are made in one pass
-over the board, where each button once passed over it, and the cards each head places are
+over the board, where each button once passed over it, and each item's part of them is kept,
+so a live change counts again only the items it reaches (`affectedItems`) and a snapshot or
+the minute counts them all; the page keeps its copy of an item while the item is the same
+object; and the cards each head places are
 found once for each version of an item (a write makes a new object), so a write does not scan
 all the heads again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
@@ -2288,7 +2347,8 @@ comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
 (15 MB on the live board). The page leaves a performance mark for each draw, each build
-of the rules and each count of the filters (`board:render`, `board:rules`,
+of the rules, each build that derived them from scratch, with its reason, and each count of
+every item's filters (`board:render`, `board:rules`, `board:rules-full`,
 `board:filter-counts`) and clears it at once, so the browser test can count them
 (section 11) and a page left open for days piles up nothing.
 
@@ -2348,8 +2408,9 @@ diagram makes the page scroll instead of being squeezed into the window, where i
 shrink until it could not be read. A narrow one is centered. A drawn diagram sits in a frame, and
 its toolbar is the top row of the frame, above the diagram, so it never covers the diagram. From
 the left: smaller, the size as a percentage of the diagram's own width, larger, 适应宽度 (back to
-the default size, which is the diagram's own width or the box's, whichever is less), and at the
-right a hint, 双指缩放，拖动或滚动查看, shown at every size. A diagram zooms with Ctrl and the
+the default size, which is the diagram's own width or the box's, whichever is less), then 60%, 90% and
+100%, each a share of the diagram's own width (100% is the diagram at its own size, so a diagram wider than a
+narrow box scrolls sideways in it; the size shown is pressed, and pressed again it gives the width of the box back), and at the right a hint, 双指缩放，拖动或滚动查看, shown at every size. A diagram zooms with Ctrl and the
 wheel too, about the cursor (Chromium sends a pinch on a trackpad as Ctrl and the wheel; other
 browsers are not checked). The plain wheel is left alone and scrolls the page.
 An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll
@@ -3857,7 +3918,9 @@ on the live board.
   record); and in a real browser where the list lies and how far the jump
   scrolls.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
-  pull request, when the engineer starts it (below), with a temporary quick
+  pull request, when the engineer starts it (below), without the browser tests
+  unless the engineer sets the input `browser`; the browser tests run on each
+  main-line merge and nightly; a temporary quick
   workflow for the pushes in between; the benchmarks run by hand as a
   workflow (`.github/workflows/bench.yml`): the write-path benchmark reports and never fails the run,
   and the history-query benchmark fails it when a check fails.
@@ -4010,18 +4073,32 @@ key until the page is quiet counts, those of the rows around the target included
 draws depend on when the baselines of the rows around the target answer, because the
 navigation waits for them 100 ms at most, so the test sets that time and does not leave
 it to the machine or the server: it delivers the answers it recorded on a first walk of
-the board, those of the rows around the target after 60 ms and the others after 20 ms,
-and the landing draws twice at most; it delivers the first after 300 ms, and the landing
-draws exactly three times, the last for the rows alone. The page without the wait, and the page with a wait that has no limit, must be
-reported by the first and the second. Time:
+the board, those of the rows around the target after 300 ms and the others after 20 ms.
+On a copy of the page whose wait is 2 s, the landing draws twice at most: a browser held
+up for less than 1.7 s cannot turn that, where a row answering 40 ms inside the 100 ms
+turned it on a slow runner. On the page itself the landing draws twice and then the late
+rows on their own, every later draw of other items' rows alone; whether two late rows share
+a frame is the browser's timing and not checked. The 100 ms itself is held by the
+fake-clock tests of `test/web.test.ts`. The page without the wait, and the page with a
+wait that has no limit, must be reported by the first and the second. While sessions
+write log entries, each write builds the rules again, derives them from scratch no time
+except in a new minute (the mark `board:rules-full` names the reason) and counts every
+item's filters no time; a page that derives the rules from scratch at every write, and
+one that counts every item's filters, must be reported. Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
 quiet and with sessions writing three times a second, each run made once. The time
 layer depends on the runner: the same page measured at the median 142 to 205 ms with
 sessions writing in four CI runs, and the speed of a hosted runner differs by up to a
 factor of two between jobs. While sessions write, a press also carries the page's
-handling of the writes that fall into it (about 50 ms for each, the board's rules built
-again), which leaves the limits close. Each change that the counts protect is taken out
+handling of the writes that fall into it, about 1–2 writes in its window of about 375 ms
+at three a second, whether they come before or after the landing. A write derived the
+whole board again for 55–80 ms each until the rules kept what a write cannot reach
+(section 4, Write cost), about 33 ms since (n-writes-stable-study, measured on hosted
+runners); the slowest runners seen run about 1.3 times slower than the one measured, and
+the acceptance of that work measured the page at that speed (CPU throttled 1.3 times). The
+write rate of the test is more than three times the busiest minute of the live board (53
+writes), on purpose. Each change that the counts protect is taken out
 in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
@@ -4042,7 +4119,8 @@ match the current file fails and is updated or retired on purpose.
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
 `test` in 8 shards, `e2e` and `result`) takes about 12 minutes with its queue,
-all of it the browser tests, and a change under way is pushed many times. A push to a pull request branch therefore does not
+nearly all of it the browser tests, which a run started by hand leaves out
+unless it is given the input `browser`; a change under way is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
 and changes the test jobs and the job list in `needs` of `result`, which reads
 only the jobs it lists.
@@ -4106,7 +4184,8 @@ only the jobs it lists.
   `gh workflow run ci.yml --ref <branch>` and wait with
   `wait-ci.mjs <owner/repo> <PR> <sha>`. Green on the head commit is what lets
   the pull request be marked ready; a later push needs a new run.
-- **The main line** runs the full CI on every push, as before.
+- **The main line** runs the full CI on every push, as before, with the browser
+  tests, which also run every night.
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
   `.github/workflows`. It runs in every full CI beside the other jobs, so the
   last run before a merge stops a temporary workflow that was not deleted, and
@@ -4223,10 +4302,10 @@ checked within a minute of the push; two runs of one configuration differed by
 It starts from the start of the attempt, not from the creation of the run, so a
 rerun does not count the time before it.
 
-The gate is set to `TIME_GATE=report` in `ci.yml`: the browser tests still take
-minutes on every pull request, so the total is over the line every time and a red
-gate would say nothing. The item that moves them off the pull request's path sets
-`enforce`, and a total over the line then fails `result` and the status
+The gate is set to `TIME_GATE=report` in `ci.yml`: a run started by hand with
+`browser` set still runs the browser tests, which take minutes, so its total is
+over the line and a red gate would say nothing. The item that moves the browser
+checks out of the full CI sets `enforce`, and a total over the line then fails `result` and the status
 `full-ci`. The shard table reads the jobs named `test shard N` and their step
 `tests`; when it finds none, the summary says so, which shows a rename.
 

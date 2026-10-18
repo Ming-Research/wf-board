@@ -2,11 +2,29 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
-## 2026-10-17 Test the page in a DOM library between the fake DOM and the browser
+## 2026-10-18 Test the page in a DOM library between the fake DOM and the browser
 
 Nodes: testing, testing/evidence, testing/press-n
 
 Summary: The page's checks that need no layout (clicks that must land on what they claim, the cards, numbers, filters, search, the agent list, the messages list, and the few style facts read from the stylesheet) run in jsdom against the real server instead of in headless Chromium, so the layers become four and the browser layer keeps what needs a layout. Each moved check keeps a witness in the layer that runs it, on the page's source edited in memory. The page, agent list and message checks took 272 of the 806 seconds of the browser job on a hosted runner; the same checks with their spoiled-page runs measured 220 seconds in 13 files of a hosted runner each, none longer than 27 seconds, so the gain is that the files run side by side (docs/design.md, section 11, Four test layers). The link anchors of two nodes follow the renamed heading.
+
+## 2026-10-18 Run the data repository's maintenance as a task of the write queue
+
+Nodes: storage
+
+Summary: The first version let git's own maintenance run in the foreground of the commit that triggers it, which removed the race between a background repack and the next write but held one write for 5.7 seconds on the live repository, over the three-second line. The board now turns git's maintenance off and runs a step of its own after every 100 commits as a task of the write queue, with a backlog maintained before the daemon listens; a step packs the loose objects, writes a commit-graph and merges the small packs in batches. The three choices (when, how many commits, what a step does) are the owner's rulings on the study's cards, with the measurements in docs/design.md, section Maintenance.
+
+## 2026-10-18 Run the browser tests after a merge, not in a pull request's full CI
+
+Nodes: testing/ci-time-gate
+
+Summary: A run of the full CI started by hand leaves out the browser tests unless it is given the input `browser`; the browser tests run on each main-line push and every night, so a pull request's full CI takes the time of the script tests only. The time gate stays report-only, because a run with the browser tests still goes over the line; the node's condition for enforcing it now names the browser checks leaving the full CI. The study is in docs/design.md, section Fast checks while writing.
+
+## 2026-10-18 Keep the page's rules across log writes and count the writes in the press-n test
+
+Nodes: storage/write-path/page-rules-reuse, testing/press-n
+
+Summary: The jump to the next unread change went over its limit on slow hosted runners while sessions wrote, because each write derived the whole board again on the page. The page now keeps what the rules before a write derived when the write changes nothing a status reads, and counts the filters of only the items the write reaches; a paired measurement put a write's cost at 0.46 of the main line's and the busy time while writing at 140 to 142 ms with the page throttled 1.3 times ([Write cost](../docs/design.md#4-architecture)). The press-n counts now cover writes, and the two counts that raced the 100 ms wait no longer depend on tens of milliseconds of real time ([Four test layers](../docs/design.md#four-test-layers)).
 
 ## 2026-10-17 Shard the script tests and gate the time of a full CI run
 
