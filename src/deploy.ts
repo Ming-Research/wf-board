@@ -4,7 +4,7 @@ import type { Notify } from "./notify.ts";
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html, and the
  * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
-export const NO_RESTART = ["docs/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".github/"];
+export const NO_RESTART = ["docs/", "design/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".gitmodules", "Makefile", ".github/"];
 
 /** A request for a push, in the shape POST /api/wake takes: the kind (src/wake.ts, WAKE_KINDS) and the fields its `external` lists. `repo` is
  * the repository as `Owner/Name` (null when it cannot be told) and `changes` the main-line commits the deploy concerns, as
@@ -206,7 +206,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     if (branch !== d.branch) return `it is on ${branch || "no branch"}, not ${d.branch}`;
     const head = line(await d.git(["rev-parse", "HEAD"]));
     if (!pending.heads.includes(head)) return `it is on ${head}, not where the job left it (${pending.heads.join(" or ")})`;
-    if (line(await d.git(["status", "--porcelain", "--untracked-files=no"]))) return "it has local changes to tracked files";
+    if (line(await d.git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules"]))) return "it has local changes to tracked files";
   }
   async function recover(pending: Pending): Promise<DeployOutcome> {
     const failed = state.failed === pending.target;
@@ -261,7 +261,7 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     }
     const branch = await d.git(["symbolic-ref", "--short", "HEAD"]).then(line, () => "");
     if (branch !== d.branch) return refuse("branch", `the checkout is on ${branch || "no branch"}, not ${d.branch}`);
-    const dirty = line(await d.git(["status", "--porcelain", "--untracked-files=no"]));
+    const dirty = line(await d.git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules"]));
     if (dirty) return refuse("dirty", `the checkout has local changes to tracked files (${dirty.split("\n").slice(0, 5).join("; ")})`);
     const behind = await d.git(["merge-base", "--is-ancestor", head, target]).then(() => true, (error: { code?: number }) => { if (error.code === 1) return false; throw error; });
     if (!behind) return refuse("ahead", `the checkout's ${head} is not an ancestor of ${target}: it has commits the main line lacks`);

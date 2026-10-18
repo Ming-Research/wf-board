@@ -1,0 +1,5 @@
+Decision: Check results are read check by check on the commit, whatever event started them, and not from GitHub's roll-up state: within one check suite only the latest attempt of a check name counts, different suites count separately, a cancelled run says nothing when another run of the check is in its suite, and a commit with no checks, or only skipped or neutral ones, is `none` and not a success, because the roll-up state counts a cancelled run as a failure, a skipped gate ran nothing, GitHub runs no pull request check for a pull request with a merge conflict, and some repositories run their real checks on push so that their pull request runs are mostly skipped gates ([What the checks say](../../docs/design.md#watching-github)), instead of GitHub's roll-up state or the checks of the pull request event alone.
+
+Rejected:
+- GitHub's roll-up state: rejected because it counts a cancelled run as a failure.
+- Reading only the checks of the pull request event: rejected because some repositories run their real checks on push.
