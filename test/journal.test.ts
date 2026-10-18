@@ -111,21 +111,23 @@ test("only the architect writes the journal; another project is refused with the
   await assert.rejects(() => op.journalEntry({ author: "Whitefoot", text: "别人的" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
 });
 
-test("the journal is the architect's: Architect without the session 架构师, the PM included, is refused, and nothing is written", async t => {
+test("the journal is the architect's: Architect without a session name starting 架构师, the PM included, is refused, and nothing is written", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
   const before = store.snapshot();
-  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }, { author: "PM", session: "PM" }, { author: "PM", session: "架构师" }, { author: architect, session: "架构师轮次x" }, { author: "Whitefoot", session: "架构师轮次" }, { author: "PM", session: "架构师轮次" }]) {
+  for (const who of [{ author: architect }, { author: architect, session: "engineer" }, { author: "Whitefoot", session: "架构师" }, { author: architect, session: "PM" }, { author: "PM", session: "PM" }, { author: "PM", session: "架构师" }, { author: architect, session: "x架构师" }, { author: architect, session: "第二个架构师·观察" }, { author: "Whitefoot", session: "架构师轮次" }, { author: "Whitefoot", session: "架构师·观察" }, { author: "PM", session: "架构师轮次" }]) {
     await assert.rejects(() => op.journalEntry({ ...who, text: "不该写进去" }), (error: unknown) => error instanceof OpError && rx`^author: only ${ARCHITECT_WRITER} may write the journal under architect-notes$`.test(error.message));
     assert.deepEqual(store.snapshot(), before);
   }
 });
 
-test("the architect's turns (session 架构师轮次) write the journal as the architect does, under their own session", async t => {
+test("every session name starting 架构师 (the runner's turns, an observing architect) writes the journal as the architect does, under its own session", async t => {
   const { store, op } = await journalBoard(t, () => "2026-10-16T12:00:00Z");
-  await op.journalEntry({ author: architect, session: "架构师轮次", text: "轮次写的一条" });
-  const [commit] = await store.log({ limit: 1 });
-  assert.deepEqual([commit!.author, commit!.session], [architect, "架构师轮次"]);
-  assert.ok(Object.values(store.snapshot().items).some(it => it.record && it.head?.includes("轮次写的一条")), "the entry is in the day's record");
+  for (const session of ["架构师轮次", "架构师·观察", "架构师·整理"]) {
+    await op.journalEntry({ author: architect, session, text: `${session}写的一条` });
+    const [commit] = await store.log({ limit: 1 });
+    assert.deepEqual([commit!.author, commit!.session], [architect, session]);
+    assert.ok(Object.values(store.snapshot().items).some(it => it.record && it.head?.includes(`${session}写的一条`)), "the entry is in the day's record");
+  }
 });
 
 test("an entry with only blank text is refused by the nonempty rule", async t => {

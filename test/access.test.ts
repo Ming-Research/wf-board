@@ -1,7 +1,7 @@
 // The permission table (model ACCESS) and its enforcement in ops.run: what each role may write, and where.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ACCESS, ARCHITECT_WRITER, PARTS, PROCESS_WRITERS, ROLES, writesAnyProject } from "../src/model.ts";
+import { ACCESS, ARCHITECT_WRITER, PARTS, PROCESS_WRITERS, ROLES, answersPushes, isArchitect, isArchitectName, isArchitectSession, writesAnyProject } from "../src/model.ts";
 import type { Access, Part, Role } from "../src/model.ts";
 import { OpError } from "../src/ops.ts";
 import type { Ops } from "../src/ops.ts";
@@ -240,11 +240,32 @@ test("the architect's credential does what the architect does, in any project", 
 
 test("the texts that say who may do the process are built from one definition, and rx matches what it is given literally", () => {
   // The definition is pinned once, so that the expected texts built from it elsewhere cannot all agree on a typo.
-  assert.equal(PROCESS_WRITERS, "PM with session PM or Architect with session 架构师");
-  assert.equal(ARCHITECT_WRITER, "Architect with session 架构师");
-  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only PM with session PM or Architect with session 架构师 may create items"));
-  assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with session 架构师 may create items"), "the architect's session alone is another text");
+  assert.equal(PROCESS_WRITERS, "PM with session PM or Architect with a session name starting 架构师");
+  assert.equal(ARCHITECT_WRITER, "Architect with a session name starting 架构师");
+  assert.ok(rx`only ${PROCESS_WRITERS} may`.test("author: only PM with session PM or Architect with a session name starting 架构师 may create items"));
+  assert.ok(!rx`only ${PROCESS_WRITERS} may`.test("author: only Architect with a session name starting 架构师 may create items"), "the architect's name alone is another text");
   assert.ok(!rx`a${"."}b`.test("axb"), "an interpolated value matches literally");
+});
+
+test("a session name is the architect's when it starts with 架构师, ignoring spaces around it; only the exact 架构师 answers the pushes", () => {
+  for (const name of ["架构师", "  架构师  ", "架构师轮次", "架构师·观察", " 架构师·整理 ", "架构师2", "架构师轮次x"]) {
+    assert.equal(isArchitectName(name), true, name);
+    assert.equal(isArchitect({ author: "Architect", session: name }), true, `${name} writes as the architect`);
+  }
+  for (const name of ["x架构师", "第二个架构师", "架 构师", "观察者", "PM", "执行程序", "", "   ", undefined]) {
+    assert.equal(isArchitectName(name), false, String(name));
+    assert.equal(isArchitect({ author: "Architect", session: name }), false, `${name} does not`);
+  }
+  assert.equal(isArchitect({ author: "Firn", session: "架构师·观察" }), false, "another author is an ordinary project author whatever the session");
+  assert.equal(isArchitect({ author: "PM", session: "架构师·观察" }), false);
+  // The pushes: the exact name, and over a credential of the architect's role the exact name too.
+  for (const name of ["架构师", " 架构师 "]) assert.equal(isArchitectSession(name), true, name);
+  for (const name of ["架构师轮次", "架构师·观察", "架构师·整理", "架构师2", undefined]) assert.equal(isArchitectSession(name), false, String(name));
+  assert.equal(answersPushes({ session: "架构师" }), true);
+  assert.equal(answersPushes({ session: "架构师·观察" }), false);
+  assert.equal(answersPushes({ role: "架构师", session: "架构师" }), true);
+  assert.equal(answersPushes({ role: "架构师", session: "架构师·观察" }), false, "the architect's role under another architect name does not answer");
+  assert.equal(answersPushes({ role: "架构师", session: "架构师轮次" }), false);
 });
 
 const vocabulary = { 健全性: "改动影响程序是否被正确拒绝或接受", 报错信息: "改动影响诊断的措辞或位置" };

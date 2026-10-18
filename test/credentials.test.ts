@@ -65,6 +65,12 @@ test("the file's entries are checked: a role of its own, the architect and the P
     ["the architect's turn session name for the resource agent", { ...ok, role: "资源管理", session: "架构师轮次" }],
     ["the architect's turn session name for the PM", { ...ok, role: "PM", session: "架构师轮次", project: "PM" }],
     ["the architect's turn in another project", { ...ok, role: "架构师", session: "架构师轮次", project: "Firn" }],
+    ["a name starting with the architect's for another role", { ...ok, session: "架构师·观察" }],
+    ["a name starting with the architect's for the observer, spaces around it", { ...ok, role: "观察者", session: " 架构师·观察 " }],
+    ["a name starting with the architect's for the resource agent", { ...ok, role: "资源管理", session: "架构师·整理" }],
+    ["a name starting with the architect's for the PM", { ...ok, role: "PM", session: "架构师·观察", project: "PM" }],
+    ["a name starting with the architect's in another project", { ...ok, role: "架构师", session: "架构师·观察", project: "Firn" }],
+    ["a name that only contains the architect's, for the architect", { ...ok, role: "架构师", session: "第二个架构师", project: "Architect" }],
     ["the runner's session name for another role", { ...ok, session: "执行程序" }],
     ["the runner's session name for the architect", { ...ok, role: "架构师", session: "执行程序", project: "Architect" }],
     ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "PM" }],
@@ -80,6 +86,8 @@ test("the file's entries are checked: a role of its own, the architect and the P
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" })] }).success);
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the architect's role under the turns' session name");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the conversation's and the turns' credentials side by side");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师·观察", project: "Architect" })] }).success, "the architect's role under a name that starts with the conversation's");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "架构师", session: "架构师·观察", project: "Architect" }), entry("c", { role: "架构师", session: "架构师·整理", project: "Architect" })] }).success, "the conversation's and two other architect credentials side by side");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "PM", session: "PM", project: "PM" })] }).success, "the PM only as itself");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "PM", session: "PM", project: "PM" })] }).success, "the architect and the PM side by side");
 });
@@ -114,6 +122,11 @@ test("a dispatch issues a credential for its session, role, item and project, an
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师轮次", agentId: "agent-7" }), /agent.*the PM's or the architect's session name/);
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: " 架构师轮次 ", agentId: "agent-8" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
   assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师轮次") ?? false, false, "and no dispatch was recorded");
+  // So is every name that starts with the architect's: the architect's rights are theirs.
+  for (const [n, agent] of [["agent-9", "架构师·观察"], ["agent-10", " 架构师·整理 "], ["agent-11", "架构师轮次x"], ["agent-12", "架构师2"]] as const) {
+    await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent, agentId: n }), /agent.*the PM's or the architect's session name/, agent);
+    assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === agent.trim()) ?? false, false, `no dispatch was recorded under ${agent}`);
+  }
   // The PM's session name is the PM's alone, for the same reason.
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "PM", agentId: "agent-5" }), /agent.*the PM's or the architect's session name/);
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: " PM ", agentId: "agent-6" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
