@@ -2,13 +2,17 @@
 // each check clicks like the owner, then compares where the page landed with what the element claims, computed independently
 // from the stored board with the shared rules (src/rules.ts) and the server's unread history (src/history.ts). A check returns
 // its violations, each opening with the family name, so a test can assert none and a witness can assert the one its bug causes.
-// These are the checks of test/e2e/invariants.ts whose answer does not depend on layout; what needs a box (a position, a size,
-// a hit) stays in the browser layer. Families: tree-row, plan-*, card-*, dep-row, badge-*, wait-*, new-*, fresh-*, n-walk, filter-*,
-// search, comment-*, empty-row, tag-text, difficulty-chip, idle-status.
+// These are the checks whose answer does not depend on layout; what needs a box (a position, a size, a hit) is in the browser
+// layer (test/e2e/invariants.ts). Families: tree-row, plan-*, card-*, dep-row, badge-*, wait-*, new-*, fresh-*, n-walk, filter-*,
+// search, comment-*, empty-row, tag-text, difficulty-chip, idle-status, wrap-*, ref-fold-*, shared-section-*.
 
-import { placedCards } from "../../src/rules.ts";
+import { ops } from "../../src/ops.ts";
+import { placedCards, rules } from "../../src/rules.ts";
+import type { Rules } from "../../src/rules.ts";
 import { difficultyText } from "../../src/model.ts";
+import type { Snapshot } from "../../src/model.ts";
 import { prng } from "../e2e/board-gen.ts";
+import type { BoardServer } from "../e2e/board-server.ts";
 import { oracle } from "../e2e/invariants.ts";
 import type { Oracle } from "../e2e/invariants.ts";
 import { attr, DomPage } from "./page.ts";
@@ -502,5 +506,138 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
     const labels = bp.$$(".grp-filters .sbtn", section).map(b => text(b));
     if (!labels.includes(`停滞 ${n}`)) v.push(`idle-status: ${g} has ${n} part-done items, its filter buttons read ${JSON.stringify(labels)}`);
   }
+  return v;
+}
+
+/** n and the right arrow wrap around the list as it stands. With the bottom row of the left tree selected, n lands on the first row of
+ * the tree holding unread content (or on the bottom row itself when that holds some), and a lap of n visits every such row once, in tree
+ * order; the right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
+ * nearest the top of the screen. Families: wrap-n, wrap-card. */
+export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], rows = bp.treeRows();
+  if (!rows.length) return v;
+  const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
+  if (freshRows.length) {
+    const expected = o.fresh.has(last) ? last : freshRows[0]!;
+    for (let lap = 0; lap < 2; lap++) {
+      await bp.select(last); bp.blur(); bp.key("n"); await bp.settle();
+      const sel = bp.selected();
+      if (sel !== expected) v.push(`wrap-n: n from the bottom row ${last} landed on ${sel}, expected ${expected}`);
+    }
+    // A lap of n from the bottom: every row holding unread content once, in tree order, starting with the first.
+    await bp.select(last); bp.blur();
+    const seen: string[] = [];
+    for (let k = 0; k < 6 * o.docs.size + 6 && seen.length < freshRows.length; k++) {
+      bp.key("n"); await bp.settle();
+      const sel = bp.selected();
+      if (sel && seen.at(-1) !== sel) seen.push(sel);
+    }
+    const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
+    if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
+  }
+  // Select the last row holding a waiting card (and no ask): the right arrow must go to its own card.
+  const waiting = (id: string) => o.r.cardsOf(id).filter(k => o.r.cardWaiting(k)).length > 0;
+  const target = rows.filter(id => o.s.items[id] && waiting(id) && !o.r.askPending(id)).at(-1);
+  if (target) {
+    await bp.select(target); bp.blur();
+    bp.key("ArrowRight"); await bp.settle();
+    const sel = bp.selected(), cards = bp.currentCards();
+    if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
+  }
+  return v;
+}
+
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+/** A head's 参考 sections (not a card's folded old text), checked on the page: each folds shut under its title, looks like body text,
+ * opens to its whole text, and stays open across a re-render. Families: ref-fold-split, ref-fold-look, ref-fold-keep. (Whether a folded
+ * body is hidden is the browser's rule for a closed `details`; here the section must be closed and its body inside it.) */
+export async function checkRefFold(bp: DomPage, b: BoardServer): Promise<string[]> {
+  const v: string[] = [], x = b.gen.witness.code, st = bp.styles;
+  // The expected titles are written out here, not read through the page's own title rule, so a broken rule cannot make the check
+  // expect fewer sections. They are the two sections board-gen.ts writes into the code witness's head.
+  const titles = ["参考：推导", "参考：测量"];
+  const sections = () => bp.$$<HTMLDetailsElement>("#item-detail .rich details[data-ref]:not(.legacy)");
+  const shown = () => sections().map(d => ({ open: d.open, title: text(d.querySelector("summary")), bodyShown: bp.$$(".refbody", d).some(c => bp.shown(c)) }));
+  await bp.select(x);
+  const first = shown();
+  if (first.length !== titles.length) return [`ref-fold-split: ${x} shows ${first.length} 参考 sections, the board's code item has ${titles.length}`];
+  first.forEach((d, i) => {
+    if (d.title !== titles[i]) v.push(`ref-fold-split: section ${i + 1} is titled "${d.title}", its head says "${titles[i]}"`);
+    if (d.open) v.push(`ref-fold-split: section ${i + 1} opens by default`);
+    if (d.bodyShown) v.push(`ref-fold-split: folded section ${i + 1} still shows its text`);
+  });
+  // Its appearance: no monospace or boxed button look, and the text matches an ordinary paragraph of the head.
+  const section = sections()[0]!, summary = bp.$("summary", section)!;
+  bp.click(summary, "the title of the first 参考 section"); await bp.settle();
+  st.forget();
+  const family = (e: Element | null) => e ? st.value(e, "font-family") ?? "" : "";
+  const bordered = (e: Element) => ["border", "border-width", "border-top-width"].some(prop => { const value = st.value(e, prop); return value !== undefined && !/\bnone\b|^0(px)?$/.test(value.trim()); });
+  if (!section.open) v.push(`ref-fold-look: clicking a 参考 title does not open its section`);
+  if (/mono|courier|menlo|monaco/i.test(family(summary))) v.push(`ref-fold-look: a 参考 title is set in ${family(summary)}, not the page's text font`);
+  if (bordered(section) || bordered(summary)) v.push(`ref-fold-look: a 参考 section has a border, as a button would`);
+  const paragraph = bp.$(".refbody p", section), plain = bp.$("#item-detail .rich > p");
+  if (paragraph && plain && family(paragraph) !== family(plain)) v.push(`ref-fold-look: text in a 参考 section is set in ${family(paragraph)}, not the head's ${family(plain)}`);
+  const gap = st.value(bp.$(".refbody", section)!, "gap") ?? st.value(bp.$(".refbody", section)!, "row-gap");
+  if (titles.length > 1 && (gap === undefined || /^(0(px)?|normal)$/.test(gap.trim()))) v.push(`ref-fold-look: paragraphs inside a 参考 section have no space between them`);
+  // Every section opens to its whole text.
+  for (let i = 0; i < sections().length; i++) { const d = sections()[i]!; if (!d.open) bp.click(bp.$("summary", d), `the title of section ${i + 1}`); }
+  await bp.settle();
+  const opened = shown();
+  opened.forEach((d, i) => { if (!d.open || !d.bodyShown) v.push(`ref-fold-split: section ${i + 1} does not show its whole text when opened`); });
+  // The open state survives a re-render: the owner's reading is not folded again when the item changes. A details element tells the
+  // page of a change of its state in a task of its own, so that has run before the item is written.
+  await pause(20);
+  const cur = b.store.snapshot().items[x]!, { rev, ...doc } = cur, at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const base = bp.changes();
+  await b.store.commit({ author: "Burst", message: "ref-fold: log the item", puts: [{ kind: "item", id: x, expectRev: rev, doc: { ...doc, log: [...cur.log, { at, by: cur.group, text: "参考展开的检查写入。" }], updated: at } }] });
+  await bp.waitChanges(base + 1);
+  const kept = shown();
+  if (kept.length !== opened.length || kept.some(d => !d.open)) v.push(`ref-fold-keep: a 参考 section the reader opened is folded again after the item changes`);
+  return v;
+}
+
+/** A project's top-level items sit under its 被其他项目依赖 line exactly when an open item of another project depends on them (the
+ * rules); the page is read as drawn, so a stale layout after a live change is a violation. */
+function sectionViolations(bp: DomPage, r: Rules, items: Snapshot["items"]): string[] {
+  const drawn = bp.$$("#areas .group").flatMap(group => bp.$$(":scope > ul.tree.lines", group).flatMap(list =>
+    bp.$$(":scope > li > .item", list).map(e => ({ id: e.id.slice(3), under: !!list.previousElementSibling?.classList.contains("shared-sep") }))));
+  const ended = (id: string) => /^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  // Two families, so a witness can name the direction it breaks: an item left above the line when it should be under, or under it when it should not.
+  return drawn.filter(d => d.under !== r.dependents(d.id).some(w => !ended(w.id) && items[w.id]?.group !== items[d.id]?.group))
+    .map(d => d.under ? `shared-section-under: ${d.id} is drawn under 被其他项目依赖, but no open item of another project depends on it`
+      : `shared-section-above: ${d.id} is drawn above 被其他项目依赖, but an open item of another project depends on it`);
+}
+/** A root another project starts to depend on moves under its project's 被其他项目依赖 line while the page stays open, and returns to
+ * the project's own roots when the shared row goes. Writes to the board: a shared row on an item of another project and its removal.
+ * Families: shared-section-above, shared-section-under. */
+export async function checkSharedSection(bp: DomPage, b: BoardServer): Promise<string[]> {
+  const s = b.store.snapshot(), r = rules(s), drawn = new Set(bp.treeRows());
+  const v = sectionViolations(bp, r, s.items);
+  const live = (id: string) => !s.items[id]!.record && !/^(done|cancelled)$/.test(r.statusOf(id) ?? "");
+  const group = (id: string) => s.items[id]!.group;
+  // A drawn open root no other project depends on yet; the first item of another project that can take a shared row to it (the write
+  // refuses one that would close a cycle).
+  const root = r.areas().find(id => drawn.has(id) && live(id) && !r.dependents(id).some(w => group(w.id) !== group(id)));
+  if (!root) return [...v, "witness setup: the board draws no open root that no other project depends on"];
+  // The first commit after the board is seeded also carries the owner's pending read cursor, and the page answers an owner change by
+  // repainting everything, which would put the root in its place even without the group repaint under test. An unrelated write takes
+  // that commit first.
+  const base = bp.changes(), idle = Object.keys(s.items).sort().filter(id => live(id)).at(-1)!;
+  await ops(b.store).appendLog({ author: group(idle), id: idle, text: "A write unrelated to the root, so the next change repaints only what it changes." });
+  await bp.waitChanges(base + 1);
+  let waiter: string | undefined;
+  for (const id of Object.keys(s.items).sort().filter(id => id !== root && group(id) !== group(root) && live(id))) {
+    try { await ops(b.store).setPlan({ author: group(id), id, row: { item: root, own: false } }); waiter = id; break; } catch { /* closes a cycle or is refused: try the next item */ }
+  }
+  if (!waiter) return [...v, "witness setup: no item of another project takes a shared row to the root"];
+  await bp.waitChanges(base + 2);
+  let now = b.store.snapshot();
+  if (!rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: the shared row did not make the other project's item depend on the root");
+  v.push(...sectionViolations(bp, rules(now), now.items));
+  await ops(b.store).setPlan({ author: group(waiter), id: waiter, remove: root });
+  await bp.waitChanges(base + 3);
+  now = b.store.snapshot();
+  if (rules(now).dependents(root).some(w => w.id === waiter)) v.push("witness setup: removing the shared row left the dependency");
+  v.push(...sectionViolations(bp, rules(now), now.items));
   return v;
 }

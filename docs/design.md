@@ -4339,15 +4339,18 @@ unread list and does not fetch the board.
 
 **Evidence.** Each check runs on the current page, where it must find
 nothing, and on the page with the thing it guards spoiled, where it must
-report it. In the DOM layer the spoiled page is the source text edited in
-memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
-(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles,
-mermaid) its own, each naming the reason it must fail for. In the browser layer
-`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
-reversed in a copy served from a temporary directory. A fix is reversed by
-undoing its commit's hunks, or, where later work rewrote the lines around it,
-by a targeted edit that removes just the fix. A witness whose edits no longer
-match the current file fails and is updated or retired on purpose.
+report it. The spoiled page is the source text edited as it is bundled
+(`test/e2e/variant.ts`), by a literal replacement that removes just the fix,
+so no test reads the repository's history. In the DOM layer `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
+(agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
+naming the reason it must fail for; the fixes of the page's update run in the
+fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+because a window has no page reload. The browser layer keeps only the
+witnesses of facts that need a box, in `test/e2e/regressions.e2e.ts`: the
+right column's widths, a plan's card row squeezed by its pick, and the diagram
+fitted to its box. A witness whose edit no longer matches the current file
+fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
@@ -4367,9 +4370,7 @@ only the jobs it lists.
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
   skeleton, whose setup steps are those of the `test` and `e2e` jobs of
-  `ci.yml`: keep each step the selected tests need and drop the others (the
-  regression witnesses of `test/e2e/regressions.e2e.ts` read fix commits, so
-  a job that runs them needs `fetch-depth: 0`):
+  `ci.yml`: keep each step the selected tests need and drop the others:
 
   ```yaml
   name: tmp-quick
@@ -4398,8 +4399,6 @@ only the jobs it lists.
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
-          with:
-            fetch-depth: 0
         - uses: actions/setup-node@v5
           with:
             node-version: 24
