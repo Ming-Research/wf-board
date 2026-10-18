@@ -20,8 +20,9 @@ async function run(bp: DomPage, family: () => Promise<string[]>): Promise<string
   return [...v, ...bp.errors.map(e => "page-error: " + e)];
 }
 
-/** The families, by the key a file asks for them with. */
-function families(bp: DomPage, board: BoardServer): Record<string, [string, (o: Oracle) => Promise<string[]>]> {
+/** The families, by the key a file asks for them with. With `projects`, the project filters are checked for the projects at the
+ * positions k with k % of === part only. */
+function families(bp: DomPage, board: BoardServer, projects?: Share): Record<string, [string, (o: Oracle) => Promise<string[]>]> {
   const w = board.gen.witness;
   // Items whose plans name cards (every one), share other items, or own items (a sample); items with dependents.
   const planItems = (o: Oracle) => {
@@ -43,22 +44,26 @@ function families(bp: DomPage, board: BoardServer): Record<string, [string, (o: 
     badges: ["purple and red numbers count and reach their own waits", o => checkBadges(bp, o)],
     waits: ["header wait numbers and the wait panel", o => checkWaitPanel(bp, o)],
     fresh: ["blue numbers, the 新 number and n", o => checkFresh(bp, o)],
-    filters: ["project filters count, show and hide the right items", o => checkFilters(bp, o)],
+    filters: ["project filters count, show and hide the right items" + (projects ? ` (part ${projects.part + 1} of ${projects.of}: the projects at positions ${projects.part}, ${projects.part + projects.of}, ...)` : ""),
+      o => checkFilters(bp, o, o.s.board.projects.map(p => p.name).filter((_, k) => !projects || k % projects.of === projects.part))],
     search: ["search finds and shows items and cards", o => checkSearch(bp, o)],
   };
 }
 
-/** Which of the two passes a file runs: the families each on a freshly loaded page, and again on a page kept open while writes land. */
-export interface PageRun { chips?: boolean; passes?: Array<"fresh" | "after"> }
+/** The part `part` (from 0) of `of` of a list, dealt out by position: the elements at positions k with k % of === part. */
+export interface Share { part: number; of: number }
+/** Which of the two passes a file runs: the families each on a freshly loaded page, and again on a page kept open while writes land;
+ * `projects` shares the project filters out over files, and a file asks for its part. */
+export interface PageRun { chips?: boolean; passes?: Array<"fresh" | "after">; projects?: Share }
 
 /** One test file's share of the page's checks: the families `keys`, each on a freshly loaded page and then on a page kept open
  * while a burst of writes lands elsewhere before it; with `chips`, also the small checks of tags, rows and comments. Each file has
  * a board of its own, and a file stays within the time one hosted-runner job gives a test file (docs/design.md, section 11). */
-export function pageTests(title: string, keys: string[], { chips = false, passes = ["fresh", "after"] }: PageRun = {}) {
+export function pageTests(title: string, keys: string[], { chips = false, passes = ["fresh", "after"], projects }: PageRun = {}) {
   test(title, { timeout: 5 * 60_000 }, async t => {
     const board = await startBoard(t), w = board.gen.witness;
     const bp = await DomPage.open(t, board, { storage: openAll(board) });
-    const all = families(bp, board), order = Object.keys(all);
+    const all = families(bp, board, projects), order = Object.keys(all);
     const picked = keys.map(k => ({ round: order.indexOf(k) + 1, name: all[k]?.[0] ?? assert.fail("no family " + k), family: all[k]![1] })).sort((a, b) => a.round - b.round);
     if (passes.includes("fresh")) for (const { name, family } of picked) await t.test("fresh page: " + name, async () => {
       await bp.reset(openAll(board));

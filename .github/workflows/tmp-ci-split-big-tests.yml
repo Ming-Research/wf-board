@@ -1,6 +1,6 @@
 name: tmp-ci-split-big-tests
 # Temporary: delete before the last full CI, which fails while this file exists.
-# Times the big test files alone on a hosted runner, to see where each file's seconds go.
+# Times each new test file alone on a hosted runner, and lists the tests of the files before and after the split.
 on:
   push:
     branches-ignore: [main]
@@ -8,45 +8,27 @@ concurrency:
   group: tmp-ci-split-big-tests-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  rules:
-    name: rules ${{ matrix.mode }}
+  alone:
+    name: alone ${{ matrix.file }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        mode: [gen, replay, full, answers]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: MODE=${{ matrix.mode }} node test/tmp-profile-rules.ts
-  page:
-    name: page ${{ matrix.file }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        file: [page-cards, page-tree, page-filters-after, page-filters-fresh, page-numbers, page-plan, witnesses-1, mermaid-view, mermaid-page, agents, messages]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test --test-reporter=spec test/dom/${{ matrix.file }}.test.ts
-  plain:
-    name: plain ${{ matrix.file }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        file: [deploy, ops-roles, ops, shutdown, push, startup-cache, web, derived, history, stateless, store]
+        file:
+          - test/dom/page-tree.test.ts
+          - test/dom/page-plan.test.ts
+          - test/dom/page-plan-after.test.ts
+          - test/dom/page-cards.test.ts
+          - test/dom/page-numbers.test.ts
+          - test/dom/page-unread.test.ts
+          - test/dom/page-search.test.ts
+          - test/dom/page-filters-fresh.test.ts
+          - test/dom/page-filters-after-1.test.ts
+          - test/dom/page-filters-after-2.test.ts
+          - test/rules-reuse-a-1.test.ts
+          - test/rules-reuse-a-2.test.ts
+          - test/rules-reuse-guards.test.ts
+          - test/rules-reuse-share.test.ts
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -56,4 +38,31 @@ jobs:
       - run: npm ci
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test --test-reporter=spec test/${{ matrix.file }}.test.ts
+      - run: node --test --test-reporter=spec ${{ matrix.file }}
+  names:
+    name: names ${{ matrix.which }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - which: base
+            files: test/rules-reuse-a.test.ts test/rules-reuse-b.test.ts test/rules-reuse-c.test.ts test/dom/page-cards.test.ts test/dom/page-tree.test.ts test/dom/page-filters-after.test.ts test/dom/page-numbers.test.ts test/dom/page-plan.test.ts
+          - which: head
+            files: test/rules-reuse-a-1.test.ts test/rules-reuse-a-2.test.ts test/rules-reuse-b-1.test.ts test/rules-reuse-b-2.test.ts test/rules-reuse-c-1.test.ts test/rules-reuse-c-2.test.ts test/dom/page-cards.test.ts test/dom/page-tree.test.ts test/dom/page-filters-after-1.test.ts test/dom/page-filters-after-2.test.ts test/dom/page-numbers.test.ts test/dom/page-plan.test.ts test/dom/page-plan-after.test.ts test/dom/page-unread.test.ts test/dom/page-search.test.ts
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # The base side runs the files of the main line as they were before the split.
+      - if: ${{ matrix.which == 'base' }}
+        run: git checkout origin/main -- test
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: git show ${{ github.sha }}:test/tmp-names-reporter.ts > "$RUNNER_TEMP/names-reporter.ts"
+      - run: node --test --test-reporter="$RUNNER_TEMP/names-reporter.ts" ${{ matrix.files }}
