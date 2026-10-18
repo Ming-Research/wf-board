@@ -47,7 +47,10 @@ test("an operation over its class limit is told to the architect with its name, 
     slow.record({ name: "tool context", cls: "read", ms: 1001, result: "ok", params: () => "id=a log=all" });
   });
   const [frame] = slowFrames(wake);
-  assert.deepEqual(frame, { n: 1, at: "2026-10-16T00:00:00.000Z", event: "slow-op", op: "tool context", ms: 1001, limitMs: 1000, params: "id=a log=all" });
+  // The architect's stream, an agent's, also keeps the line the frame is shown as.
+  const { line, ...fields } = frame!;
+  assert.deepEqual(fields, { n: 1, at: "2026-10-16T00:00:00.000Z", event: "slow-op", op: "tool context", ms: 1001, limitMs: 1000, params: "id=a log=all" });
+  assert.match(String(line), /操作太慢 · tool context 用了 1001 毫秒，限 1000/);
   assert.deepEqual(info, ["tool context ok 1000 ms", "tool context ok 1001 ms"], "every operation is logged with its time, slow or not");
   assert.deepEqual(warn, ["slow tool context: 1001 ms, limit 1000 ms (id=a log=all)"]);
 });

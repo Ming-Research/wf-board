@@ -161,7 +161,10 @@ test("a stream file that holds a kind the table no longer has loads without it, 
   const wake = new Wake({ dir, now: () => T0 }), stream = wake.agent("eng");
   assert.deepEqual(stream.pending().frames.map(f => [f.n, f.event]), [[2, "item-done"]], "the two retired kinds are not kept");
   assert.equal(stream.push("item-done", done("c2", "p")).n, 4, "and numbering goes on past them");
-  assert.equal(wake.footer("eng").split("\n").length, 3, "a tool result is made of what is kept: its head and the two item-done lines");
+  // The first retired push was never delivered, so the session is told that one was dropped, then it gets what is kept.
+  const lines = wake.footer("eng").split("\n");
+  assert.equal(lines.length, 4, "a tool result is made of what is kept: its head, the line that a push was dropped and the two item-done lines");
+  assert.match(lines[1]!, /只留 #2 及以后的/);
 });
 
 test("a delivered push is never given again: after an ack, across a restart, and once a tool result carried it", async t => {

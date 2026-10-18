@@ -28,7 +28,7 @@ test("the items delivering the pulls the subjects name are those whose 改动 se
   assert.deepEqual(deliveries(s(), "Ming-Research/Whitefoot", ["B (#2)", "Merge pull request #1 from x", "again (#2)"]).map(d => d.pr), [2, 1, 1], "a pull request once, in the order the subjects name them");
   assert.deepEqual(deliveries(s(), "Ming-Research/Whitefoot", ["Merge pull request #9 from x", "no number"]), [], "no item names it");
   assert.deepEqual(deliveries(s(), "Other/Repo", ["Merge pull request #1 from x"]), [], "another repository's pull request 1 is not this one");
-  // Nobody holds either: the first is the one to name in a push to the PM.
+  // Nobody holds either: the first is the one to name in a push to the architect.
   const all = deliveries(s(), "Ming-Research/Whitefoot", ["Merge pull request #1 from x"]);
   assert.deepEqual(tellFirst(s(), all), [{ pr: 1, item: "other" }]);
   await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-a" });

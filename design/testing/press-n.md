@@ -4,6 +4,6 @@ Rejected:
 - A time limit alone: rejected because the time depends on the runner and varies up to a factor of two between jobs.
 - A row that answers 40 ms inside the page's own 100 ms wait: rejected because a browser held up for 40 ms turned the count on slow runners; the 100 ms itself is held by fake-clock tests of the page.
 - A fake clock for the page's timers in the browser: rejected because the page's frames, the test's waits for the page to be quiet and the minute timers would all have to follow it, and a fake clock mixed with real network requests stalls.
-- The time limit on the 14900K only: rejected because only the PM starts runs there, so it cannot guard every pull request.
+- The time limit on the 14900K only: rejected because only the runner starts runs there, so it cannot guard every pull request.
 - The time from the key to the landing instead of the main thread's busy time: rejected because its twin noise at the 90th percentile was 68% against 5.5% for the busy time's median.
 - A looser limit while sessions write: rejected because it drops the owner's 0.2 seconds while sessions write and makes the page no faster.

@@ -242,7 +242,8 @@ test("after a write the check scan rederives only the items the write can reach"
   const checked: string[] = [], shared = store.derived.rules.bind(store.derived);
   t.mock.method(store.derived, "rules", (s: Parameters<typeof shared>[0], now?: number) => {
     const r = shared(s, now);
-    return { ...r, checks: (id: string) => { if (s === store.snapshot()) checked.push(id); return r.checks(id); } };
+    // The scan reads each item's status (an item that became done is announced to the sessions waiting on it).
+    return { ...r, statusOf: (id: string) => { if (s === store.snapshot()) checked.push(id); return r.statusOf(id); } };
   });
   await op.appendLog({ author: "Firn", id: "other", text: "Progress elsewhere" });
   await star.sync();
