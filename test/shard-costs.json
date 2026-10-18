@@ -3,6 +3,7 @@
   "test/agents.test.ts": 1.6,
   "test/backup-push.test.ts": 3.4,
   "test/board-gen.test.ts": 4.8,
+  "test/browser-limits.test.ts": 0.3,
   "test/budget.test.ts": 3.9,
   "test/candidates.test.ts": 6.6,
   "test/changes-cost.test.ts": 1.5,
