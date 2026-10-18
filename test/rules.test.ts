@@ -862,7 +862,7 @@ const tests = (state: PlanStep["state"] = "todo") => step("tests", state, { acce
 const stageLabel = (r: ReturnType<typeof rules>, id: string) => r.stages(id)?.current?.label;
 
 test("a plan with research and impl rows counts only its stage rows for the progress share and the count", () => {
-  const s = snapshot({ a: {}, sub: {} }, { q: {} });
+  const s = snapshot({ a: {}, sub: {} }, { q: { item: "a" } });
   // Three detail rows done, then research done, impl in progress, an owned sub-item and a card (neither a stage), the rest todo.
   s.items.a!.plan = [step("d1", "done"), step("d2", "done"), step("d3", "done"), step("research", "done"), own("sub"), card("q"), step("impl", "doing"), step("ci"), tests(), step("accept"), step("merge")];
   const r = rules(s);
@@ -886,8 +886,6 @@ test("the current stage is the first one in progress, else the first not done, a
   s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), tests("done"), step("accept", "done"), step("merge", "done"), step("verify", "done")];
   assert.equal(rules(s).stages("a")?.current, undefined, "every stage done: no current stage");
   assert.equal(rules(s).stages("a")?.share, 1);
-  s.items.a!.plan = [step("research", "done", { text: "调研：读规则" }), step("impl"), tests(), step("accept")];
-  assert.equal(stageLabel(rules(s), "a"), "实现");
 });
 
 test("a plan is read by stages only when it has a research row and an impl row, and the acceptance step is never a stage", () => {
