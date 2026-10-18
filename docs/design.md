@@ -4127,9 +4127,9 @@ and `ops-roles.test.ts`, pause and who may write what), because one of its tests
 alone takes 7 seconds and the file about 28, which kept any shard above the others.
 
 **Measured** (hosted runners, 4 cores, 8 shards, the costs as above): the step
-`tests` of a shard took 14 to 26 seconds, its setup (checkout, Node, `npm ci`, the
-build) 11 to 13, and a run from its start to the end of its last shard 40 to 45
-seconds in 9 of 10 runs of one commit; in the tenth a shard waited 46 seconds for
+`tests` of a shard took 12 to 26 seconds, the rest of its job (checkout, Node,
+`npm ci`, the build, the start and end of the job) 12 to 16, and a run from its
+start to the end of its last shard 40 to 45 seconds in 9 of 10 runs of one commit; in the tenth a shard waited 46 seconds for
 a runner (the others 3 to 5) and the run took 70. A shard takes about as long as
 the largest file it holds, and eight files take 13 to 20 seconds each when three
 share a runner, so the costs balance the sums but the floor is the largest file.
