@@ -2348,10 +2348,9 @@ diagram makes the page scroll instead of being squeezed into the window, where i
 shrink until it could not be read. A narrow one is centered. A drawn diagram sits in a frame, and
 its toolbar is the top row of the frame, above the diagram, so it never covers the diagram. From
 the left: smaller, the size as a percentage of the diagram's own width, larger, 适应宽度 (back to
-the default size, which is the diagram's own width or the box's, whichever is less), 缩放到 100%
-(the diagram at its own width, so that a diagram wider than a narrow box scrolls sideways in it; pressed
-again it says 缩到框宽 and goes back to the default size), and at the right a hint, 双指缩放，拖动或滚动查看,
-shown at every size. A diagram zooms with Ctrl and the
+the default size, which is the diagram's own width or the box's, whichever is less), then 60%, 80% and
+100%, each a share of the diagram's own width (100% is the diagram at its own size, so a diagram wider than a
+narrow box scrolls sideways in it), and at the right a hint, 双指缩放，拖动或滚动查看, shown at every size. A diagram zooms with Ctrl and the
 wheel too, about the cursor (Chromium sends a pinch on a trackpad as Ctrl and the wheel; other
 browsers are not checked). The plain wheel is left alone and scrolls the page.
 An enlarged diagram wider than its box scrolls sideways in the box, which keeps a scroll

@@ -3,7 +3,7 @@
 // never runs; a page with no diagram never fetches the library; a diagram survives the repaint a live update makes; the same diagram
 // drawn twice has no id twice; both color schemes read, and the owner's data-theme attribute wins over the system's. A diagram wider
 // than its box is shrunk to it, never enlarged, at two window widths; the settings a diagram brings in its own frontmatter win over
-// the page's; it has a toolbar in its frame (smaller, the size in percent, larger, fit to width, the 100% button, the hint at the right); it zooms with the
+// the page's; it has a toolbar in its frame (smaller, the size in percent, larger, fit to width, the 60%, 80% and 100% buttons, the hint at the right); it zooms with the
 // buttons and with Ctrl and the wheel, the plain wheel scrolls the page, a zoomed one is dragged, and a live update that leaves its source alone leaves its view alone too. Each check also runs on a page with one part taken out (an
 // edit applied while the page is bundled), where it must report the part's absence for the reason the check protects. A diagram that
 // never appears can only be observed by waiting, so the wait is short (GIVE_UP) and the reported line must say what was waited for and
@@ -432,10 +432,10 @@ async function checkBar(bp: BoardPage, wait: number): Promise<string[]> {
   });
   if (!got) return ["mermaid-bar: the diagram has no toolbar"];
   const v: string[] = [], names = got.items.map(i => i.name);
-  if (names.join() !== "缩小,size,放大,适应宽度,缩放到 100%,hint") v.push(`mermaid-bar: the toolbar reads, left to right, ${names.join(", ")}; expected 缩小, size, 放大, 适应宽度, 缩放到 100%, hint`);
+  if (names.join() !== "缩小,size,放大,适应宽度,60%,80%,100%,hint") v.push(`mermaid-bar: the toolbar reads, left to right, ${names.join(", ")}; expected 缩小, size, 放大, 适应宽度, 60%, 80%, 100%, hint`);
   else {
     if (got.items.some((item, i) => i > 0 && item.left < got.items[i - 1]!.right - 1)) v.push("mermaid-bar: the items of the toolbar overlap or run right to left");
-    const size = got.items[1]!, hint = got.items[5]!;
+    const size = got.items[1]!, hint = got.items[7]!;
     if (!/^\d+%$/.test(size.text)) v.push(`mermaid-bar: the size reads ${JSON.stringify(size.text)}, not a percentage`);
     if (hint.text !== HINT) v.push(`mermaid-bar: the hint reads ${JSON.stringify(hint.text)}, expected ${JSON.stringify(HINT)}`);
     if (!hint.shown) v.push("mermaid-bar: the hint is not shown");
@@ -447,19 +447,24 @@ async function checkBar(bp: BoardPage, wait: number): Promise<string[]> {
   return v;
 }
 
-/** The 缩放到 100% button draws a diagram wider than its box at its own size, its box scrolls sideways to both ends and the page does not;
- * pressed again it goes back to the width of the box, with the size in percent. */
+/** The 60%, 80% and 100% buttons draw a diagram wider than its box at that share of its own size; at 100% its box scrolls sideways to both
+ * ends and the page does not; 适应宽度 gives the width of the box back. */
 async function checkActual(bp: BoardPage, wait: number): Promise<string[]> {
   const waited = await settled(bp, 1, wait);
   if (waited) return [`mermaid-actual: ${waited}`];
-  if (!(await buttons(bp)).includes("缩放到 100%")) return ["mermaid-actual: the diagram has no 缩放到 100% button"];
+  const have = await buttons(bp);
+  for (const need of ["60%", "80%", "100%"]) if (!have.includes(need)) return [`mermaid-actual: the diagram has no ${need} button; its buttons are ${have.join(", ") || "none"}`];
   const v: string[] = [];
   const start = await firstFigure(bp);
   if (start.natural <= start.box) return [`witness setup: the diagram is ${round(start.natural)} px wide and fits its box of ${start.box} px`];
-  await press(bp, "缩放到 100%");
+  for (const share of [0.6, 0.8]) {
+    await press(bp, `${share * 100}%`);
+    const f = await firstFigure(bp);
+    if (Math.abs(f.drawn - f.natural * share) > 2) v.push(`mermaid-actual: the ${share * 100}% button draws the diagram ${round(f.drawn)} px wide, not ${round(f.natural * share)} px`);
+  }
+  await press(bp, "100%");
   const actual = await firstFigure(bp);
   if (Math.abs(actual.drawn - actual.natural) > 2) v.push(`mermaid-actual: the 100% button draws the diagram ${round(actual.drawn)} px wide, not its own ${round(actual.natural)} px`);
-  if (!(await buttons(bp)).includes("缩到框宽")) v.push("mermaid-actual: the button does not say 缩到框宽 at the diagram's own size");
   if (actual.scroll <= actual.box + 1) v.push(`mermaid-actual: at its own size the diagram fits its box of ${actual.box} px`);
   else {
     if (!/auto|scroll/.test(actual.overflowX)) v.push(`mermaid-actual: the box does not scroll sideways (overflow-x ${actual.overflowX})`);
@@ -474,11 +479,11 @@ async function checkActual(bp: BoardPage, wait: number): Promise<string[]> {
   }
   const page = (await figures(bp)).page;
   if (page[0] > page[1] + 1) v.push(`mermaid-actual: the page scrolls sideways at the diagram's own size (${page[0]} px wide in ${page[1]} px)`);
-  await press(bp, "缩到框宽");
-  const back = await firstFigure(bp);
-  if (Math.abs(back.drawn - start.drawn) > 2) v.push(`mermaid-actual: pressed again, the diagram is ${round(back.drawn)} px wide, not back at the width of the box, ${round(start.drawn)} px`);
-  const issue = await percentIssue(bp, back);
+  const issue = await percentIssue(bp, actual);
   if (issue) v.push(issue);
+  await press(bp, "适应宽度");
+  const back = await firstFigure(bp);
+  if (Math.abs(back.drawn - start.drawn) > 2) v.push(`mermaid-actual: 适应宽度 leaves the diagram ${round(back.drawn)} px wide, not the width of the box, ${round(start.drawn)} px`);
   return v;
 }
 
@@ -636,7 +641,7 @@ const NO_TOOLS: Edit = { file: "mermaid.ts", find: "block.prepend(viewer(block, 
 const WHEEL_ZOOMS_ALL: Edit = { file: "mermaid.ts", find: "if (!event.ctrlKey) return;", replace: "" };
 const NO_DRAG: Edit = { file: "mermaid.ts", find: 'if (down.button !== 0 || down.pointerType !== "mouse" || block.dataset.pan !== "yes") return;', replace: "return;" };
 const NO_SCROLLBAR: Edit = { file: "index.html", find: ".mermaid-fig::-webkit-scrollbar { height: 10px; }", replace: "" };
-const ACTUAL_IS_FIT: Edit = { file: "mermaid.ts", find: "else set(ownSize(), middle());", replace: "else set(1, middle());" };
+const ACTUAL_IS_FIT: Edit = { file: "mermaid.ts", find: 'button("100%", "100%", () => set(ownSize(), middle())),', replace: 'button("100%", "100%", () => set(1, middle())),' };
 const NO_HINT: Edit = { file: "index.html", find: ".mermaid-hint { margin-left: auto;", replace: ".mermaid-hint { display: none; margin-left: auto;" };
 const HINT_LEFT: Edit = { file: "index.html", find: ".mermaid-hint { margin-left: auto;", replace: ".mermaid-hint {" };
 const WRONG_HINT: Edit = { file: "mermaid.ts", find: 'hint.textContent = "双指缩放，拖动或滚动查看";', replace: 'hint.textContent = "可拖动";' };
@@ -819,7 +824,7 @@ test("the same check on a page whose diagram box does not scroll reports the box
   caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the enlarged diagram's box does not scroll sideways/);
 });
 
-test("the 缩放到 100% button draws a diagram wider than its box at its own size and back at the box's width, in a narrow column", LONG, async t => {
+test("the 60%, 80% and 100% buttons draw a diagram wider than its box at its share of its own size, and 适应宽度 gives the box's width back, in a narrow column", LONG, async t => {
   const { bp } = await open(t, seedPipeline);
   await narrow(bp);
   none(await checkActual(bp, WAIT));
@@ -835,7 +840,7 @@ test("the same check on a page whose toolbar shows a stale size reports the perc
   caught(await checkZoom(bp, GIVE_UP), /^mermaid-zoom: the toolbar says "\d+%" for a diagram drawn at/);
 });
 
-test("the toolbar is the top row of the diagram's frame: smaller, size, larger, fit to width, the 100% button, and the hint at the right", LONG, async t => {
+test("the toolbar is the top row of the diagram's frame: smaller, size, larger, fit to width, 60%, 80%, 100%, and the hint at the right", LONG, async t => {
   const { bp } = await open(t, seedPipeline);
   none(await checkBar(bp, WAIT));
 });
