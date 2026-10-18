@@ -479,3 +479,47 @@ export const seedPipeline = async (board: BoardServer, id: string) => setHead(bo
 export const NARROW = { width: 700, height: 1000 };
 export const narrow = async (bp: BoardPage) => { await bp.page.setViewportSize(NARROW); await bp.settle(); };
 export const probe = (bp: BoardPage) => bp.page.evaluate(() => { (window as unknown as { __probe: () => void }).__probe = () => { (window as unknown as { __xss: number }).__xss = 4; }; });
+
+/** Writes the head `seed` makes into the item `witness.code`, loads the page afresh and selects the item; the answer is the item. */
+export async function showHead(bp: BoardPage, board: BoardServer, seed: (board: BoardServer, id: string) => Promise<void>): Promise<string> {
+  const id = board.gen.witness.code;
+  await seed(board, id);
+  await bp.reset();
+  await bp.select(id);
+  return id;
+}
+
+/** Runs `fn` with the window narrowed to about a phone held sideways, where the page puts the list and the detail in two narrow columns, and puts the window back at 1500. */
+export async function atNarrow<T>(bp: BoardPage, fn: () => Promise<T>): Promise<T> {
+  await narrow(bp);
+  try { return await fn(); } finally { await bp.page.setViewportSize({ width: 1500, height: 1000 }); await bp.settle(); }
+}
+
+/** What the real library does with a head's blocks: a good one is drawn and a bad one shows its error (checkHead), a hostile text runs nothing
+ * (checkStrict), the same diagram drawn twice has no id twice (checkIds), and a diagram's own settings win over the page's (checkOwn). */
+export async function checkLibrary(bp: BoardPage, board: BoardServer, wait = WAIT): Promise<string[]> {
+  const v: string[] = [];
+  await showHead(bp, board, seedHead);
+  v.push(...await checkHead(bp, wait));
+  await showHead(bp, board, seedHostile);
+  await probe(bp);
+  v.push(...await checkStrict(bp, wait));
+  await showHead(bp, board, seedTwice);
+  v.push(...await checkIds(bp, wait));
+  await showHead(bp, board, seedOwn);
+  v.push(...await checkOwn(bp, wait));
+  return v;
+}
+
+/** The diagrams fit their boxes (checkFit) in the window the page is open in and in a narrow one. `note` gets each diagram's own width and its box's, for the CI log. */
+export async function checkFitWindows(bp: BoardPage, board: BoardServer, note: (line: string) => void = () => {}, wait = WAIT): Promise<string[]> {
+  await showHead(bp, board, seedFit);
+  const sizes = async (window: string) => {
+    if (await settled(bp, 3, wait)) return;
+    note(`at a window ${window}: ` + (await figures(bp)).figs.map((f, i) => `${["small", "wide", "tall"][i]} ${round(f.natural)} px in a box of ${f.box} px, drawn ${round(f.drawn)} px`).join("; "));
+  };
+  await sizes("1500 px wide");
+  const wide = await checkFit(bp, wait);
+  const narrowed = await atNarrow(bp, async () => { await sizes("700 px wide"); return checkFit(bp, wait); });
+  return [...wide, ...narrowed];
+}
