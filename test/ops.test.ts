@@ -116,7 +116,8 @@ test("each operation records its effects, author and single atomic commit", asyn
   await committed(() => op.setStatus({ ...asArchitect, id: "new", status: "cancelled", log: "Superseded" }),"set_status new cancelled",["decisions/new-card.yaml","items/new.yaml"],"item","new",architect);
   assert.equal(rules(store.snapshot()).statusOf("new"),"cancelled"); assert.deepEqual(store.snapshot().items.new!.plan,beforeCancel.plan); assert.deepEqual(store.snapshot().items.new!.ask,beforeCancel.ask);
   assert.deepEqual(store.snapshot().items.new!.log.at(-1),{at:later,by:architect,text:"Superseded"});
-  await itemCommit(() => op.setStatus({ ...asArchitect, id: "new", status: "open", log: "Resume" }),"set_status new open",undefined,architect);
+  // Reopening restores the card the cancellation withdrew, in the same commit.
+  await committed(() => op.setStatus({ ...asArchitect, id: "new", status: "open", log: "Resume" }),"set_status new open",["decisions/new-card.yaml","items/new.yaml"],"item","new",architect);
   assert.equal(store.snapshot().items.new!.status,undefined); assert.equal(rules(store.snapshot()).statusOf("new"),"blocked");
   await itemCommit(() => op.clearAsk({ author, id: "new", log: "Owner approved" }),"clear_ask new");
   assert.equal(store.snapshot().items.new!.ask,undefined); assert.equal(store.snapshot().items.new!.log.at(-1)!.text,"Owner approved");
