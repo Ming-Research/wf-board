@@ -196,7 +196,8 @@ test("a time reference is resolved by git going back from the head, to the commi
 
 test("a version conflict reads back only as far as the revision it was written against, and not at all for one that never existed", async t => {
   const { store, op } = await board(t);
-  for (let i = 0; i < 6; i++) await op.appendLog({ author, id: "a", text: `Step ${i}` });
+  // Each step replaces the head, the field the conflicting writes below replace too, and adds a log line for it.
+  for (let i = 0; i < 6; i++) await op.updateItem({ author, id: "a", rev: store.snapshot().items.a!.rev, head: `Head ${i}`, reason: `Step ${i}` });
   const current = store.snapshot().items.a!.rev, shown = t.mock.method(store, "show");
   const conflict = (rev: number) => op.updateItem({ author, id: "a", rev, head: "Another head", reason: "Conflict" });
   await assert.rejects(conflict(current + 5), /current rev .*previous revision unavailable/);

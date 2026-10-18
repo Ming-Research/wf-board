@@ -98,6 +98,11 @@ const EXAMPLES: Record<string, unknown> = {
   create_item: { key: "my-item", title: "让 X 能做 Y", head: "**问题**：……", accept: "测试 T 通过", owner: "parent-item", difficulty: 2, tags: ["看板"] },
   set_plan: { id: "my-item", row: { id: "step-1", text: "做 X", state: "doing", waits: "CI" } },
   update_item: { id: "my-item", rev: 3, head: "**问题**：……", reason: "为什么改正文" },
+  write_card: {
+    key: "my-card", item: "my-item", question: "怎么做 X？",
+    options: [{ text: "做法一", detail: "做什么，代价和风险，为什么推荐", recommended: true }, { text: "做法二", detail: "……" }, { text: "做法三", detail: "……" }],
+    confidence: { score: 4, reason: "证据，以及什么会推翻它" },
+  },
 };
 
 export function exampleCall(tool: string, json: Json): string {

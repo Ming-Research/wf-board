@@ -19,7 +19,7 @@ function refuseSummary(head: string | undefined): void {
   if (mark) throw new OpError(`head: it holds the line "${mark}", which context writes where it cut a section short, so it is a summary and not the head. Read the whole head with context section: "all", change that, and write it back`);
 }
 /** `credential`: the token a new dispatch writes with, shown once (only the hash is kept). `repeated`: the write was already made a moment ago, by the same session with the same text; nothing was written again. */
-export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true }
+export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true; /** What the writer should know about how the write was made: a revision that was behind and why the write stood. */ note?: string }
 export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
@@ -160,7 +160,7 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
-interface Work { moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
+interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -267,8 +267,8 @@ const REPEAT_MS = 60_000;
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), options: OpsOptions = {}): Ops {
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
-  async function stale(kind: "item" | "decision", id: string, rev: number, current: Item | Decision): Promise<never> {
-    let before: unknown = null;
+  /** The version of the document that carried `rev`, read back from its history; none when `rev` never existed or the history is more than a request may read. */
+  async function versionAt(kind: "item" | "decision", id: string, rev: number, current: Item | Decision): Promise<Item | Decision | null> {
     // Each write raises the revision by one, so a revision above the current one never existed, and going back from the
     // newest version, the first one below the wanted revision means it is not in the history. Neither case reads on.
     try {
@@ -277,7 +277,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         allowRange(versions.length);
         for (const commit of versions) {
           const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
-          if (doc?.rev === rev) { before = doc; break; }
+          if (doc?.rev === rev) return doc;
           if (doc && doc.rev < rev) break;
         }
       }
@@ -285,12 +285,30 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The conflict is still the answer when the history it is explained from is more than a request may read.
       if (!(error instanceof BudgetError)) throw error;
     }
+    return null;
+  }
+  /** The refusal of a write on a revision that is behind. `before`: the version `rev` names when the caller has read it already. */
+  async function stale(kind: "item" | "decision", id: string, rev: number, current: Item | Decision, before?: Item | Decision | null): Promise<never> {
+    if (before === undefined) before = await versionAt(kind, id, rev, current);
     throw new OpError(`rev ${rev}: current rev ${current.rev}; ${before ? describeChanges(before, current, kind) : "previous revision unavailable; " + currentTitle(current)}. Read context and redo with current rev ${current.rev}`);
   }
   function currentTitle(doc: Item | Decision): string { return ("title" in doc ? doc.title : doc.question).replace(/\s+/g, " ").slice(0, 100); }
   async function revision(kind: "item" | "decision", id: string, rev: number, doc: Item | Decision): Promise<void> {
     if (!Number.isSafeInteger(rev) || rev < 1) throw new OpError("rev: provide the positive integer revision read from context");
     if (rev !== doc.rev) await stale(kind, id, rev, doc);
+  }
+  /**
+   * The check of a write that replaces some fields of an item, which names the revision it read (docs/design.md, section 5).
+   * It stands when that is the current revision, or when none of `fields` has changed since: the writer read the fields it
+   * replaces, and what else changed meanwhile (a log line, a plan row) is not lost by replacing them. Otherwise, or when the
+   * revision cannot be read back, the write is refused as for any stale revision. Answers what changed meanwhile, for the writer.
+   */
+  async function fieldsRevision(id: string, rev: number, it: Item, fields: readonly (keyof Item)[]): Promise<string | undefined> {
+    if (!Number.isSafeInteger(rev) || rev < 1) throw new OpError("rev: provide the positive integer revision read from context");
+    if (rev === it.rev) return undefined;
+    const before = await versionAt("item", id, rev, it) as Item | null;
+    if (!before || fields.some(field => !isDeepStrictEqual(before[field], it[field]))) await stale("item", id, rev, it, before);
+    return `rev ${rev} was behind (current rev ${it.rev}): ${describeChanges(before, it, "item")} since, and ${fields.join(", ")} did not change, so the edit was written`;
   }
   /** The items of the subtrees that start at `roots`: each root and everything it owns, at any depth. */
   function subtreeOf(s: Snapshot, roots: readonly string[]): Set<string> {
@@ -406,7 +424,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
-          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message };
+          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(work.note === undefined ? {} : { note: work.note }) };
         } catch (error) {
           if (error instanceof ConflictError) {
             if (!overwrite) continue;
@@ -780,7 +798,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }, false, true),
     updateItem: a => run(a, updateParts(a), async (s, at) => {
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
-      const it = ownedItem(s, a.id, a); await revision("item", a.id, a.rev, it);
+      const it = ownedItem(s, a.id, a);
+      // Turning an item into a record, or back, also rewrites its plan's acceptance rows, so it needs the revision to be the current one.
+      const replaced = (["title", "head", "links", "data", "order"] as const).filter(key => a[key] !== undefined);
+      let note: string | undefined;
+      if (a.record !== undefined || a.accept !== undefined || !replaced.length) await revision("item", a.id, a.rev, it);
+      else note = await fieldsRevision(a.id, a.rev, it, replaced);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead) refuseSummary(a.head);
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
@@ -801,7 +824,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         doc.log.push(entry(a.author, at, "改为工作条目：状态由计划推导"));
       } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record to work; edit acceptance with set_plan");
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
-      return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)] };
+      return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)], ...(note === undefined ? {} : { note }) };
     }, true),
     setStatus: a => run(a, ["item.cancel", "card.write"], async (s, at) => {
       onlyProcess(a, "cancel or reopen an item");

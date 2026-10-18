@@ -632,8 +632,17 @@ log:
   serializer that quotes where needed, and validates every document against
   a schema on read and write.
 - `rev` counts writes to the file. A write that replaces content names the
-  `rev` it read and fails on a mismatch with the current content in the
-  error. Log appends, `set_plan` and `set_targets` carry no caller `rev`: the operations
+  `rev` it read. For `update_item` it stands when that is the current `rev` or
+  when none of the fields it replaces (`title`, `head`, `links`, `data`, `order`) differs
+  between the version `rev` names, read back from the history, and the current one;
+  the answer then ends with a `note:` saying what changed meanwhile (`+1 log, plan
+  changed`). Otherwise, or when the history cannot be read back within the request's
+  budget, it fails with the changes in the error. Switching an item to or from a record
+  also rewrites its plan's acceptance rows, so it needs the current `rev`. The item that made this
+  change counted, in the session records of two days, 6 refused head rewrites, 4 of them
+  only because someone else had added a log line (a count not repeated here): each cost a
+  re-read and a resend of a head over ten thousand characters.
+  Log appends, `set_plan` and `set_targets` carry no caller `rev`: the operations
   queue retries against the latest item while preserving unrelated concurrent writes.
   Replying to an answered note is refused with the previous author and time;
   deliberate replacement requires `replace: true`.
@@ -1993,7 +2002,19 @@ is wrong in plain words (an unknown parameter, a missing required one, a value o
 type or outside the allowed words, the row of a plan that fails and why), then the tool's
 parameter table (name, type, required or optional, the first sentence of its description,
 built from the same schema the client is shown) and an example call (built from the required
-parameters; written by hand for `create_item`, `set_plan` and `update_item`).
+parameters; written by hand for `create_item`, `set_plan`, `update_item` and `write_card`).
+
+**Mistakes made before the tool can help.** A write on a connection with no credential
+that names no author is refused with the call that works: `author=<your project's
+name, from projects>` and `session=<your session's name>`, with no word about asking the PM
+for a credential, since the call needs none (that item's count: 12 sessions met the earlier text once
+each, and one went to the PM for a credential). A `write_card` whose JSON does not parse is refused by
+the Claude Code client before the call reaches the board, with no position (that item's count: 11 refusals
+in 4 sessions), so the board can only say beforehand what the shape is: its description gives
+the options array with each bracket closed once and the escapes for a double quote and a
+line break. A `set_plan` whose `rows` was meant as one row would replace the whole plan, so
+the description and the parameter's own text say that `rows` deletes every row it leaves out
+and that `row` changes one.
 
 **Names the tools read as others.** A parameter the tool lacks is read as the name it has,
 and the answer ends with `note: <name> read as <name>`: `key` and `id` for each other,
@@ -2071,7 +2092,7 @@ author `总管` is refused by every tool.
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | A changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the PM and the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |

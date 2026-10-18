@@ -82,7 +82,7 @@ test("MCP onboarding and write schemas use project identities", async t => {
   const instructions = client.getInstructions()!, tools = (await client.listTools()).tools;
   await t.test("startup repo and project author", () => { assert.match(instructions, /GitHub remote/); assert.doesNotMatch(instructions, /总管|claim_project|session-list/); });
   for (const tool of tools.filter(tool => tool.inputSchema.properties?.author)) {
-    await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`); leave it out when this connection carries a credential, which names it"));
+    await t.test(`${tool.name} author`, () => assert.equal((tool.inputSchema.properties!.author as {description?:string}).description, "the name of the project you work for (from `projects`); give it, with session, unless this connection carries a credential, which names both"));
   }
   await t.test("list agent filter removed", () => {
     const filters = tools.find(tool => tool.name === "list")!.inputSchema.properties!.filters as {properties:Record<string,unknown>};
