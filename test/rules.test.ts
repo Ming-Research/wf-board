@@ -325,7 +325,8 @@ test("progressShare weighs each kind of sub-item by its status, and leaves a can
   assert.equal(share([own("d")]), 0.5, "an owned sub-item done counts whole");
   assert.equal(share([own("i")]), 0.25, "an owned sub-item idle counts half");
   assert.equal(share([own("t")]), 0, "an owned sub-item not started counts nothing");
-  assert.equal(share([shared("r")]), 0.5, "a shared record counts whole");
+  assert.equal(share([shared("r")]), 0, "a shared record row is no step: left out of the share, as an owned one is");
+  assert.equal(share([own("r")]), 0, "an owned record row is left out of the share");
   assert.equal(share([own("c")]), 0, "an owned cancelled sub-item is left out of the share");
   s.items.a!.plan = [shared("c"), accept()];
   assert.equal(rules(s).progressShare("a"), 0, "a shared cancelled sub-item is left out too: it does not lift the share of an open acceptance step");
