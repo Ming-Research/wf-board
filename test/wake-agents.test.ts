@@ -50,6 +50,7 @@ test("every kind says where it goes, and a holder or session route names one of 
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS["main-red"].to, { holder: "item" });
   assert.deepEqual(WAKE_KINDS.message.to, { session: "to" });
+  assert.deepEqual(WAKE_KINDS["card-ruled"].to, { holder: "item", only: true }, "a ruling is for the session holding the card's item alone: the architect has the owner's note");
   assert.deepEqual(WAKE_KINDS["dep-merged"].to, { holder: "waiter", otherwise: "architect" });
   assert.equal("pr-ready" in WAKE_KINDS, false, "a pull request that can merge is the engineer's to merge, not pushed");
   assert.equal("dispatch" in WAKE_KINDS, false, "the board pushes no offers: the PM compares the candidates with its own limits");
@@ -76,6 +77,7 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   "no-answer": { session: L, item: L, project: L, title: L, since: L },
   // A message's text is refused above MESSAGE_TEXT_LIMIT when it is sent, so its longest is that; the rest is any length.
   message: { message: L, from: L, project: L, to: L, item: L, text: "长".repeat(MESSAGE_TEXT_LIMIT) },
+  "card-ruled": { card: L, item: L, project: L, title: L, choice: L, option: L, ruling: L },
   "dep-merged": { item: L, project: L, title: L, prs: many, waiter: L },
 };
 

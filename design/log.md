@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Tell the session holding a card's item when the card is ruled
+
+Nodes: wake/routing
+
+Summary: A card ruled on the page reached only the architect, as the owner's note, and an engineer stopped on the card stayed stopped for two days because the ruling was not forwarded. The board now also pushes `card-ruled` to the session holding the card's item when an open card becomes ruled, by the page or by `rule_card`, and to no one when nobody holds the item; the grounds and the refused alternatives are in docs/design.md, section 8, A card ruled.
+
 ## 2026-10-18 Tell the sessions that wait on an item when its merge row is done
 
 Nodes: wake/routing

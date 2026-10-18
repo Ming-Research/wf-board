@@ -1659,7 +1659,8 @@ where the design reaches it.
   choice?, ruling?)` is for a decision the owner made in chat: it takes the
   option chosen, the owner's own words, or both, and the words are kept in
   `ruling` for the design log's approval line. A card ruled in words alone has
-  no `choice`.
+  no `choice`. Either way the board tells the session
+  holding the card's item with a `card-ruled` push (section 8, A card ruled).
 - **Withdrawing.** `withdraw_card(key, log)` closes an open card nobody needs
   any more: the status becomes `withdrawn`, the log text goes to the item's
   log, and a row counts as resolved. It is the one way to retire a card;
@@ -2662,8 +2663,8 @@ session's single write turns to the wrong session.
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the PM rules (main flow 9–15)
 and the engineer rules say. All go to the PM except `note` and `timed-architect`,
-which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, `dep-merged` and
-`ask-alive`, which go to a holder; and `message`, which goes to its recipient:
+which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, `dep-merged`,
+`ask-alive` and `card-ruled`, which go to a holder; and `message`, which goes to its recipient:
 
 - an owner note, to the architect: a note becomes `sent`, on any project's item or
   card, so the owner's comments on an engineer's item reach the architect too. Every kind
@@ -2707,11 +2708,37 @@ which go to the architect; `main-red`, `deployed`, `deployFailed`, `item-done`, 
 - a session holding an item that has given no sign of life for 30 minutes
   (`ask-alive`), to that session; and one that has given none for 30 minutes
   after being asked (`no-answer`), to the PM (Liveness, below);
-- a message one agent sent another (`message`; Messages, below).
+- a message one agent sent another (`message`; Messages, below);
+- a card that was ruled (`card-ruled`): an open card became ruled, whether the owner
+  sent a choice on the page or a session recorded one with `rule_card`. It goes to
+  the session holding the card's item, which may be stopped on the card; when
+  nobody holds the item nothing is pushed (A card ruled, below).
 
 Not pushed: a blocking card (the owner is told in open pages, below),
 an item's ask, any other check, draft-PR CI. A later kind is one entry in the
 table and one row below.
+
+**A card ruled.** The owner's pick on the page reaches the architect as a `note`
+(a sent choice note also rules the card), and the engineer rules had the architect
+forward it to the session stopped on the card. One ruling was never forwarded, and
+the engineer holding its item stayed stopped for two days. So the board tells that
+session itself, from the one place both ways of ruling a card pass: the change in
+which an open card becomes ruled, not the note, since a decision recorded with
+`rule_card` has no note. A card's plan row stands only in its own item's plan
+(section 5, Decision cards), so the session waiting on a card is the one holding its
+item. The frame carries the card's key and question, the key and name of the option
+chosen and the owner's words, so the line says what was decided without a read of the
+board; runs of white space in the question, the option's name and the words are one
+space, so the line stays one line. Nothing is pushed when nobody holds the item: the
+owner's pick has already reached the architect as the note, and a ruling a session
+recorded was made by a session that knows it. A card that is withdrawn, or written
+again while open, is not ruled and pushes nothing. Rejected: leaving it to the
+architect to forward, which rests on one session remembering and is what failed;
+pushing to the PM when nobody holds the item, which hands the PM a message it can
+only pass on while the architect already has the note; pushing the owner's note
+itself to the holder, which would send every comment and explain request on the item
+to the engineer before the architect has judged it, and says nothing of the option
+chosen.
 
 **Free slots are the PM's to count.** The board holds no limit per pool and pushes no
 offer, so no push says a slot is free. The PM compares the working count and the candidates
@@ -2808,6 +2835,7 @@ the forms the server sends:
 | `{n, at, event:"ask-alive", item, project, title, since}` | A session holding `item`, an item in progress, gave no sign of life for 30 minutes (Liveness). It goes to the stream of the session holding `item`. `since` is the time (ISO) its silence began: its last sign, or the first time the board saw it holding an item in progress if later, moved on by the time the board was stopped in between. One per silence |
 | `{n, at, event:"no-answer", session, item, project, title, since}` | A session that was asked gave no sign for another 30 minutes. `session` is its name, `item` the first item in progress it holds, `since` the time its silence began, as above. One per silence |
 | `{n, at, event:"message", message, from, project, to, item, text}` | A message was sent (Messages, below). `message` is its id, `from` the sending session and `project` its project, `to` the receiving session, `item` the item it is about or null, and `text` its whole text. It goes to the stream of `to`, the PM's when `to` is the PM's session |
+| `{n, at, event:"card-ruled", card, item, project, title, choice, option, ruling}` | An open card became ruled (the owner sent a choice on the page, or a session recorded one with `rule_card`) and a session holds `item`, the card's item; it goes to that session's stream, and nothing is pushed when nobody holds the item (A card ruled). `card` is the card's key and `title` its question; `choice` is the key of the option chosen and `option` its name, both null when the owner answered in words alone; `ruling` is the owner's words, null when there are none |
 | `{event:"connected", latest}` | First on every connection. `latest` is the number of the newest event, 0 before any, so a client that has seen none still has a number to come back with |
 | `{event:"gap", oldest, latest}` | After `connected`, when the client asked to continue from a number and the events after it are no longer all kept: `after` is more than one below `oldest`, or above `latest`. The client sets the number it remembers to `oldest − 1`, reads the board for what it missed, and goes on. That is right in both cases: when `after` was above `latest` (the numbering went back), it lowers the number, and the live events that follow are numbered above `latest`; when events were dropped, the kept events replayed after the gap frame are all numbered above `oldest − 1` and none is taken for a repeat |
 
