@@ -33,9 +33,9 @@ import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
 export const WITNESS_LANDINGS = 8, COUNT_LANDINGS = 12, LANDINGS_FOR_LATE_ROWS = 20, OWN_ANSWER_MS = 20, ROW_MS = 300, MIN_LANDINGS_WITH_ROW = 3;
-/** The widest half width of the twin's interval that still counts as this run's noise, as a fraction: 6.1% quiet (the widest of 15
- * comparisons of a page with itself on 5 hosted runners); while writing, measured again (docs/design.md, The n-key lane). */
-export const FLOOR = { quiet: 0.061, writing: 0.061 };
+/** The widest half width of the twin's interval that still counts as this run's noise, as a fraction: the widest of 15 comparisons of a
+ * page with itself over 30 pairs, 5 hosted runners with 3 rounds each (docs/design.md, The n-key lane): 6.9% quiet, 7.6% while writing. */
+export const FLOOR = { quiet: 0.069, writing: 0.076 };
 /** What one press that lands writes, the median over the landings of the first walk: characters assigned to innerHTML and elements
  * made. A page that writes more is red; a change to the page that moves them changes the numbers here, and the pull request says why. */
 const WRITES = { innerHtml: 33873, created: 756 };

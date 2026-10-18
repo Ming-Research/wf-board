@@ -4319,8 +4319,10 @@ that landing k of every window is one pair. 30 pairs are measured after 2 that a
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
 holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
 otherwise. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
-"undecided" in a warning and passes. The floor is the widest half width the twin showed in comparisons of a page with itself: 6.1% quiet (15 comparisons on 5
-hosted runners); while writing, to be set from the same measure. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
+"undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
+runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
+against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
+twenty, so a run that makes a second round is expected. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
 runner differs by up to a factor of two between jobs, and every fixed number made a pull request red or green by the runner.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
