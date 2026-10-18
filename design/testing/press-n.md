@@ -5,7 +5,7 @@ Rejected:
 - A fixed time limit on a pull request (the former median of 0.2 seconds and 90th percentile of 0.3 seconds in the browser, the owner's 0.2 seconds for n being held on the 14900K or by use): rejected because jsdom's time is not a browser's and a fixed number is wrong for some run; the pairs against the base page measure each run's own noise.
 - A row that answers 40 ms inside the page's own 100 ms wait: rejected because a browser held up for 40 ms turned the count on slow runners; the 100 ms itself is held by fake-clock tests of the page.
 - A fake clock for the page's timers in the browser: rejected because the page's frames, the test's waits for the page to be quiet and the minute timers would all have to follow it, and a fake clock mixed with real network requests stalls; in jsdom the clock stands only for the timers longer than a frame and for the answers a test holds back.
-- The time limit on the 14900K only: rejected because only the PM starts runs there, so it cannot guard every pull request.
+- The time limit on the 14900K only: rejected because only the runner starts runs there, so it cannot guard every pull request.
 - The time from the key to the landing instead of the event loop's busy time: rejected because its twin noise at the 90th percentile was 68% against 5.5% for the busy time's median.
 - A time layer that only reports and never fails: rejected because a lane that slows down must turn something red or the slowdown goes unnoticed.
 - Red only above a minimum size of change (a picked percentage): rejected because the noise differs between machines and a picked threshold means nothing; the interval and the twin decide.

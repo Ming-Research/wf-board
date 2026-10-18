@@ -20,7 +20,7 @@ export function pullNumbers(subject: string): number[] {
 export interface Delivery { pr: number; item: string }
 
 /** The items that deliver the pull requests the commit subjects name in `repo` (`Owner/Name`): every item whose 改动 section
- * names one, done or not, since the session holding it stays until the PM finishes it. In the board's item order, a pull
+ * names one, done or not, since the session holding it stays until the runner finishes it. In the board's item order, a pull
  * request first. */
 export function deliveries(s: Snapshot, repo: string, subjects: readonly string[]): Delivery[] {
   const numbers = [...new Set(subjects.flatMap(pullNumbers))];
@@ -33,7 +33,7 @@ export function deliveries(s: Snapshot, repo: string, subjects: readonly string[
 }
 
 /** The deliveries whose item a session holds, else all of them: the ones to tell, and when nobody holds any, the first to name
- * in the push that goes to the PM. */
+ * in the push that goes to the architect. */
 export function tellFirst(s: Snapshot, found: readonly Delivery[]): Delivery[] {
   const held = found.filter(d => holderOf(s, d.item) !== undefined);
   return held.length ? held : found.slice(0, 1);

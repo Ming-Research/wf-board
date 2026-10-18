@@ -4,8 +4,8 @@
 //
 //   TIME_GATE=report|enforce node scripts/ci-time-gate.ts    (reads the run's jobs through the API; GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID)
 //
-// `report` writes the summary and never fails; `enforce` fails the step when the total is red. The browser job still takes
-// minutes in a run started by hand with `browser`, so the workflow reports until the browser checks leave the full CI (ci-browser-lane).
+// `report` writes the summary and never fails; `enforce` fails the step when the total is red. The full CI enforces: the browser
+// tests are the workflow browser.yml and are not in its path (item ci-browser-lane).
 import { appendFileSync } from "node:fs";
 
 export const LIMIT_SECONDS = { yellow: 50, red: 60 };

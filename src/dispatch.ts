@@ -1,9 +1,9 @@
-// Dispatch records: the agent sessions the PM (or the architect) started on items. A dispatch lives on its item (`Item.dispatches`);
+// Dispatch records: the agent sessions the architect or the runner started on items. A dispatch lives on its item (`Item.dispatches`);
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
 import { DISPATCH_RESULTS, DISPATCH_ROLES, DISPATCH_SIGNALS, milliDollars } from "./model.ts";
-import type { Dispatch, Snapshot } from "./model.ts";
+import type { Dispatch, Item, Snapshot } from "./model.ts";
 
 type Role = (typeof DISPATCH_ROLES)[number];
 type Result = (typeof DISPATCH_RESULTS)[number];
@@ -131,15 +131,17 @@ export function finishLogLine(d: Dispatch, corrected: boolean): string {
 /** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf
  * reads for the pushes (docs/design.md, The wake streams). */
 export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
-  return (s.items[item]?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+  return openDispatchesOf(s.items[item]);
+}
+/** The same, read from the item itself. */
+export function openDispatchesOf(it: Pick<Item, "dispatches"> | undefined): Dispatch[] {
+  return (it?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
 }
 /** The session holding an item: the agent of the newest open engineer dispatch on it, or none. A takeover's dispatch is newer
  * than the one it replaces, so it holds the item from its start; a review holds nothing. */
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
-/** Whether a reviewer session has an open dispatch on the item: a review the engineer resumes itself, not one the PM starts. */
-export const hasReviewer = (s: Pick<Snapshot, "items">, item: string): boolean => openDispatches(s, item).some(d => d.role === "审查");
 /** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
 export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   const out = new Set<string>();

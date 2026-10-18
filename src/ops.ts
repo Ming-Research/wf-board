@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PM_AUTHOR, PM_SESSION, PROCESS_WRITERS, RETIRED_COORDINATOR, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isPMSession, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -11,6 +11,8 @@ import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
+import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
+import type { LiveRole } from "./live.ts";
 
 export class OpError extends Error {}
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
@@ -30,12 +32,17 @@ export interface Ops {
   markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
   /** Adds one timed entry to today's architect journal record, creating the day's record under the notes item first. */
   journalEntry(a: { author: string; session?: string; access?: Access; text: string }): Promise<Result>;
-  /** Records a session the PM (or the architect) started on an item, and logs the start on the item. */
+  /** Records a session the architect or the runner started on an item, and logs the start on the item. */
   dispatchStart(a: { author: string; session?: string; access?: Access; id: string; role: (typeof DISPATCH_ROLES)[number]; level: number; model: string; effort?: string; agent: string; agentId: string; worktree?: string; startedAt?: string; did?: string }): Promise<Result>;
   /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
   /** The runner's report on the work on an item (docs/design.md, section 5, Runner reports): replaces the item's `runner`, stamps `since` and `at`, and writes nothing when the report changes nothing. */
   reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
+  /**
+   * The runner's beat for a turn it is running (docs/design.md, section 7, The live view of a turn): the same writers as `reportState`,
+   * kept in the options' `live` store and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
+   */
+  reportLive(a: { author: string; session?: string; access?: Access; id: string; role: LiveRole; turn: number; turnSeconds: number; idleSeconds?: number; action?: string }): Promise<string>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
@@ -43,7 +50,7 @@ export interface Ops {
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
   setTagsMany(a: { author: string; session?: string; access?: Access; items: Array<{ id: string; tags: string[] }> }): Promise<Result>;
-  /** The PM and the architect set a difficulty on an item of any project, an engineer's credential on the items below the one it was started on; the change is logged with its reason. */
+  /** The architect sets a difficulty on an item of any project, an engineer's credential on the items below the one it was started on; the change is logged with its reason. */
   setDifficulty(a: { author: string; session?: string; access?: Access; id: string; difficulty: Difficulty; reason: string }): Promise<Result>;
   /** set_difficulty for many items in one commit: the same checks and a log entry per item, all or nothing. `reason` is the default for entries that give none. */
   setDifficultyMany(a: { author: string; session?: string; access?: Access; reason?: string; items: Array<{ id: string; difficulty: Difficulty; reason?: string }> }): Promise<Result>;
@@ -68,7 +75,7 @@ export interface Ops {
 }
 /** `sessions`: the sessions of the long-lived credentials, which a message may go to besides the architect and the sessions
  * with an open dispatch (docs/design.md, Messages); none when the board runs without a credentials file. */
-export interface OpsOptions { sessions?: () => Iterable<string> }
+export interface OpsOptions { sessions?: () => Iterable<string>; /** Where `reportLive` keeps its beats; a store of its own when none is given. */ live?: LiveStore }
 
 // Shared across Ops instances: validation and multi-document writes are one
 // operation. Store.commit still checks revisions against other store callers.
@@ -116,18 +123,18 @@ function checkedTags(s: Snapshot, project: string, tags: readonly string[] | und
   if (!given.length && required && tagsRequired(boardTags(s.board), project)) throw new OpError(`tags: give at least one; ${allowedTags(s, project)}`);
   return given.length ? [...given] : undefined;
 }
-/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the PM or the architect (model `isPM`, `isArchitect`), and the `access` the connection's credential grants, when it has one (credentials.ts). */
+/** Who is writing: the call's `author` and `session`, which together decide whether it speaks for the architect (model `isArchitect`), and the `access` the connection's credential grants, when it has one (credentials.ts). */
 interface Writer { author: string; session?: string; access?: Access }
-/** What the board reserves for the architect alone: every other writer, the PM included, is refused, and `what` names the operation in the message. */
+/** What the board reserves for the architect alone: every other writer is refused, and `what` names the operation in the message. */
 function onlyArchitect(who: Writer, what: string): void {
   if (!isArchitect(who)) throw new OpError(`author: only ${ARCHITECT_WRITER} may ${what}`);
 }
-/** What the board reserves for the process, which the PM does and the architect may do too: every other writer is refused, and `what` names the operation in the message. */
+/** What the board reserves for the process, which the architect does: every other writer is refused, and `what` names the operation in the message. */
 function onlyProcess(who: Writer, what: string): void {
   if (!mayRunProcess(who)) throw new OpError(`author: only ${PROCESS_WRITERS} may ${what}`);
 }
 /**
- * What the board reserves for the process (the PM and the architect) among writers that carry no credential. A write over a
+ * What the board reserves for the process (the architect) among writers that carry no credential. A write over a
  * credential is asked of the role's parts instead (`ACCESS`, checked by `mayWrite` before the write begins), where the
  * engineer has two of these.
  */
@@ -234,8 +241,8 @@ function requireAuthor(s: Snapshot, author: string, prefix = ""): void {
   if (!s.board.projects.some(p => p.name === author)) throw new OpError(`${prefix}author ${author}: choose a configured project (${s.board.projects.map(p => p.name).join(", ")}); call projects and use the project whose repo matches your repository`);
 }
 function requireOwnership(s: Snapshot, project: string, who: Writer, id: string): void {
-  const refusal = `item ${id} belongs to project ${project}; report what you need from it to the PM, who creates work another project needs in the project that delivers it`
-    + (who.author === ARCHITECT || who.author === PM_AUTHOR ? `; only ${PROCESS_WRITERS} write other projects' items` : "");
+  const refusal = `item ${id} belongs to project ${project}; report what you need from it to the architect, who creates work another project needs in the project that delivers it`
+    + (who.author === ARCHITECT ? `; only ${PROCESS_WRITERS} write other projects' items` : "");
   requireAuthor(s, who.author, who.author === project ? "" : `${refusal}. `);
   if (who.author !== project && !mayRunProcess(who) && !(who.access && writesAnyProject(who.access.role))) throw new OpError(refusal);
 }
@@ -274,6 +281,7 @@ function updateParts(a: { title?: string; head?: string; links?: unknown; data?:
 const REPEAT_MS = 60_000;
 
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), options: OpsOptions = {}): Ops {
+  const live = options.live ?? new LiveStore();
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   /** The version of the document that carried `rev`, read back from its history; none when `rev` never existed or the history is more than a request may read. */
@@ -330,7 +338,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   function mayWrite(a: Writer, parts: readonly Part[]): void {
     if (!a.access) return;
     const refused = parts.filter(part => ACCESS[a.access!.role][part] === undefined);
-    if (refused.length) throw new OpError(`${refused.join(", ")}: a ${a.access.role} credential may not write ${refused.length === 1 ? "this part" : "these parts"}; report what you need to the PM, who writes it or passes it on`);
+    if (refused.length) throw new OpError(`${refused.join(", ")}: a ${a.access.role} credential may not write ${refused.length === 1 ? "this part" : "these parts"}; report what you need to the architect, who writes it or passes it on`);
   }
   /** After the write is made: when a part is limited to the credential's subtree, every document the write changes must be inside it. */
   function withinScope(s: Snapshot, a: Writer, parts: readonly Part[], work: Work): void {
@@ -355,16 +363,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       else if (put.kind === "glossary" && put.id !== project) throw new OpError(`glossary ${put.id}: a ${role} credential writes only its own project's glossary (${project})`);
     }
   }
+  /** What every write asks of its call before it reads anything: the table for a credential's role, the text of every field, the removed names, the session and the author. */
+  function checkWriter(a: Writer, parts: readonly Part[]): void {
+    mayWrite(a, parts);
+    nonempty(a);
+    if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
+    for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
+    if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
+    if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
+    if (RETIRED_AUTHORS.includes(a.author)) throw new OpError(`author ${a.author}: this identity is retired; write as ${ARCHITECT} (session ${ARCHITECT_SESSION}), which does the process and keeps the rules`);
+  }
   function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
       const partList = typeof parts === "string" ? [parts] : parts;
-      mayWrite(a, partList);
-      nonempty(a);
-      if (Object.hasOwn(a, "priority")) throw new OpError(REMOVED_PRIORITY);
-      for (const key of ["parent", "parentWhy", "parentOwnWork", "parent_why", "parent_own_work", "new_parent", "sourceStatus", "sourcePriority", "source_status", "source_priority", "deps", "steps", "step", "migrated", "provisional"]) if (Object.hasOwn(a, key)) throw new OpError(`${key}: removed by item plans`);
-      if (a.session !== undefined && (typeof a.session !== "string" || a.session.trim().length > 80 || /\p{Cc}/u.test(a.session))) throw new OpError("session: give your session name, 1-80 characters without control characters");
-      if (typeof a.author !== "string" || !a.author.trim() || /[<>\r\n\0]/.test(a.author)) throw new OpError("author: provide your project name without <, >, newlines or NUL");
-      if (a.author === RETIRED_COORDINATOR) throw new OpError(`author ${RETIRED_COORDINATOR}: this identity is retired; write the process as ${PM_AUTHOR} (session ${PM_SESSION}), and the rules and the architect's own entries as ${ARCHITECT}`);
+      checkWriter(a, partList);
       for (;;) {
         const s = store.snapshot(), at = now();
         const work = await make(s, at);
@@ -658,7 +670,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
-        if (isArchitectName(a.agent) || isPMSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the PM's or the architect's session name; a dispatch's credential under it would be taken for theirs`);
+        if (isArchitectName(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
         if (isRunnerSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the runner's session name, which no dispatch carries`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
@@ -712,6 +724,24 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (before !== undefined && isDeepStrictEqual({ ...next, at: before.at }, before)) return it;
       return { ...it, updated: at, runner: next };
     }, false, ` ${a.state}`),
+    reportLive: async a => {
+      checkWriter(a, ["item.runner"]);
+      onlyProcessOrRunnerWithoutCredential(a, "report a turn's live state");
+      const it = ownedItem(store.snapshot(), a.id, a);
+      if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
+      if (!LIVE_ROLES.includes(a.role)) throw new OpError(`role: give ${LIVE_ROLES.join(" or ")}`);
+      const whole = (value: unknown, field: string, min: number): number => {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) throw new OpError(`${field}: give a whole number, ${min} or more`);
+        return value;
+      };
+      const turn = whole(a.turn, "turn", 1), turnSeconds = whole(a.turnSeconds, "turnSeconds", 0), idleSeconds = a.idleSeconds === undefined ? undefined : whole(a.idleSeconds, "idleSeconds", 0);
+      // The action is one line, like a report's note: a reporter's line breaks become spaces rather than a refusal.
+      const action = a.action?.replace(/\s+/g, " ").trim();
+      if (action !== undefined && [...action].length > LIVE_ACTION_MAX) throw new OpError(`action: give one line of at most ${LIVE_ACTION_MAX} characters`);
+      const at = now(), back = (seconds: number) => new Date(Date.parse(at) - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      live.put({ role: a.role, item: a.id, turn, turnStartedAt: back(turnSeconds), ...(idleSeconds === undefined ? {} : { lastActionAt: back(idleSeconds) }), ...(action === undefined ? {} : { action }), at });
+      return `live ${a.role} ${a.id} turn ${turn} · kept in memory only, no commit`;
+    },
     setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
@@ -1014,7 +1044,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     replyNote: a => run(a, "note.reply", (s, at) => {
       const { note } = ownedNote(s, a.id, a);
       if (note.reply !== undefined) {
-        // A reply is its author's: replacing it rewrites what another writer said to the owner. Only the PM and the architect, who run the process, replace a reply they did not write, also an old one with no author recorded or a retired author's.
+        // A reply is its author's: replacing it rewrites what another writer said to the owner. Only the architect, who runs the process, replaces a reply it did not write, also an old one with no author recorded or a retired author's.
         const seen = `note ${a.id}: already replied by ${note.repliedBy ?? "an unknown author"} at ${note.repliedAt ?? "unknown time"}`;
         if (note.repliedBy !== a.author && !mayRunProcess(a)) throw new OpError(`${seen}; a reply is replaced only by its author, so leave this one`);
         if (a.replace !== true) throw new OpError(`${seen}; use replace: true for a deliberate replacement`);
@@ -1041,7 +1071,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const from = typeof a.session === "string" ? a.session.trim() : "";
         if (!from) throw new OpError("session: a message says who sent it; give your session name");
         const to = typeof a.to === "string" ? a.to.trim() : "";
-        const reachable = new Set([ARCHITECT_SESSION, PM_SESSION, ...openAgents(s), ...options.sessions?.() ?? []]);
+        const reachable = new Set([ARCHITECT_SESSION, ...openAgents(s), ...options.sessions?.() ?? []]);
         if (!reachable.has(to)) throw new OpError(`to ${to || "(empty)"}: no session the board can reach has that name; send to one of: ${[...reachable].join(", ")}`);
         const text = typeof a.text === "string" ? a.text : "";
         const length = [...text].length;

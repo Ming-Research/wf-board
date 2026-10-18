@@ -14,7 +14,6 @@ import type { Bucket } from "../../src/whole-view.ts";
 import { startBoard } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { DomPage } from "./page.ts";
-import { asPM } from "../helpers.ts";
 
 const HOUR = 3_600_000;
 const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -64,8 +63,6 @@ test("the block counts what the tool counts, and a kind lists the rows the tool'
 
 test("a runner report moves its item into the block's kind as soon as the board has it", async t => {
   const board = await startBoard(t);
-  // The runner writes as the PM, a project of the real board that the generated board does not have.
-  await ops(board.store).createProject({ ...asPM, name: "PM" });
   const bp = await DomPage.open(t, board, { storage: { "board-whole": "open" } }), read = await counts(board, t);
   const s = board.store.snapshot(), now = Date.now(), view = wholeView(s, rules(s, now), now);
   const target = view.rows.find(x => x.bucket === "unattended")!;
@@ -74,7 +71,7 @@ test("a runner report moves its item into the block's kind as soon as the board 
   assert.ok(!kindRows(bp, "overdue").includes(target.id));
   const base = bp.changes();
   // The report is three hours old when it is written, so its item has waited for CI past the 90 minutes the limit allows.
-  await ops(board.store, () => iso(Date.now() - 3 * HOUR)).reportState({ ...asPM, id: target.id, state: "ci", note: "wf-board#98 的 CI" });
+  await ops(board.store, () => iso(Date.now() - 3 * HOUR)).reportState({ author: s.items[target.id]!.group, session: "执行程序", id: target.id, state: "ci", note: "wf-board#98 的 CI" });
   await bp.waitChanges(base + 1);
   const after = blockCounts(bp);
   assert.equal(after.kind.overdue, before.kind.overdue + 1, "one more waits too long");

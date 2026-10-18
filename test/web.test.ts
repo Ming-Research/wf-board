@@ -4327,7 +4327,7 @@ test("agent list: waiting shows the step's own text, a long wait is amber, a sta
 });
 
 test("agent list: only running rows are unfolded; the rest sit behind 其他 N 个, which opens them and the choice is kept", async () => {
-  // eng has an unfinished dispatch. norecord and late touched child, which has a step in progress, but norecord has no dispatch record and late's has ended.
+  // eng has an unfinished dispatch. norecord and late touched child, which has a step in progress, but norecord has no dispatch record (no row at all) and late's has ended.
   // idle and idle2 have finished records too.
   const s = agentSnapshot({ eng: [{ item: "child", at: minutesAgo(5) }], norecord: [{ item: "child", at: minutesAgo(6) }], late: [{ item: "child", at: minutesAgo(3) }],
     idle: [{ item: "area", at: minutesAgo(8) }], idle2: [{ item: "area", at: minutesAgo(50) }] }, undefined, [], ["late", "idle", "idle2"]);
@@ -4340,16 +4340,16 @@ test("agent list: only running rows are unfolded; the rest sit behind 其他 N �
   const host = p.roots.get("agents")!, others = () => host.querySelector(".agents-others-toggle")!;
   assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review"], "running rows only, newest first");
   assert.equal(host.querySelector(".agents-toggle")!.innerHTML, "▾ 代理 3", "the heading counts the running rows");
-  assert.equal(others().innerHTML, "▸ 其他 4 个");
+  assert.equal(others().innerHTML, "▸ 其他 3 个", "norecord is not counted: no dispatch record names it");
   assert.equal(others().attributes["aria-expanded"], "false");
   assert.equal(host.querySelector(".agent-list")!.children.at(-1)!.classList.contains("agent-others"), true, "the fold is the last line of the list");
   await others().click(); await p.flush();
-  assert.equal(others().innerHTML, "▾ 其他 4 个");
-  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review", "late", "norecord", "idle", "idle2"], "opened: the other rows follow the running ones, newest first, drawn as before");
-  for (const name of ["late", "norecord"]) assert.equal(agentRowsOf(p).find(r => r.dataset.agent === name)!.querySelector(".agent-state")!.innerHTML, "干活", `${name} is folded although the state word is read from the step`);
+  assert.equal(others().innerHTML, "▾ 其他 3 个");
+  assert.deepEqual(agentRowsOf(p).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review", "late", "idle", "idle2"], "opened: the other rows follow the running ones, newest first, drawn as before");
+  assert.equal(agentRowsOf(p).find(r => r.dataset.agent === "late")!.querySelector(".agent-state")!.innerHTML, "干活", "late is folded although the state word is read from the step");
   assert.equal(storage.get("board-agents-others"), "open");
   const again = await page(s, [], null, undefined, { now: () => NOW, storage });
-  assert.equal(agentRowsOf(again).length, 7, "a reload keeps it open");
+  assert.equal(agentRowsOf(again).length, 6, "a reload keeps it open");
   await again.roots.get("agents")!.querySelector(".agents-others-toggle")!.click(); await again.flush();
   assert.deepEqual(agentRowsOf(again).map(r => r.dataset.agent), ["eng", "fresh-review", "old-review"], "closed again");
   assert.equal(storage.get("board-agents-others"), "closed");

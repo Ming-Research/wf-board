@@ -70,16 +70,25 @@ const dispatch = (agent: string, started: string, fields: Partial<Dispatch> = {}
 const snap = (items: Record<string, Item>, agents: Record<string, AgentTouch[]> = {}) => ({ items, activity: { writes: [], items: {}, agents } }) as unknown as Pick<Snapshot, "items" | "activity">;
 const wrote = (...touches: Array<[string, number]>) => touches.map(([item, m]) => ({ item, at: minutesAgo(m) }));
 const row = (s: ReturnType<typeof snap>, name: string) => agentRows(s, NOW).find(r => r.name === name);
+// An item whose dispatch records, long ago and unfinished, name the sessions: a session is listed only when a record names it.
+const dispatched = (...names: string[]) => item([], { dispatches: names.map(name => dispatch(name, minutesAgo(400))) } as Partial<Item>);
 
-test("a session is listed for six hours after its last write, and the architect's and the PM's own never are", () => {
-  const items = { a: item() };
+test("a session is listed for six hours after its last write, and the architect's own never is; the name PM is a name like any other", () => {
+  const items = { a: item(), named: dispatched("fresh", "edge", "old", "架构师", "PM") };
   const s = snap(items, { fresh: wrote(["a", 5]), edge: wrote(["a", 359]), old: wrote(["a", 361]), "架构师": wrote(["a", 1]), PM: wrote(["a", 2]) });
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh", "edge"], "newest first; past the window and the architect's and the PM's sessions are out");
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["PM", "fresh", "edge"], "newest first; past the window and the architect's session are out");
+});
+
+test("a session no dispatch record names is not listed, whatever it wrote: the programs, the architect's turns and helpers, a hand-started session, a name written by mistake", () => {
+  const items = { a: item(), named: dispatched("fresh") };
+  const s = snap(items, { fresh: wrote(["a", 5]), "执行程序": wrote(["a", 1]), "架构师轮次": wrote(["a", 1]), "架构师-helper": wrote(["a", 1]), "看板": wrote(["a", 1]), architect: wrote(["a", 1]), observer: wrote(["a", 2]) });
+  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["fresh"], "only the session a dispatch record names has a row");
+  assert.deepEqual(agentRows(snap({ a: item() }, { observer: wrote(["a", 2]) }), NOW), [], "with no dispatch record at all the list is empty");
 });
 
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {
   const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }, { id: "accept", text: "ok", state: "todo" }]);
-  const s = snap({ idle: item([{ id: "w", text: "work", state: "done" }]), run: doing(), wait: doing("PR 草稿 CI") }, {
+  const s = snap({ idle: item([{ id: "w", text: "work", state: "done" }]), run: doing(), wait: doing("PR 草稿 CI"), named: dispatched("fresh", "stale", "nothing", "quick", "long", "longer") }, {
     fresh: wrote(["run", 29]), stale: wrote(["run", 31]), nothing: wrote(["idle", 3]),
     quick: wrote(["wait", 5]), long: wrote(["wait", 59]), longer: wrote(["wait", 61]),
   });
@@ -97,26 +106,20 @@ test("waits wins over the clock, and a step in progress on the older of the two 
     a: item([{ id: "w", text: "work", state: "doing", waits: "等审查" }]),
     b: item([{ id: "w", text: "work", state: "doing" }]),
     c: item([{ id: "w", text: "work", state: "todo" }]),
+    named: dispatched("both", "mixed", "third"),
   }, { both: wrote(["c", 1], ["a", 2]), mixed: wrote(["b", 2], ["a", 3]), third: wrote(["c", 1], ["b", 2]) });
   assert.deepEqual([row(s, "both")!.state, row(s, "both")!.waits], ["waiting", "等审查"]);
   assert.equal(row(s, "mixed")!.state, "waiting", "any of its steps waiting makes it waiting");
   assert.equal(row(s, "third")!.state, "working");
 });
 
-test("the level comes from the newest dispatch record naming it, else from the newest item it touched that has a step in progress", () => {
-  const doing = [{ id: "w", text: "work", state: "doing" }];
+test("the level comes from the newest dispatch record naming the session, not an older one", () => {
   const s = snap({
-    easy: item(doing, { difficulty: 1 } as Partial<Item>), hard: item(doing, { difficulty: 4 } as Partial<Item>), mine: item(doing),
-    plain: item([], { difficulty: 3 } as Partial<Item>),
-    rec: item(doing, { dispatches: [dispatch("both", minutesAgo(300), { level: 5 }), dispatch("both", minutesAgo(100), { level: 2 })] } as Partial<Item>),
-  }, { derived: wrote(["plain", 1], ["hard", 2], ["easy", 3]), both: wrote(["rec", 4]), unratedOwn: wrote(["mine", 4]), idle: wrote(["plain", 4]),
-    // The newest item is unrated and the older one is rated 4: the older one gives the level.
-    passedOver: wrote(["mine", 1], ["hard", 2]) });
-  assert.equal(row(s, "derived")!.level, 4, "the difficulty of the newest touched item with a step in progress");
+    rec: item([], { dispatches: [dispatch("both", minutesAgo(300), { level: 5 }), dispatch("both", minutesAgo(100), { level: 2 })] } as Partial<Item>),
+    hard: item([], { difficulty: 4, dispatches: [dispatch("easier", minutesAgo(100), { level: 1 })] } as Partial<Item>),
+  }, { both: wrote(["rec", 4]), easier: wrote(["hard", 2]) });
   assert.equal(row(s, "both")!.level, 2, "the newest dispatch record, not an older one");
-  assert.equal(row(s, "unratedOwn")!.level, undefined, "an unrated item gives no level");
-  assert.equal(row(s, "idle")!.level, undefined, "no step in progress, no dispatch: no level");
-  assert.equal(row(s, "passedOver")!.level, 4, "an unrated item is passed over for an older one that has a difficulty");
+  assert.equal(row(s, "easier")!.level, 1, "the record's level, not the difficulty of the item it touched");
 });
 
 test("a dispatch record adds its item and its start time to the session's activity", () => {
@@ -186,10 +189,9 @@ test("a step in progress on an item a session touched does not make it running; 
     "alive: running with every state word, 「可能停了」 and a wait over an hour (amber) included, and with none");
 });
 
-test("a session with no dispatch record is never running, whatever stands on the items it touched", () => {
+test("a session with no dispatch record has no row, whatever stands on the items it touched", () => {
   const s = snap({ run: doing(), wait: doing("PR 草稿 CI") }, { observer: wrote(["run", 5]), waiter: wrote(["wait", 5]), stopped: wrote(["run", 45]) });
-  assert.deepEqual(["observer", "waiter", "stopped"].map(name => [row(s, name)!.state, row(s, name)!.running]), [["working", false], ["waiting", false], ["maybe-stopped", false]],
-    "the state word is still read from the steps, but those steps are other sessions': it is folded");
+  assert.deepEqual(agentRows(s, NOW), [], "the steps on its items may be other sessions': nothing names it a programmer the board sent out");
 });
 
 test("a session with an unfinished dispatch that is alive is running, an engineer or a review, with no step in progress", () => {

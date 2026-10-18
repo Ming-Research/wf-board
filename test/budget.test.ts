@@ -8,13 +8,14 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { board, author, server, wakeSocket, appendCommits } from "./helpers.ts";
+import { board, author, server, appendCommits } from "./helpers.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { createHttpServer } from "../src/http.ts";
 import { Wake } from "../src/wake.ts";
+import { ARCHITECT_SESSION } from "../src/model.ts";
 import * as q from "../src/query.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "../src/budget.ts";
 import type { BudgetLimits } from "../src/budget.ts";
@@ -162,19 +163,18 @@ test("every entry opens a budget: with requireBudget the page routes and the too
   for (const [name, args] of calls) { const result = await client.callTool({ name, arguments: args }); assert.doesNotMatch(text(result), /ran under no budget/, name); }
 });
 
-test("the timed wake reads the history under a budget of its own", async t => {
+test("the architect's timed wake reads the history under a budget of its own", async t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
-  const T0 = Date.parse("2026-10-16T00:00:00Z"), half = 30 * 60_000;
+  const T0 = Date.parse("2026-10-16T00:00:00Z"), hour = 60 * 60_000;
   let clock = T0;
   const wake = new Wake({ now: () => clock });
-  const { url, store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, timedWakeMs: half, requireBudget: true });
-  wake.markTimed({ at: new Date(T0).toISOString(), head: store.snapshot().head });
+  const { store, op } = await server(t, { now: () => clock, checkIntervalMs: 1000, wake, architectTimedWakeMs: hour, requireBudget: true });
+  wake.agent(ARCHITECT_SESSION).markTimed({ at: new Date(T0).toISOString(), head: store.snapshot().head });
   await op.appendLog({ author, session: "工程师", id: "b", text: "progress" });
-  const star = await wakeSocket(t, url);
-  clock = T0 + half; t.mock.timers.tick(1000);
-  for (let i = 0; i < 400 && !star.events().length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  const frame = star.events()[0]!;
-  assert.equal(frame.event, "timed");
+  clock = T0 + hour; t.mock.timers.tick(1000);
+  for (let i = 0; i < 400 && !wake.agent(ARCHITECT_SESSION).since(0).frames.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const frame = wake.agent(ARCHITECT_SESSION).since(0).frames[0]!;
+  assert.equal(frame.event, "timed-architect");
   assert.deepEqual((frame.changed as Array<{ item: string }>).map(e => e.item), ["b"]);
 });
 
