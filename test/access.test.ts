@@ -60,6 +60,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   dispatchStart: [{ parts: ["dispatch.start"], args: { id: "a", role: "工程师", level: 2, model: "m", agent: "g", agentId: "i" } }],
   dispatchFinish: [{ parts: ["dispatch.finish"], args: { id: "a", agentId: "i", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 1 } }],
   reportState: [{ parts: ["item.runner"], args: { id: "a", state: "running" } }],
+  reportLive: [{ parts: ["item.runner"], args: { id: "a", role: "工程师", turn: 1, turnSeconds: 1 } }],
   setPlan: [{ parts: ["item.plan"], args: { id: "a", remove: "r" } }],
   setTargets: [{ parts: ["item.targets"], args: { id: "a", remove: "r" } }],
   updateItem: [

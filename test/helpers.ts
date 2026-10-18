@@ -9,6 +9,7 @@ import { WebSocket } from "ws";
 import { stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
+import { LiveStore } from "../src/live.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -62,14 +63,15 @@ export async function board(t: { after(fn: () => void | Promise<void>): void }, 
     { kind: "note", id: "note-1", expectRev: null, doc: { target: "it:a", kind: "comment", text: "中文意见 Whitefoot #341", at, sentAt: at, state: "sent" } },
     { kind: "note", id: "note-2", expectRev: null, doc: { target: "q:choice", kind: "explain", text: "解释 #341", at, state: "done", reply: "中文回复", repliedAt: later, repliedBy: author } },
   ] });
-  return { dir, store, op: ops(store, () => later) };
+  const live = new LiveStore();
+  return { dir, store, live, op: ops(store, () => later, { live }) };
 }
 
 /** The daemon's pieces over a fresh board, listening on a free port; `wake` and `architectTimedWakeMs` reach the wake channel. */
 export async function server(t: Parameters<typeof board>[0], extra: { now?: () => number; checkIntervalMs?: number; credentials?: Credentials; wake?: Wake; architectTimedWakeMs?: number; watch?: (fixture: Awaited<ReturnType<typeof board>>) => GithubWatch; ci?: (fixture: Awaited<ReturnType<typeof board>>) => CiWatch; webDir?: string; prepare?: (fixture: Awaited<ReturnType<typeof board>>) => void; requireBudget?: boolean } = {}) {
   const fixture = await board(t, { requireBudget: extra.requireBudget }), { store, op } = fixture;
   extra.prepare?.(fixture);
-  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
+  const http = createHttpServer({ store, ops: op, live: fixture.live, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");

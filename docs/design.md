@@ -767,7 +767,9 @@ log:
     leaves `since`, so how long an item has waited is read from `since` while the board holds
     no heartbeat. A report identical in every field writes no commit at all (the store skips an
     unchanged document), so a runner that reports at every turn start and end adds one commit
-    for a change, not one for a call.
+    for a change, not one for a call. While the state is `running`, `at` is when the turn began as long as the
+    runner reports nothing else during a turn, which is how it behaves; the agent list takes a turn's
+    start from the runner's beat (section 7, The live view of a turn) and from `at` only without one.
   - Historical detail, like the log and the dispatches: `withoutHistoricalDetail` drops
     `runner` before any owner-facing comparison, so a report is never news to the owner.
     The page shows no report of its own; the whole view (section 7) draws what it says.
@@ -2612,42 +2614,84 @@ does not make it unread.
 
 ### Agent list
 
-Above the projects and below the summary, the page lists the agent sessions that
-wrote to the board lately: one row per session name, then the two items it
-wrote to last. The owner reads it to see which work has someone on it, at which
+Above the projects and below the summary, the page lists the programmers the board
+sent out (the sessions a dispatch record names) that wrote to the board lately: one
+row per session name, then the two items it wrote to last. The owner reads it to see which work has someone on it, at which
 level, and whether that someone is working, waiting or has gone quiet.
 
 - **Data.** Only the board's own records: the per-session index of section 5
-  (`activity.agents`) and the dispatch records on items. Nothing reads the
+  (`activity.agents`), the dispatch records on items, and what the runner reports
+  to the board: its report on each item it holds (section 5, Runner reports) and
+  its beats for the turns running now (The live view of a turn, below). Nothing reads the
   machine the board runs on, and no session reports apart from the writes it
-  already makes with its session name. This is what lets the board run on
+  already makes with its session name; the runner, the one resident program of
+  the new agent system, pushes its reports to the board. This is what lets the board run on
   another machine and keep the list; the owner required that. Rejected: asking
   the host for its session list (`claude agents`) or reading its state files,
-  which is exact but ties the board to the machine; a reporter process beside
-  the sessions or hooks that report, which add a process or a Claude Code format
-  to keep alive; the item's last writer alone (`activity.sessions`), which
+  which is exact but ties the board to the machine; a reporter process of the
+  list's own beside the sessions or hooks that report, which add a process or a Claude Code format
+  to keep alive (the runner is not one: it runs the engineers' turns and reports their state already); the item's last writer alone (`activity.sessions`), which
   loses a session's earlier items when another session writes the same item and
   needs the in-progress row to know whose item it is. The dispatch records are
   read because they give the level a session was started at and the time it
   started, before it has written anything (a reviewer may never write).
-- **Who is listed.** A session whose last activity is at most six hours old.
-  Activity is a write with its session name, or the start of a dispatch record
-  naming it (`agent`), whichever is later; a reviewer that only reads has a row
-  from its start. The architect's own session is left out: on 2026-10-16 the architect's made
-  521 of the 1158 board writes since 00:00 UTC and would head the list every
-  time. A name
-  whose newest dispatch record has ended is not listed until it writes again
-  more than a minute after the recorded end (the end may be recorded to the
-  minute); names are reused (one item's study and its implementation are both
-  named after the item), so the newest record decides. A name used by mistake
-  is listed as it is, so whoever wrote it sees it.
+- **Who is listed.** A session that a dispatch record names (`agent`) and whose
+  last activity is at most six hours old. Activity is a write with its session
+  name, or the start of that record, whichever is later; a reviewer that only
+  reads has a row from its start. The architect's own session is
+  left out: on 2026-10-16 the architect's made 521 of the 1158 board writes since
+  00:00 UTC and would head the list every time. A name whose newest dispatch
+  record has ended is not listed until it writes again more than a minute after
+  the recorded end (the end may be recorded to the minute); names are reused (one
+  item's study and its implementation are both named after the item), so the
+  newest record decides. A session no dispatch record names is not listed,
+  whatever it wrote. The board has no PM any more: only the architect and the
+  programmers the board sends out work on it, and a dispatch is recorded for each
+  of those. What else writes is no such programmer: on 2026-10-18 three of the five
+  rows behind 「其他 5 个」 were programs (the board's own, the runner's own, an
+  architect turn that had answered ten minutes before), and the other two a name
+  used by mistake and an old session. None of them has a dispatch record, so none
+  is listed, and no table of program names is kept: a name written by mistake and
+  the architect's helper sessions are left out by the same rule. A turn that ends is
+  gone from the list, and the one running is drawn under the work that asks it (the
+  runner's block). A session the owner started by hand (the observer) is not
+  listed either; its writes are in the logs of the items it wrote to.
+- **The runner's block.** Above those rows, one row for each piece of work the
+  runner holds (`runnerRows`, `src/runner-rows.ts`): an open, unpaused item that
+  carries a runner report and has an unfinished engineer dispatch that began with
+  it. Their starts are within five minutes of each other (`runnerHolds`): the
+  runner records the dispatch and reports in the same breath, so a report left
+  from an earlier job does not make a session started on the item later the
+  runner's. A row has the session (the dispatch's agent, level, model and
+  effort), what the report says in the whole view's words (`reportText`) and
+  its limits (`limitOf`: past it, or an exception, the chip is amber), since
+  when the work has been in that state, and the time, turns and cost since it
+  began. All the rows are unfolded: the older rule unfolds only a session with a
+  dispatch alive within six hours, which would fold a job that waits for the
+  owner overnight, and a job waiting for CI, a card or the architect is what the
+  owner opens the list to see. Overdue and exception rows come first, then
+  those with a turn running, then the waiting ones, the longest in their state
+  first. A row whose report says a turn runs adds a line for the turn: from the runner's
+  beat (turn number, how long it has run, how long since its last action and
+  the action) when it sends one, else the time the report says it began and
+  that the runner has told nothing of the turn's inside; a beat not repeated
+  for 90 seconds is shown as silent, with what it last said. A row that
+  asks the architect gets the architect's turn under it while the runner beats
+  for one. A beat counts only while it agrees with the report (an engineer's while
+  the report says a turn runs, the architect's while it says the work asks the
+  architect), so a turn that ended is gone from the row at the next report
+  without the beat having to be cleared. The older rows leave out the sessions
+  the runner holds, so no session is drawn twice. The whole view is not changed: it
+  answers what is left and who has nobody, by item, and the architect reads it
+  too; the two repeat a job on purpose, and say the same words with the same
+  limits because both call the same function and table. Rejected: folding the
+  runner's rows by the older six-hour rule; dropping the whole view's rows that
+  the block repeats, which two questions each need; unfolding a report with no
+  dispatch of the runner's job behind it, which is a leftover.
 - **A row.** Name; level; state word; how long ago it wrote (「N 分钟前写过」,
   or 「N 分钟前起」 when the last activity is a dispatch start); its two items.
   The level is the one in the newest dispatch record naming the session, which
-  is what it was started at (「审查 3 级」 for a review); with no record, the
-  difficulty (1 to 5) of the newest of its items that has a step in progress
-  and a difficulty in that range: an unrated item is passed over for an older
-  item that has one.
+  is what it was started at (「审查 3 级」 for a review).
 - **State word.** Read from the steps in progress on its two items, never from
   the host. A step with `waits` text: 「在等：」 and that text, whatever the
   time (the text is the session's own); amber when it has not written for over
@@ -2678,9 +2722,8 @@ level, and whether that someone is working, waiting or has gone quiet.
   the push's holder). So an engineer just started or waiting for the merge with
   every row done, and a review still being read, are running although they
   marked no step, and 「可能停了」 stays expanded, being the exception the owner most
-  needs to see. Nothing else makes a row running. A session with no dispatch
-  record (the observer, one opened by hand) or whose dispatch has ended is
-  folded, even when the items it touched have a step in progress: those steps
+  needs to see. Nothing else makes a row running. A session whose
+  dispatch has ended is folded, even when the items it touched have a step in progress: those steps
   are another session's, and its state word is still read from them. A review is
   not given a shorter bound than the window, so a review nobody closed out stays
   expanded until six hours after its last activity, which is when Status stops
@@ -2716,6 +2759,45 @@ level, and whether that someone is working, waiting or has gone quiet.
   shows changed (its inputs are compared). The minute timer that re-derives
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
+
+### The live view of a turn
+
+A turn can run ten minutes and more (an engineer's first turn in the second trial run took 9.5
+minutes), and the runner's report on the item changes only when a turn starts or ends,
+so the report cannot say whether a running turn is moving. The runner therefore beats: about
+every 30 seconds, for each turn whose process runs, it calls `report_live` with the item, the
+role (`工程师`, or `架构师` for the architect's turn that answers the engineer's question on
+that item), the turn's number, how many seconds it has run, how many seconds since its last
+action (the runner reads the session transcript's last change) and the action in one line of at
+most 80 characters (for example 「改 web/app.ts」).
+
+- *Memory only.* `LiveStore` (`src/live.ts`) keeps the newest beat for each (role, item) in the
+  daemon's memory. A beat makes no commit and writes no file, is lost when the daemon stops and
+  is filled again by the next beat, so the page misses at most 30 seconds after a restart. It is
+  presence, not a record: nothing is lost that a restart could lose, and the owner's first
+  priority, that nothing on the board is lost or silently changed, concerns records. A beat older
+  than a day is dropped when the next is stored. The runner sends durations and the board
+  counts back from the moment the beat arrives (the same rule as the report's `since`), so the
+  runner's clock decides nothing.
+- *The writers* are those of `report_state` (the same part, `item.runner`, section 9): the runner
+  from its own session, and the architect. The tool is `write` class of the time limits, but
+  it does not wait in the write queue, since it commits nothing.
+- *To the page.* The event stream sends a `live` event with all the beats when it opens and after
+  every beat (a few entries; the page replaces its list). It is not a change of the board: the page
+  counts no change, keeps its snapshot and redraws only the agent list, and only when the minutes
+  it would show differ.
+- *Silent.* A beat that has not been repeated for 90 seconds (three beats) is silent. The
+  board cannot tell a stopped runner from a stopped turn, so the row keeps what the runner last
+  said and says it has heard nothing for that long, in amber, instead of showing a turn running
+  or stopped. The 90 seconds are provisional; reopen them if rows go silent while their turns run.
+- Rejected: a commit for each action, since every board write is a git commit and a turn
+  makes tens of actions a minute; the runner's report on the item renewed every five minutes,
+  which is up to 12 commits an hour for each running turn (about 860 a day with the runner's three
+  slots busy, against the 1158 writes the whole board made on 2026-10-16), each waiting in the
+  write queue, and an action up to five minutes old, which cannot say whether the turn is moving
+  now; the board asking the runner (a port on its machine, or its files), which a board on another
+  machine cannot reach; showing only the report, which says 「跑一轮」 for the ten minutes that the
+  owner cannot tell a running turn from a stopped one.
 
 ### The whole view
 

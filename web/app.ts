@@ -1,6 +1,9 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
+import { runnerRows } from "../src/runner-rows.ts";
+import type { RunnerRow, RunnerTurn } from "../src/runner-rows.ts";
+import type { LiveEntry } from "../src/live.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
 import { rules, placedCardsOf, cardMarker, draftEditable, isPlainPick, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
@@ -1712,7 +1715,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (unreadRow.children.length) sum.appendChild(unreadRow);
     sum.appendChild(view);
   }
-  // The agent list: one row per session that wrote to the board lately, with the two items it touched last (src/agents.ts,
+  // The agent list: one row per session the board dispatched that wrote to it lately, with the two items it touched last (src/agents.ts,
   // docs/design.md "Agent list"). Everything shown is what sessions declared by writing; nothing is observed, and the
   // state word is inferred, so every row carries how long ago the session wrote. Only the running rows are unfolded; the
   // others sit behind one line, 「其他 N 个」, that the reader opens.
@@ -1725,8 +1728,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return hours ? hours + " 小时" + (rest ? " " + rest + " 分钟" : "") + "前" : minutes ? minutes + " 分钟前" : "不到 1 分钟前";
   }
   function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now())); }
+  // What the runner says of the turns running now (src/live.ts): the event stream sends the whole list when it opens and after every beat.
+  let liveBeats: LiveEntry[] = [];
+  function runnerRowsNow() { return cached("runnerRows", () => runnerRows(state.items, derived, liveBeats, Date.now())); }
   // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
-  function agentLevel(r: AgentRow) { return r.level === undefined ? "" : (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
+  function agentLevel(r: AgentRow) { return (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
   const AGENT_STATE_TITLES: Record<string, string> = {
     working: "它有进行中的行，30 分钟内写过看板。这是从写看板推出来的，不是看到它在干活",
     "maybe-stopped": "它有进行中的行，超过 30 分钟没写看板，也没写在等什么。可能停了，也可能在读代码或等 CI",
@@ -1746,8 +1752,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   // tree's. The name is written so that two names never share a prefix: every character but a letter, digit or hyphen becomes
   // its code point in hex between underscores.
   function agentMount(name: string) { return "ag-" + [...name].map(c => /[A-Za-z0-9-]/.test(c) ? c : "_" + c.codePointAt(0)!.toString(16) + "_").join("") + "--"; }
-  function agentItem(r: AgentRow, t: AgentTouch, it: ViewItem) {
-    const st = statusOf(it) ?? "record", li = el("li", "agitem"), m: Mount = { prefix: agentMount(r.name) };
+  function agentItem(owner: string, t: AgentTouch, it: ViewItem) {
+    const st = statusOf(it) ?? "record", li = el("li", "agitem"), m: Mount = { prefix: agentMount(owner) };
     // A cell and the item row an unfolded parent draws for the same item must not share an id.
     li.id = m.prefix + "cell-" + it.id;
     const row = el("div", "agitem-row"), sub = kids(it.id, true).filter(passes), open = rowOpen(m, it) && sub.length > 0;
@@ -1783,21 +1789,57 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     box.dataset.agent = r.name;
     const head = el("div", "agent-head");
     head.appendChild(el("span", "agent-name", esc(r.name)));
-    const level = agentLevel(r);
-    if (level) head.appendChild(el("span", "tagchip diffchip", esc(level))).title = r.role ? "起这个会话时定的等级（派活记录）" : "它最近碰过的、有进行中的行的条目的难度";
+    head.appendChild(el("span", "tagchip diffchip", esc(agentLevel(r)))).title = "起这个会话时定的等级（派活记录）";
     const state = agentState(r); if (state) head.appendChild(state);
     head.appendChild(el("span", "agent-ago", agoText(r.lastAt) + (r.lastKind === "started" ? "起" : "写过"))).title = r.lastKind === "started" ? "派活记录里的开始时间；它还没写过看板" : "它最近一次写看板的时间";
     box.appendChild(head);
     const cells = el("ul", "agent-items");
-    for (const t of r.touched) { const it = index().byId.get(t.item); if (it) cells.appendChild(agentItem(r, t, it)); }
+    for (const t of r.touched) { const it = index().byId.get(t.item); if (it) cells.appendChild(agentItem(r.name, t, it)); }
     if (cells.children.length) box.appendChild(cells);
+    return box;
+  }
+  // A turn the runner says is running: how long it has run, and when and what its last action was. A turn the runner has not
+  // mentioned for a while is shown as silent, with what it last said.
+  function runnerTurnText(t: RunnerTurn, now: number, at = now) {
+    const bits = ["这一轮 " + spanText(at - t.startedAt)];
+    if (t.lastActionAt !== undefined) bits.push("最后动作 " + spanText(at - t.lastActionAt) + "前" + (t.action ? "：" + t.action : ""));
+    else if (t.action) bits.push(t.action);
+    return t.silent ? "没有动静：执行程序 " + spanText(now - t.heardAt) + "没报这一轮；上次报的是第 " + t.turn + " 轮，" + bits.join("，") : "第 " + t.turn + " 轮 · " + bits.join(" · ");
+  }
+  function runnerRowEl(x: RunnerRow, now: number) {
+    const box = el("li", "agent runner-row");
+    box.dataset.agent = x.agent; box.dataset.runner = x.state;
+    const head = el("div", "agent-head");
+    head.appendChild(el("span", "agent-name", esc(x.agent)));
+    head.appendChild(el("span", "tagchip diffchip", esc(x.level + " 级 " + x.model + (x.effort ? " " + x.effort : "")))).title = "起这个会话时定的等级、模型和推理强度（派活记录）";
+    const chip = el("span", "agent-state runner " + x.state + (x.overdue ? " overdue" : ""), esc(x.what));
+    chip.title = "执行程序对这件活的最新报告，和全貌说的一样" + (x.overdue ? "。已超过这个状态该有的时间，或报告说它要人看" : "");
+    head.appendChild(chip);
+    const spent = "共 " + spanText(now - x.started) + (x.turns === undefined ? "" : "，" + x.turns + " 轮") + (x.cost === undefined ? "" : " $" + x.cost.toFixed(2));
+    head.appendChild(el("span", "agent-ago", esc(spanText(now - x.since) + " · " + spent))).title = "在这个状态已经多久；这件活开始以来的时间、轮数和花费（执行程序报的）";
+    box.appendChild(head);
+    if (x.state === "running") {
+      const turn = el("div", "runner-turn" + (x.live?.silent ? " silent" : ""));
+      turn.textContent = x.live ? runnerTurnText(x.live, now, x.live.silent ? x.live.heardAt : now) : "这一轮从 " + spanText(now - x.turnStartedAt!) + "前起；执行程序还没报这一轮之内的动作";
+      turn.title = x.live ? "执行程序每 30 秒报一次这一轮的动静，只放在看板的内存里" : "条目上的报告只在轮次开始和结束时更新";
+      box.appendChild(turn);
+    }
+    const it = index().byId.get(x.item);
+    if (it) { const cells = el("ul", "agent-items"); cells.appendChild(agentItem(x.agent, { item: x.item, at: new Date(x.since).toISOString() }, it)); box.appendChild(cells); }
+    if (x.architect) {
+      const arch = el("div", "runner-architect" + (x.architect.silent ? " silent" : ""));
+      arch.dataset.architect = x.item;
+      arch.appendChild(el("span", "agent-name", "架构师"));
+      arch.appendChild(el("span", "runner-turn", esc(runnerTurnText(x.architect, now, x.architect.silent ? x.architect.heardAt : now))));
+      box.appendChild(arch);
+    }
     return box;
   }
   // The line that holds the rows which are not running: a count that opens them, below the running rows.
   function agentOthers(rows: AgentRow[]) {
     const box = el("li", "agent-others"), toggle = el("button", "agents-others-toggle", (othersOpen ? "▾ " : "▸ ") + "其他 " + rows.length + " 个");
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(othersOpen));
-    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：没有派活记录的，和派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
+    toggle.title = (othersOpen ? "收起" : "展开") + "没有在跑的会话：派活已经收尾的；它们碰过的条目上有进行中的行也不算，那些行可能是别人的";
     toggle.addEventListener("click", () => { othersOpen = !othersOpen; try { localStorage.setItem("board-agents-others", othersOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     box.appendChild(toggle);
     if (othersOpen) { const list = el("ul", "agent-list"); rows.forEach(r => list.appendChild(agentRow(r))); box.appendChild(list); }
@@ -1805,7 +1847,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function renderAgents() {
     const host = get("agents"); if (!host) return;
-    const rows = agentRowsNow(), running = rows.filter(r => r.running), others = rows.filter(r => !r.running);
+    const rows = agentRowsNow(), running = rows.filter(r => r.running), others = rows.filter(r => !r.running), runner = runnerRowsNow(), now = Date.now();
     // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
     // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
     const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
@@ -1816,18 +1858,34 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;
     })];
     // The rows behind the closed line are not drawn, so only their number can change what is on screen.
-    const signature = JSON.stringify([agentsOpen, othersOpen, running.map(shown), othersOpen ? others.map(shown) : others.length]);
+    // The runner's rows: what each says, in the units it is drawn in (minutes), and the item cell it draws.
+    const turnShown = (t: RunnerTurn | undefined) => t ? [t.turn, t.silent, spanText(now - (t.silent ? t.heardAt : t.startedAt)), t.lastActionAt === undefined ? null : spanText((t.silent ? t.heardAt : now) - t.lastActionAt), t.action ?? null] : null;
+    const runnerShown = (x: RunnerRow) => {
+      const it = index().byId.get(x.item);
+      return [x.item, x.agent, x.level, x.model, x.effort, x.state, x.what, x.overdue, spanText(now - x.since), spanText(now - x.started), x.turns, x.cost,
+        x.turnStartedAt === undefined ? null : spanText(now - x.turnStartedAt), turnShown(x.live), turnShown(x.architect),
+        it ? [it.title, it.num, statusOf(it), inTree(it), unfolded(agentMount(x.agent), x.item)] : null];
+    };
+    const signature = JSON.stringify([agentsOpen, othersOpen, runner.map(runnerShown), running.map(shown), othersOpen ? others.map(shown) : others.length]);
     if (signature === agentsSignature) return;
     agentsSignature = signature;
-    host.hidden = !rows.length;
+    host.hidden = !rows.length && !runner.length;
     host.innerHTML = "";
-    if (!rows.length) return;
-    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + running.length);
+    if (!rows.length && !runner.length) return;
+    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + (running.length + runner.length));
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(agentsOpen)); toggle.title = agentsOpen ? "收起代理列表" : "展开代理列表";
     toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
     if (!agentsOpen) return;
-    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。没有派活记录的、派活已收尾的会话折在最后。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
+    if (runner.length) {
+      host.appendChild(el("h3", "agents-sub", "执行程序手上的 " + runner.length + " 件")).title = "执行程序对每件活的最新报告；一轮在跑时再加它每 30 秒报的动静。和全貌用同一套话和时限";
+      const held = el("ul", "agent-list runner-list");
+      runner.forEach(x => held.appendChild(runnerRowEl(x, now)));
+      host.appendChild(held);
+    }
+    if (!rows.length) return;
+    if (runner.length) host.appendChild(el("h3", "agents-sub", "其他会话"));
+    host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。派活已收尾的会话折在最后；没有派活记录的会话不列。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
     running.forEach(r => list.appendChild(agentRow(r)));
     if (others.length) list.appendChild(agentOthers(others));
@@ -3123,6 +3181,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     next.addEventListener("page", event => {
       if (!active()) return;
       pageUpdates.announce((JSON.parse((event as MessageEvent).data) as { version: string }).version);
+    });
+    // The runner's beats: the whole list replaces what the page held, so a turn that ended is gone from it.
+    next.addEventListener("live", event => {
+      if (!active()) return;
+      liveBeats = JSON.parse((event as MessageEvent).data) as LiveEntry[];
+      scheduleRender("agents");
     });
     next.addEventListener("owner", event => {
       if (!active()) return;

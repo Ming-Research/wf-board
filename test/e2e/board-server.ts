@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import { ops } from "../../src/ops.ts";
+import type { Ops } from "../../src/ops.ts";
+import { LiveStore } from "../../src/live.ts";
 import { ownerOps } from "../../src/owner-ops.ts";
 import { createHttpServer } from "../../src/http.ts";
 import { createMcpServer } from "../../src/mcp.ts";
@@ -18,7 +20,8 @@ import { seedBoard } from "./seed.ts";
 export const ROOT = join(import.meta.dirname, "../..");
 export interface Hooks { after(fn: () => unknown): void }
 
-export interface BoardServer { url: string; store: Store; gen: Generated; dir: string; webDir: string }
+/** `ops` and `live`: the operations the served daemon runs on and the store it keeps the runner's beats in, so a beat made through them reaches the page. */
+export interface BoardServer { url: string; store: Store; gen: Generated; dir: string; webDir: string; ops: Ops; live: LiveStore }
 /** Viewer state that draws every tree row: each item's sub-items unfolded. */
 export function openAll(board: BoardServer): Record<string, unknown> {
   return { "board-open": Object.fromEntries(Object.keys(board.store.snapshot().items).map(id => [id, true])) };
@@ -32,12 +35,12 @@ export async function startBoard(t: Hooks, opts: { seed?: number; webDir?: strin
   return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, opts.webDir ?? join(ROOT, "web"));
 }
 /** The board served at an address of its own with the page from `webDir`: one board can be read through several pages. */
-export async function serveBoard(t: Hooks, board: BoardServer, webDir: string): Promise<BoardServer> {
-  const { store } = board, op = ops(store);
-  const server: Server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir, createMcp: () => createMcpServer({ store, ops: op }) });
+export async function serveBoard(t: Hooks, board: Omit<BoardServer, "ops" | "live">, webDir: string): Promise<BoardServer> {
+  const { store } = board, live = new LiveStore(), op = ops(store, undefined, { live });
+  const server: Server = createHttpServer({ store, ops: op, live, ownerOps: ownerOps(store), webDir, createMcp: () => createMcpServer({ store, ops: op }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("no address");
-  return { ...board, url: `http://127.0.0.1:${address.port}`, webDir };
+  return { ...board, url: `http://127.0.0.1:${address.port}`, webDir, ops: op, live };
 }

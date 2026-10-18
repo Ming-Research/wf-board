@@ -1,6 +1,6 @@
 // The agent list on the page in a DOM library: it sits above the projects, it keeps the tree's element ids to the tree, and 在树中
-// selects the item and 返回 comes back; a cell unfolds its sub-items in place, the list folds apart from the tree, and a session with
-// no dispatch record sits behind 其他 N 个. The fake-DOM tests in test/web.test.ts cover what the list says; the browser layer keeps
+// selects the item and 返回 comes back; a cell unfolds its sub-items in place, the list folds apart from the tree, a session whose
+// dispatch has ended sits behind 其他 N 个, and a session with no dispatch record has no row. The fake-DOM tests in test/web.test.ts cover what the list says; the browser layer keeps
 // where it lies and how far the jump scrolls (test/e2e/agents.e2e.ts). Each scenario also runs on a page with one thing spoiled,
 // where it must fail for the reason it states.
 
@@ -24,10 +24,16 @@ function farItem(bp: DomPage, board: BoardServer): string {
 const write = (board: BoardServer, session: string, id: string) =>
   ops(board.store).appendLog({ author: board.store.snapshot().items[id]!.group, session, id, text: `${session} wrote here` });
 // A dispatch record that is unfinished and alive: the session is then running, so the list unfolds its row. A session
-// with no dispatch record (the plain `write`) is never running. The record is written with no session of its own, so the
+// with no dispatch record (the plain `write`) has no row. The record is written with no session of its own, so the
 // writer adds no row to the list.
 const start = (board: BoardServer, agent: string, id: string) =>
   ops(board.store).dispatchStart({ author: board.store.snapshot().items[id]!.group, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id` });
+// A dispatch that began three hours ago and ended two hours ago: the session wrote nothing since, so it has no row until it writes again.
+async function startAndEnd(board: BoardServer, agent: string, id: string) {
+  const o = ops(board.store), author = board.store.snapshot().items[id]!.group, ago = (hours: number) => new Date(Date.now() - hours * 3600_000).toISOString();
+  await o.dispatchStart({ author, id, role: "工程师", level: 2, model: "Sonnet", agent, agentId: `${agent}-id`, startedAt: ago(3) });
+  await o.dispatchFinish({ author, id, agentId: `${agent}-id`, result: "一次通过", usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0, reports: 0, kickbacks: 0, endedAt: ago(2) });
+}
 const FOLLOWING = 4;
 const open = async (t: Hooks, board: BoardServer, reverts: Revert[]) => DomPage.open(t, board, { storage: openAll(board), reverts });
 
@@ -117,13 +123,19 @@ export async function othersFold(t: Hooks, reverts: Revert[] = []) {
   const [idle, busy] = bp.treeRows().filter(x => board.store.snapshot().items[x] && !board.store.snapshot().items[x]!.record && board.store.snapshot().items[x]!.group);
   assert.ok(idle && busy, "the generated board draws two open items");
   let base = bp.changes();
-  await write(board, "agent-bare", idle);
+  // A session no dispatch record names has no row, however much it writes.
+  await write(board, "agent-plain", idle);
   await bp.waitChanges(base + 1);
+  assert.equal(bp.visible(bp.$("#agents")), false, "a session with no dispatch record is no programmer the board sent out: no list");
+  base = bp.changes();
+  await startAndEnd(board, "agent-bare", idle);
+  await write(board, "agent-bare", idle);
+  await bp.waitChanges(base + 3);
   const toggle = () => bp.$("#agents .agents-others-toggle");
   assert.ok(toggle(), "the line of the folded sessions is drawn");
   assert.equal(bp.$("#agents .agents-toggle")!.textContent, "▾ 代理 0", "nothing runs: the heading counts none");
-  assert.equal(toggle()!.textContent!.trim(), "▸ 其他 1 个");
-  assert.equal(bp.$$("#agents .agent").length, 0, "the row of a session with no dispatch record is not drawn while the line is closed");
+  assert.equal(toggle()!.textContent!.trim(), "▸ 其他 1 个", "the plain session is not counted, the session whose dispatch ended is");
+  assert.equal(bp.$$("#agents .agent").length, 0, "the row of a session whose dispatch ended is not drawn while the line is closed");
   base = bp.changes();
   await start(board, "agent-busy", busy);
   await bp.waitChanges(base + 1);
@@ -196,7 +208,7 @@ const WITNESSES: Array<{ bug: string; scenario: (t: Hooks, reverts: Revert[]) =>
   },
   {
     bug: "the heading counted every session, not only the running ones",
-    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + running.length', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + rows.length')], reason: /nothing runs: the heading counts none/,
+    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (running.length + runner.length)', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (rows.length + runner.length)')], reason: /nothing runs: the heading counts none/,
   },
   {
     bug: "a key command with nothing selected took the first item row it found, an unfolded row of the agent list, for a tree row (agent list, review of wf-board#37)",
