@@ -34,6 +34,7 @@ export const WAKE_KINDS = {
   "ask-alive": { label: "问一句", fields: ["item", "project", "title", "since"], to: { holder: "item" }, answeredByCall: true },
   "no-answer": { label: "没回应", fields: ["session", "item", "project", "title", "since"], to: "pm" },
   message: { label: "消息", fields: ["message", "from", "project", "to", "item", "text"], to: { session: "to" } },
+  "card-ruled": { label: "卡裁了", fields: ["card", "item", "project", "title", "choice", "option", "ruling"], to: { holder: "item", only: true } },
 } as const satisfies Record<string, { label: string; fields: readonly string[]; to: WakeRoute; external?: readonly string[]; answeredByCall?: true }>;
 export type WakeKind = keyof typeof WAKE_KINDS;
 /** Frames the server sends on its own, without a number: the first on every connection, and the one that says events were dropped. */
@@ -67,6 +68,9 @@ const pr = (f: Record<string, unknown>) => `${str(f.repo)}#${str(f.number)}`;
 /** A time given as an ISO string, to the minute. */
 const minute = (v: unknown) => `${str(v).slice(0, 16)}Z`;
 
+/** What a card's ruling says: the option chosen, the owner's words, or both. */
+const ruling = (f: Record<string, unknown>) => [f.choice ? `选 ${str(f.choice)}「${str(f.option)}」` : "", f.ruling ? `原话：${str(f.ruling)}` : ""].filter(Boolean).join(" · ") || "已裁";
+
 /** What each kind says after its label: the subject first (an item or PR with its project), then a few words. Details are
  * read from the board when needed, so a line carries no list and no body text. */
 const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
@@ -87,6 +91,7 @@ const SAYS: { [K in WakeKind]: (f: Record<string, unknown>) => string } = {
   "ask-alive": f => `${it(f.item, f.project)} · 最后一次动静 ${minute(f.since)}，调一次看板就算在`,
   "no-answer": f => `${it(f.item, f.project)} · 会话 ${str(f.session)} · 最后一次动静 ${minute(f.since)} · ${str(f.title)}`,
   message: f => `${str(f.from)}（${str(f.project)}）${f.item ? ` · it:${str(f.item)}` : ""}`,
+  "card-ruled": f => `${it(f.item, f.project)} · q:${str(f.card)} · ${ruling(f)} · ${str(f.title)}`,
 };
 
 /** The one line an agent is given for a push: its number, label and what it is about, at most LINE_LIMIT characters. */

@@ -2,8 +2,13 @@ Decision: A session holds an item while an engineer dispatch record on the item 
 
 Decision: A deploy result and a red main line go to the session that holds the item whose changes section names the merged pull request, which is read from the commit's title, and when no session holds that item the failed deploy and the red main line go to the PM while a successful deploy goes nowhere, because the engineer that merged must act on the result, instead of every deploy going to the PM to forward or only the engineer of the last commit a deploy carried.
 
+Decision: A card that becomes ruled, whether the owner sent a choice on the page or a session recorded one with `rule_card`, is pushed as `card-ruled` to the session holding the card's item and to no one when nobody holds it, because a card's plan row stands only in its own item's plan, so the session stopped on the card is the one holding that item, and the owner's pick had reached only the architect, who did not forward it, so an engineer stayed stopped for two days after the owner ruled ([A card ruled](../../docs/design.md#the-wake-streams)), instead of the architect forwarding every ruling, pushing it to the PM when nobody holds the item, or pushing the owner's note to the holder.
+
 Rejected:
 - A claim and release tool that the engineer calls: rejected because it adds two calls an engineer can forget and a second record that can disagree with the dispatch.
 - Inferring the holder from who last wrote an item with a step in progress: rejected because one write by another session points the push at the wrong session.
 - Pushing every deploy to the PM to forward: rejected because it hands the PM a message that it can only pass on.
 - Telling only the engineer of the last commit of a deploy: rejected because it misses the other commits that the deploy carried.
+- The architect forwarding every ruling to the session stopped on the card: rejected because it rests on one session remembering to do it, which is what failed.
+- Pushing a ruling to the PM when nobody holds the item: rejected because it hands the PM a message it can only pass on, while the architect already has the owner's note.
+- Pushing the owner's note to the holder as well: rejected because every comment and explain request on the item would reach the engineer before the architect has judged it, and the note does not say which option was chosen.
