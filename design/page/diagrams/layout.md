@@ -8,4 +8,4 @@ Rejected:
 - Dagre as the layout: rejected because it draws 12 of the 28 arrows of the role chart into the side of a box, which the owner refused as a broken drawing, and right-angle lines do not change it.
 - A layout registered by the page under the name elk around the library's own ELK drawing: rejected because it names a file inside the library whose name changes with each release and its entry for options reaches only the top graph, not the gaps inside a subgraph.
 - A patch of the library's source: rejected because the repository would carry a patch and the tool that applies it, both redone against each release.
-- A change to the library so that ELK reads the two settings: rejected for now because it publishes to others and whether and when it is accepted and released is not ours to decide; the wrapper is removed when the library reads the settings itself.
+- A change to the library so that ELK reads the two settings: rejected because it publishes to others, and whether and when it is accepted and released is not ours to decide, so the page cannot rely on it; the wrapper is removed when the library reads the settings itself.

@@ -65,7 +65,7 @@ test("the gaps in a diagram's own settings block win over the page's", LONG, asy
 const NO_LAYER: Revert = { file: "web/mermaid-entry.ts", edit: "ELK keeps the gaps the library wrote", find: "elk.layout = function", replace: "void function" };
 // The layer asks for 20 px whatever the diagram's configuration says.
 const FIXED_GAPS: Revert = { file: "web/mermaid-entry.ts", edit: "the layer ignores the diagram's own gaps", find: "const { nodeSpacing = 50, rankSpacing = 50 } = mermaid.mermaidAPI.getConfig().flowchart ?? {};", replace: "const nodeSpacing = 20, rankSpacing = 20;" };
-// A straight run of 3 px before an arrowhead, which puts the head on a bend.
+// A straight run of 3 px asked for before an arrowhead: ELK then routes a line through a box.
 const SHORT_RUN: Revert = { file: "web/mermaid-entry.ts", edit: "the run before an arrowhead is 3 px", find: "const APPROACH = 12;", replace: "const APPROACH = 3;" };
 // The page asks the library for nothing: its own look and its own gaps.
 const NO_DEFAULTS: Revert = { file: "web/mermaid.ts", edit: "the page leaves the library's look and gaps alone", find: "...COMPACT,", replace: "" };
@@ -82,8 +82,8 @@ test("the same check on a page that asks the library for nothing reports the hei
   caught(v, /^mermaid-compact \(role\): the diagram is \d+ px high, over the 2500 px/);
   caught(v, /^mermaid-compact \(role\): the boxes are \d+ px apart at the closest, not the 20 px/);
 });
-test("the same check on the lanes with the library's own gaps reports the height", LONG, async t => {
-  caught(await check(t, await open(t, LANES, [NO_LAYER]), "lanes", LANES_WANT), /^mermaid-compact \(lanes\): the diagram is \d+ px high, over the 1900 px/);
+test("the same check on the lanes drawn with the library's own look and gaps reports the height", LONG, async t => {
+  caught(await check(t, await open(t, LANES, [NO_DEFAULTS]), "lanes", LANES_WANT), /^mermaid-compact \(lanes\): the diagram is \d+ px high, over the 1900 px/);
 });
 test("the same check on a page whose layer ignores the diagram's own gaps reports the gap", LONG, async t => {
   caught(await check(t, await open(t, ENGINEER_OWN, [FIXED_GAPS]), "own gaps", OWN_WANT), /^mermaid-compact \(own gaps\): the boxes are \d+ px apart at the closest, not the 60 px/);
@@ -91,8 +91,8 @@ test("the same check on a page whose layer ignores the diagram's own gaps report
 test("the same check on a page that draws with dagre reports the arrows that enter from the side", LONG, async t => {
   caught(await check(t, await open(t, ENGINEER, [DAGRE]), "role", ENGINEER_WANT), /^mermaid-compact \(role\): \d+ of 28 arrows enter a box from the side/);
 });
-test("the same check on a page with a run of 3 px before the arrowheads reports the run", LONG, async t => {
-  caught(await check(t, await open(t, ENGINEER, [SHORT_RUN]), "role", ENGINEER_WANT), new RegExp(`^mermaid-compact \\(role\\): an arrow runs straight for \\d+ px before its head, under ${MIN_RUN} px`));
+test("the same check on a page that asks for a run of 3 px before the arrowheads reports the line through a box", LONG, async t => {
+  caught(await check(t, await open(t, ENGINEER, [SHORT_RUN]), "role", ENGINEER_WANT), /^mermaid-compact \(role\): \d+ lines cross a box: N9->N11 crosses N10/);
 });
 
 // Hand-made drawings in the shape the library draws: boxes A and B 60 px apart with one arrow between them, and one wrong thing each.
