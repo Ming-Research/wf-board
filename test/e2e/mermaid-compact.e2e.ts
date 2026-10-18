@@ -23,7 +23,7 @@ type Hooks = Parameters<typeof startBoard>[0] & { diagnostic(message: string): v
 const WAIT = 60_000;
 const LONG = { timeout: 5 * 60_000 };
 
-// The sizes the page's compact drawing stays under (measured on these charts in CI: 2430 and 1801 px; the library's own drawing is 3214 and 2443).
+// The sizes the page's compact drawing stays under (measured on these charts in CI: 2406 and 1657 px; the library's own drawing is 3420 and 2477).
 const ENGINEER_WANT: Want = { arrows: 28, height: 2500, gap: 20 };
 const LANES_WANT: Want = { arrows: 17, height: 1900, gap: 20 };
 // The settings block of ENGINEER_OWN asks for 60 px between boxes and layers, and nothing else is asked of the drawing.

@@ -2515,10 +2515,7 @@ page's with the diagram's own frontmatter over it, and sets them as ELK's gaps b
 on the graph and on every subgraph in it; the library's own unscoped name for a subgraph's gap between boxes is
 removed, since ELK reads both names as one option and the two values would compete. It also keeps a straight
 run of 12 px before an arrowhead (a shorter one leaves the head on a bend; at a total gap of 12 the run was
-3 px) and 10 px between lines that run side by side. On the synthetic role chart this takes the height from 3214 to 2430 px (24% less) and on a chart
-with three lanes from 2443 to 1801 px (26% less), every arrow still entering a box from above; dagre, which
-reads the settings, draws the role chart 33% shorter but 12 of its 28 arrows enter a box from the side, and
-changing ELK's other public settings (layering, mergeEdges, the look alone) saves at most 10% in height. The
+3 px) and 10 px between lines that run side by side. In the CI's browser the synthetic role chart goes from 3420 to 2406 px high (30% less) and a chart with three lanes from 2477 to 1657 px (33% less), every arrow still entering a box from above (other fonts give other sizes: the study measured 3214 to 2430 and 2443 to 1801). Dagre, which reads the settings, draws the role chart 12% shorter again (2124 px) but 10 of its 28 arrows enter a box from the side. The classic look alone saves 16% (3420 to 2868 px), and ELK's layering and edge-merging settings change the height by at most 4% and some widen the drawing. The
 wrapper reaches ELK because the library calls it through elkjs's `layout`; should the library move ELK into a
 web worker or leave elkjs, the wrapper stops acting, the gap between layers returns to 40 px and the
 browser check fails (the library would then be patched instead). The settings a diagram brings in a frontmatter
@@ -4286,14 +4283,14 @@ an enlarged diagram can be scrolled to both its ends (and two page variants wher
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
 a view and the page's scroll survive a live update (and a variant that draws the diagrams
 after the scroll is restored); labels and lines read in both color schemes. The compactness of a drawing
-has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2430 px high
-against the library's own 3214) and a synthetic chart with three lanes (17 arrows, 1801 px against
-2443) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
+has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2406 px high
+against the library's own 3420) and a synthetic chart with three lanes (17 arrows, 1657 px against
+2477) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
 for a chart whose settings block asks for 60); no arrow enters a box from the side and each runs at
 least 6 px straight before its head; no edge label covers a box or another label and no line crosses
 a box that is not its end. The check runs on pages with one part taken out (the wrapper around ELK,
 the wrapper's reading of the diagram's gaps, the 12 px run, the page's configuration, and a page that
-asks for dagre), where it reports the height, the gap, the run or the arrows from the side; and on
+asks for dagre), where it reports the height, the gap, the arrows from the side or a line through a box; and on
 hand-made drawings, one wrong in one way each, to show that the measurement sees a side entry,
 a short run, a label on a box, labels on each other, a line through a box, a gap and a height. A diagram that never appears
 can only be observed by waiting, so the wait is short, and the reported line must say what was
