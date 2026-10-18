@@ -41,6 +41,16 @@ test("a flag that appears in the range is listed once with the sessions that wro
   assert.ok(!JSON.stringify(r).includes("wordy"), "an unchanged flag is never listed");
 });
 
+test("a second missing dependency is a new flag on an item that already had one: the flag's target tells them apart, not its text", async t => {
+  const { store } = await board(t);
+  const row = (item: string) => ({ id: item, item, own: false, after: [] }), accept = { id: "accept", accept: true, text: "passes", state: "todo" };
+  await create(store, "early", "waiting", doc("等待者", { plan: [row("gone-1"), accept] }));
+  const since = store.snapshot().head;
+  await write(store, "eng-1", "waiting", d => ({ ...d, plan: [row("gone-1"), row("gone-2"), accept] }));
+  const f = flagged(await report(store, since));
+  assert.deepEqual(f.waiting?.flags, ["依赖的条目不存在：gone-2"], "the dependency that was already missing is not listed again");
+});
+
 test("a flag another item's change brings out has no writer of its own, and a flag on an item written in the range names its writers", async t => {
   const { store, op } = await board(t);
   const since = store.snapshot().head;

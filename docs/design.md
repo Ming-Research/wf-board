@@ -1442,32 +1442,43 @@ item in the default tree.
 
 The checks touching plans, replacing the dependency and completion-condition
 checks. A cancelled item, and each card of one, shows none of them; the
-write-time refusals in the last column still apply to it:
+write-time refusals in the last column still apply to it.
 
-| Check | Refused when newly introduced |
-|---|---|
-| 依赖的条目不存在 / 依赖的决策卡不存在 | yes |
-| 依赖成环 | yes |
-| 被多个条目拥有 | yes |
-| 跨项目拥有 | yes |
-| 同项目有条目在等它，却没有条目拥有它 | yes |
-| 没有计划：至少要有一个验收步骤 | yes |
-| 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
-| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
-| 依赖的条目已取消 (shared row to a cancelled item) | no |
-| 拥有它的条目已关闭 | no |
-| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
-| 项目没有配置：<group> (the item's `group` is not a configured project) | no |
-| 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
-| 卡没标位置 (an open card the item's head does not place, below) | no |
-| 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
-| 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
-| 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
-| 无人推进 (stalled, above) | no |
-| 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
-| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
-| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+Every kind of check has a fixed id, registered once in `CHECK_KINDS` (`src/rules.ts`),
+beside its short label and whether a write that introduces it is refused. A check is made
+only through that registry, so its id is never missing and its label never disagrees with
+its kind. An id is a short English word chain that is not reused, renamed or given another
+meaning. What says two checks are the same one, on two boards or at two times, is the id and
+the item or card the check points at (`checkKey`); the text, which may carry a count that
+changes while the check stays, is for people. A check whose kind can occur more than once on
+an item points at each object it is about (the missing dependency, the waiting item, the
+card), which is what tells the occurrences apart. A new kind of check is a new entry in the
+registry, and a test raises every registered kind on one board.
+
+| Id | Check | Refused when newly introduced |
+|---|---|---|
+| `dep-item-missing`, `dep-card-missing` | 依赖的条目不存在 / 依赖的决策卡不存在 (pointing at the missing row's key) | yes |
+| `dep-cycle` | 依赖成环 | yes |
+| `owned-by-many` | 被多个条目拥有 | yes |
+| `owned-across-projects` | 跨项目拥有 | yes |
+| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 | yes |
+| `no-acceptance` | 没有计划：至少要有一个验收步骤 | yes |
+| `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
+| `acceptance-pending` | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
+| `dep-item-cancelled` | 依赖的条目已取消 (shared row to a cancelled item) | no |
+| `owner-closed` | 拥有它的条目已关闭 | no |
+| `only-acceptance-left` | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
+| `project-unconfigured` | 项目没有配置：<group> (the item's `group` is not a configured project) | no |
+| `card-plan-mismatch` | 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
+| `card-unplaced` | 卡没标位置 (an open card the item's head does not place, below) | no |
+| `card-options-short` | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
+| `tags-missing` | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
+| `difficulty-missing` | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
+| `title-too-long` | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
+| `stalled` | 无人推进 (stalled, above) | no |
+| `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
+| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
+| `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1998,8 +2009,8 @@ whose commits do not count.
   the board settings of before the range: the head's settings stand, and the version is
   counted. The flags that settings change brings (a newly approved tag vocabulary, say)
   are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
-  flag on both boards when its short label (else its text without the count of the
-  title-length flag) and the item or card it points at are equal. A new flag's row names
+  flag on both boards when its check id (below, Checks) and the item or card it points at are
+  equal; its text and short label are for people and play no part. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
   not `except` names it; with no writer the row says no session wrote it in the range (the
   flag came from another item's change, or from time). Flags are never left out by

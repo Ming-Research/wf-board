@@ -7,7 +7,8 @@ import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey } from "./rules.ts";
+import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
@@ -16,6 +17,15 @@ import type { LiveRole } from "./live.ts";
 import { currentTrace } from "./write-trace.ts";
 
 export class OpError extends Error {}
+/** What to do instead, for the checks a write may not introduce (`refused` in CHECK_KINDS); the owner checks, which share one fix, are not listed. */
+const REFUSED_FIX: Partial<Record<CheckId, string>> = {
+  "dep-item-missing": "use set_plan to remove or replace the missing row",
+  "dep-card-missing": "use set_plan to remove or replace the missing row",
+  "dep-cycle": "use set_plan or move_item to remove the item-row cycle",
+  "no-acceptance": "use set_plan to add at least one acceptance step where its check happens",
+  "owned-across-projects": "use a shared row instead of ownership",
+};
+const OWNER_FIX = "use move_item to place the item under exactly one same-project owner";
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
 function refuseSummary(head: string | undefined): void {
   const mark = head === undefined ? undefined : summaryMark(head);
@@ -434,18 +444,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
               if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
             }
           }
-          const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
           for (const id of Object.keys(next.items)) {
             if (!checked.has(id)) continue;
-            const oldChecks = new Set(beforeRules.refusals(id).map(c => JSON.stringify(c)));
+            const oldChecks = new Set(beforeRules.refusals(id).map(checkKey));
             for (const check of afterRules.refusals(id)) {
-              if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
-                const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
-                  : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
-                  : check.text.startsWith("没有计划") ? "use set_plan to add at least one acceptance step where its check happens"
-                  : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
-                  : "use move_item to place the item under exactly one same-project owner";
-                throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
+              if (checkKind(check.id).refused && !oldChecks.has(checkKey(check))) {
+                const fix = REFUSED_FIX[check.id] ?? OWNER_FIX;
+                throw new OpError(`item ${id}: "${check.text}"${check.target && !check.text.endsWith(check.target.id) ? ` ${check.target.id}` : ""}; ${fix}`);
               }
             }
           }
@@ -964,7 +969,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const ids = [...moved], puts: Put[] = [];
       for (const id of ids) {
         // A stored cross-project owned row would only be carried along; the board's own check names it.
-        const crossed = r.refusals(id).find(check => check.text === "跨项目拥有");
+        const crossed = r.refusals(id).find(check => check.id === "owned-across-projects");
         if (crossed) throw new OpError(`item ${id}: owned by ${crossed.target!.id} of project ${r.groupOf(crossed.target!.id)} but belongs to project ${r.groupOf(id)} (跨项目拥有); fix that with set_plan first`);
         const it = ownedItem(s, id, a);
         try { checkedTags(s, a.project, it.tags, false); }
@@ -983,7 +988,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The board's own check says which items the move leaves with an open waiter in their project and no owner there: the
       // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
-      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.text.startsWith("同项目有条目在等它"));
+      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.id === "unowned-but-awaited");
       const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
       const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
       const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
