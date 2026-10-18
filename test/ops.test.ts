@@ -127,7 +127,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   assert.match(moved.items.area!.log.at(-1)!.text,/Revised title.*其他项目/); assert.match(moved.items.other!.log.at(-1)!.text,/Revised title/); assert.match(moved.items.new!.log.at(-1)!.text,/解释器工作.*其他项目/);
   const cardCommit=(call: () => Promise<Result>,message:string,key="new-card",extra:string[]=[])=>committed(call,message,["decisions/"+key+".yaml",...extra],"decision",key);
   const originalAt=store.snapshot().decisions["new-card"]!.at, rowsBefore=store.snapshot().items.new!.plan;
-  await cardCommit(() => op.writeCard({ confidence: conf,author,key:"new-card",rev:1,item:"new",question:"Choose revised?",options:[opt("A"),opt("B"),opt("C")]}),"write_card new-card");
+  await cardCommit(() => op.writeCard({ confidence: conf,author,key:"new-card",rev:store.snapshot().decisions["new-card"]!.rev,item:"new",question:"Choose revised?",options:[opt("A"),opt("B"),opt("C")]}),"write_card new-card");
   assert.equal(store.snapshot().decisions["new-card"]!.at,originalAt); assert.deepEqual(store.snapshot().items.new!.plan,rowsBefore,"a revision keeps the card's row");
   await cardCommit(() => op.ruleCard({author,key:"new-card",choice:"B"}),"rule_card new-card");
   assert.equal(store.snapshot().decisions["new-card"]!.choice,"B"); assert.equal(store.snapshot().decisions["new-card"]!.ruledAt,later);
