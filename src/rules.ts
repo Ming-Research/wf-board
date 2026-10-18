@@ -745,11 +745,11 @@ interface Carried { memo: Map<string, Map<string, unknown>>; closedMemo: Map<str
 const carried = new WeakMap<Rules, Carried>();
 /** Why `r` derived everything from scratch ("no previous", "minute", "document", "activity", "session"), or null when it
  * reused the previous Rules object it was given. */
-export function rebuiltBecause(r: Rules): string | null { return carried.get(r)?.rebuilt ?? "no previous"; }
+export function rebuiltBecause(r: Rules): string | null { const kept = carried.get(r); return kept ? kept.rebuilt : "no previous"; }
 /**
  * `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are
  * scanned from `s`. `previous`, when given, lets a write that changed no field a status reads keep what was derived before it
- * (docs/design.md, section 5, Reusing the rules of the state before a write).
+ * (docs/design.md, section 4, Write cost).
  */
 export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex); previous?: PreviousRules } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
