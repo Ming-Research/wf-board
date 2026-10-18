@@ -2,14 +2,13 @@
 // Status). No schema accepts the field any more, but the files of the live board hold it on every root, and old versions
 // in history hold it too, which historical comparison omits as it omits the other retired fields (section 9). A board
 // whose files still hold it refuses to start unless Store.open is given { clearPriority: true }; the daemon gives it, so
-// the first start with this code clears the field in one commit, and the command in migrate-priority-cli.ts does the same
-// offline on a copy. The commit is bookkeeping: it sets no `updated` and adds no log line, so no item looks changed; the value
-// each item held stays in git history and in the report. Delete this file, the command, its test, the npm script, the start
+// the first start with this code clears the field in one commit (the offline command that did the same is removed). The commit is bookkeeping: it sets no `updated` and adds no log line, so no item looks changed; the value
+// each item held stays in git history and in the report. Delete this file, its test, the start
 // option in store.ts and main.ts, the commit's bookkeeping checks in store.ts and timed-wake.ts, Txn.rewrite with its condition in
 // Store.commit, and the design paragraph once it has run on the live board. What stays is store.ts's omission of the field from old versions.
 
 /** What the refusal to start says about an item file that still holds the field. */
-export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer exists; start with the migration, or clear it once with the daemon stopped: npm run migrate:priority -- --data DIR";
+export const RETIRED_PRIORITY_REFUSAL = "priority: the item priority no longer exists; remove the line from the item file, with the daemon stopped";
 /** The message of the one commit that clears them. */
 export const CLEAR_PRIORITY_MESSAGE = "clear_priority";
 /** Whether a commit message is the clearing commit: bookkeeping, not work on the items, so activity and the timed wake leave it out. */

@@ -572,22 +572,6 @@ export class Store {
     }
   }
 
-  /** Write the migrated items and cards of `readRawCardData` in one commit. Every document passes the current schema, so
-   * a migration that would leave an invalid document changes nothing. */
-  static async commitCardMigration(dir: string, data: RawCardData, migrated: { items: Record<string, unknown>; decisions: Record<string, unknown> }, author: string): Promise<string> {
-    dir = resolve(dir);
-    const head = (await run("git", ["rev-parse", "HEAD"], { cwd: dir })).stdout.trim();
-    if (head !== data.head) throw new Error(`The data changed since it was read: ${data.head} is now ${head}`);
-    const snapshot = { board: validated(Board, data.board, "board.yaml"), items: data.items, decisions: data.decisions, notes: {}, glossaries: {}, owner: {}, head } as unknown as Snapshot;
-    const store = new Store(dir, snapshot);
-    const put = (kind: "item" | "decision", id: string, doc: unknown): Put => ({ kind, id, doc, expectRev: (kind === "item" ? data.items : data.decisions)[id]!.rev as number });
-    const result = await store.commit({ author, message: CARD_MIGRATION_MESSAGE, puts: [
-      ...Object.entries(migrated.items).map(([id, doc]) => put("item", id, doc)),
-      ...Object.entries(migrated.decisions).map(([id, doc]) => put("decision", id, doc)),
-    ] });
-    return result.commit;
-  }
-
   /** Give every unnumbered item and card a short number, oldest first, in one commit. On a board written before
    * numbers existed this numbers everything once; afterwards every document already has one and nothing happens.
    * Only `num` (and the revision) changes on each document. */
@@ -1434,28 +1418,6 @@ function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numb
   if (numbers === undefined && max > 0) problems.push(`${numbersPath} is missing while documents hold numbers up to ${max}`);
   if (numbers !== undefined && numbers.next <= max) problems.push(`${numbersPath} next ${numbers.next} is not above the highest issued number ${max}`);
   if (problems.length) throw new Error(`Short numbers are inconsistent; refusing to start:\n${problems.join("\n")}`);
-}
-
-/** The documents of a board whose cards may still have the shape before cards joined the plans, unvalidated. */
-export interface RawCardData { head: string; board: unknown; items: Record<string, Record<string, unknown>>; decisions: Record<string, Record<string, unknown>>; notes: Record<string, Record<string, unknown>> }
-
-/** Transient reader for the one-time card migration; all data-file IO stays in Store. The current schemas refuse the old cards,
- * so this reads the items, cards and notes as plain data. */
-export async function readRawCardData(dir: string): Promise<RawCardData> {
-  dir = resolve(dir);
-  const dirty = await run("git", ["status", "--porcelain", "--", "board.yaml", numbersPath, "items", "decisions", "notes", "glossaries"], { cwd: dir });
-  if (dirty.stdout.trim()) throw new Error(`Board working tree has uncommitted changes: ${dirty.stdout.trim()}`);
-  const read = async (path: string): Promise<unknown> => parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
-  const collection = async (name: "items" | "decisions" | "notes"): Promise<Record<string, Record<string, unknown>>> => {
-    const out: Record<string, Record<string, unknown>> = {};
-    for (const file of (await readdir(join(dir, name))).sort()) {
-      if (!file.endsWith(".yaml")) throw new Error(`${name}/${file}: expected a .yaml document`);
-      out[file.slice(0, -5)] = await read(`${name}/${file}`) as Record<string, unknown>;
-    }
-    return out;
-  };
-  return { head: (await run("git", ["rev-parse", "HEAD"], { cwd: dir })).stdout.trim(), board: await read("board.yaml"),
-    items: await collection("items"), decisions: await collection("decisions"), notes: await collection("notes") };
 }
 
 /** Transient reader for the CLI and startup migration; all data-file IO stays in Store. */
