@@ -1001,7 +1001,7 @@ test("every kind of check is registered once under a fixed id, and a board that 
 
 test("check ids are words in lower case, labels are never shared, and the kinds a write may not introduce are the ones that were refused", () => {
   for (const id of Object.keys(CHECK_KINDS)) assert.match(id, /^[a-z]+(-[a-z]+)*$/, id);
-  const labels = Object.values(CHECK_KINDS).flatMap(kind => "label" in kind ? [kind.label] : []);
+  const labels: string[] = Object.values(CHECK_KINDS).flatMap(kind => "label" in kind ? [kind.label] : []);
   assert.equal(new Set(labels).size, labels.length, "one label names one kind");
   assert.ok(!labels.includes(CHECK_LABEL), "the label of a check with none is not any kind's");
   const refused = Object.entries(CHECK_KINDS).filter(([, kind]) => "refused" in kind).map(([id]) => id).sort();
