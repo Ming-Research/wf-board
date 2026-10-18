@@ -229,7 +229,7 @@ test("a loop that is really held is told, and a stopped watch tells nothing more
   await sleep(60);
   assert.ok(lines.length >= 1, "the stall is told");
   const held = Number(/^event loop held for (\d+) ms/.exec(lines.at(-1)!)?.[1]);
-  assert.ok(held >= 400, lines.at(-1));
+  assert.ok(held >= 400, String(lines.at(-1)));
   stop();
   const told = lines.length, stopped = performance.now();
   while (performance.now() - stopped < 450) { /* held again, unwatched */ }
