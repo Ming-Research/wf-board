@@ -37,11 +37,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: Tag the two pages' scripts with a name each, so the profile tells their functions apart
+      - name: Tag the pages' scripts with a name each, so the profile tells their functions apart
         run: |
           echo "NKEY_BASE=$(git rev-parse origin/main^1)" >> "$GITHUB_ENV"
-          sed -i 's|return { script: await bundleScript(await readFile(join(dir, "web/app.ts"), "utf8"), join(dir, "web")), html };|return { script: (await bundleScript(await readFile(join(dir, "web/app.ts"), "utf8"), join(dir, "web"))) + "\\n//# sourceURL=base-page.js", html };|; s|export async function currentPage(): Promise<{ script: string; html: string }> { return { script: await pageScript(), html: await pageHtml() }; }|export async function currentPage(): Promise<{ script: string; html: string }> { return { script: (await pageScript()) + "\\n//# sourceURL=cand-page.js", html: await pageHtml() }; }|' test/nkey/press.ts
-          git diff --stat; grep -c "sourceURL" test/nkey/press.ts
+          # base and twin both run the older page (options.page); cand is the current page; slow is the current page with the draw slowed.
+          sed -i 's|try { this.win.eval(script); }|try { this.win.eval(script + "\\n//# sourceURL=" + (this.options.page ? "base" : this.options.reverts?.length ? "slow" : "cand") + "-page.js"); }|' test/dom/page.ts
+          git diff --stat; git diff test/dom/page.ts | grep sourceURL | cut -c1-200
       - name: The lane, three rounds, profiled
         env:
           NKEY_FLOOR: 3
@@ -60,24 +61,25 @@ jobs:
             const label = n => `${n.callFrame.functionName || "(anon)"} ${n.callFrame.url.split("/").slice(-2).join("/")}${/page\.js$/.test(n.callFrame.url) ? "" : ":" + n.callFrame.lineNumber}`;
             const group = id => {
               // The page that owns a sample: the first page frame met going up from it.
-              for (let cur = id; cur !== undefined; cur = parent.get(cur)) { const url = nodes.get(cur).callFrame.url; if (url.endsWith("base-page.js")) return "base"; if (url.endsWith("cand-page.js")) return "cand"; }
+              for (let cur = id; cur !== undefined; cur = parent.get(cur)) { const url = nodes.get(cur).callFrame.url; if (url.endsWith("base-page.js")) return "base"; if (url.endsWith("cand-page.js")) return "cand"; if (url.endsWith("slow-page.js")) return "slow"; }
               return "other";
             };
-            const tot = { base: 0, cand: 0, other: 0 }, by = { base: new Map(), cand: new Map(), other: new Map() }, incl = { base: new Map(), cand: new Map() };
+            const tot = { base: 0, cand: 0, slow: 0, other: 0 }, by = { base: new Map(), cand: new Map(), slow: new Map(), other: new Map() }, incl = { base: new Map(), cand: new Map(), slow: new Map() };
             for (const [id, t] of self) {
               const g = group(id); tot[g] += t;
               const k = label(nodes.get(id)); by[g].set(k, (by[g].get(k) ?? 0) + t);
               if (g !== "other") { const seen = new Set(); for (let cur = id; cur !== undefined; cur = parent.get(cur)) { const kk = label(nodes.get(cur)); if (!seen.has(kk)) { seen.add(kk); incl[g].set(kk, (incl[g].get(kk) ?? 0) + t); } } }
             }
             const ms = x => (x / 1000).toFixed(1).padStart(9);
-            console.log(`== ${f}: base ${ms(tot.base)} ms, cand ${ms(tot.cand)} ms (cand holds the window with 15 ms more per draw), other ${ms(tot.other)} ms`);
+            console.log(`== ${f}: base+twin ${ms(tot.base)} ms (half: ${ms(tot.base / 2)}), cand ${ms(tot.cand)} ms, slow ${ms(tot.slow)} ms, other ${ms(tot.other)} ms`);
+            const half = m => new Map([...m].map(([k, v]) => [k, v / 2]));
             const diff = (mapA, mapB, title) => {
               const keys = new Set([...mapA.keys(), ...mapB.keys()]);
               const rows = [...keys].map(k => ({ k, a: mapA.get(k) ?? 0, b: mapB.get(k) ?? 0 })).map(r => ({ ...r, d: r.b - r.a }));
               console.log(`-- ${title}: base, cand, cand minus base (ms)`);
               rows.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, 35).forEach(r => console.log(ms(r.a), ms(r.b), ms(r.d), r.k));
             };
-            diff(by.base, by.cand, "self time by function");
-            diff(incl.base, incl.cand, "inclusive time by function");
+            diff(half(by.base), by.cand, "self time by function (base is half of base+twin)");
+            diff(half(incl.base), incl.cand, "inclusive time by function (base is half of base+twin)");
           }
           EOF
