@@ -7,7 +7,7 @@ import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
@@ -510,15 +510,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     for (const key of was) if (!now.has(key)) throw new OpError(`card ${key}: a card's row cannot be removed; withdraw the card with withdraw_card`);
   }
   /** The plan with the new card's row in it. `before` (default: the first acceptance step) also waits for the card, without
-   * losing what it waited for: a row with no `after` followed the row before it. */
-  function withCardRow(plan: PlanRow[], key: string, before: string | undefined, after: string[] | undefined): PlanRow[] {
+   * losing what it waited for: a row with no `after` followed the row before it that is not a record row. */
+  function withCardRow(plan: PlanRow[], key: string, before: string | undefined, after: string[] | undefined, isRecord: (row: PlanRow) => boolean): PlanRow[] {
     if (plan.some(r => r.id === key)) throw new OpError(`key ${key}: the item's plan already has a row with this id; choose another card key`);
     const stop = before ?? plan.find(r => "accept" in r && r.accept)?.id, i = stop === undefined ? plan.length : plan.findIndex(r => r.id === stop);
     if (i < 0) throw new OpError(`before ${before}: choose a row of the item's plan`);
     const out = plan.slice();
     out.splice(i, 0, { id: key, card: key, ...(after === undefined ? {} : { after }) });
     const waiter = out[i + 1];
-    if (waiter) out[i + 1] = { ...waiter, after: [...waiter.after ?? (i > 0 ? [plan[i - 1]!.id] : []), key] };
+    if (waiter) out[i + 1] = { ...waiter, after: [...waiter.after ?? followedRows(plan, i, isRecord), key] };
     return out;
   }
   function attach(s: Snapshot, puts: Put[], at: string, by: Writer, owner: string, id: string, after?: string[]): void {
@@ -1019,8 +1019,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!blocking && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: only a card with blocks has a row in the plan; the work goes on without a card that does not block");
       if (blocking && was && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: a card's row is placed when it starts to block; a revision keeps it");
       const puts: Put[] = [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }];
-      if (blocking && !was) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after), updated: at }));
-      if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
+      const isRecord = (row: PlanRow): boolean => isRecordRow(s.items, row);
+      if (blocking && !was) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after, isRecord), updated: at }));
+      if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key, isRecord), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts };
     }, a.rev !== undefined),
     ruleCard: a => run(a, "card.rule", (s, at) => {
