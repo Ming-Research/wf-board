@@ -8,6 +8,7 @@ import { ops, OpError } from "../src/ops.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { Item, RunnerReport, ACCESS, PARTS, PROCESS_WRITERS } from "../src/model.ts";
+import { CredentialsFile, hashToken } from "../src/credentials.ts";
 import { board, asArchitect, asPM, author, rx } from "./helpers.ts";
 
 // A board whose clock the test sets, so `since` and `at` can be told apart.
@@ -94,13 +95,13 @@ test("a record has no work to report on", async t => {
   assert.equal(RunnerReport.safeParse({ state: "running", since: "2026-10-18T09:00:00Z", at: "2026-10-18T08:00:00Z", started: "2026-10-18T09:00:00Z" }).success, false, "time does not run backwards");
 });
 
-test("only the PM and the architect write a report, on any project's item; every other role and writer is refused", async t => {
+test("only the PM, the architect and the runner write a report; every other role and writer is refused", async t => {
   const { store, op } = await clocked(t);
   // Without a credential: the writer's names decide.
   await op.reportState({ ...asPM, id: "other", state: "running" });
   await op.reportState({ ...asArchitect, id: "other", state: "ci" });
   assert.equal(report(store, "other")!.state, "ci");
-  await assert.rejects(() => op.reportState({ author, session: "someone", id: "a", state: "running" }), refused(rx`only ${PROCESS_WRITERS} may report the runner's state`));
+  await assert.rejects(() => op.reportState({ author, session: "someone", id: "a", state: "running" }), refused(rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`));
   // Over a credential the role's parts decide, whatever the call says about itself.
   for (const role of ["工程师", "审查", "观察者", "资源管理"] as const) {
     await assert.rejects(() => op.reportState({ ...asPM, access: { role, project: "Whitefoot", roots: ["a"] }, id: "a", state: "running" }), refused(/item\.runner: a .* credential may not write this part/), role);
@@ -111,6 +112,54 @@ test("only the PM and the architect write a report, on any project's item; every
   // The table: the part exists and only the two roles of the process hold it.
   assert.ok(PARTS.includes("item.runner"));
   assert.deepEqual((["PM", "架构师", "观察者", "工程师", "审查", "资源管理"] as const).filter(role => ACCESS[role]["item.runner"] === "board"), ["PM", "架构师"]);
+});
+
+test("the runner reports from its own session as the author of the item's project, does no other part of the process, and takes no pushes", async t => {
+  const { store, op } = await clocked(t);
+  const runner = { author, session: "执行程序" };
+  await op.reportState({ ...runner, id: "a", state: "ci", note: "Ming-Research/wf-board#100 的 CI", turns: 1, cost: 0.5 });
+  assert.equal(report(store)!.state, "ci");
+  assert.equal((await store.log({ limit: 1 }))[0]!.session, "执行程序", "the commit records the runner's session");
+  await op.reportState({ ...runner, session: "  执行程序  ", id: "a", state: "running" });
+  assert.equal(report(store)!.state, "running", "spaces around the name are ignored");
+  // Ownership is as for any project's writer: the runner names the item's project as its author.
+  await assert.rejects(() => op.reportState({ ...runner, id: "other", state: "running" }), refused(/item other belongs to project Firn/));
+  // A near miss, another session or none is not the runner.
+  const before = store.snapshot();
+  for (const session of ["执行程序x", "x执行程序", "执行 程序", "engineer", undefined]) {
+    await assert.rejects(() => op.reportState({ author, ...(session === undefined ? {} : { session }), id: "a", state: "ci" }), refused(rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`));
+  }
+  assert.deepEqual(store.snapshot(), before);
+  // Nothing else of the process: creating, rating, pausing, cancelling and retitling stay the PM's and the architect's.
+  const it = store.snapshot().items.a!;
+  const only = rx`author: only ${PROCESS_WRITERS} may`;
+  await assert.rejects(() => op.createItem({ ...runner, key: "made", group: author, title: "Made", accept: "ok" }), refused(only));
+  await assert.rejects(() => op.setDifficulty({ ...runner, id: "a", difficulty: 3, reason: "r" }), refused(only));
+  await assert.rejects(() => op.setPause({ ...runner, id: "a", paused: true, reason: "r" }), refused(only));
+  await assert.rejects(() => op.setStatus({ ...runner, id: "a", status: "cancelled", log: "l" }), refused(only));
+  await assert.rejects(() => op.updateItem({ ...runner, id: "a", rev: it.rev, title: "Renamed" }), refused(only));
+  assert.deepEqual(store.snapshot(), before);
+  // Over a credential the role's parts decide, whatever session the call names.
+  await assert.rejects(() => op.reportState({ ...runner, access: { role: "工程师", project: "Whitefoot", roots: ["a"] }, id: "a", state: "running" }), refused(/item\.runner: a 工程师 credential may not write this part/));
+  // The session name is the runner's alone: no dispatch and no credential file entry carries it.
+  await assert.rejects(() => op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "执行程序", agentId: "agent-9" }), refused(/agent 执行程序: that is the runner's session name/));
+  assert.ok(!CredentialsFile.safeParse({ credentials: [{ session: "执行程序", role: "观察者", project: "Architect", roots: [], hash: hashToken("x") }] }).success, "no credential file entry under the runner's name");
+});
+
+test("the runner starts and ends a dispatch on its project's item without a credential, which an engineer's credential does not", async t => {
+  const { store, op } = await clocked(t);
+  const runner = { author, session: "执行程序" };
+  const usage = { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 };
+  // Without a credential these two check the item's project only (section 6 of docs/design.md); the credential's role is asked of the table.
+  await op.dispatchStart({ ...runner, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "a-worker", agentId: "agent-1" });
+  assert.equal(store.snapshot().items.a!.dispatches?.[0]?.agent, "a-worker");
+  await op.dispatchFinish({ ...runner, id: "a", agentId: "agent-1", result: "一次通过", usage, cost: 1, reports: 0, kickbacks: 0 });
+  assert.ok(store.snapshot().items.a!.dispatches?.[0]?.finish);
+  const engineer = { ...runner, access: { role: "工程师" as const, project: "Whitefoot", roots: ["a"] } };
+  await assert.rejects(() => op.dispatchStart({ ...engineer, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-2" }), refused(/dispatch\.start: a 工程师 credential may not write this part/));
+  await assert.rejects(() => op.dispatchFinish({ ...engineer, id: "a", agentId: "agent-1", result: "一次通过", usage, cost: 1, reports: 0, kickbacks: 0, replace: true }), refused(/dispatch\.finish: a 工程师 credential may not write this part/));
+  // Another project's item is out of reach of the project's author, the runner included.
+  await assert.rejects(() => op.dispatchStart({ ...runner, id: "other", role: "工程师", level: 2, model: "Sonnet", agent: "c-worker", agentId: "agent-3" }), refused(/item other belongs to project Firn/));
 });
 
 test("a report is never news to the owner, while a head change on the same item is", async t => {

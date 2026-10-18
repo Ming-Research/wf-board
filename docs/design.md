@@ -772,9 +772,13 @@ log:
   - Historical detail, like the log and the dispatches: `withoutHistoricalDetail` drops
     `runner` before any owner-facing comparison, so a report is never news to the owner.
     The page shows no report of its own; the whole view (section 7) draws what it says.
-  - Only the PM and the architect write it (`item.runner`, section 9): the runner is part of the
-    PM's process and reports with the PM's credential, so the part is one of the process parts
-    and no engineer, reviewer or observer credential carries it.
+  - Only the PM and the architect write it over a credential (`item.runner`, section 9), so the
+    part is one of the process parts and no engineer, reviewer or observer credential carries
+    it. The runner has no credential: it writes without one, from the session `执行程序`, as the
+    author of the item's project, and the board lets that session do this one part
+    (`isRunner`, section 9, The runner). Its first reports were all refused (the service log
+    held a `tool report_state` error for each), because the check had only the PM and the
+    architect in mind.
   - A record has no runner report: it has no work to report on.
 - **Projects.** Every item stores its project in `group`; an item's project
   changes only through `move_item_project`, which moves the item and everything it owns
@@ -1802,7 +1806,7 @@ coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; a call from the
-PM's or the architect's session (`PM`, `架构师`) is also a receipt for the PM's wake stream, and any
+PM's or the architect's session (`PM`, `架构师`; not `架构师轮次`, below) is also a receipt for the PM's wake stream, and any
 session's call but the PM's, the architect's included, carries what was pushed to it and not yet delivered (section 8, The wake streams).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
@@ -2133,7 +2137,7 @@ replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
-the session `架构师`, and the PM author `PM` writing from the session `PM`
+the session `架构师` or `架构师轮次`, and the PM author `PM` writing from the session `PM`
 (section 9). Both may write any project's items, cards and note replies, and so may
 the observer's credential (section 9); every other writer only its own project's. Some operations are reserved for the process, which the PM does and the architect may do too, and every other writer
 is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
@@ -2166,7 +2170,7 @@ author `总管` is refused by every tool.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
-| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the PM and the architect (`item.runner`); not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
+| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the PM and the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the PM and the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the PM and the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -3125,6 +3129,28 @@ stream the architect's calls answer without having been shown them; pushing each
 streams, because two receipts for one note leave it unclear who handled it; the PM forwarding the
 notes, because it would have to judge which are about content, and that judgment is the architect's.
 
+**The architect's turns.** When an engineer stops to ask the architect, the runner starts a turn
+of the architect (`claude -p` with the architect's turn rules) to answer on the engineer's item.
+It writes as author `Architect` from the session `架构师轮次` (`ARCHITECT_TURN_SESSION` in
+`src/model.ts`), not from `架构师`, which belongs to the conversation the owner talks to: a turn
+under that name would be carried the conversation's pushes by its first tool result and mark
+them delivered. The rights and the pushes go by different tests. The rights (section 9) are
+the architect's for either name (`isArchitect`, `isArchitectName`); the pushes go by the
+conversation's name alone (`isArchitectSession`): the stream under `架构师` is carried
+only in a tool result of that session, a turn's call is no receipt for the PM's stream (over a
+credential, `answersPushes` reads the role and the session together, so the architect's role
+under `架构师轮次` does not answer it), and the architect's timed wake leaves out only
+what the session `架构师` wrote, so a turn's writes are listed there: the conversation did not
+make them. Decision: one more session name with the architect's rights and none of its pushes.
+Rejected: a role of its own for the turns with a narrower access table, because a turn does
+the architect's whole work (answering, cards, pauses, new items, ratings, the architect's
+journal) so the narrower table is the architect's or breaks the next time a part is added, and
+a credential guards against a wrong name, not against impersonation; the turns writing as
+`架构师` and the board finding another way to keep the pushes, because it needs a name or a
+credential to tell the turns apart, which is this decision with an extra layer; the runner
+writing the answers itself, because it would translate every judgment write of the architect
+and need the architect's rights itself.
+
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
 no-receipt alert. Each notice goes to every open board page, as an `owner`
@@ -3431,7 +3457,7 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师`); this applies to items, their cards and owner-note
+the writer is the PM or the architect (`author === PM`, session `PM`, or `author === Architect`, session `架构师` or `架构师轮次`); this applies to items, their cards and owner-note
 replies or closures. Only the PM and the architect create items in any project; an
 engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
@@ -3450,8 +3476,10 @@ authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
 The architect's identity is author `Architect` writing from the session
-`架构师` (`isArchitect` in `src/model.ts`), and the PM's is author `PM`
-writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both names
+`架构师` or `架构师轮次` (`isArchitect` in `src/model.ts`; the second is the name of the
+turns the runner starts to answer an engineer, section 8, The architect's turns, and has the
+rights without the pushes), and the PM's is author `PM`
+writing from the session `PM` (`isPM`); `mayRunProcess` is either. Both author names
 are needed because each author name is also a project: `Architect` is the
 project of the agents_config repository, `PM` the project of the PM's own
 records (it has no repository), and an engineer who does an item there writes as
@@ -3472,6 +3500,40 @@ the one path every agent write takes, refuses any write under that author
 with a message naming `PM` (session `PM`) for the process and `Architect` for the rules
 and the architect's own entries. Store migrations commit under `总管`
 directly and do not pass through it; the historical authors stay as written.
+
+**The runner.** The runner is the resident program that starts the engineers' turns and
+reports their state on the items (item `runner-mvp`). It has no credential. It calls the board
+as the author of the project of the item it touches, from the session `执行程序`
+(`RUNNER_SESSION` in `src/model.ts`). Three kinds of its calls and what the board does with them:
+
+- `report_state` is a part of the process (`item.runner`), which without a credential only the
+  PM and the architect could write; every report was refused. The board now takes the
+  session `执行程序` over no credential for the runner (`isRunner`), and that session may do this
+  one part. The name is read only when no credential is carried, as the PM's and the
+  architect's are; it is reserved like them (no credential file entry and no dispatch carries
+  it), and it is no push session: `answersPushes` does not know it, so its calls answer
+  nothing on the PM's stream, and the board makes no stream for it. Anything else of the
+  process (creating, rating, pausing, cancelling, retitling) is still refused to it.
+- `dispatch_start` and `dispatch_finish` pass without a credential. They carry no process
+  check: without a credential they check the item's project (the author is the item's project,
+  as for `append_log`; the tool table in section 6 says so), and over a credential the table
+  gives `dispatch.start` and `dispatch.finish` to the PM and the architect alone. They
+  should stay as they are for a writer with no credential: an author that writes without a
+  credential may already change everything on its own project's items, and a dispatch issues
+  a credential limited to the subtree of that one item (below), so nothing is enlarged. When
+  the path without a credential is removed, the runner needs a credential for these two.
+- `append_log` and `send_message` are any project's author and any session's, as for every
+  writer.
+
+Decision: the runner is known by its session name, the same device as the PM's and the
+architect's names. Rejected: a role and a credential of its own for the runner, because the
+runner stays refused until the owner has issued a token and put it in the runner's
+configuration, and the path without a credential would still need a rule for it until that
+path is removed (it can be added beside the name, and the two do not conflict); opening the
+report to every project author without a credential, because any session could then write a
+false state on any item of its project, and the whole view reads it to say what each item
+waits for; the PM's credential, because every one of the runner's calls would answer the
+PM's stream and hide the PM's silence, and it would carry all the PM's rights for one part.
 
 There is no inbox. Work another project needs is not filed into that
 project: the session that needs it reports it to the PM, who creates the
@@ -3535,21 +3597,24 @@ the writer from it.
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
-  - A *long-lived credential* belongs to the architect (`架构师`), the PM (`PM`), the observer (`观察者`) or the
+  - A *long-lived credential* belongs to the architect (`架构师`, or `架构师轮次` for the turns the runner
+    starts), the PM (`PM`), the observer (`观察者`) or the
     resource agent (`资源管理`): session name, role, project and, for the resource agent, the
     records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
     `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session names `架构师` and `PM`** are the architect's and the PM's alone: without a
-  credential the board takes author `Architect` writing from `架构师` for the architect, and
+- **The session names `架构师`, `架构师轮次`, `PM` and `执行程序`** are the architect's, the PM's and the runner's alone: without a
+  credential the board takes author `Architect` writing from `架构师` or `架构师轮次` for the architect, and
   author `PM` writing from `PM` for the PM (section 6), and skips the process checks for them. A
-  file entry of another role under either name is refused, so is an entry of the architect's role
+  file entry of another role under any of the names is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
   under another name or in another project than `Architect`, an entry of the PM's role under another
-  name or in another project than `PM`, and so is `dispatch_start` for an agent of either name
-  (spaces around it are ignored, as everywhere the board compares it). With a credential, a
-  write is the architect's or the PM's when the credential's role is, whatever names it carries.
+  name or in another project than `PM`, and so is `dispatch_start` for an agent of any of the four names
+  (spaces around it are ignored, as everywhere the board compares it). The conversation's credential
+  and the turns' credential are two entries side by side. With a credential, a
+  write is the architect's or the PM's when the credential's role is, whatever names it carries; what
+  the role's session name still decides is the pushes (section 8, The architect's turns).
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads

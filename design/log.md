@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Give the architect's turns the architect's rights and none of its pushes
+
+Nodes: responsibility/identities, wake, wake/architect-stream, items
+
+Summary: The runner could not report its state either: without a credential the board let only the PM and the architect write the report, and the runner has none, so each report was refused. The runner's own session name may now do that one part and nothing else of the process, its name is reserved like the others, and the two dispatch tools, which pass without a credential on the item's project alone, keep doing so. The turns the runner starts to answer an engineer write under a session name of their own, so that they do not take the pushes of the architect's conversation, but the board gave the architect's rights to the conversation's name alone, so a turn could not write on the engineer's item. The architect's rights now go to both names, and the pushes, a call's receipt for the PM's stream and the exclusion of the architect's own writes from its timed wake stay with the conversation's name; a credential of the architect's role may carry either name, and no other role or dispatch may. The grounds and the refused alternatives are in the identities node; the derivation is in docs/design.md, section 8, The architect's turns, and section 9.
+
 ## 2026-10-18 Show the architect and the owner the whole board's open work in five kinds
 
 Nodes: items, mcp/whole-view

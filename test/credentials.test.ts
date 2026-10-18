@@ -61,6 +61,12 @@ test("the file's entries are checked: a role of its own, the architect and the P
     ["the architect in another project", { ...ok, role: "架构师", session: "架构师", project: "Firn" }],
     ["the architect's session name for another role", { ...ok, session: "架构师" }],
     ["the architect's session name for the resource agent", { ...ok, role: "资源管理", session: "架构师" }],
+    ["the architect's turn session name for another role", { ...ok, session: "架构师轮次" }],
+    ["the architect's turn session name for the resource agent", { ...ok, role: "资源管理", session: "架构师轮次" }],
+    ["the architect's turn session name for the PM", { ...ok, role: "PM", session: "架构师轮次", project: "PM" }],
+    ["the architect's turn in another project", { ...ok, role: "架构师", session: "架构师轮次", project: "Firn" }],
+    ["the runner's session name for another role", { ...ok, session: "执行程序" }],
+    ["the runner's session name for the architect", { ...ok, role: "架构师", session: "执行程序", project: "Architect" }],
     ["the PM as another session", { ...ok, role: "PM", session: "别人", project: "PM" }],
     ["the PM in the architect's project", { ...ok, role: "PM", session: "PM", project: "Architect" }],
     ["the PM in another project", { ...ok, role: "PM", session: "PM", project: "Firn" }],
@@ -72,6 +78,8 @@ test("the file's entries are checked: a role of its own, the architect and the P
   for (const [what, credential] of bad) assert.equal(CredentialsFile.safeParse({ credentials: [credential] }).success, false, what);
   assert.equal(CredentialsFile.safeParse({ credentials: [ok, ok] }).success, false, "the same session twice");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" })] }).success);
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the architect's role under the turns' session name");
+  assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "架构师", session: "架构师轮次", project: "Architect" })] }).success, "the conversation's and the turns' credentials side by side");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "PM", session: "PM", project: "PM" })] }).success, "the PM only as itself");
   assert.ok(CredentialsFile.safeParse({ credentials: [entry("a", { role: "架构师", session: "架构师", project: "Architect" }), entry("b", { role: "PM", session: "PM", project: "PM" })] }).success, "the architect and the PM side by side");
 });
@@ -102,6 +110,10 @@ test("a dispatch issues a credential for its session, role, item and project, an
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师", agentId: "agent-3" }), /agent.*the PM's or the architect's session name/);
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师 ", agentId: "agent-4" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name: the board ignores them where it takes a session for the architect's");
   assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师") ?? false, false, "and no dispatch was recorded");
+  // The same for the name of the architect's turns, whose rights a dispatch's credential must not borrow.
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "架构师轮次", agentId: "agent-7" }), /agent.*the PM's or the architect's session name/);
+  await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "审查", level: 2, model: "Sonnet", agent: " 架构师轮次 ", agentId: "agent-8" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
+  assert.equal(store.snapshot().items.a!.dispatches?.some(d => d.agent.trim() === "架构师轮次") ?? false, false, "and no dispatch was recorded");
   // The PM's session name is the PM's alone, for the same reason.
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "PM", agentId: "agent-5" }), /agent.*the PM's or the architect's session name/);
   await assert.rejects(op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: " PM ", agentId: "agent-6" }), /agent.*the PM's or the architect's session name/, "spaces around the name do not make another name");
@@ -142,6 +154,26 @@ test("a write over a connection with a credential is recorded under the credenti
   assert.equal(newest!.author, "Whitefoot", "the commit is the credential's too");
   const same = await client.callTool({ name: "append_log", arguments: { author: "Whitefoot", session: "a-worker", id: "a", text: "says the same as the credential" } });
   assert.doesNotMatch(text(same), /ignored/);
+});
+
+test("a connection with the architect's credential under the turns' session writes any project's items as the architect, recorded under that session", async t => {
+  const turn: Resolved = { ok: true, who: { author: "Architect", session: "架构师轮次", access: { role: "架构师", project: "Architect", roots: [] } } };
+  const { client, text, store } = await connected(t, turn);
+  const answered = await client.callTool({ name: "append_log", arguments: { id: "a", text: "Answer to the engineer" } });
+  assert.ok(!answered.isError, text(answered));
+  const newest = (await store.log({ limit: 1 }))[0]!;
+  assert.deepEqual([newest.author, newest.session], ["Architect", "架构师轮次"], "the credential's names, whatever the call says");
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.by, "Architect");
+  const paused = await client.callTool({ name: "set_pause", arguments: { id: "b", paused: true, reason: "Owner chose to wait" } });
+  assert.ok(!paused.isError, text(paused));
+  const created = await client.callTool({ name: "create_item", arguments: { key: "made-by-turn", title: "Made for Firn", accept: "ok", group: "Firn" } });
+  assert.ok(!created.isError, text(created));
+  assert.equal(store.snapshot().items["made-by-turn"]!.group, "Firn");
+  // An engineer's credential under the same call is still refused: the names do not matter, the role does.
+  const asEngineer = await connected(t, engineer);
+  const refused = await asEngineer.client.callTool({ name: "create_item", arguments: { author: "Architect", session: "架构师轮次", key: "refused", title: "Refused", accept: "ok", group: "Firn" } });
+  assert.equal(refused.isError, true);
+  assert.equal(asEngineer.store.snapshot().items.refused, undefined);
 });
 
 test("a credential holds the writer to its role over MCP as it does in ops", async t => {

@@ -397,6 +397,8 @@ test("the architect's timed wake comes every hour with the items changed since t
   await op.appendLog({ author, session: ARCHITECT_SESSION, id: "a", text: "reviewed" });
   await op.appendLog({ author, session: ARCHITECT_SESSION, id: "b", text: "reviewed" });
   await op.appendLog({ author, session: "PM", id: "area", text: "patrolled" });
+  // A turn the runner started to answer an engineer is not the conversation: the conversation's architect did not write this and is told.
+  await op.appendLog({ author: "Architect", session: "架构师轮次", id: "work", text: "answered the engineer" });
   await api("/api/notes", { target: "q:choice", kind: "comment", text: "owner says" });
   const star = await agentSocket(t, url, ARCHITECT_SESSION), pm = await wakeSocket(t, url);
   clock = T0 + HOUR - 1; t.mock.timers.tick(1000); await star.sync(); await setImmediate();
@@ -407,7 +409,7 @@ test("the architect's timed wake comes every hour with the items changed since t
   assert.deepEqual({ n: frame.n, at: frame.at, event: frame.event, since: frame.since }, { n: 1, at: iso(clock), event: "timed-architect", since: iso(T0) });
   assert.deepEqual(Object.keys(frame).sort(), ["at", "changed", "event", "line", "n", "since", "working"], "changes and a count, none of the PM's lists or counts");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
-  assert.deepEqual(by, { area: ["PM"], b: ["owner", "工程师"], other: ["工程师"] }, "the PM's write is listed; the architect's own writes are not why a or b is, and a is left out");
+  assert.deepEqual(by, { area: ["PM"], b: ["owner", "工程师"], other: ["工程师"], work: ["架构师轮次"] }, "the PM's write and a turn's are listed; the architect's own writes are not why a or b is, and a is left out");
   assert.equal(frame.working, 2, "the items someone holds outside the Architect and PM projects: a step being done, or a live session");
   assert.deepEqual(wake.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(architectFile)).filter(l => l.timed).at(-1), { timed: wake.agent(ARCHITECT_SESSION).lastTimed });
@@ -510,6 +512,9 @@ test("a call carrying the architect's or the PM's session, read or write, is the
   await client.callTool({ name: "projects", arguments: { session: "PMx" } });
   await client.callTool({ name: "projects", arguments: { session: "pm" } });
   assert.equal(wake.receiptedUpTo(), 4, "a near miss of the PM's session is not a receipt");
+  await client.callTool({ name: "projects", arguments: { session: "架构师轮次" } });
+  await client.callTool({ name: "append_log", arguments: { author: "Architect", session: "架构师轮次", id: "a", text: "x" } });
+  assert.equal(wake.receiptedUpTo(), 4, "a call from the architect's turns, read or write, is not a receipt: its rights are the architect's, its pushes are not");
   await client.callTool({ name: "projects", arguments: { session: "PM" } });
   assert.equal(wake.receiptedUpTo(), 5, "a read from the session PM answers");
   wake.push("stalled", stallFields("n6"));
@@ -536,6 +541,8 @@ test("a call over a connection with a PM or architect credential is the receipt,
   assert.equal(await receiptOf(who("PM", "PM")), 1, "the PM's credential answers");
   assert.equal(await receiptOf(who("PM", "pm-2"), "别的名字"), 1, "by its role, not by the name the call gives");
   assert.equal(await receiptOf(who("架构师", "架构师")), 1, "the architect's credential still answers");
+  assert.equal(await receiptOf(who("架构师", "架构师轮次")), 0, "the architect's role under the turns' session does not: its rights are the architect's, its pushes are not");
+  assert.equal(await receiptOf(who("架构师", "架构师轮次"), "架构师"), 0, "whatever session the call names");
   assert.equal(await receiptOf(who("观察者", "观察者")), 0, "the observer's does not");
   assert.equal(await receiptOf(who("工程师", "PM")), 0, "a credential of another role does not, even under the session name PM");
 });
