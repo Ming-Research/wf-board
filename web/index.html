@@ -284,6 +284,7 @@ body.wide #item-detail .item > .body, body.wide #item-detail .item > .notes { pa
 .mermaid-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 2px 4px; border-bottom: 1px solid var(--rule); border-radius: 5px 5px 0 0; background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; }
 .mermaid-tools button { font: inherit; min-width: 24px; height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .mermaid-tools button:hover { background: var(--accent-soft); }
+.mermaid-tools button[aria-pressed="true"] { background: var(--accent-soft); font-weight: 600; }
 .mermaid-percent { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
 .mermaid-hint { margin-left: auto; padding: 0 6px; color: var(--muted); }
 /* A box with more to show sideways says so: a scroll bar that stays (the system's own hides itself when idle) and a grabbing hand, besides the hint in the toolbar. */
