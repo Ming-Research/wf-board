@@ -1089,7 +1089,7 @@ tree, status and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the architect (`author: Architect`, session `架构师`) sets or clears it through
+the server's time. Only the architect (`author: Architect`, a session name starting `架构师`) sets or clears it through
 `set_pause`, at the owner's request in a comment (the page has no pause or
 resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
@@ -1242,7 +1242,7 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. A write by any author but the architect (`Architect` from session `架构师`) that changes an item from effectively paused
+pause. A write by any author but the architect (`Architect` from a session name starting `架构师`) that changes an item from effectively paused
 to open, not-paused work is refused, naming its pause source and requiring
 the owner or the architect to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
@@ -1838,12 +1838,12 @@ session works for, selected from `projects` by matching `repo` to its
 repository's GitHub remote (until the old tools are removed), and a write with
 neither is refused. The
 architect writes as `Architect`, the project of the agents_config repository, from the session
-`架构师` (section 9). Several sessions may share a project and
+`架构师`, or another name that starts with it (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; any session's call, the architect's
-included (not `架构师轮次`, below, whose stream is empty), is a sign of life for the session and carries what was pushed to it and not
+included (not another name that starts with `架构师`, such as `架构师轮次`, below, whose stream is empty), is a sign of life for the session and carries what was pushed to it and not
 yet delivered (section 8, The wake streams, Liveness).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
@@ -2173,7 +2173,7 @@ replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
-the session `架构师` or `架构师轮次` (section 9). It may write any project's items, cards and note replies, and so may
+a session whose name starts with `架构师` (section 9). It may write any project's items, cards and note replies, and so may
 the observer's credential (section 9); every other writer only its own project's. Some operations are reserved for the process, which the architect does, and every other writer
 is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
 a changed title in `update_item`, and the page order in `create_project` and
@@ -3225,25 +3225,37 @@ handled it; the PM forwarding the notes, because it would have to judge which ar
 judgment is the architect's. While a PM ran, the architect's calls also answered the PM's stream, which
 hid the PM's silence from the owner; that ended with the PM (The PM is retired, below).
 
-**The architect's turns.** When an engineer stops to ask the architect, the runner starts a turn
-of the architect (`claude -p` with the architect's turn rules) to answer on the engineer's item.
-It writes as author `Architect` from the session `架构师轮次` (`ARCHITECT_TURN_SESSION` in
-`src/model.ts`), not from `架构师`, which belongs to the conversation the owner talks to: a turn
-under that name would be carried the conversation's pushes by its first tool result and mark
-them delivered. The rights and the pushes go by different tests. The rights (section 9) are
-the architect's for either name (`isArchitect`, `isArchitectName`); the pushes go by the
-conversation's name alone (`isArchitectSession`): the stream under `架构师` is carried
-only in a tool result of that session, and the architect's timed wake leaves out only
-what the session `架构师` wrote, so a turn's writes are listed there: the conversation did not
-make them. Decision: one more session name with the architect's rights and none of its pushes.
-Rejected: a role of its own for the turns with a narrower access table, because a turn does
+**The architect's sessions.** The owner often has several architect sessions at once: the
+conversation the owner talks to, one that tidies old projects, one that works as the observer
+(the architect's duty of improving the process), and the turns the runner starts to answer an
+engineer. All write as author `Architect` from a session name that starts with `架构师`
+(`ARCHITECT_SESSION` in `src/model.ts`): the runner's turns use `架构师轮次`, the others a name of
+their own such as `架构师·观察` or `架构师·整理`, which the history and the activity index show
+apart. Only the exact name `架构师` belongs to the conversation the owner talks to, and the pushes
+are its alone: a second session under that name would be carried the conversation's pushes by its
+first tool result and mark them delivered. The rights and the pushes go by different tests. The
+rights (section 9) are the architect's for every such name (`isArchitect`, `isArchitectName`, which
+ignores spaces around the name); the pushes go by the exact name alone (`isArchitectSession`): the
+stream under `架构师` is carried only in a tool result of that session, and the architect's timed
+wake leaves out only what the session `架构师` wrote, so the writes of the other names are listed
+there: the conversation did not make them. Decision: every session name that starts with `架构师`
+has the architect's rights and none of its pushes, because the owner starts a new kind of architect
+session now and then and a name is all it needs. Rejected: one name, `架构师轮次`, for every
+auxiliary architect, because the board then shows the runner's turns and the owner's other
+sessions as one writer, and the name was defined as the runner's; auxiliary sessions without the
+architect's rights, writing as ordinary project authors, because they could not create items in
+other projects, retitle, or write the architect's log, and the architect would relay every such
+write; a narrower role for each kind of auxiliary session, because each new kind needs a table of
+its own and each new board operation a decision in every table, and a session name is not
+authenticated, so a narrower table guards against a wrong write and not against impersonation; a
+role of its own for the turns, with a narrower access table, because a turn does
 the architect's whole work (answering, cards, pauses, new items, ratings, the architect's
-journal) so the narrower table is the architect's or breaks the next time a part is added, and
-a credential guards against a wrong name, not against impersonation; the turns writing as
-`架构师` and the board finding another way to keep the pushes, because it needs a name or a
+journal) so the narrower table is the architect's or breaks the next time a part is added; the turns
+writing as `架构师` and the board finding another way to keep the pushes, because it needs a name or a
 credential to tell the turns apart, which is this decision with an extra layer; the runner
 writing the answers itself, because it would translate every judgment write of the architect
-and need the architect's rights itself.
+and need the architect's rights itself. The names are for the architect alone: a credential of
+another role under one, and a dispatch for one, are refused (section 9).
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
@@ -3581,7 +3593,7 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-the writer is the architect (`author === Architect`, session `架构师` or `架构师轮次`); this applies to items, their cards and owner-note
+the writer is the architect (`author === Architect`, a session name starting `架构师`); this applies to items, their cards and owner-note
 replies or closures. Only the architect creates items in any project; an
 engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
@@ -3599,10 +3611,11 @@ supplied by the callers, and the checks enforce the workflow rather than
 authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
-The architect's identity is author `Architect` writing from the session
-`架构师` or `架构师轮次` (`isArchitect` in `src/model.ts`; the second is the name of the
-turns the runner starts to answer an engineer, section 8, The architect's turns, and has the
-rights without the pushes); `mayRunProcess` is the same test. The author name is needed because
+The architect's identity is author `Architect` writing from a session whose name starts with
+`架构师` (`isArchitect` in `src/model.ts`; `架构师` itself is the conversation the owner talks to,
+and every longer name, such as `架构师轮次` of the turns the runner starts to answer an engineer or
+`架构师·观察` of an observing architect, has the rights without the pushes, section 8, The
+architect's sessions); `mayRunProcess` is the same test. The author name is needed because
 it is also a project: `Architect` is the
 project of the agents_config repository, and an engineer who does an item there writes as
 that project's author, as every project's engineer writes as its project.
@@ -3715,24 +3728,27 @@ the writer from it.
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
-  - A *long-lived credential* belongs to the architect (`架构师`, or `架构师轮次` for the turns the runner
-    starts), the observer (`观察者`) or the
+  - A *long-lived credential* belongs to the architect (`架构师`, or a longer name starting with it, such as
+    `架构师轮次` for the turns the runner starts), the observer (`观察者`) or the
     resource agent (`资源管理`): session name, role, project and, for the resource agent, the
     records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
     `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session names `架构师`, `架构师轮次` and `执行程序`** are the architect's and the runner's alone: without a
-  credential the board takes author `Architect` writing from `架构师` or `架构师轮次` for the architect
+- **The session names that start with `架构师`, and `执行程序`** are the architect's and the runner's alone: without a
+  credential the board takes author `Architect` writing from a session name that starts with `架构师` (`架构师`, `架构师轮次`,
+  `架构师·观察`, and so on) for the architect
   (section 6), and skips the process checks for them. A
-  file entry of another role under any of the names is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
-  under another name or in another project than `Architect`, and so is `dispatch_start` for an agent of any of the three names
+  file entry of another role under any such name is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
+  under a name that does not start with `架构师` or in another project than `Architect`, and so is `dispatch_start` for an agent whose name starts with `架构师` or is `执行程序`
   (spaces around it are ignored, as everywhere the board compares it). An entry of the role `PM` is refused as a
-  role the file does not know (`LONG_LIVED_ROLES` in `src/model.ts`), and `PM` is an ordinary session name. The conversation's credential
-  and the turns' credential are two entries side by side. With a credential, a
+  role the file does not know (`LONG_LIVED_ROLES` in `src/model.ts`), and `PM` is an ordinary session name. A name that merely contains `架构师`
+  (`x架构师`) is an ordinary session name. The credentials of the conversation, of the turns and of the other architect
+  sessions are separate entries side by side. With a credential, a
   write is the architect's when the credential's role is, whatever names it carries; what
-  the role's session name still decides is the pushes (section 8, The architect's turns).
+  the role's session name still decides is the pushes, which only the exact name `架构师` has (section 8,
+  The architect's sessions).
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads
