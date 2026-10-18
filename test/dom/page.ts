@@ -29,10 +29,13 @@ type Loose = Record<string, any>;
 // variantWeb does on disk.
 const bundles = new Map<string, Promise<string>>();
 const pages = new Map<string, Promise<string>>();
-const key = (reverts: Revert[]) => JSON.stringify(reverts);
+// The script depends on the reverts of the sources it is built from, the text on those of index.html: a variant that spoils only the
+// stylesheet shares the bundle of the current page.
+const scriptKey = (reverts: Revert[]) => JSON.stringify(reverts.filter(r => r.file !== "web/index.html"));
+const htmlKey = (reverts: Revert[]) => JSON.stringify(reverts.filter(r => r.file === "web/index.html"));
 /** The page's script for a window: the same esbuild options as `build:web`, as a script instead of a module so the window can evaluate it. */
 export function pageScript(reverts: Revert[] = []): Promise<string> {
-  const k = key(reverts);
+  const k = scriptKey(reverts);
   if (!bundles.has(k)) bundles.set(k, (async () => {
     const contents = await reverted("web/app.ts", reverts);
     // A fix reversed in another source file of the page (web/mermaid.ts) is applied as the file is read.
@@ -55,9 +58,17 @@ export function pageScript(reverts: Revert[] = []): Promise<string> {
 }
 /** The page's HTML as `GET /` serves it for a page that does not know its version (it then never reloads itself). */
 export function pageHtml(reverts: Revert[] = []): Promise<string> {
-  const k = key(reverts);
+  const k = htmlKey(reverts);
   if (!pages.has(k)) pages.set(k, reverted("web/index.html", reverts).then(html => stampPage(html, undefined)));
   return pages.get(k)!;
+}
+
+/** A window with the page's stylesheet and nothing else: the page's HTML with the given fixes reversed, no script run, no server, no board.
+ * For the facts the stylesheet states about elements a test adds itself (test/dom/style-checks.ts); closed when the test ends. */
+export async function stylesheetWindow(t: Hooks, reverts: Revert[] = []): Promise<DOMWindow> {
+  const dom = new JSDOM(await pageHtml(reverts));
+  t.after(() => dom.window.close());
+  return dom.window;
 }
 
 export interface PageOptions {

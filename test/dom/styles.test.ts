@@ -31,7 +31,7 @@ test("code blocks are set in Monaco at 13.5px, inner code included", async t => 
   none(await on(t, board, [], async bp => checkCodeFont(bp, await oracle(board.store))));
   await t.test("the code element falls back to the inline-code font", () => reported(t, board, [css("the code in a block no longer inherits", ".rich pre.code code { font: inherit;", ".rich pre.code code {")], "code-font", async bp => checkCodeFont(bp, await oracle(board.store))));
   await t.test("the block loses Monaco", () => reported(t, board, [css("the block's font", "font-family: Monaco, var(--font-mono); font-size: 13.5px;", "font-size: 13.5px;")], "code-font", async bp => checkCodeFont(bp, await oracle(board.store))));
-  await t.test("the block's size changes", () => reported(t, board, [css("the block's size", "font-family: Monaco, var(--font-mono); font-size: 13.5px;", "font-family: Monaco, var(--font-mono); font-size: 12px;")], "code-font", async bp => checkCodeFont(bp, await oracle(board.store))));
+  await t.test("the block's size changes", () => reported(t, board, [css("the block's size", "font-family: Monaco, var(--font-mono); font-size: 13.5px;", "font-family: Monaco, var(--font-mono); font-size: 12.5px;")], "code-font", async bp => checkCodeFont(bp, await oracle(board.store))));
 });
 
 test("tag chips read at 4.5:1 or more in the light theme and in both dark-theme blocks", async t => {

@@ -1,0 +1,97 @@
+name: tmp-witness
+# Temporary: delete before the last full CI, which fails while this file exists. Item ci-script-witness.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-witness-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+  # Each file the change adds or edits, alone on a runner with the flags of a CI shard, so its time is its own.
+  file:
+    name: ${{ matrix.file }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - test/dom/witnesses-1.test.ts
+          - test/dom/witnesses-2.test.ts
+          - test/dom/witnesses-3.test.ts
+          - test/dom/changed-blocks.test.ts
+          - test/dom/width-caps-1.test.ts
+          - test/dom/width-caps-2.test.ts
+          - test/dom/agents.test.ts
+          - test/dom/styles.test.ts
+          - test/web.test.ts
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          timeout 60 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            ${{ matrix.file }}
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+  # The other files of the DOM layer, which share test/dom/page.ts and checks.ts with the files above.
+  rest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            test/dom/agents-spoiled-1.test.ts test/dom/agents-spoiled-2.test.ts test/dom/mermaid-page.test.ts test/dom/mermaid-view.test.ts \
+            test/dom/messages.test.ts test/dom/page-cards.test.ts test/dom/page-filters-after.test.ts test/dom/page-filters-fresh.test.ts \
+            test/dom/page-numbers.test.ts test/dom/page-plan.test.ts test/dom/page-tree.test.ts test/dom/whole.test.ts
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+  # The browser witnesses that stay (test/e2e/regressions.e2e.ts) and the update checks that use the same variant code.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: playwright
+        run: echo "version=$(node -p "require('./package.json').devDependencies.playwright")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --only-shell chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - run: node --test test/e2e/regressions.e2e.ts test/e2e/update.e2e.ts
