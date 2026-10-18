@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
+import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -854,4 +854,107 @@ test("whether an owned item's turn has come does not depend on which item was as
   const zFirst = rules(build());
   assert.deepEqual([idFirst.statusOf("z"), zFirst.statusOf("z")], ["todo", "todo"]);
   assert.deepEqual([idFirst.progress("z").behind, zFirst.progress("z").behind], [false, false]);
+});
+
+// The big steps of an engineer's plan (the engineer rules, The plan's stages): rows whose id names a stage. The acceptance
+// step of these fixtures has its own id, since `accept` is the stage's id, and only a row without the acceptance mark is one.
+const tests = (state: PlanStep["state"] = "todo") => step("tests", state, { accept: true, text: "Checks pass" });
+const stageLabel = (r: ReturnType<typeof rules>, id: string) => r.stages(id)?.current?.label;
+
+test("a plan with research and impl rows counts only its stage rows for the progress share and the count", () => {
+  const s = snapshot({ a: {}, sub: {} }, { q: { item: "a" } });
+  // Three detail rows done, then research done, impl in progress, an owned sub-item and a card (neither a stage), the rest todo.
+  s.items.a!.plan = [step("d1", "done"), step("d2", "done"), step("d3", "done"), step("research", "done"), own("sub"), card("q"), step("impl", "doing"), step("ci"), tests(), step("accept"), step("merge")];
+  const r = rules(s);
+  assert.deepEqual(r.stages("a"), { done: 1, total: 5, share: 1.5 / 5, current: { id: "impl", kind: "impl", round: 1, label: "实现" } }, "research whole, impl half, of five stages");
+  assert.equal(r.progressShare("a"), 1.5 / 5, "the band follows the stages, not the 11 rows");
+  assert.deepEqual(r.planRatio("a"), { done: 4, total: 11 }, "the plan ratio still counts every row");
+  // A dropped stage leaves the count; so does a stage row of a finished round.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "dropped"), tests(), step("accept"), step("merge")];
+  assert.deepEqual(rules(s).stages("a"), { done: 2, total: 4, share: 0.5, current: { id: "accept", kind: "accept", round: 1, label: "验收" } }, "a dropped stage is not counted");
+});
+
+test("the current stage is the first one in progress, else the first not done, and a round after the first shows its number", () => {
+  const s = snapshot({ a: {} });
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "doing"), tests(), step("accept"), step("merge")];
+  assert.equal(stageLabel(rules(s), "a"), "完整 CI", "the stage in progress");
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci"), tests(), step("accept"), step("merge")];
+  assert.equal(stageLabel(rules(s), "a"), "完整 CI", "none in progress: the first not done");
+  // The full CI went red: the old rows are settled and a second round of implementation and CI follows them.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), tests(), step("accept", "dropped"), step("merge", "dropped"), step("impl-2", "doing"), step("ci-2")];
+  assert.deepEqual(rules(s).stages("a")?.current, { id: "impl-2", kind: "impl", round: 2, label: "实现·2" });
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), tests("done"), step("accept", "done"), step("merge", "done"), step("verify", "done")];
+  assert.equal(rules(s).stages("a")?.current, undefined, "every stage done: no current stage");
+  assert.equal(rules(s).stages("a")?.share, 1);
+});
+
+test("a plan is read by stages only when it has a research row and an impl row, and the acceptance step is never a stage", () => {
+  const s = snapshot({ a: {} });
+  const share = () => rules(s).progressShare("a");
+  // Older plans use these ids for ordinary rows: they keep counting every row.
+  s.items.a!.plan = [step("work", "done"), step("merge"), accept()];
+  assert.equal(rules(s).stages("a"), undefined, "a merge row alone");
+  assert.equal(share(), 1 / 3);
+  s.items.a!.plan = [step("impl", "done"), step("merge"), accept()];
+  assert.equal(rules(s).stages("a"), undefined, "impl and merge without research");
+  assert.equal(share(), 1 / 3);
+  s.items.a!.plan = [step("research", "done"), step("work", "done"), accept()];
+  assert.equal(rules(s).stages("a"), undefined, "research without impl");
+  // The mark makes `accept` the acceptance step, which is not the stage of that id.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), accept()];
+  assert.deepEqual(rules(s).stages("a"), { done: 2, total: 2, share: 1, current: undefined });
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), tests(), step("accept")];
+  assert.equal(rules(s).stages("a")?.total, 3);
+  // Ids that only look like stages are not: a round must be 2 or more, and the id must be the whole of it.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("impl-1"), step("implement"), step("impl-02"), tests()];
+  assert.equal(rules(s).stages("a")?.total, 2);
+});
+
+const held = (fields: Partial<Item> = {}): Partial<Item> => ({ dispatches: [{ agentId: "id-eng", agent: "eng", role: "工程师", level: 2, model: "Sonnet", started: T1 }], ...fields });
+const formatCheck = (s: Snapshot, id: string) => rules(s).checks(id).find(c => c.label === STAGE_FORMAT_LABEL)?.text;
+const goodStages = () => [step("research", "done"), step("impl", "doing"), step("ci"), tests(), step("accept"), step("merge")];
+
+test("an item an engineer holds is flagged when its plan lacks a stage or has the stages out of order", () => {
+  const s = snapshot({ a: held(), loose: held(), free: {} });
+  s.items.a!.plan = goodStages();
+  assert.equal(formatCheck(s, "a"), undefined, "all stages, in order: no flag");
+  // A plan without the big steps at all.
+  s.items.loose!.plan = [step("write", "doing"), accept()];
+  assert.match(formatCheck(s, "loose")!, /research.*impl.*accept/s, "it names the missing stages");
+  s.items.free!.plan = [step("write", "doing"), accept()];
+  assert.equal(formatCheck(s, "free"), undefined, "an item nobody holds is not checked");
+  // One of the three that every plan has is missing.
+  s.items.a!.plan = [step("research", "done"), step("impl", "doing"), tests()];
+  assert.match(formatCheck(s, "a")!, /缺 accept/);
+  assert.doesNotMatch(formatCheck(s, "a")!, /验收标记/);
+  // An acceptance step that took the stage's id is one row where the plan needs two.
+  s.items.a!.plan = [step("research", "done"), step("impl", "doing"), accept()];
+  assert.match(formatCheck(s, "a")!, /缺 accept.*验收标记/s, "and says the acceptance step and the stage are two rows");
+  s.items.a!.plan = [step("impl", "doing"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /缺 research/);
+  s.items.a!.plan = [step("research", "done"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /缺 impl/);
+  // The first rows of the stages must follow the flow.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), step("merge"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /merge.*accept/s, "merge before accept");
+  s.items.a!.plan = [step("impl", "doing"), step("research", "done"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /impl.*research/s, "impl before research");
+  // A later round comes after the earlier one of its stage, and may follow any stage of the first round.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), tests(), step("accept", "dropped"), step("merge", "dropped"), step("impl-2", "doing"), step("ci-2"), step("accept-2"), step("merge-2")];
+  assert.equal(formatCheck(s, "a"), undefined, "going back appends a round and breaks no order");
+  s.items.a!.plan = [step("research", "done"), step("impl-2"), step("impl", "done"), step("ci", "done"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /impl-2.*impl/s, "a second round before the first");
+});
+
+test("the format check reads who holds the item: an open engineer dispatch or a runner report that is not done", () => {
+  const plan = [step("write", "doing"), accept()];
+  const runner = (state: "running" | "done") => ({ state, since: T1, at: T1, started: T1 });
+  const s = snapshot({
+    dispatch: held({ plan }), ended: held({ plan, dispatches: [{ agentId: "id-eng", agent: "eng", role: "工程师", level: 2, model: "Sonnet", started: T1, finish: { ended: T2, result: "一次通过", reports: 0, kickbacks: 0, signals: [], usage: { input: 1, cacheWrite: 0, cacheRead: 0, output: 1 }, cost: 0 } }] }),
+    review: held({ plan, dispatches: [{ agentId: "id-rev", agent: "rev", role: "审查", level: 2, model: "Sonnet", started: T1 }] }),
+    running: { plan, runner: runner("running") }, finished: { plan, runner: runner("done") }, plain: { plan },
+    done: held({ plan: [step("write", "done"), accept("done")] }),
+  });
+  const flagged = Object.keys(s.items).filter(id => formatCheck(s, id) !== undefined).sort();
+  assert.deepEqual(flagged, ["dispatch", "running"], "a finished dispatch, a reviewer, a finished runner report and a finished item are not held");
 });

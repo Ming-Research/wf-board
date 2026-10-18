@@ -1412,6 +1412,7 @@ write-time refusals in the last column still apply to it:
 | 无人推进 (stalled, above) | no |
 | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
+| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1532,6 +1533,30 @@ Both colour pairs keep the text tokens at 4.5:1 or more against both ends of
 the band, in both themes; the values were computed from the tokens, not
 measured in a browser. The owner asked for this on the board, so the left list
 shows how far each open item is without opening it.
+
+A plan an engineer wrote by the engineer rules (The plan's stages) is read by
+its stages, so the share and the count say how far the item is in the flow and
+items written with different numbers of detail rows can be compared. A stage
+row is a step without the acceptance mark whose id is `research`, `impl`, `ci`,
+`accept`, `merge` or `verify`, with `-2` and up for the round that going back
+appends (`impl-2`). `Rules.stages` gives the plan's stages only when it has
+both a `research` and an `impl` row, because older plans use `merge`, `impl`
+and `accept` for ordinary rows: the live board, read on 2026-10-18, held many
+open items with a `merge` row and no other stage id, and `accept` is the id of
+the acceptance step in nearly every item, which is why a step with the mark is
+never a stage. Without both rows the plan keeps counting every row, as above. For a plan
+read by stages, `Rules.progressShare` and the count on a tree row without a
+band count only the stage rows, with the same weights (done 1, in progress ½)
+and the dropped ones left out; detail rows, sub-item rows and cards do not move
+them. The stage ids and names are the engineer rules' own (研究, 实现, 完整 CI,
+验收, 合入, 线上验证) and `review` is not among them, as this version has no
+review. The tree row also shows the name of the stage the item is at as a small
+muted tag, `实现·2` from the second round on: the first stage in progress,
+else the first not done, none when every stage is done and none on a finished
+or cancelled item. The detail column and the agent list keep the count of all
+rows, and the plan lists every row. When going back appends a round, the
+stages of the earlier round that were not reached stay in the plan until the
+engineer drops them, so a share can fall when a round is added.
 
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
@@ -1712,8 +1737,8 @@ where the design reaches it.
   nothing deletes one. Cancelling an item withdraws its open cards in the
   same commit, marked `withdrawnWithItem`; reopening the item restores those
   marked cards to open, and leaves a card withdrawn by hand withdrawn.
-- **Legacy text.** Cards converted from the earlier form (see
-  [Card conversion](#card-conversion)) keep their old `background` in
+- **Legacy text.** Cards converted from the earlier form (by the one-time card
+  migration, removed once it ran on the live board) keep their old `background` in
   `legacy`, shown in a fold titled 原卡的背景. Nothing writes `legacy` again,
   and search covers it. An open card's fold starts open, because its reader
   decides from the background; a closed card's starts folded. Their options
@@ -2345,9 +2370,9 @@ If a later change joins a pending read's step, that combined step waits for
 the server's read result to separate its later unread changes.
 
 In a comment, typing `#` opens a small popup of the items and decision cards
-whose title contains the text typed after it (ignoring case; up to eight
-shown). When the text is a number, the item or card holding that number
-comes first, then titles containing those digits. Up and down choose, Enter or a click writes a reference token over
+whose title or key contains the text typed after it (ignoring case; up to eight
+shown). A key equal to the text comes first, and so does the item or card holding that
+number when the text is a number; the other matches follow in board order. Up and down choose, Enter or a click writes a reference token over
 `#…`, and Esc closes only the popup. A `#` glued to a word before it, as in
 `Repo#341`, starts nothing. The token is `[[it:<key>]]` for an item and
 `[[q:<key>]]` for a decision card: the prefix is there because an item and a
@@ -2365,9 +2390,9 @@ or goes, and any item, decision card, note or the board goal refers to it, the
 page renders again.
 
 `/` anywhere except while typing in a text field opens a search box over every
-item and decision card by title, matched as in the popup (ignoring case,
+item and decision card by title or key, matched as in the popup (ignoring case,
 substring, any language; `812` or `#812` puts that number's item or card
-first), done and cancelled ones included. A row shows the
+first, and so does a key equal to the text), done and cancelled ones included. A row shows the
 status, the title, the project and the owner item (a card's holding item). Up
 and down choose, Enter or a click goes there as for a reference, and Esc or a
 click outside closes it.
@@ -2504,9 +2529,27 @@ first meets a block, so a page that shows no diagram never fetches it and the
 main bundle does not carry it. The library runs with `securityLevel: "strict"`:
 board text is written by agents, and strict makes the text of a diagram plain
 text and leaves out the click handlers that call functions of the page. A drawn
-diagram stands in for its code (the code stays in the page, hidden). The library draws with its
-own spacing and layout, and the settings a diagram brings in a frontmatter block at its start win over
-the page's, as they do wherever mermaid is used: the page does not strip them. Its width on the page
+diagram stands in for its code (the code stays in the page, hidden). The page asks the library
+for a compact drawing: the classic look (the default look writes a larger padding into every box and draws a
+decision as a hexagon about 95 px high), 8 px of padding in a box, and 20 px between boxes and between layers
+(`flowchart.nodeSpacing` and `flowchart.rankSpacing`). ELK, the layout the library draws flowcharts and the
+state, class and ER diagrams with, does not read those two settings, only dagre does: the library writes
+its own gaps into the graph it hands ELK, 40 px between boxes and layers at the top, and in a subgraph 50 px
+between boxes and a 30 px straight run before an arrow. The bundled entry (`web/mermaid-entry.ts`) therefore
+wraps the call that hands the graph to ELK (`layout` of elkjs, which the library calls once for each diagram).
+The wrapper reads the two settings from the configuration in force for that diagram, which is the
+page's with the diagram's own frontmatter over it, and sets them as ELK's gaps between boxes and between layers
+on the graph and on every subgraph in it; the library's own unscoped name for a subgraph's gap between boxes is
+removed, since ELK reads both names as one option and the two values would compete. It also keeps a straight
+run of 12 px before an arrowhead (a shorter one leaves the head on a bend; at a total gap of 12 the run was
+3 px) and 10 px between lines that run side by side. In the CI's browser the synthetic role chart goes from 3420 to 2406 px high (30% less) and a chart with three lanes from 2477 to 1657 px (33% less), every arrow still entering a box from above (other fonts give other sizes: the study measured 3214 to 2430 and 2443 to 1801). Dagre, which reads the settings, draws the role chart 12% shorter again (2124 px) but 10 of its 28 arrows enter a box from the side. The classic look alone saves 16% (3420 to 2868 px), and ELK's layering and edge-merging settings change the height by at most 4% and some widen the drawing. The
+wrapper reaches ELK because the library calls it through elkjs's `layout`; should the library move ELK into a
+web worker or leave elkjs, the wrapper stops acting, the gap between layers returns to 40 px and the
+browser check fails (the library would then be patched instead). The settings a diagram brings in a frontmatter
+block at its start win over the page's, as they do wherever mermaid is used: the page does not strip them,
+and a block that asks for 60 px gets 60. A state, class or ER diagram is drawn by ELK too and takes the same
+two settings of `flowchart`, not its own; a diagram that asks for `layout: dagre` keeps dagre, which reads them. A sequence diagram is not drawn by
+ELK and keeps its own spacing. Its width on the page
 is the smaller of its own width and the width of the text, times the zoom, set in CSS from the
 width of the drawing: a diagram wider than the text is shrunk to it and never enlarged by fitting,
 nothing is measured by script, and the page never scrolls sideways. The height follows the width; a tall
@@ -4089,19 +4132,12 @@ Every work item has an acceptance step from phase 1 on, so 没有计划：至少
 
 ### Clearing the retired difficulty level
 
-`npm run migrate:architect-level -- --data DIR` clears the retired level
-`architect` (「架构师做」, section 5, Difficulty) from the item files that hold
-it. It runs offline, with the daemon stopped or on a copy: the board refuses to
-start on a file that holds the level, and `Store.open(dir, { clearArchitectLevel:
-true })`, which the command calls, reads those files without it and writes one
-commit, `clear_architect_level N items`, in which each such item has no
-difficulty and one more log line, `难度：架构师做 → 未评，理由：迁移：…`. The
-commit is bookkeeping for the owner: unread shows nothing for it. Items cleared this way raise 缺难度 once they qualify
-(section 5, Difficulty) and are rated 1–5 by whoever may rate them. A second run
-writes nothing. The command, its module, its test, the npm script and the start
-option are deleted after the run on the live board; what stays is the omission of
-the value from old versions in historical comparison, and unread's reading of
-the clearing as bookkeeping.
+The board refuses to start on an item file that holds the retired level
+`architect` (「架构师做」, section 5, Difficulty). The one-time clearing ran on
+the live board, in one commit, `clear_architect_level N items`, which left
+each such item unrated with one more log line. The command that wrote that
+commit is removed. What stays is the omission of the value from old versions in
+historical comparison, and unread's reading of the clearing as bookkeeping.
 
 ### Clearing the retired priority
 
@@ -4115,18 +4151,17 @@ only make the deploy job roll back) and prints the report to its log: the totals
 by value, then one line per item with its key, project and the value it held.
 The commit sets no `updated` and adds no log line to the items, so no item looks
 changed. The value each item held stays in git history, as the lines the commit
-removed, and in that report. `npm run migrate:priority -- --data DIR` does the
-same offline on a copy of the data and prints the same report, which is how the
-run is rehearsed before the live one.
+removed, and in that report. The offline command that did the same on a copy is
+removed; the live run is the one that counts.
 
 The commit is bookkeeping, not work on the items: historical comparison omits the
 field from old versions, so unread shows nothing for it, and activity and the
 timed wake leave the commit out, so no item's last-change time or no-progress
 clock restarts and the wake lists nothing it wrote. A second start writes
-nothing. The command, its module, its test, the npm script, the start option, the
+nothing. The command and its test are removed. The module, the start option, the
 daemon's use of it, the two checks that leave the commit out of activity and the
 timed wake, and the transaction flag (`rewrite`) that lets it write unchanged
-documents are deleted after the run on the live board; what stays is the
+documents stay until a later cleanup removes them; what stays for good is the
 omission of the field from old versions in historical comparison.
 
 ### Owner-wide rules to change
@@ -4171,54 +4206,6 @@ the board.
     grow while a project rewrites. Proceeding on: accept it; the owner can
     read a project at a time with the 进展 filter. Alternative: author phase
     2 moves as not unread, which would hide real structural changes.
-
-### Card conversion
-
-The card shape of section 5 (Decision cards) replaces cards whose option text
-was long, whose background, confidence and ruling were text of the same kind,
-and plans that named cards of other items. `npm run migrate:cards -- --data
-DIR [--apply]` converts a data directory in one commit, `Migrate decision cards
-into item plans`. It is a one-time offline command, not a startup step: it
-reads the raw files (the current schemas refuse the old cards), prints a
-report without `--apply`, and with `--apply` writes only when the working tree
-is clean, the daemon is stopped and the report has no error. A commit with this
-message is not work on the items: activity and the owner's unread list skip
-it, as they skip the numbering commit. The command is deleted once it has run
-on the live board.
-
-- Each card keeps `item`, `question`, `status`, `blocks`, `choice`, `ruledAt`,
-  `confidence`, `ruling`, `num` and times. Each option's text becomes its
-  `detail` and its name stays empty. The old `background` moves to `legacy`;
-  `order` is dropped. A status other than open and ruled is an error.
-- An open card whose owner pick was already sent closes with that pick and the
-  send time as `ruledAt`.
-- Only a card that blocks has a row. An open blocking card with no row gets
-  one before the first acceptance step, which then also waits for it. An open
-  card that has a row but no `blocks` becomes a blocking card: in the old plans
-  a card's row made the step after it wait, so `blocks` names that step (the row
-  waiting for the card, else the row after it; a step's text, an item's title or
-  a card's question) and the row stays. No item changes status because of it,
-  and the report lists these cards. A closed card keeps the row it has and gets
-  none: the row records the step that once waited for it.
-- A row for a card of another item is dropped (an open one is an error: place
-  it by hand). Every such card was ruled, so the row was resolved. Each
-  affected item's log gets one entry naming the card and what was chosen. A
-  dropped id is removed from later rows' `after`, and a row that implicitly
-  followed a dropped row gets `after: []`, so it was ready before and stays ready.
-- The head of every item with cards the head does not place gets a section at
-  its end, before its first 参考 section: the bold line **以前的决定**, then
-  one line `[[q:key]]` per card, in the order the cards were written, so the
-  converted cards show in the body without the reader having to ask for them.
-  A card the head already places keeps its line and is not listed again.
-- The report lists every item whose status or ready rows differ
-  between the board before and after, both read with the same current rules,
-  and prints the text of one section it added. The expected differences are an
-  item that waits on an open blocking card it never named (that card now has its
-  row) and an item whose answered card now closes; anything else is a fault in
-  the conversion.
-- Open cards the head does not place are placed by the section above, so the
-  conversion raises no 卡没标位置. Cards written afterwards are placed by the
-  head that asks the question.
 
 ## 11. Testing
 
@@ -4389,7 +4376,8 @@ the diagram's frame with its items in order, the hint at the right and the frame
 it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand, a
 shade at the edge with more) and the toolbar and the bar read in both color schemes; a
 view survives a live update that leaves the source alone and a changed source starts
-at the default size. The stand-in is what the page depends on of the library and nothing
+at the default size; the page configures the library for a compact drawing (the classic look,
+padding 8, gaps of 20). The stand-in is what the page depends on of the library and nothing
 more: the same text gives the same drawing, its ids and their references begin with the id
 the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
 page's. The widths come from the model of the boxes, not from a layout; the model also
@@ -4407,7 +4395,17 @@ window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in t
 an enlarged diagram can be scrolled to both its ends (and two page variants where it cannot),
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
 a view and the page's scroll survive a live update (and a variant that draws the diagrams
-after the scroll is restored); labels and lines read in both color schemes. A diagram that never appears
+after the scroll is restored); labels and lines read in both color schemes. The compactness of a drawing
+has its own file, `test/e2e/mermaid-compact.e2e.ts`: a synthetic role chart (28 arrows, 2406 px high
+against the library's own 3420) and a synthetic chart with three lanes (17 arrows, 1657 px against
+2477) stay under 2500 and 1900 px high; their boxes are as far apart as the page asked, 20 px (60 px
+for a chart whose settings block asks for 60); no arrow enters a box from the side and each runs at
+least 6 px straight before its head; no edge label covers a box or another label and no line crosses
+a box that is not its end. The check runs on pages with one part taken out (the wrapper around ELK,
+the wrapper's reading of the diagram's gaps, the 12 px run, the page's configuration, and a page that
+asks for dagre), where it reports the height, the gap, the arrows from the side or a line through a box; and on
+hand-made drawings, one wrong in one way each, to show that the measurement sees a side entry,
+a short run, a label on a box, labels on each other, a line through a box, a gap and a height. A diagram that never appears
 can only be observed by waiting, so the wait is short, and the reported line must say what was
 waited for and what the page held, not a bare timeout or a page that did not start.
 
@@ -4454,15 +4452,18 @@ unread list and does not fetch the board.
 
 **Evidence.** Each check runs on the current page, where it must find
 nothing, and on the page with the thing it guards spoiled, where it must
-report it. In the DOM layer the spoiled page is the source text edited in
-memory as it is bundled (`test/e2e/variant.ts`): `test/dom/witnesses.ts`
-(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file (agents, messages, styles,
-mermaid) its own, each naming the reason it must fail for. In the browser layer
-`test/e2e/regressions.e2e.ts` runs the check on the page with a past fix
-reversed in a copy served from a temporary directory. A fix is reversed by
-undoing its commit's hunks, or, where later work rewrote the lines around it,
-by a targeted edit that removes just the fix. A witness whose edits no longer
-match the current file fails and is updated or retired on purpose.
+report it. The spoiled page is the source text edited as it is bundled
+(`test/e2e/variant.ts`), by a literal replacement that removes just the fix,
+so no test reads the repository's history. In the DOM layer `test/dom/witnesses.ts`
+(run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
+(agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
+naming the reason it must fail for; the fixes of the page's update run in the
+fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+because a window has no page reload. The browser layer keeps only the
+witnesses of facts that need a box, in `test/e2e/regressions.e2e.ts`: the
+right column's widths, a plan's card row squeezed by its pick, and the diagram
+fitted to its box. A witness whose edit no longer matches the current file
+fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
@@ -4482,9 +4483,7 @@ only the jobs it lists.
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
   skeleton, whose setup steps are those of the `test` and `e2e` jobs of
-  `ci.yml`: keep each step the selected tests need and drop the others (the
-  regression witnesses of `test/e2e/regressions.e2e.ts` read fix commits, so
-  a job that runs them needs `fetch-depth: 0`):
+  `ci.yml`: keep each step the selected tests need and drop the others:
 
   ```yaml
   name: tmp-quick
@@ -4513,8 +4512,6 @@ only the jobs it lists.
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
-          with:
-            fetch-depth: 0
         - uses: actions/setup-node@v5
           with:
             node-version: 24

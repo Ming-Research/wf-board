@@ -91,16 +91,14 @@ jobs:
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
         run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
-  # The owner's page in headless Chromium against the real server (test/e2e). The regression witnesses read fix
-  # commits, so the checkout carries history; the browser is cached by Playwright version. It takes about 11 minutes, so a
-  # run started by hand leaves it out unless the input `browser` is set; the main line and the nightly run always have it.
+  # The owner's page in headless Chromium against the real server (test/e2e); the browser is cached by Playwright version. It
+  # takes about 11 minutes, so a run started by hand leaves it out unless the input `browser` is set; the main line and the
+  # nightly run always have it.
   e2e:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.browser }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
