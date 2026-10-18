@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
-import { oracle, burst, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout } from "./invariants.ts";
+import { oracle, burst, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout, checkProgressBands } from "./invariants.ts";
 import type { Oracle } from "./invariants.ts";
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.slice(0, 60).join("\n"));
@@ -19,6 +19,7 @@ test("the owner's page lays out what its clicks lead to", { timeout: 10 * 60_000
   const families: Array<[string, (o: Oracle) => Promise<string[]>]> = [
     ["a plan's card rows keep their question link wide enough and a click brings the card into the pane", o => checkPlanCardLayout(bp, o, planItems(o))],
     ["a closed card shows only its line while folded, and what is under it once the line is clicked", o => checkCardFold(bp, o, cardSample(o))],
+    ["progress bands: as wide as the plan's share, in both colour schemes", o => checkProgressBands(bp, o)],
   ];
   for (const [name, run] of families) await t.test("fresh page: " + name, async () => {
     await bp.reset(openAll(board));

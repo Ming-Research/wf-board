@@ -36,6 +36,7 @@
   --todo-soft: #eceeed;
   --idle: #1f6590;
   --idle-soft: #e0eef7;
+  --prog-from: #fcefdc; --prog-to: #e7f4ea;
   --note-bg: #f6f8f7;
   --ask: #b3261e;
   --ask-soft: #fdeceb;
@@ -57,6 +58,7 @@
     --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140;
     --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
     --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
+    --prog-from: #4c3211; --prog-to: #1a3623;
     --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
     --amber: #f0c060; --amber-soft: #3a2d0a;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
@@ -68,6 +70,7 @@
   --accent: #5cc2b9; --accent-soft: #163633; --cur: #35281a; --bar-wip: #f5a524; --bar-done: #3fcf6a; --bar-idle: #5b9cc4; --bar-todo: #3f4a47; --bar-cancel: #5b6663; --bar-block: #a78bfa; --block: #b9a1fb; --block-soft: #2a2140;
   --wip: #f0a43c; --wip-soft: #33260f; --done: #7cc48c; --done-soft: #16291d;
   --idle: #7db8dc; --idle-soft: #16293a; --todo: #a3aeaa; --todo-soft: #222b29; --note-bg: #1d2625; --ask: #ff8a80; --ask-soft: #3d1a18; --blockwait: #c4a8ff; --blockwait-soft: #2a2140;
+  --prog-from: #4c3211; --prog-to: #1a3623;
   --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
   --amber: #f0c060; --amber-soft: #3a2d0a;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
@@ -333,6 +336,11 @@ h2 { font-family: var(--font-head); font-size: 19px; margin: 0; font-weight: 700
 .item.done .item-title { color: var(--muted); }
 .item.cur, .card.cur { background: var(--cur); }
 .item-row { display: flex; align-items: center; gap: 8px; }
+.item-row.tree-row { position: relative; isolation: isolate; }
+/* The band covers the first `--p` of the row; its gradient is sized to the whole row, so each colour sits where it does
+   across the full row and the rest of the row stays plain (docs/design.md, How the page shows a plan). */
+.progress-band { position: absolute; left: 0; top: 0; bottom: 0; z-index: -1; width: calc(var(--p) * 100%); background-image: linear-gradient(to right, var(--prog-from), var(--prog-to)); background-size: calc(100% / var(--p)) 100%; background-repeat: no-repeat; border-radius: 6px 0 0 6px; pointer-events: none; }
+.item.selected > .item-row > .progress-band, .item.cur > .item-row > .progress-band { opacity: 0.45; }
 .cbtn { font: inherit; font-size: 12px; color: var(--muted); background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 0 8px; cursor: pointer; flex: none; line-height: 1.8; }
 .cbtn.on { color: var(--fresh-ink); background: var(--fresh); border-color: var(--fresh); }
 .cbtns { display: flex; gap: 6px; flex: none; }

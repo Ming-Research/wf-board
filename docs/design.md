@@ -1411,6 +1411,27 @@ and 计划和进展 at the top of the detail says how far it is and what its row
 line under the title would say the same twice. An item that only waits for its turn in its
 owner's plan shows that in the owner's plan, not in its own detail.
 
+The left tree draws a band behind the row of each item whose status is wip or
+idle, from the row's left edge over the first `Rules.progressShare` of its
+width. The agent list (the sessions panel's unfolded items) draws none. The
+share is the sum of the weights of the plan rows that count, over the number of
+those rows, 0 when there are none. A row counts unless it is dropped (its
+`excluded` flag) or it is a cancelled sub-item, owned or shared, which is left
+out of the share and the denominator alike. Weights: a done row 1, a row in
+progress ½, a card decided or withdrawn 1 and open 0; a sub-item row weighs by
+its status: done 1, wip or idle ½, anything else 0; a record counts 1. The plan
+ratio shown on the detail column is unchanged: it still counts a shared
+cancelled row. The band's gradient runs from `--prog-from` to `--prog-to` across
+the full row width, so a short band shows only the start colour: the colour at
+any point of the band is the colour that point has in the whole row. Items of
+other statuses draw no band. A tree row that draws a band shows no `done/total`
+count, since the band already shows the share; the detail keeps its ratio. A
+selected or current row keeps its highlight: its band is drawn at 45 % opacity.
+Both colour pairs keep the text tokens at 4.5:1 or more against both ends of
+the band, in both themes; the values were computed from the tokens, not
+measured in a browser. The owner asked for this on the board, so the left list
+shows how far each open item is without opening it.
+
 The status chip, the tree's left bar, the parent's counts, the status bar and
 the project's filter buttons all carry 停滞 as a status of its own: the filter
 reads "做完了一部分、现在没人在做的条目" and 未开始 reads "什么都还没做、也没人在做的条目".
@@ -1524,8 +1545,9 @@ At phone width (below 560 pixels) nothing changes structurally: rows already
 wrap; the chip and ratio of an owned row move to the second line, the group
 bracket narrows to 1 pixel, and the 16-pixel gutter stays so glyphs align.
 Unread changed rows carry the existing blue bar to the left of the gutter.
-The tree row of an item shows its plan ratio (`1/7`) where the steps ratio
-was; leaf counts count owned descendants that own no work items, by status.
+A tree row shows its plan ratio (`1/7`) where the steps ratio was, unless it
+draws a band (above); leaf counts count owned descendants that own no work
+items, by status.
 
 #### Decision cards
 
@@ -3950,8 +3972,9 @@ while a burst of writes lands on other items before each family (new waits
 on the first item in board order, progress, log lines, a ruling, replies, a
 new item), so incremental re-renders happen in between. The families run in
 several files (`test/dom/page-*.test.ts`), each with a board and a page of its
-own and none longer than 40 seconds on a hosted runner, so the files can be
-dealt out to parallel jobs and run side by side.
+own and short enough to be dealt out to the shards (the longest of the layer's
+13 files takes 27 seconds on a hosted runner, all 13 together 220), so the files
+run side by side.
 
 Diagrams have their own file, `test/e2e/mermaid.e2e.ts`: a block in a head and one in a
 log are drawn, with Chinese labels; a block that does not parse shows its code and the
@@ -4017,9 +4040,9 @@ match the current file fails and is updated or retired on purpose.
 
 ### Fast checks while writing, and the full CI at the end
 
-The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `test`,
-`e2e` and `result`) takes about 12 minutes with its queue, and a change under
-way is pushed many times. A push to a pull request branch therefore does not
+The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
+`test` in 8 shards, `e2e` and `result`) takes about 12 minutes with its queue,
+all of it the browser tests, and a change under way is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
 and changes the test jobs and the job list in `needs` of `result`, which reads
 only the jobs it lists.
@@ -4071,7 +4094,7 @@ only the jobs it lists.
             cache: npm
         - run: npm ci
         # The browser steps of ci.yml's e2e job, from `id: playwright` through
-        # `install-deps`, unchanged.
+        # `playwright install`, unchanged.
         - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         - run: npm run build:web
         # The e2e cases the change touches, picked by test name.
@@ -4085,10 +4108,11 @@ only the jobs it lists.
   the pull request be marked ready; a later push needs a new run.
 - **The main line** runs the full CI on every push, as before.
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
-  `.github/workflows`. It runs in every full CI, ahead of the test jobs, so the
-  last run before a merge stops a temporary workflow that was not deleted
-  within seconds instead of after the tests, and the main line's own run stops
-  one that got in anyway. It costs the happy path about 10 seconds.
+  `.github/workflows`. It runs in every full CI beside the other jobs, so the
+  last run before a merge stops a temporary workflow that was not deleted, and
+  the main line's own run stops one that got in anyway. It once ran ahead of the
+  test jobs so as to fail within seconds; that put its ten seconds on the path of
+  every green run, which the time gate (below) counts.
 - **Status `full-ci`**: a run started by hand is attached to the head commit
   (`gh run list --commit` and the commit's check-run list show it), but it is
   not among the checks a pull request lists, which is what `gh pr checks`, the
@@ -4139,6 +4163,72 @@ request form would still turn green at once on the checks that did run.
 Starting the full CI by a pull request label: a label would have to be added
 and removed for each run, and any other label would start it too. Neither was
 tried; both are rejected on those grounds.
+
+### Sharding the script tests
+
+The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
+full CI as 8 shards, each in a job of its own, beside the type check, which is a
+job of its own too. One runner took 82 to 118 seconds for the suite, and the type
+check ahead of it added to that.
+
+**Decision**: `scripts/test-shard.ts` deals the files out, longest first, each to
+the shard with the least cost so far, instead of Node's `--test-shard`, because
+that one cuts the sorted list by position and the files take from 0.1 to 30
+seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
+a file is the seconds of its own entry in the runner's report, from the start of
+its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
+not the sum of the file's tests, which leaves out loading the file and its hooks:
+`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
+a new test file is run from its first push and never missed. The table is brought
+up to date from the table of seconds per file that every shard writes to its job
+summary and log (`scripts/test-times-reporter.ts`); the time gate names a shard
+that took more than 1.5 times the mean of the others as the sign. A shard lists
+its files longest first, which is the order the runner starts them in, three at a
+time.
+A shard's test step is cut at 45 seconds and a single test at 40
+(`--test-timeout`), so that a hung shard or test is named in the log of the red
+run and not only reported as a job that ran long.
+
+`test/ops.test.ts` is two files with the same tests (`ops.test.ts`, the writes,
+and `ops-roles.test.ts`, pause and who may write what), because one of its tests
+alone takes 7 seconds and the file about 28, which kept any shard above the others.
+
+**Measured** (hosted runners, 4 cores, 8 shards, the costs as above): the step
+`tests` of a shard took 12 to 26 seconds, the rest of its job (checkout, Node,
+`npm ci`, the build, the start and end of the job) 12 to 16, and a run from its
+start to the end of its last shard 40 to 45 seconds in 9 of 10 runs of one commit; in the tenth a shard waited 46 seconds for
+a runner (the others 3 to 5) and the run took 70. A shard takes about as long as
+the largest file it holds, and eight files take 13 to 20 seconds each when three
+share a runner, so the costs balance the sums but the floor is the largest file.
+Two settings were tried once each, and neither is worth keeping: 16 shards left
+the longest `tests` step at 20 seconds against 26 for the 8 of that run, and
+`--test-concurrency=6` was no faster than the default 3 (mean 18.9 against 19.4
+seconds over 8 shards). Both differences are inside the spread between runs. The
+next lever is splitting the largest files, as `ops.test.ts` was.
+
+**Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
+list of the files of each shard: a new test file would belong to no shard and
+nothing would run it, which the table with a default cost cannot do.
+
+### The time gate
+
+The last job of a full CI started by hand (`result`) reads the run's jobs through
+the Actions API (`scripts/ci-time-gate.ts`) and puts into the run's summary the
+seconds from the start of the run to the end of the job that ended last, a table
+with the wait, the run and the end of each job, and the table of the shards.
+Above 50 seconds the total is yellow, above 60 red (the target is a pull request
+checked within a minute of the push; two runs of one configuration differed by
+13%, so the target is a typical 50 seconds, which leaves the line 20% above).
+It starts from the start of the attempt, not from the creation of the run, so a
+rerun does not count the time before it.
+
+The gate is set to `TIME_GATE=report` in `ci.yml`: the browser tests still take
+minutes on every pull request, so the total is over the line every time and a red
+gate would say nothing. The item that moves them off the pull request's path sets
+`enforce`, and a total over the line then fails `result` and the status
+`full-ci`. The shard table reads the jobs named `test shard N` and their step
+`tests`; when it finds none, the summary says so, which shows a rename.
 
 ### Private content check
 
