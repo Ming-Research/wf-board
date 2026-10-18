@@ -218,7 +218,7 @@ const WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT: Revert[] = [
   { file: "web/app.ts", edit: "the wait for the rows around the target has no limit", find: "const timer = setTimeout(resolve, ms); void Promise.all", replace: "const timer = 0 as unknown as ReturnType<typeof setTimeout>; void Promise.all" },
 ];
 const FILTERS_COUNTED_EACH_DRAW: Revert[] = [
-  { file: "web/app.ts", edit: "the filter counts are made again at each draw", find: "  function invalidateView() { memo = {}; }", replace: "  function invalidateView() { memo = {}; dataMemo = {}; }" },
+  { file: "web/app.ts", edit: "the filter counts are made again at each draw", find: "  function invalidateView() { memo = {}; }", replace: "  function invalidateView() { memo = {}; dataMemo = {}; filterRecount = null; }" },
 ];
 const SLOW_DRAW: Revert[] = [
   { file: "web/app.ts", edit: "a draw takes 150 ms more", find: '    countEvent("board:render", [...scope].join(","));\n', replace: '    countEvent("board:render", [...scope].join(","));\n    for (const began = performance.now(); performance.now() - began < 150;) {}\n' },
