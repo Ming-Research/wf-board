@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Give every session name that starts with the architect's the architect's rights
+
+Nodes: responsibility/identities, wake/architect-stream
+
+Summary: The owner runs several architect sessions at once (the conversation, one that tidies old projects, one that works as the observer), but the board gave the architect's write rights to two names only, so an auxiliary session either took the conversation's pushes by writing under its name or wrote as an ordinary project author that cannot create items in other projects, retitle or write the architect's log. The rights now go to every session name that starts with the architect's name (spaces around it ignored), the pushes and the exclusion of the architect's own writes from its timed wake stay with the exact name, and a credential of another role under such a name and a dispatch for one are refused. The grounds and the refused alternatives are in the identities node; the derivation is in docs/design.md, section 8, The architect's sessions, and section 9.
+
 ## 2026-10-18 Keep the browser tests in one small file that runs after a merge
 
 Nodes: testing, testing/browser-file, testing/ci, testing/ci-shards, testing/ci-time-gate, testing/evidence

@@ -243,6 +243,8 @@ test("the architect's timed wake comes every hour with the items changed since t
   await op.appendLog({ author, session: "巡查", id: "area", text: "patrolled" });
   // A turn the runner started to answer an engineer is not the conversation: the conversation's architect did not write this and is told.
   await op.appendLog({ author: "Architect", session: "架构师轮次", id: "work", text: "answered the engineer" });
+  // The same for any other architect name: an observing architect's write is listed.
+  await op.appendLog({ author: "Architect", session: "架构师·观察", id: "arch", text: "noted a rule problem" });
   await api("/api/notes", { target: "q:choice", kind: "comment", text: "owner says" });
   const star = await agentSocket(t, url, ARCHITECT_SESSION);
   clock = T0 + HOUR - 1; t.mock.timers.tick(1000); await star.sync(); await setImmediate();
@@ -253,7 +255,7 @@ test("the architect's timed wake comes every hour with the items changed since t
   assert.deepEqual({ n: frame.n, at: frame.at, event: frame.event, since: frame.since }, { n: 1, at: iso(clock), event: "timed-architect", since: iso(T0) });
   assert.deepEqual(Object.keys(frame).sort(), ["at", "changed", "event", "line", "n", "since", "working"], "changes and a count, nothing else");
   const by = Object.fromEntries((frame.changed as Array<{ item: string; by: string[] }>).map(e => [e.item, e.by]));
-  assert.deepEqual(by, { area: ["巡查"], b: ["owner", "工程师"], other: ["工程师"], work: ["架构师轮次"] }, "another session's write and a turn's are listed; the architect's own writes are not why a or b is, and a is left out");
+  assert.deepEqual(by, { arch: ["架构师·观察"], area: ["巡查"], b: ["owner", "工程师"], other: ["工程师"], work: ["架构师轮次"] }, "another session's write and those of the architect's other names are listed; the architect's own writes are not why a or b is, and a is left out");
   assert.equal(frame.working, 2, "the items someone holds outside the Architect project: a step being done, or a live session");
   assert.deepEqual(wake.agent(ARCHITECT_SESSION).lastTimed, { at: iso(clock), head: store.snapshot().head });
   assert.deepEqual((await lines(architectFile)).filter(l => l.timed).at(-1), { timed: wake.agent(ARCHITECT_SESSION).lastTimed });

@@ -168,7 +168,7 @@ test("only the architect creates items, cancels or reopens them, changes a title
   const tag = { name: "新标签", meaning: "测试用" };
   const only = (what: string) => rx`^author: only ${what.startsWith("change the tag vocabulary") ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The item's own project, another project, and the Architect project with no session, another session or a near miss.
-  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "架构师x" }, { author: architect, session: "PMx" }, { author: architect, session: "PM" }];
+  const writers = [{ author }, { author: "Firn" }, { author, session: "架构师" }, { author, session: "PM" }, { author: architect }, { author: architect, session: "engineer" }, { author: architect, session: "x架构师" }, { author: architect, session: "PMx" }, { author: architect, session: "PM" }];
   const cases: Array<[() => Promise<unknown>, RegExp]> = [];
   for (const who of writers) cases.push(
     [() => op.createItem({ ...who, key: "made", group: who.author, title: "Made", accept: "Pass" }), only("create items")],
@@ -279,11 +279,45 @@ test("the architect's turns (author Architect, session 架构师轮次) write as
   const only = (what: string) => rx`^author: only ${what === "change the tag vocabulary" ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
   // The message is tested, not the error's text, which begins with the class name.
   const refused = (pattern: RegExp) => (e: unknown) => e instanceof OpError && pattern.test(e.message);
-  for (const who of [{ author: architect, session: "架构师轮次x" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架构师 轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }]) {
+  for (const who of [{ author: architect, session: "轮次" }, { author: architect, session: "x架构师轮次" }, { author: architect, session: "架 构师轮次" }, { author: author, session: "架构师轮次" }, { author: "Firn", session: "架构师轮次" }]) {
     await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), refused(only("create items")));
     await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), refused(only("pause or resume an item")));
     await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), refused(only("change the tag vocabulary")));
     if (who.author !== author) await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), refused(/item a belongs to project Whitefoot/));
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal((await store.log()).length, count);
+  }
+});
+
+test("every session name that starts with 架构师 (author Architect) writes as the architect does; one that only contains it, or another author, does not", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  const lastCommit = async () => (await store.log({ limit: 1 }))[0]!;
+  for (const [n, session] of ["架构师·观察", "架构师·整理", "架构师2", "架构师轮次x", " 架构师·观察 "].entries()) {
+    const who = { author: architect, session }, key = `made-by-${n}`;
+    // The architect's process rights over another project's items: create, rate, retitle, pause, cancel; and its log on an item.
+    await op.createItem({ ...who, key, group: "Firn", title: "Made for Firn", accept: "Pass" });
+    await op.setDifficulty({ ...who, id: key, difficulty: 3, reason: "Rated" });
+    await op.updateItem({ ...who, id: key, rev: store.snapshot().items[key]!.rev, title: "Retitled" });
+    assert.equal(store.snapshot().items[key]!.title, "Retitled");
+    await op.setPause({ ...who, id: "a", paused: true, reason: "Owner chose to wait" });
+    // The text differs for each round: the same session appending the same text again within minutes is taken for a retry and not made again.
+    await op.appendLog({ ...who, id: "a", text: `Written by ${session.trim()} (${n})` });
+    assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: `Written by ${session.trim()} (${n})` });
+    // What the board reserves for the architect alone.
+    // Limited to the item's own project: a tag for every project would be required on the next item made for Firn.
+    await op.setTag({ ...who, name: `标签${n}`, meaning: "测试用", projects: [author] });
+    await op.updateProject({ ...who, name: "Whitefoot", repo: "Org/Changed" });
+    await op.setStatus({ ...who, id: key, status: "cancelled", log: "Not needed" });
+    const commit = await lastCommit();
+    assert.deepEqual([commit.author, commit.session], [architect, session.trim()], "the commit names Architect and the trimmed session, which tells the architects apart");
+  }
+  const before = store.snapshot(), count = (await store.log()).length;
+  const only = (what: string) => rx`^author: only ${what === "change the tag vocabulary" ? ARCHITECT_WRITER : PROCESS_WRITERS} may ${what}`;
+  const refused = (pattern: RegExp) => (e: unknown) => e instanceof OpError && pattern.test(e.message);
+  for (const who of [{ author: architect, session: "x架构师" }, { author: architect, session: "第二个架构师·观察" }, { author: "Firn", session: "架构师·观察" }, { author: author, session: "架构师·整理" }]) {
+    await assert.rejects(op.createItem({ ...who, key: "refused", group: who.author, title: "Refused", accept: "Pass" }), refused(only("create items")));
+    await assert.rejects(op.setPause({ ...who, id: "a", paused: true, reason: "Wait" }), refused(only("pause or resume an item")));
+    await assert.rejects(op.setTag({ ...who, name: "另一个", meaning: "测试用" }), refused(only("change the tag vocabulary")));
     assert.deepEqual(store.snapshot(), before);
     assert.equal((await store.log()).length, count);
   }

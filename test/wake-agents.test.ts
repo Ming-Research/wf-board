@@ -314,6 +314,13 @@ test("an agent's tool call (the architect's too) carries its undelivered pushes 
   assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 2, "and none of it was recorded as delivered");
   assert.equal(await call({ session: ARCHITECT_SESSION }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(owedToConversation)}`, "the conversation's next call carries it");
   assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 3);
+  // So is every other name that starts with 「架构师」: the rights are shared, the conversation's pushes are not.
+  const owedAgain = wake.agent(ARCHITECT_SESSION).push("item-done", done("c7", "p"));
+  for (const session of ["架构师·观察", " 架构师·整理 ", "架构师2"]) assert.equal(await call({ session }), plain, `${session}: a call carries nothing of the architect's`);
+  const observer: Resolved = { ok: true, who: { author: "Architect", session: "架构师·观察", access: { role: "架构师", project: "Architect", roots: [] } } };
+  assert.equal(await call({ session: ARCHITECT_SESSION }, observer), plain, "the architect's role under such a name: whatever session the call names, the conversation's pushes stay");
+  assert.equal(wake.agent(ARCHITECT_SESSION).deliveredUpTo(), 3, "and none of it was recorded as delivered");
+  assert.equal(await call({ session: ARCHITECT_SESSION }), `${plain}\n\n${FOOTER_HEAD}\n${lineOf(owedAgain)}`, "the conversation's next call carries it");
 });
 
 test("an item becoming done tells the session holding each open item that waits on it, once, and nobody else, the architect included", async t => {
