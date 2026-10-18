@@ -138,15 +138,42 @@ test("each operation records its effects, author and single atomic commit", asyn
 
 test("stale item/card revisions summarize intervening changes and never overwrite", async t => {
   const { store, op } = await board(t, { sharedProjects: true });
-  await op.appendLog({ author, id: "a", text: "Concurrent evidence" });
+  // Someone else replaced the same field since the revision the writer read.
+  await op.updateItem({ ...asArchitect, id: "a", rev: 1, title: "Intervening title" });
   const before = store.snapshot();
-  await assert.rejects(op.updateItem({ ...asArchitect, id: "a", rev: 1, title: "Stale" }), /rev 1: current rev 2; \+1 log.*redo.*rev 2/);
+  await assert.rejects(op.updateItem({ ...asArchitect, id: "a", rev: 1, title: "Stale" }), /rev 1: current rev 2; title changed.*redo.*rev 2/);
   assert.deepEqual(store.snapshot(), before);
   const args = { author, key: "choice", item: "b", question: "Changed?", options: [opt("A")] };
   await op.writeCard({ confidence: conf, ...args, rev: 1 });
   const cardBefore = store.snapshot();
   await assert.rejects(op.writeCard({ confidence: conf, ...args, rev: 1 }), /current rev 2.*question changed/);
   assert.deepEqual(store.snapshot(), cardBefore);
+});
+
+test("a text write on a revision that is behind stands when no field it replaces has changed since, and the answer says what did", async t => {
+  const { store, op } = await board(t, { sharedProjects: true });
+  await op.appendLog({ author, id: "a", text: "Concurrent evidence" });
+  await op.setPlan({ author, id: "a", row: { id: "extra", text: "Extra step", state: "todo" } });
+  const behind = store.snapshot().items.a!.rev;
+  assert.equal(behind, 3, "the log line and the plan row each raised the revision");
+  const done = await op.updateItem({ author, id: "a", rev: 1, head: "New head", reason: "Rewritten" });
+  assert.match(done.note ?? "", /^rev 1 was behind \(current rev 3\): .+ since, and head did not change, so the edit was written$/);
+  assert.match(done.note!, /\+1 log/); assert.match(done.note!, /plan changed/);
+  const doc = store.snapshot().items.a!;
+  assert.equal(doc.head, "New head"); assert.equal(doc.rev, 4);
+  assert.ok(doc.log.some(entry => entry.text === "Concurrent evidence"), "the concurrent log line is kept");
+  assert.ok(doc.plan!.some(row => row.id === "extra"), "the concurrent plan row is kept");
+  // Another field of the same write is judged by itself: data was not touched since, so it stands on the old revision too.
+  await op.updateItem({ author, id: "a", rev: 1, data: "12 s" });
+  assert.equal(store.snapshot().items.a!.data, "12 s");
+  // The field changed since: refused, and nothing is overwritten.
+  const head = store.snapshot().items.a!.head, rev = store.snapshot().items.a!.rev;
+  await assert.rejects(op.updateItem({ author, id: "a", rev: 1, head: "Mine", reason: "Stale" }), /rev 1: current rev \d+; .*head changed.*redo.*rev \d+/);
+  assert.equal(store.snapshot().items.a!.head, head); assert.equal(store.snapshot().items.a!.rev, rev);
+  // Turning an item into a record changes its plan too, so it needs the revision to be the current one.
+  await assert.rejects(op.updateItem({ author, id: "a", rev: 1, record: true }), /rev 1: current rev \d+/);
+  // A revision that never existed is refused, as before.
+  await assert.rejects(op.updateItem({ author, id: "a", rev: rev + 9, head: "Never read", reason: "Future" }), /previous revision unavailable/);
 });
 
 test("concurrent appends across Ops instances and a genuine store conflict lose no entries", async t => {

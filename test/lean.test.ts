@@ -76,6 +76,27 @@ test("a mistake inside a plan row is placed at the row, and set_plan reads plan 
   assert.deepEqual(store.snapshot().items.a!.plan.map(row => row.id), ["s", "accept"]);
 });
 
+test("write_card and set_plan say in their descriptions how a call goes wrong, and a refused write_card shows a whole call", async t => {
+  const { client, text } = await connected(t), tools = (await client.listTools()).tools;
+  const tool = (name: string) => tools.find(tool => tool.name === name)!;
+  // A call whose JSON does not parse is refused by the client, so the board can only say beforehand what the shape is.
+  const card = tool("write_card").description!;
+  assert.ok(card.includes('options is an array of objects, [{"text": "A", "detail": "…"}'), card);
+  assert.ok(card.includes("each object ends with one } and the array with one ]"), card);
+  assert.ok(card.includes("the client then refuses it before the board sees it, with no position"), card);
+  assert.ok(card.includes('Write a double quote inside a text as \\" and a line break as \\n'), card);
+  const refused = text(await client.callTool({ name: "write_card", arguments: { author, not_a_parameter: 1 } }));
+  const example = JSON.parse(/^Example: write_card (.*)$/m.exec(refused)![1]!) as { options: Array<{ recommended?: boolean }>; confidence: { reason: string } };
+  assert.equal(example.options.length, 3, "the example is a card the board takes: three options");
+  assert.equal(example.options.filter(option => option.recommended).length, 1); assert.ok(example.confidence.reason);
+  // rows is the whole plan; a writer who means one row is told which parameter that is.
+  const plan = tool("set_plan").description!;
+  assert.ok(plan.includes("row upserts one row by its id (the way to change one row"), plan);
+  assert.ok(plan.includes("rows REPLACES THE WHOLE PLAN, so every row you leave out is deleted"), plan);
+  const rows = (tool("set_plan").inputSchema.properties!.rows as { description: string }).description;
+  assert.ok(rows.includes("every row not listed here is deleted") && rows.includes("To change one row send row"), rows);
+});
+
 // --- The head in sections -------------------------------------------------------------------------------------------
 
 const table = (rows: number) => ["| 做法 | 代价 | 风险 |", "|---|---|---|", ...Array.from({ length: rows }, (_, i) => `| 做法 ${i} | 要改 ${i} 处，每处都要重新跑一遍检查 | 回退很难 |`)].join("\n");

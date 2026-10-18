@@ -1,0 +1,32 @@
+name: tmp-quick
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # The test files the change touches; each one is its own step so a red one does not hide the others.
+      - run: node --test test/ops.test.ts
+        if: ${{ !cancelled() }}
+      - run: node --test test/budget.test.ts
+        if: ${{ !cancelled() }}
+      - run: node --test test/credentials.test.ts
+        if: ${{ !cancelled() }}
+      - run: node --test test/mcp.test.ts
+        if: ${{ !cancelled() }}
+      - run: node --test test/lean.test.ts
+        if: ${{ !cancelled() }}
+      - run: npm run check
+        if: ${{ !cancelled() }}

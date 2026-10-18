@@ -176,7 +176,9 @@ test("without a credential the board is read as before, and a write names its au
   assert.ok(!(await client.callTool({ name: "context", arguments: { id: "a" } })).isError);
   const refused = await client.callTool({ name: "append_log", arguments: { id: "a", text: "who am I" } });
   assert.equal(refused.isError, true);
-  assert.match(text(refused), /no credential, so it can only read the board/);
+  // The refusal says how to make the call work, and sends nobody to the PM for a credential the call does not need.
+  assert.match(text(refused), /author=<your project's name, from `projects`> and session=<your session's name>/);
+  assert.doesNotMatch(text(refused), /PM|credential for your session/);
   const old = await client.callTool({ name: "append_log", arguments: { author: "Whitefoot", session: "self-reported", id: "a", text: "the old way still works" } });
   assert.ok(!old.isError, text(old));
   assert.equal((await store.log({ limit: 1 }))[0]!.session, "self-reported");
