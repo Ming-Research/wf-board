@@ -8,6 +8,12 @@ Nodes: wake/routing
 
 Summary: A card ruled on the page reached only the architect, as the owner's note, and an engineer stopped on the card stayed stopped for two days because the ruling was not forwarded. The board now also pushes `card-ruled` to the session holding the card's item when an open card becomes ruled, by the page or by `rule_card`, and to no one when nobody holds the item; the grounds and the refused alternatives are in docs/design.md, section 8, A card ruled.
 
+## 2026-10-18 Tell the sessions that wait on an item when its merge row is done
+
+Nodes: wake/routing
+
+Summary: An engineer that waited for another item's pull request to merge learned of the merge only when the architect found it on a patrol, because the board pushed only when an item was wholly done, which is after its deploy and live check. The board now pushes `dep-merged` when a merge row turns done, to the session holding each open item with a shared row on it, and to the architect for one nobody holds; the grounds and the refused alternatives are in docs/design.md, section 8, A merge a waiter waits on.
+
 ## 2026-10-18 Test the page in a DOM library between the fake DOM and the browser
 
 Nodes: testing, testing/evidence, testing/press-n

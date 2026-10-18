@@ -359,8 +359,12 @@ export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRep
 }
 /** The PRs a step of item `id` is the merge row of: none unless it is a merge step (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
 export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
+  return mergePullsIn(s, s.items[id]?.head, step, repos);
+}
+/** The same for a step of an item whose head is `head`, which need not be the one the snapshot holds. */
+export function mergePullsIn(s: Snapshot, head: string | undefined, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
   if (!isOpenMergeStep(step)) return [];
-  const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(s.items[id]?.head), repos).map(prKey)));
+  const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(head), repos).map(prKey)));
   return named.filter(p => counted.has(prKey(p)));
 }
 export function prs(s: Snapshot, r: Rules, repo: string, number: number) {
