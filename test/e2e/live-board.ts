@@ -1,4 +1,4 @@
-// A generated board of the live board's weight, for the page's time limits (test/e2e/press-n.e2e.ts): about 1,600 items,
+// A generated board of the live board's weight, for the n-key lane (test/nkey): about 1,600 items,
 // 770 cards and 780 comments, heads padded until the snapshot is as heavy as the live board's (about 15 MB on the wire),
 // and hundreds of unread commits, so that n walks a long list. The generator's default board has 176 items; one press of
 // n there takes about a quarter of what it takes here, so it cannot show a page that is too slow for the real board.
@@ -10,8 +10,8 @@ import { rules } from "../../src/rules.ts";
 import { ownerOps } from "../../src/owner-ops.ts";
 import { generateBoard, prng } from "./board-gen.ts";
 import { seedBoard } from "./seed.ts";
-import { serveBoard, ROOT } from "./harness.ts";
-import type { BoardServer } from "./harness.ts";
+import { serveBoard, ROOT } from "./board-server.ts";
+import type { BoardServer } from "./board-server.ts";
 
 /** The generator's scale: 12 times its default of about 160 items per project set. */
 const SCALE = 12;

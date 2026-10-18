@@ -1,0 +1,45 @@
+name: tmp-nkey
+# TEMPORARY (item ci-script-nkey): the quick check of the n-key lane on the work branch. Removed before the pull request is ready.
+on:
+  push:
+    branches: [ci-script-nkey]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: node --test test/nkey/stats.test.ts
+  nkey:
+    name: nkey ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: same-disk, base: merge-base, tmp: "" }
+          - { name: same-shm, base: merge-base, tmp: /dev/shm }
+          - { name: changed-disk, base: older, tmp: "" }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Select the base page
+        run: |
+          if [ "${{ matrix.base }}" = older ]; then base=$(git rev-list --first-parent origin/main -n 40 | tail -1); else base=$(git merge-base origin/main HEAD); fi
+          echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$base"
+      - run: |
+          if [ -n "${{ matrix.tmp }}" ]; then export TMPDIR=${{ matrix.tmp }}; fi
+          npm run test:nkey

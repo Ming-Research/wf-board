@@ -46,12 +46,17 @@ export function pageScript(reverts: Revert[] = []): Promise<string> {
         });
       },
     };
-    // A window has no module loader for the page's `import("/mermaid.js")`: the bundle asks for the library through `require`
-    // instead, which the window answers (PageOptions.library). Nothing else of the page changes.
-    const out = await build({ stdin: { contents, resolveDir: join(ROOT, "web"), sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", supported: { "dynamic-import": false }, plugins: [plugin], write: false, logLevel: "silent" });
-    return out.outputFiles[0]!.text;
+    return bundleScript(contents, join(ROOT, "web"), [plugin]);
   })());
   return bundles.get(k)!;
+}
+/** The page's source text as the script of a window. A window has no module loader for the page's `import("/mermaid.js")`: the
+ * bundle asks for the library through `require` instead, which the window answers (PageOptions.library). Nothing else of the page
+ * changes. `dir` is the page directory its imports resolve from: a checkout of another commit, for a page to compare with
+ * (test/nkey). */
+export async function bundleScript(contents: string, dir: string, plugins: Plugin[] = []): Promise<string> {
+  const out = await build({ stdin: { contents, resolveDir: dir, sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", supported: { "dynamic-import": false }, plugins, nodePaths: [join(ROOT, "node_modules")], absWorkingDir: join(dir, ".."), write: false, logLevel: "silent" });
+  return out.outputFiles[0]!.text;
 }
 /** The page's HTML as `GET /` serves it for a page that does not know its version (it then never reloads itself). */
 export function pageHtml(reverts: Revert[] = []): Promise<string> {
@@ -60,11 +65,28 @@ export function pageHtml(reverts: Revert[] = []): Promise<string> {
   return pages.get(k)!;
 }
 
+/** Time the page's longer timers run on instead of real time, which a test moves (test/nkey/press.ts). */
+export interface Clock {
+  setTimeout(fn: () => void, ms: number): number;
+  clearTimeout(id: number): void;
+}
+
 export interface PageOptions {
   /** Viewer state written to localStorage before the page loads (values JSON-encoded unless strings). */
   storage?: Record<string, unknown>;
   /** The page with these fixes reversed. */
   reverts?: Revert[];
+  /** The page's script and HTML built elsewhere (the page of another commit); `reverts` then does not apply. */
+  page?: { script: string; html: string };
+  /** What answers the page's requests, given the absolute address and the request: the real server through Node's `fetch` when
+   * absent. A test answers from recordings, or holds an answer back (`hold`). */
+  fetch?: (url: URL, init: RequestInit | undefined, page: DomPage) => Promise<Response>;
+  /** `"manual"`: the event stream opens at once and carries only what `deliver` gives it, none of the server's events. */
+  stream?: "server" | "manual";
+  /** The page's timers longer than the short ones (SHORT_TIMER_MS) run on this clock instead of real time. */
+  clock?: Clock;
+  /** Told of every performance mark the page leaves, with the detail it gave. */
+  onMark?: (name: string, detail: unknown) => void;
   /** The colour scheme the page's media queries answer for. */
   scheme?: "light" | "dark";
   /** What the window answers when the page asks for the diagram library (`import("/mermaid.js")`), made for each window; a window
@@ -87,11 +109,14 @@ export class DomPage {
   private scheme: "light" | "dark" = "light";
   private schemeListeners: Array<() => unknown> = [];
   private inflight = 0;
+  /** Of the fetches in flight, those a test holds back itself: settle() does not wait for them. */
+  private held = 0;
   private frames = 0;
   private changeCount = 0;
   private pending = new Map<number, NodeJS.Timeout>();
   private timers = new Map<number, NodeJS.Timeout>();
   private streams = new Set<AbortController>();
+  private sources = new Set<{ deliver(kind: string, data: string): void }>();
   private stylesOfWindow: Styles | undefined;
   private options: PageOptions;
   private constructor(board: BoardServer, options: PageOptions) { this.board = board; this.options = options; }
@@ -114,7 +139,7 @@ export class DomPage {
     for (const timer of [...this.pending.values(), ...this.timers.values()]) clearTimeout(timer);
     this.pending.clear(); this.timers.clear(); this.frames = 0;
     for (const stream of this.streams) stream.abort();
-    this.streams.clear();
+    this.streams.clear(); this.sources.clear();
     this.win?.close();
   }
 
@@ -122,10 +147,10 @@ export class DomPage {
   async reset(storage: Record<string, unknown> = {}) {
     this.close();
     this.stylesOfWindow = undefined;
-    this.errors = []; this.marks = new Map(); this.inflight = 0; this.changeCount = 0;
+    this.errors = []; this.marks = new Map(); this.inflight = 0; this.held = 0; this.changeCount = 0;
     this.library = undefined; this.loads = []; this.scheme = this.options.scheme ?? "light"; this.schemeListeners = [];
     const { reverts = [] } = this.options;
-    const [html, script] = await Promise.all([pageHtml(reverts), pageScript(reverts)]);
+    const { html, script } = this.options.page ?? { html: await pageHtml(reverts), script: await pageScript(reverts) };
     // The window's own complaints about what it does not implement (a stylesheet it cannot parse, navigation) are not the page's.
     const virtualConsole = new VirtualConsole();
     virtualConsole.on("error", (...args: unknown[]) => { this.errors.push("console.error: " + args.map(String).join(" ")); });
@@ -145,20 +170,30 @@ export class DomPage {
     const win = this.win, board = this.board;
     const abs = (input: unknown) => new URL(typeof input === "string" ? input : (input as { url?: string }).url ?? String(input), board.url);
     // A fetch is in flight until its body has been read, so a test waits for the page to have what it asked for.
+    const { fetch: answer } = this.options;
     win.fetch = (input: unknown, init?: RequestInit) => {
       this.inflight++;
-      return fetch(abs(input), init).then(async response => { try { await response.clone().arrayBuffer(); } catch { /* aborted */ } return response; }).finally(() => { this.inflight--; });
+      return (answer ? answer(abs(input), init, this) : fetch(abs(input), init)).then(async response => { try { await response.clone().arrayBuffer(); } catch { /* aborted */ } return response; }).finally(() => { this.inflight--; });
     };
     // The event stream: `open` when the response starts, then the named events. A change event counts before the page sees it.
+    // A stream that is `manual` carries only what a test delivers.
     const page = this;
     win.EventSource = class {
       onopen: (() => unknown) | null = null; onerror: (() => unknown) | null = null;
       readyState = 0; url: string;
       private handlers = new Map<string, Array<(event: unknown) => unknown>>(); private controller = new AbortController();
-      constructor(url: string) { this.url = url; page.streams.add(this.controller); void this.run(); }
+      constructor(url: string) {
+        this.url = url; page.streams.add(this.controller); page.sources.add(this);
+        void (page.options.stream === "manual" ? this.open() : this.run());
+      }
       addEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, [...this.handlers.get(kind) ?? [], fn]); }
       removeEventListener(kind: string, fn: (event: unknown) => unknown) { this.handlers.set(kind, (this.handlers.get(kind) ?? []).filter(f => f !== fn)); }
-      close() { this.readyState = 2; this.controller.abort(); }
+      close() { this.readyState = 2; this.controller.abort(); page.sources.delete(this); }
+      deliver(kind: string, data: string) {
+        if (kind === "change") page.changeCount++;
+        for (const fn of this.handlers.get(kind) ?? []) fn({ data });
+      }
+      private async open() { await turn(); this.readyState = 1; void this.onopen?.(); }
       private async run() {
         try {
           const response = await fetch(abs(this.url), { signal: this.controller.signal, headers: { Accept: "text/event-stream" } });
@@ -170,8 +205,7 @@ export class DomPage {
               const block = buffer.slice(0, at); buffer = buffer.slice(at + 2);
               let kind = "message", data = "";
               for (const line of block.split("\n")) { if (line.startsWith("event:")) kind = line.slice(6).trim(); else if (line.startsWith("data:")) data += line.slice(5).trim(); }
-              if (kind === "change") page.changeCount++;
-              for (const fn of this.handlers.get(kind) ?? []) fn({ data });
+              this.deliver(kind, data);
             }
           }
         } catch { /* closed by the page or the test */ }
@@ -191,16 +225,26 @@ export class DomPage {
     // Short timers are the page's own bookkeeping (a fallback frame, a deferred call) that settle() waits for; longer ones are left to the window.
     const windowSetTimeout = win.setTimeout.bind(win), windowClearTimeout = win.clearTimeout.bind(win);
     let nextTimer = 1_000_000_000;
+    // A test's clock takes the longer timers; its ids and the window's do not meet.
+    const { clock } = this.options;
     win.setTimeout = (fn: unknown, ms = 0, ...args: unknown[]) => {
-      if (typeof fn !== "function" || ms > SHORT_TIMER_MS) return windowSetTimeout(fn as TimerHandler, ms, ...args);
+      if (typeof fn !== "function") return windowSetTimeout(fn as TimerHandler, ms, ...args);
+      if (ms > SHORT_TIMER_MS) return clock ? clock.setTimeout(() => guarded(fn as (...a: unknown[]) => unknown, ...args), ms) : windowSetTimeout(fn as TimerHandler, ms, ...args);
       const id = nextTimer++;
       this.timers.set(id, setTimeout(() => { this.timers.delete(id); guarded(fn as (...a: unknown[]) => unknown, ...args); }, ms));
       return id;
     };
-    win.clearTimeout = (id?: number) => { const timer = id === undefined ? undefined : this.timers.get(id); if (timer) { clearTimeout(timer); this.timers.delete(id!); } else windowClearTimeout(id); };
+    win.clearTimeout = (id?: number) => {
+      const timer = id === undefined ? undefined : this.timers.get(id);
+      if (timer) { clearTimeout(timer); this.timers.delete(id!); } else { windowClearTimeout(id); if (id !== undefined) clock?.clearTimeout(id); }
+    };
     // The page leaves performance marks for its tests; they are counted here by name and not kept.
     const perf = win.performance as Loose, mark = perf.mark?.bind(perf);
-    perf.mark = (name: string, ...rest: unknown[]) => { this.marks.set(name, (this.marks.get(name) ?? 0) + 1); return mark?.(name, ...rest); };
+    perf.mark = (name: string, ...rest: unknown[]) => {
+      this.marks.set(name, (this.marks.get(name) ?? 0) + 1);
+      this.options.onMark?.(name, (rest[0] as { detail?: unknown } | undefined)?.detail);
+      return mark?.(name, ...rest);
+    };
     perf.clearMarks = () => {};
     // A reader who prefers reduced motion: the page then moves at once instead of gliding.
     win.matchMedia = (query: string) => {
@@ -262,7 +306,7 @@ export class DomPage {
   }
   /** Waits until no fetch is in flight, no frame or short timer is waiting and the page drew nothing across two turns. */
   async settle() {
-    const busy = () => this.inflight > 0 || this.frames > 0 || this.timers.size > 0;
+    const busy = () => this.inflight > this.held || this.frames > 0 || this.timers.size > 0;
     for (let k = 0; k < 200; k++) {
       while (busy()) await turn();
       const before = this.draws;
@@ -270,6 +314,13 @@ export class DomPage {
       if (!busy() && this.draws === before) return;
     }
     throw new Error(`the page did not settle: ${this.inflight} fetches in flight, ${this.frames} frames and ${this.timers.size} timers waiting, ${this.draws} draws`);
+  }
+  /** Gives the page's event stream an event, as the server's stream would. */
+  deliver(kind: string, data: string) { for (const source of this.sources) source.deliver(kind, data); }
+  /** Waits for a promise a test releases itself (an answer held back on a clock); settle() does not wait for the fetch it holds up. */
+  async hold<T>(promise: Promise<T>): Promise<T> {
+    this.held++;
+    try { return await promise; } finally { this.held--; }
   }
   /** The change events the page's event stream delivered. */
   changes(): number { return this.changeCount; }
