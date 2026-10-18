@@ -3,7 +3,7 @@ import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
-import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
+import { rules, placedCardsOf, cardMarker, draftEditable, isPlainPick, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
 import type { ActivityDelta, PreviousRules, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { drawMermaid, watchMermaid } from "./mermaid.ts";
@@ -1484,7 +1484,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
     if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
     const label = n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + (n.choice || "") : undefined;
-    const canonical = n.kind === "explain" ? n.text === EXPLAIN : n.kind === "choice" ? n.text === "选 " + n.choice : n.kind === "approve" ? n.answerText === undefined || n.text === n.answerText : false;
+    const canonical = n.kind === "explain" ? n.text === EXPLAIN : n.kind === "choice" ? isPlainPick(n) : n.kind === "approve" ? n.answerText === undefined || n.text === n.answerText : false;
     box.appendChild(el("div", "txt", label === undefined ? linkTerms(blocks(n.text),terms) : esc(label) + (canonical || !n.text ? "" : '<div class="rich">' + linkTerms(blocks(n.text),terms) + "</div>")));
     if (n.reply) box.appendChild(el("div", "reply rich" + (replyFresh ? " newbar" : ""), '<div class="sub">Claude</div>' + linkTerms(blocks(n.reply),terms)));
     return box;

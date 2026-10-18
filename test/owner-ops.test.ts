@@ -513,8 +513,30 @@ test("sending a pick closes its card in the same commit with the chosen option a
   assert.deepEqual({ status: after.decisions.choice!.status, choice: after.decisions.choice!.choice, ruledAt: after.decisions.choice!.ruledAt, updated: after.decisions.choice!.updated }, { status: "ruled", choice: "B", ruledAt: sentAt, updated: sentAt });
   assert.deepEqual(after.decisions.choice!.options, before.decisions.choice!.options, "the options stay as written");
   assert.equal(after.notes[pick.id]!.sentAt, sentAt);
+  // The pick says nothing but the option, and the ruling handles it: nobody has to close it, and it is not waiting for anyone.
+  assert.equal(after.notes[pick.id]!.state, "done", "a plain pick is handled by the ruling in the same commit");
+  assert.equal(after.notes[comment.id]!.state, "sent", "a comment sent with it still waits for the architect");
+  assert.equal(after.notes[pick.id]!.reply, undefined, "the board writes no reply for it");
   assert.equal(rules(after).cardWaiting("choice"), false, "the card no longer waits");
   assert.equal(rules(after).planRows("b").find(row => row.row.id === "choice")!.state, "resolved", "its plan row is done");
+});
+
+test("a pick with the owner's words rules its card but stays sent for the architect to read", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const worded = await own.createNote({ target: "q:choice", kind: "choice", text: "选 B，但先把测试补上", choice: "B" });
+  await own.send();
+  const after = store.snapshot();
+  assert.deepEqual({ status: after.decisions.choice!.status, choice: after.decisions.choice!.choice }, { status: "ruled", choice: "B" }, "the pick rules the card whatever its text");
+  assert.equal(after.notes[worded.id]!.state, "sent", "the words are not handled by the ruling");
+  assert.equal(after.notes[worded.id]!.text, "选 B，但先把测试补上");
+});
+
+test("a pick whose text was emptied has no words either and is handled by the ruling", async t => {
+  const { store } = await board(t), own = ownerOps(store, () => later);
+  const empty = await own.createNote({ target: "q:choice", kind: "choice", text: "", choice: "A" });
+  await own.send();
+  assert.equal(store.snapshot().notes[empty.id]!.state, "done");
+  assert.equal(store.snapshot().decisions.choice!.status, "ruled");
 });
 
 test("a pick on a card that is no longer open is still sent and leaves the card as it was", async t => {
