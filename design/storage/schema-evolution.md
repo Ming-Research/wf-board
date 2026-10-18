@@ -1,0 +1,4 @@
+Decision: Schemas stay strict: live data that holds a field the schema does not know is refused at start with the schema's own error, a retired field leaves the data through a one-time migration that rewrites the files in a commit of its own, and a comparison with an older version drops exactly the named retired fields while any other unknown field still refuses that version, because nothing on the board may be read and silently discarded ([Data format](../../docs/design.md#5-data-format)), instead of discarding unknown fields on read; only the replay of history that derives activity and pauses reads old documents through a projection that takes project, record, pause and owned-target metadata and ignores the rest, because it compares nothing.
+
+Rejected:
+- Discarding unknown fields when reading: rejected because data would be read and silently discarded.

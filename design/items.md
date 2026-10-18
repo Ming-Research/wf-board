@@ -1,0 +1,12 @@
+Decision: The sessions that the PM or the architect starts are recorded as dispatch records on the subtree root item they were given, with the SHA-256 of the session's credential (kept until the dispatch ends), the measured usage and cost, and no document kind of their own, and the board holds no price table, because an item already has history, `changes`, retried writes and the project check, while a new document kind would change the store's reads and writes, the snapshot, the events and the page, and the price depends on each message's prompt length, which only the transcript shows ([Dispatch records](../docs/design.md#5-data-format)), instead of a new document kind for dispatches or a price table on the board.
+
+Decision: The board keeps one approved tag vocabulary in its own configuration, which only the architect changes after the owner approves on a card, and every item carries at least one tag from it that applies to its project once the vocabulary has one for the project, because the vocabulary is small board-level configuration under the same single-writer rule as the project list and a rename must change the vocabulary and the items in one commit, which one commit per operation already gives ([Tags](../docs/design.md#5-data-format)), instead of a document of its own for the vocabulary.
+
+Decision: A work item may carry a difficulty from 1 to 5 as a field of the item and not of a plan row, every change is logged with the old value, the new value and the reason, and whether an item can be started is defined once, because the unit that is dispatched to an agent is the item and changing the level changes who does the work ([Difficulty](../docs/design.md#5-data-format)), instead of a level written into the text of a plan row or a level table kept on the board.
+
+Rejected:
+- A new document kind for dispatch records: rejected because it would change the store's reads and writes, the snapshot, the events and the page's snapshot.
+- A price table on the board: rejected because the price depends on each message's prompt length, which only the transcript shows.
+- A separate document for the tag vocabulary: rejected because every rename or removal would also have to write that extra file in the same commit.
+- Difficulty written into the text of a plan row: rejected because the unit dispatched to an agent is the item, not a row.
+- A level table on the board: rejected because the rules map levels to agents, outside the board.

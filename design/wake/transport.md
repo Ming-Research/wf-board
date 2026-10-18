@@ -1,0 +1,5 @@
+Decision: Wake events are defined independently of transport and go over a local WebSocket that a small client reads under Claude Code's Monitor, restarted every 30 minutes and carried across the gap by event numbers, because plain MCP notifications do not start a turn in an idle session and Claude Code's channels are a research preview that the desktop app's sessions cannot load, so that a thin stdio channel that relays the stream can replace the Monitor later without changing the server ([Why not MCP push](../../docs/design.md#the-wake-streams)), instead of MCP server notifications or Claude Code channels. This is provisional and reopens when channels allow a custom channel in the sessions in use.
+
+Rejected:
+- Plain MCP server notifications: rejected because Claude Code does not start a turn in an idle session for them.
+- Claude Code channels: rejected because they are a research preview that the sessions of the desktop app cannot load, which reopens when channels allow a custom channel.

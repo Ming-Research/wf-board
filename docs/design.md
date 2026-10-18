@@ -185,7 +185,8 @@ minute from one session is not made, which the answer says. The other writes
 are refused or change nothing when repeated (a used key, a stale revision, an
 unchanged plan, a note already replied, an ended dispatch).
 
-**Stopping.** launchd sends SIGTERM and kills the process five seconds later.
+**Stopping.** launchd sends SIGTERM and kills the process five seconds later (the job's exit
+timeout: `launchctl print` on the job reports `exit timeout = 5`, and the plist sets none).
 The daemon uses well under that:
 
 1. From the signal on, the server accepts no new connection and answers every
@@ -211,10 +212,11 @@ A commit's automatic repack also runs in the foreground (see Storage). On
 wrote 5,000 new loose objects and triggered the repack took 345 to 793 ms (three
 runs; the same commit with the repack in the background took 25 to 103 ms). The
 study measured a manual repack of 1.3 to 2.2 thousand loose objects on CI at 1.4
-to 1.5 s. Not measured: the first repack of the live repository (4,986 loose
-objects), a repack that merges existing packs, and a repack that overlaps a push.
-After deployment the architect checks the slowest write in the service log
-against three seconds.
+to 1.5 s. The first repack of the live repository on 2026-10-16 held a write for
+5,672 ms, over the three-second line (item `data-repo-gc-timing-study`). The owner
+has ruled that the board turns git's automatic maintenance off and queues a
+maintenance step of its own after every 100 commits (item `e2e-git-tmp-flake`,
+not yet built); until then the repack stays in the foreground.
 
 **Time limits.** Every page request and every MCP tool call is timed at the one
 place each passes through: the request handler in `src/http.ts`, and `register` in
@@ -354,10 +356,10 @@ restart.
   (`src/deploy.ts`, the one place the list is defined): the daemon loads `src/`
   and the packages at its start and reads nothing else of the checkout but the
   page files, which it reads from disk on each request. The root's README.md,
-  LICENSE and AGENTS.md (exact paths) and the `.github/` directory are read by
-  no code the daemon runs, so they need no restart either. A path that only
-  starts with one of those names, such as `LICENSE.ts`, restarts. Any other
-  path restarts.
+  LICENSE, AGENTS.md, `.gitmodules` and Makefile (exact paths) and the `.github/`
+  and `design/` directories are read by no code the daemon runs, so they need no
+  restart either. A path that only starts with one of those names, such as
+  `LICENSE.ts`, restarts. Any other path restarts.
   A daemon that is down at the deploy is restarted whatever changed, since a
   deploy leaves the board up.
 - Pages open in the owner's browser are replaced after the deploy, and the job
@@ -417,7 +419,7 @@ restart.
   answer there, the owner is told on the Mac.
 - The checkout is not moved, and one `deployFailed` push per reason and commit
   says why, when it is on another branch, has local changes to tracked
-  files (untracked files do not count) or has a commit the main line lacks: the
+  files (untracked files and the files of a submodule do not count, since a merge that moves a submodule's pointer leaves them behind) or has a commit the main line lacks: the
   edit or commit is someone's, not the job's to move or undo.
 - The job asks the board to make the pushes through `POST /api/wake` (section 8). One the
   daemon did not take is kept in the job's state file, and sent first at the
@@ -520,6 +522,7 @@ wf-board-data/
   state/wake.jsonl        the PM's wake stream: events, receipts and marks (not a board document; excluded from git)
   state/wake/<hash>.jsonl  one agent's wake stream: its session name, events and how far they were delivered (same)
   state/github-watch.json   the time of the last look at GitHub (same)
+  state/liveness.json     the silences of the sessions that hold items, with the time of the last round (same; section 8, Liveness)
   state/ci-watch.json       what the look at the checks last saw of each pull request an open item names (same)
   import/                 the original artifact export, kept as provenance
 ```
@@ -679,7 +682,8 @@ log:
     have been). They are a different record and stay written by hand in the
     calibration item's log.
 - **Projects.** Every item stores its project in `group`; an item's project
-  never changes, and ownership never crosses projects, so the stored field and
+  changes only through `move_item_project`, which moves the item and everything it owns
+  together (section 6), and ownership never crosses projects, so the stored field and
   the ownership chain always agree. The legacy `area` was folded into
   `parent` at the artifact migration and `parent` into owned plan rows at the
   plan conversion (section 10).
@@ -776,7 +780,8 @@ log:
   decision card may carry `blocks`, one sentence naming the work that is
   stopped until the owner rules (for example `#398 合并停着`); a card with `blocks`
   is blocking, one without is not, and sessions proceed on its recommendation.
-  An item's `ask` is always blocking. `src/rules.ts` derives the predicates:
+  A legacy `ask` still on an item is always blocking; no tool sets one, and `clear_ask`
+  removes it. `src/rules.ts` derives the predicates:
   `cardBlocking(card)` (waiting and carrying `blocks`), `ownerBlocking(item)`
   (a pending ask or a blocking card), and per subtree `blockingBelow(item)`
   (pending asks plus blocking cards) and `nonBlockingBelow(item)` (waiting
@@ -1296,7 +1301,9 @@ write-time refusals in the last column still apply to it:
 | 依赖的条目已取消 (shared row to a cancelled item) | no |
 | 拥有它的条目已关闭 | no |
 | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
-| 没有未完成的条目依赖它，却没写优先级 | no |
+| 项目没有配置：<group> (the item's `group` is not a configured project) | no |
+| 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
+| 卡没标位置 (an open card the item's head does not place, below) | no |
 | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
 | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the PM or the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
@@ -1708,8 +1715,9 @@ started outside `~/dev/wf` does not load the rules; the pointer tells it to
 read them.
 
 A rule the server enforces is defined in `src/model.ts` or `src/rules.ts`;
-the section "Board" states it for agents, and a change to a tool's behavior
-or to a board rule changes that section in the same change. A test keeps the
+the section "Board" states it for agents. A change to a tool's behavior or to a
+board rule gets what that section must say written on its item by its engineer, and the
+observer changes the section after the merge (`AGENTS.md`, Rules). A test keeps the
 instructions within the limit and free of rule text.
 
 ### Finding things
@@ -1949,8 +1957,8 @@ results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
 the session `架构师`, and the PM author `PM` writing from the session `PM`
-(section 9). Both may write any project's items, cards and note replies; every
-other writer only its own project's. Some operations are reserved for the process, which the PM does and the architect may do too, and every other writer
+(section 9). Both may write any project's items, cards and note replies, and so may
+the observer's credential (section 9); every other writer only its own project's. Some operations are reserved for the process, which the PM does and the architect may do too, and every other writer
 is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
 a changed title in `update_item`, and the page order in `create_project` and
 `update_project`. `create_item`, `set_difficulty` and `set_difficulty_many` are
@@ -1990,7 +1998,7 @@ author `总管` is refused by every tool.
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
 | `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
 | `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
-| `withdraw_card(key, log)` | Closes an open card nobody needs; the reason goes to the item's log | The card is open and not answered |
+| `withdraw_card(key, log)` | Closes an open card nobody needs; the reason goes to the item's log | The card is open |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is the PM or the architect, who run the process and replace any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by the PM and the architect |
 | `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or the architect; the main line has no whitespace; order: only the PM and the architect |
@@ -2637,9 +2645,11 @@ of the main line. A subject names a pull request in the forms `Merge pull reques
 `… (#N)` (`pullNumbers` in `src/merges.ts`); the item that delivers it is the item whose
 改动 section names that pull request in that repository, done or not, since its session
 stays until the PM finishes it (`deliveries`). `deployed` is pushed to each session holding
-such an item, one push per pull request and item, and to nobody when none does. `deployFailed` and `main-red` are
-pushed the same way and, when no delivering item is held, to the PM, naming the first delivering
-item if there is one. The job names at most `MAX_CHANGES` commits in a request and counts the rest, so a pull
+such an item, one push per pull request and item, and to nobody when none does. `deployFailed` is pushed
+the same way and, when no delivering item is held, to the PM, naming the first delivering
+item if there is one. `main-red` names the pull request of the main line's newest commit and is pushed
+once for each branch and commit, to the session holding the first delivering item, and to the PM
+when none does. The job names at most `MAX_CHANGES` commits in a request and counts the rest, so a pull
 request only a later commit names of a deploy that carried more gets no push. Rejected: pushing every deploy to the PM to forward, which hands
 the PM a message it can only pass on; telling the engineer of the last commit only, which
 misses the others a deploy carried.
@@ -2810,11 +2820,11 @@ session that waits on a script call the board by hand every 30 minutes or be
 reported; the script calling a tool as the session every 25 minutes, which hands
 the script the session's credential and costs a tool call for what one frame says.
 
-The 30 and 30 minutes are a provisional choice. The architect then knows within
+The 30 and 30 minutes are a provisional choice. The PM then knows within
 an hour of a session's last sign. On 2026-10-16, over thirteen sessions at work, a session was
 more than 30 minutes past its last board write 0.2 % of the time (15 minutes:
 11 %); only writes were counted, and reads now count too. Rejected: 15 and 15
-minutes, which would call the architect to engineers at work; 60 and 30 minutes,
+minutes, which would flag engineers at work; 60 and 30 minutes,
 which leaves a stopped session unknown for an hour and a half. Reopen if more
 than a tenth of the `no-answer` pushes of the first week come while the session
 was working.
@@ -3237,10 +3247,8 @@ targeted by its items’ cross-project shared rows. Read rows, project summaries
 and `followups` have no agents field; `list` selects a project through its
 `group` filter. The page counts
 sent notes per project, such as `已发出 3 条：Halo-wf×2 · Firn-wf×1`.
-The page creates no work items: the owner asks for work through notes and the
-coordinator. Delivery belongs to the coordinator:
-it finds a project’s live session by its working directory, independently
-of its current session name.
+The page creates no work items: the owner asks for work through notes, which reach
+the architect (section 8, The wake streams).
 
 Keys bear on it. The rule that every key starts with its session's prefix
 exists so that sessions writing one database never collide. The server now
@@ -3326,7 +3334,7 @@ the writer from it.
     (`note.reply`), replacing only a reply it wrote itself (the architect replaces any); it does not close a note without a reply, rule a card, move an item,
     or write the tag vocabulary. A new item counts as inside the subtree only when an item
     of the subtree owns it, so an engineer cannot make a top item. Without a credential,
-    creating an item and rating one stay the architect's alone (the old way, until the
+    creating an item and rating one stay the PM's and the architect's alone (the old way, until the
     old tools are removed).
     `write_card` names `card.write`, `item.plan` (a blocking card is also a row of its
     item's plan) and `item.log` (clearing `blocks` on a revision logs the removed row);
@@ -3826,8 +3834,9 @@ on the live board.
   landing with a cell unfolded.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
   pull request, when the engineer starts it (below), with a temporary quick
-  workflow for the pushes in between; the write-path benchmark runs by hand,
-  as a workflow that reports and never fails the run.
+  workflow for the pushes in between; the benchmarks run by hand as a
+  workflow (`.github/workflows/bench.yml`): the write-path benchmark reports and never fails the run,
+  and the history-query benchmark fails it when a check fails.
 - A private-content check on every pull request and every push to a branch
   (below), in its own workflow.
 
@@ -4115,7 +4124,7 @@ a pull request that adds one of these kinds of thing:
   carrier-grade NAT and Tailscale use), a user's home directory other than a
   placeholder or the CI runner's, an SSH key file or option, a private key
   block, a token in a known format (GitHub, Anthropic and OpenAI `sk-`, AWS,
-  Slack), a secret assigned as a quoted literal, a path under the home
+  Slack, a `Bearer` header value), a secret assigned as a quoted literal, a path under the home
   directory with a key, token, secret, credential or password word in it, a
   link to the old board page;
 - a path under a directory named `scratch` or `.scratch`, a `.bak` file, an
@@ -4124,9 +4133,9 @@ a pull request that adds one of these kinds of thing:
 It reads only what the change adds: the added lines of the diff between the
 base and the head, the added or changed paths, the messages of the commits in
 the range and, for a pull request, its title and body. It reads the net
-change of the range, which is what a squash merge lands; pull requests are
-merged by squash, so a value added and removed again inside one pull request
-does not reach `main`. What the history already holds is not read again, and
+change of the range; pull requests are merged with a merge commit, so a value
+added and removed again inside one pull request stays in `main`'s history, and
+only the push that added it is checked. What the history already holds is not read again, and
 author lines are not read (an author address carries the machine's host name,
 which is not private). It prints the rule and the place, never the matched
 text, because the log of a public repository is public; for the same reason it

@@ -1,0 +1,63 @@
+name: design
+# The design tree's checks (design/, checked by the Design-skill submodule at design/skill). `lint` runs on every push to
+# any branch: the checker's own tests and the form of every node and of the change log. `ready` runs where its answer
+# decides something, on a pull request that is ready for review and on the main line: a tree that differs from its base
+# needs a new change-log entry that names every changed node. A draft pull request shows `ready` as skipped, so work in
+# progress never turns it red. Neither job installs the board's packages.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+concurrency:
+  # A push is checked from the commit before it, so a run for a push is never replaced by the next one; a pull request
+  # shares its group between runs.
+  group: design-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  lint:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The review base is a fork point or the previous tip of the main line, so the checkout carries the history.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Name the main line as a remote ref
+        run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+      - name: Select the design review base
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+      - name: Lint the design tree
+        run: make design-lint
+  ready:
+    if: ${{ (github.event_name == 'pull_request' && !github.event.pull_request.draft) || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Name the main line as a remote ref
+        run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+      # A pull request checks out its merge commit, so the base is the tip of the branch it targets; a main-line push
+      # is compared with its previous tip.
+      - name: Select the design review base
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+      - name: Check that a tree change has a new change-log entry
+        run: make design-ready
