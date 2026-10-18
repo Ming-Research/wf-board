@@ -76,7 +76,7 @@ export function verifyPlans(old: LegacySnapshot, result: PlanConversion): string
     inc("unlistedChildren",children.filter(child=>!source.deps.some(dep=>"id"in dep&&dep.id===child)).length);
     check(actual.statusOf(id)===newStatus,`${id}: plan status rule disagreement`);
     check(actual.isRoot(id)===after.isRoot(id)&&actual.isBacklog(id)===after.isBacklog(id),`${id}: root/backlog rule disagreement`);
-    check(equal(actual.planRows(id).map(row=>({id:row.row.id,state:row.state,ready:row.ready})),after.rows(id)),`${id}: plan frontier rule disagreement`);
+    check(equal(actual.planRows(id).map(row=>({id:row.row.id,state:row.state,ready:row.ready,excluded:row.excluded})),after.rows(id)),`${id}: plan frontier rule disagreement`);
     const identity={item:id,project:before.groupOf(id),title:source.title};
     if(oldStatus!==newStatus){
       const cause=newStatus==="blocked"&&after.askPending(id)?"pending ask":newStatus==="wip"?"doing rows count":oldStatus==="done"?"unfinished plan rows":oldStatus==="wip"?"manual progress removed":newStatus==="blocked"?"waiting frontier":"ready frontier";

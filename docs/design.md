@@ -1119,11 +1119,14 @@ is one of four kinds:
   item needs to explain goes in its head's 做法 or its log. The former whys
   are kept in each item's log by the conversion (section 10).
 - **After.** `after` lists ids of earlier rows that must be resolved before
-  this row can proceed. Absent means after the previous row (the first row:
-  after nothing); `after: []` means it can start at once. Only earlier rows
-  may be named, so the order relation cannot form a cycle. Acceptance uses
-  these same rules, including the previous-row default. Removing a row that
-  a later row names in `after` is refused, naming the later rows.
+  this row can proceed. Absent means after the previous row that is not a
+  record row (a record row is no step, see Records; the first row, and a row
+  with only record rows before it: after nothing); `after: []` means it can
+  start at once. Only earlier rows may be named, so the order relation cannot
+  form a cycle. Acceptance uses these same rules, including the previous-row
+  default. A row that names a record row in `after` waits for nothing, since a
+  record row is always resolved. Removing a row that a later row names in
+  `after` is refused, naming the later rows.
 - **Acceptance.** A work item's plan has at least one acceptance step; several
   are allowed, for example one per acceptance scenario. A record has none.
   Place each where the check happens, normally before merge or release rows.
@@ -1150,7 +1153,7 @@ Each row is in one derived state, which status and display use:
 | owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or idle |
 | shared item | target done | — | target open (any status) | — |
 | card | card not open (ruled or withdrawn) | — | card open | — |
-| owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
+| record (owned or shared) | always resolved, left out of counts and out of the order: a record is a part kept for reference, not work, and no row waits for it | | | |
 
 A shared row whose target is cancelled is not resolved: someone else dropped
 what this item waits for, and the plan's own project must remove or replace
@@ -1206,8 +1209,9 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    step of its own is done, or an item it owns is done, or an open item it owns
    has begun in this same sense (a dropped step, a cancelled owned item and an
    owned record do not count). What others finished does not count: a shared
-   dependency that is done, a ruled card and a shared record leave the item at
-   `todo`, though the progress count still includes those rows. A parent
+   dependency that is done and a ruled card leave the item at `todo`, though
+   the progress count still includes those rows; a record row, shared or
+   owned, is no step and is not counted. A parent
    therefore leaves `todo` as its parts progress.
 8. `todo` otherwise: nothing is done and nobody is working on the item.
 
@@ -1357,8 +1361,16 @@ A record (`record: true`) may have a plan of steps, owned rows, shared rows
 and card rows, and no acceptance step; it has no status, appears in no status
 queue, is never waiting or blocking for anyone. It may
 own work items (the backlog, the 14900K queue's run items). A record can be
-owned, and an owned record row is always resolved and left out of the owner's
-counts. Setting `record: true` on a work item removes all its acceptance steps,
+owned or shared by a work item's plan, and its row there, owned or shared, is
+no step: it is always resolved, left out of the plan's counts and progress
+share, and left out of the order, so a row with no `after` comes after the
+nearest row before it that is not a record row. Without that, a record row put
+between waiting rows and the acceptance step would count as a finished row the
+acceptance step follows, and an item whose every step waits would read as
+startable. The same skip applies where the plan is rewritten for a card row
+(`write_card` placing a blocking card's row, and removing it when the card stops
+blocking) and where an owned item's turn in its owner's plan is read.
+Setting `record: true` on a work item removes all its acceptance steps,
 logging every step's text; setting `record: false` requires `accept` text for
 the new acceptance step. A real change of mode in either direction appends a
 server-stamped log line saying the item became a record or a work item; a
@@ -1531,8 +1543,9 @@ those rows, 0 when there are none. A row counts unless it is dropped (its
 `excluded` flag) or it is a cancelled sub-item, owned or shared, which is left
 out of the share and the denominator alike. Weights: a done row 1, a row in
 progress ½, a card decided or withdrawn 1 and open 0; a sub-item row weighs by
-its status: done 1, wip or idle ½, anything else 0; a record counts 1. The plan
-ratio shown on the detail column is unchanged: it still counts a shared
+its status: done 1, wip or idle ½, anything else 0; a record row is left out,
+like a dropped step. The plan ratio shown on the detail column is unchanged
+except for that: it leaves out the record row too, and still counts a shared
 cancelled row. The band's gradient runs from `--prog-from` to `--prog-to` across
 the full row width, so a short band shows only the start colour: the colour at
 any point of the band is the colour that point has in the whole row. Items of
