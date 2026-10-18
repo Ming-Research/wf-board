@@ -3,11 +3,11 @@
 // beat (src/live.ts). Imported by the page and by tests, like src/agents.ts. docs/design.md, section 7, "Agent list", gives the
 // reasons for each rule.
 
-import { openDispatches } from "./dispatch.ts";
+import { openDispatchesOf } from "./dispatch.ts";
 import { runnerHolds } from "./agents.ts";
 import { LIVE_FRESH_MS } from "./live.ts";
 import type { LiveEntry } from "./live.ts";
-import type { Dispatch, RunnerState, Snapshot } from "./model.ts";
+import type { Dispatch, Item, RunnerState } from "./model.ts";
 import type { Rules } from "./rules.ts";
 import { limitOf, reportText } from "./whole-view.ts";
 
@@ -57,19 +57,23 @@ function turnOf(entry: LiveEntry, now: number): RunnerTurn {
   };
 }
 
+/** An item with its key: the page already holds the board's items so (`ViewItem` in web/app.ts). */
+export type HeldItem = Pick<Item, "runner" | "record" | "dispatches"> & { id: string };
+
 /**
  * The rows at `now`: every open, unpaused piece of work the runner holds, the ones needing a look first (overdue), then those with a
  * turn running, then the waiting ones, the longest in their state first. A report with no engineer dispatch of the runner's job open
  * is a leftover and not listed. The beats count only while they agree with the report: an engineer's while the report says a turn
- * runs, the architect's while it says the work asks the architect.
+ * runs, the architect's while it says the work asks the architect. The items come as a list, not as the snapshot's keyed object: the
+ * page redraws the list on every write, and listing the keys of a board this size again costs more than the whole pass over the items.
  */
-export function runnerRows(s: Pick<Snapshot, "items">, r: Pick<Rules, "isOpenWork" | "isPaused">, beats: readonly LiveEntry[], now: number): RunnerRow[] {
+export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork" | "isPaused">, beats: readonly LiveEntry[], now: number): RunnerRow[] {
   const byKey = new Map(beats.map(b => [`${b.role}:${b.item}`, b]));
   const rows: RunnerRow[] = [];
-  for (const [item, it] of Object.entries(s.items)) {
-    const report = it.runner;
+  for (const it of items) {
+    const report = it.runner, item = it.id;
     if (!report || it.record || !r.isOpenWork(item) || r.isPaused(item)) continue;
-    const dispatch: Dispatch | undefined = openDispatches(s, item).find(d => runnerHolds(it, d));
+    const dispatch: Dispatch | undefined = openDispatchesOf(it).find(d => runnerHolds(it, d));
     if (!dispatch) continue;
     const since = Date.parse(report.since);
     const row: RunnerRow = {

@@ -3,7 +3,7 @@
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
 import { DISPATCH_RESULTS, DISPATCH_ROLES, DISPATCH_SIGNALS, milliDollars } from "./model.ts";
-import type { Dispatch, Snapshot } from "./model.ts";
+import type { Dispatch, Item, Snapshot } from "./model.ts";
 
 type Role = (typeof DISPATCH_ROLES)[number];
 type Result = (typeof DISPATCH_RESULTS)[number];
@@ -131,7 +131,11 @@ export function finishLogLine(d: Dispatch, corrected: boolean): string {
 /** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf
  * reads for the pushes (docs/design.md, The wake streams). */
 export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
-  return (s.items[item]?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+  return openDispatchesOf(s.items[item]);
+}
+/** The same, read from the item itself. */
+export function openDispatchesOf(it: Pick<Item, "dispatches"> | undefined): Dispatch[] {
+  return (it?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
 }
 /** The session holding an item: the agent of the newest open engineer dispatch on it, or none. A takeover's dispatch is newer
  * than the one it replaces, so it holds the item from its start; a review holds nothing. */

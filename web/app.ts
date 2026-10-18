@@ -1730,7 +1730,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now())); }
   // What the runner says of the turns running now (src/live.ts): the event stream sends the whole list when it opens and after every beat.
   let liveBeats: LiveEntry[] = [];
-  function runnerRowsNow() { return cached("runnerRows", () => runnerRows(snapshot, derived, liveBeats, Date.now())); }
+  function runnerRowsNow() { return cached("runnerRows", () => runnerRows(state.items, derived, liveBeats, Date.now())); }
   // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
   function agentLevel(r: AgentRow) { return (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
   const AGENT_STATE_TITLES: Record<string, string> = {

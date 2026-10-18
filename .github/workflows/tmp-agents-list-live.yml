@@ -1,6 +1,6 @@
 name: tmp-agents-list-live
 # Temporary: delete before the last full CI, which fails while this file exists.
-# Finds what makes the page slower on the n-key lane's writing phase: a CPU profile of the lane on this page, read by function.
+# Checks the page after the runner block stopped listing the board's items again on every write: the type check, the tests the change touches, and the n-key writing lane (four rounds, profiled).
 on:
   push:
     branches-ignore: [main]
@@ -8,6 +8,19 @@ concurrency:
   group: tmp-agents-list-live-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  unit:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: node --test test/runner-rows.test.ts test/agents.test.ts test/live.test.ts test/dom/runner-block.test.ts
   profile:
     name: nkey writing, cpu profile
     runs-on: ubuntu-latest
@@ -23,9 +36,9 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: Base page
         run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
-      - name: The lane, two rounds, profiled
+      - name: The lane, four rounds, profiled
         env:
-          NKEY_FLOOR: 2
+          NKEY_FLOOR: 4
         run: node --cpu-prof --cpu-prof-dir=prof --cpu-prof-interval=250 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (base|time|twin)|✔|✖" || true
       - name: Read the profile
         run: |
