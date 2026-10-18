@@ -12,7 +12,7 @@ import { performance as perf } from "node:perf_hooks";
 import type { Revert } from "../e2e/variant.ts";
 import { Press, Scope, VirtualClock, landings } from "./press.ts";
 import type { Landing } from "./press.ts";
-import { FILTERS_COUNTED_EACH_DRAW, LANDINGS_FOR_LATE_ROWS, LONG_WAIT, MIN_LANDINGS_WITH_ROW, NAVIGATION_DRAWS_THREE_TIMES, OWN_ANSWER_MS, READ_FETCHES_THE_BOARD, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, SCHEDULE_REBUILDS, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, WITNESS_LANDINGS, checkCounts, lap, log, ms, startLane } from "./lane.ts";
+import { FILTERS_COUNTED_EACH_DRAW, LANDINGS_FOR_LATE_ROWS, LONG_WAIT, MIN_LANDINGS_WITH_ROW, NAVIGATION_DRAWS_THREE_TIMES, OWN_ANSWER_MS, READ_FETCHES_THE_BOARD, ROW_MS, ROWS_AROUND_NOT_WAITED_FOR, SCHEDULE_REBUILDS, WAIT_FOR_ROWS_AROUND_HAS_NO_LIMIT, WITNESS_LANDINGS, checkCounts, lap, log, ms, startLane, describeCounts } from "./lane.ts";
 
 test("a row around the target that answers late is drawn as it should be, the counts report the page with all three changes taken out, and m marks a read without fetching the board", { timeout: 10 * 60_000 }, async t => {
   const lane = await startLane(t, { landings: LANDINGS_FOR_LATE_ROWS });
@@ -79,7 +79,7 @@ test("a row around the target that answers late is drawn as it should be, the co
   await t.test("with all three taken out, the counts report each of them", async () => {
     const list = await lane.walk({ label: "witness", reverts: [...SCHEDULE_REBUILDS, ...NAVIGATION_DRAWS_THREE_TIMES, ...FILTERS_COUNTED_EACH_DRAW] }, WITNESS_LANDINGS);
     const violations = checkCounts("all three out", list);
-    log(`press-n all three out: draws of the landing ${[...new Set(list.map(l => l.draws))].join("/")}`);
+    log(`press-n witness (all three taken out): ${violations.length} violations reported; ${describeCounts(list)}`);
     for (const family of ["drew", "built the board's rules", "counted the filters"]) assert.ok(violations.some(v => v.includes(family)), "the counts report: " + family);
   });
   lap("all three taken out");

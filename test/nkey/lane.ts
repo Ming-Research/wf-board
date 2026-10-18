@@ -112,6 +112,11 @@ export function checkWrites(list: Landing[]): string[] {
   return v;
 }
 
+/** What the counts of a set of landings come to, for the log: the draws of a landing, the rebuilds of the rules (and those from scratch), the filter counts. */
+export function describeCounts(list: Landing[]): string {
+  return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`;
+}
+
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are red verdicts and witnesses that
  * were not reported, and an undecided run is a warning. */
 export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): string[] {

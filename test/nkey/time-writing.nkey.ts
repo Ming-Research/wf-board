@@ -6,13 +6,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PAIRS, WARMUP, timePhase } from "./press.ts";
-import { FLOOR, checkWritingCounts, judgePhase, lap, log, startLane } from "./lane.ts";
+import { FLOOR, checkWritingCounts, judgePhase, lap, log, startLane, describeCounts } from "./lane.ts";
 
 test("time of one press of n with a write in each press on a board of the live board's weight: the current page against its base", { timeout: 10 * 60_000 }, async t => {
   const lane = await startLane(t, { landings: WARMUP + PAIRS, base: true, writes: true });
   const r = await timePhase(lane.windows(), FLOOR.writing, lane.events);
   lap(`time phase (${r.rounds} rounds)`);
   const list = r.first[lane.currentLabel]!;
-  log(`press-n writing counts: rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.flatMap(l => l.full).join(", ") || "none"}, filter counts of every item ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`);
+  log(`press-n writing counts: ${describeCounts(list)}`);
   assert.deepEqual([...checkWritingCounts("writing", list), ...judgePhase("writing", r, FLOOR.writing, lane.changed)], []);
 });
