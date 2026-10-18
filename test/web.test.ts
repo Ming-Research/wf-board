@@ -1501,18 +1501,60 @@ test("an item's baseline derives its own status only when it differs in what it 
   });
 });
 
-test("a write builds the board's rules and counts the filters once, however many draws follow", async () => {
+test("a write builds the board's rules once and counts only the filters of the items it reaches, however many draws follow", async () => {
   const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush();
-  const count=(name:string)=>p.marks.get(name) ?? 0, was={rules:count("board:rules"),filters:count("board:filter-counts")};
+  const count=(name:string)=>p.marks.get(name) ?? 0, was={rules:count("board:rules"),full:count("board:rules-full"),filters:count("board:filter-counts")};
   p.emit("1".repeat(40),[{kind:"note",id:"burst",after:{target:"it:area",kind:"comment",text:"Burst",at,state:"sent",rev:1}}]); await p.flush();
   assert.equal(count("board:rules")-was.rules,1);
-  assert.equal(count("board:filter-counts")-was.filters,1);
+  assert.equal(count("board:rules-full")-was.full,1,"a comment can change what a status reads, so the rules are derived from scratch");
+  assert.equal(count("board:filter-counts")-was.filters,0,"only the items the comment reaches are counted again");
+  p.emit("2".repeat(40),[{kind:"item",id:"child",after:{...nativeSnapshot().items.child!,log:[{at,text:"progress"}],rev:2}}]); await p.flush();
+  assert.equal(count("board:rules")-was.rules,2);
+  assert.equal(count("board:rules-full")-was.full,1,"a log entry changes nothing a status reads, so the rules keep what they derived");
   await rowOf(p,"child").querySelector(".item-head")!.click(); await p.flush();
   assert.ok(p.all().some(e=>e.id === "detail-it-child"),"selecting another item drew");
-  assert.equal(count("board:rules")-was.rules,1,"a draw of the same snapshot keeps them");
+  assert.equal(count("board:rules")-was.rules,2,"a draw of the same snapshot keeps them");
   p.intervals.forEach(fn=>fn()); await p.flush();
-  assert.equal(count("board:rules")-was.rules,2,"the minute moves the rules");
-  assert.equal(count("board:filter-counts")-was.filters,2,"and the done-in-7-days count with them");
+  assert.equal(count("board:rules")-was.rules,3,"the minute moves the rules");
+  assert.equal(count("board:rules-full")-was.full,2,"from scratch");
+  assert.equal(count("board:filter-counts")-was.filters,1,"and the done-in-7-days count with them, for every item");
+});
+
+// Each item's part of the filter counts is kept, and a live change counts again only the items it reaches: after every change
+// the buttons read what a page opened on the same board counts from nothing.
+test("filter counts kept per item through live changes equal those of a page opened on the same board", async () => {
+  const work=(rows:PlanRow[],fields:Partial<Item>={}):Item=>({title:"Work",group:"P",updated:at,rev:1,links:[],log:[],plan:planWork(rows),...fields});
+  let s:Snapshot={board:{title:"Filters",projects:[{name:"P"},{name:"Q"}],tags:[{name:"看板",meaning:"看板的事"}]},head:"a".repeat(40),owner:{},decisions:{},notes:{},glossaries:{},items:{
+    p1:work([ownedRow("p2"),sharedRow("q1"),planStep("w","Work","todo")]),
+    p2:work([planStep("w","Work","doing")],{tags:["看板"]}),
+    p3:work([planStep("w","Work","todo")]),
+    q1:work([planStep("w","Work","todo")],{group:"Q"}),
+    q2:work([sharedRow("p3"),planStep("w","Work","done")],{group:"Q",tags:["看板"]}),
+  }};
+  const labels=(p:Awaited<ReturnType<typeof page>>)=>p.all().filter(e=>e.className.split(" ").includes("grp-filters")).map(e=>e.children.map(c=>c.innerHTML).join(" | "));
+  const p=await page(s,[]); await p.flush();
+  const count=(name:string)=>p.marks.get(name) ?? 0, counted=count("board:filter-counts");
+  assert.ok(labels(p).length === 2 && labels(p).every(row=>row.length > 0),"both projects show their filter buttons");
+  const it=(id:string)=>s.items[id]!;
+  const changes:Array<[string,Array<{kind:string;id:string;after:Item|null}>]>=[
+    ["a log entry",[{kind:"item",id:"p2",after:{...it("p2"),log:[{at,text:"progress"}]}}]],
+    ["work done in the other project",[{kind:"item",id:"q1",after:{...it("q1"),plan:[planStep("w","Work","done"),planAcceptance("done")]}}]],
+    ["a title too long",[{kind:"item",id:"p3",after:{...it("p3"),title:"一个远远超过二十个字的标题，用来让它出一条需核对的检查"}}]],
+    ["a tag taken off",[{kind:"item",id:"p2",after:{...it("p2"),tags:[]}}]],
+    ["a cancellation",[{kind:"item",id:"q2",after:{...it("q2"),status:"cancelled"}}]],
+    ["a new item and its owner",[{kind:"item",id:"p4",after:work([planStep("w","Work","doing")],{tags:["看板"]})},{kind:"item",id:"p3",after:{...it("p3"),plan:planWork([ownedRow("p4"),planStep("w","Work","todo")])}}]],
+    ["an item deleted",[{kind:"item",id:"q2",after:null}]],
+    ["a pause",[{kind:"item",id:"p1",after:{...it("p1"),paused:{reason:"等",at}}}]],
+  ];
+  for (const [k,[what,docs]] of changes.entries()) {
+    const items={...s.items};
+    for (const doc of docs) { if (doc.after) items[doc.id]={...doc.after,rev:(s.items[doc.id]?.rev ?? 0)+1}; else delete items[doc.id]; }
+    s={...s,items};
+    await p.change(String(k+1).repeat(40),docs.map(doc=>({...doc,after:doc.after && items[doc.id]}))); await p.flush();
+    const fresh=await page(s,[]); await fresh.flush();
+    assert.deepEqual(labels(p),labels(fresh),"after "+what);
+  }
+  assert.equal(count("board:filter-counts")-counted,0,"no change counted every item again");
 });
 
 test("SSE burst renders once per frame and fetches unread once", async () => {

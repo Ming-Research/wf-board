@@ -8,6 +8,12 @@ Nodes: testing/ci-time-gate
 
 Summary: A run of the full CI started by hand leaves out the browser tests unless it is given the input `browser`; the browser tests run on each main-line push and every night, so a pull request's full CI takes the time of the script tests only. The time gate stays report-only, because a run with the browser tests still goes over the line; the node's condition for enforcing it now names the browser checks leaving the full CI. The study is in docs/design.md, section Fast checks while writing.
 
+## 2026-10-18 Keep the page's rules across log writes and count the writes in the press-n test
+
+Nodes: storage/write-path/page-rules-reuse, testing/press-n
+
+Summary: The jump to the next unread change went over its limit on slow hosted runners while sessions wrote, because each write derived the whole board again on the page. The page now keeps what the rules before a write derived when the write changes nothing a status reads, and counts the filters of only the items the write reaches; a paired measurement put a write's cost at 0.46 of the main line's and the busy time while writing at 140 to 142 ms with the page throttled 1.3 times ([Write cost](../docs/design.md#4-architecture)). The press-n counts now cover writes, and the two counts that raced the 100 ms wait no longer depend on tens of milliseconds of real time ([Three test layers](../docs/design.md#three-test-layers)).
+
 ## 2026-10-17 Shard the script tests and gate the time of a full CI run
 
 Nodes: testing/ci-shards, testing/ci-time-gate

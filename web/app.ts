@@ -1,8 +1,8 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus } from "../src/rules.ts";
-import type { ActivityDelta, Rules } from "../src/rules.ts";
+import { rules, placedCardsOf, cardMarker, draftEditable, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
+import type { ActivityDelta, PreviousRules, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
 import { drawMermaid, watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
@@ -229,11 +229,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let memo: Record<string, unknown> = {};
   let dataMemo: Record<string, unknown> = {};
   // The browser tests count these (test/e2e/press-n.e2e.ts): a performance mark each time the page draws, builds the
-  // board's rules again or counts the filters again. The mark is cleared at once, so a page left open for days piles up
-  // nothing; an observer in the test has seen it.
+  // board's rules again, derives them from scratch (with the reason, rebuiltBecause in src/rules.ts) or counts every item's
+  // filters again. The mark is cleared at once, so a page left open for days piles up nothing; an observer in the test has
+  // seen it.
   function countEvent(name: string, detail?: string) { performance.mark(name, detail === undefined ? undefined : { detail }); performance.clearMarks(name); }
-  // The data changed (a snapshot, a minute that moves the rules): the board's rules are built again, and both caches go.
-  function invalidate() { countEvent("board:rules"); memo = {}; dataMemo = {}; const s = snapshot; derived = rules(s, Date.now(), { activity: () => activityCache.activity(s) }); }
+  // The data changed (a snapshot, a live change, a minute that moves the rules): the board's rules are built again, and both
+  // caches go. `previous`, the rules before a live change with what it changed, lets them keep what the change cannot reach;
+  // without it every item's filters are counted again too.
+  function invalidate(previous?: PreviousRules) {
+    countEvent("board:rules"); memo = {}; dataMemo = {};
+    const s = snapshot;
+    derived = rules(s, Date.now(), { activity: () => activityCache.activity(s), ...(previous ? { previous } : {}) });
+    const why = rebuiltBecause(derived);
+    if (why !== null) countEvent("board:rules-full", why);
+    if (!previous) filterRecount = null;
+  }
   // Only the view changed (selection, folds, filters, the unread marks, a draft's overlay): the rules of the same snapshot stay.
   function invalidateView() { memo = {}; }
   function cached<T>(name: string, make: () => T): T { return name in memo ? memo[name] as T : (memo[name] = make()) as T; }
@@ -391,20 +401,35 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return { hit, anc, keep: new Set([...hit, ...anc]) };
     });
   }
-  // What each filter button of a project counts, every project's in one pass over the board: the counts depend on the data
-  // alone, so they are kept until it changes and a draw only reads them.
+  // What each filter button of a project counts, every project's: the counts depend on the data alone, so they are kept until
+  // it changes and a draw only reads them. Each item's part of them is kept too, so after a live change only the items it can
+  // reach (affectedItems) are counted again; a snapshot, the minute and a change that reaches every item count them all.
+  type FilterPart = { g: string; keys: string[]; tags: string[] };
+  let filterParts = new Map<string, FilterPart>(), filterTotals = new Map<string, { filters: Map<string, number>; tags: Map<string, number> }>();
+  // The items to count again at the next read, or null for every item.
+  let filterRecount: Set<string> | null = null;
+  function filterPart(it: ViewItem): FilterPart {
+    return { g: groupOf(it), keys: [...STATUS_FILTERS, ...DEP_FILTERS].filter(([, , , test]) => test(it)).map(([key]) => key), tags: [...new Set(it.tags ?? [])] };
+  }
+  function addPart(part: FilterPart, sign: 1 | -1) {
+    let counts = filterTotals.get(part.g);
+    if (!counts) filterTotals.set(part.g, counts = { filters: new Map(), tags: new Map() });
+    for (const key of part.keys) counts.filters.set(key, (counts.filters.get(key) ?? 0) + sign);
+    for (const tag of part.tags) counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + sign);
+  }
   function filterCounts() {
     return dataCached("filterCounts", () => {
-      countEvent("board:filter-counts");
-      const all = [...STATUS_FILTERS, ...DEP_FILTERS], byGroup = new Map<string, { filters: Map<string, number>; tags: Map<string, number> }>();
-      for (const it of state.items) {
-        const g = groupOf(it);
-        let counts = byGroup.get(g);
-        if (!counts) byGroup.set(g, counts = { filters: new Map(), tags: new Map() });
-        for (const [key, , , test] of all) if (test(it)) counts.filters.set(key, (counts.filters.get(key) ?? 0) + 1);
-        for (const tag of new Set(it.tags ?? [])) counts.tags.set(tag, (counts.tags.get(tag) ?? 0) + 1);
+      if (!filterRecount) {
+        countEvent("board:filter-counts");
+        filterParts = new Map(); filterTotals = new Map();
+        for (const it of state.items) { const part = filterPart(it); filterParts.set(it.id, part); addPart(part, 1); }
+      } else for (const id of filterRecount) {
+        const was = filterParts.get(id), it = index().byId.get(id);
+        if (was) addPart(was, -1);
+        if (it) { const part = filterPart(it); filterParts.set(id, part); addPart(part, 1); } else filterParts.delete(id);
       }
-      return byGroup;
+      filterRecount = new Set();
+      return filterTotals;
     });
   }
   function filterCount(key: string, g: string) { return filterCounts().get(g)?.filters.get(key) ?? 0; }
@@ -2723,17 +2748,27 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function showDisconnected() { get("server-banner").hidden = false; get("server-banner").textContent = DISCONNECTED; }
   async function createNote(note: Parameters<OwnerOps["createNote"]>[0]) { sendMessage = ""; try { return await api("/api/notes", note); } catch(e) { showError(e); throw e; } }
   async function deleteNote(id: string) { try { return await api("/api/notes/" + encodeURIComponent(id), {}, "DELETE"); } catch(e) { showError(e); throw e; } }
-  /** `partial`: the caller names the items to sign again (presentationAffected) instead of all. */
-  function applySnapshot(s: Snapshot, partial = false) {
+  // The page's copy of each item, kept while the item is the same object: a live change replaces only the items it wrote.
+  const viewOf = new WeakMap<Item, ViewItem>();
+  function viewItem(id: string, it: Item): ViewItem {
+    const kept = viewOf.get(it);
+    if (kept?.id === id) return kept;
+    const view = { ...it, id };
+    viewOf.set(it, view);
+    return view;
+  }
+  /** `partial`: the caller names the items to sign again (presentationAffected) instead of all. `previous`: the rules before
+   * the live change being applied, with what it changed (invalidate). */
+  function applySnapshot(s: Snapshot, partial = false, previous?: PreviousRules) {
     if (!partial) rulePresentationDirty=true;
     snapshot = s;
     for (const id of sentNotes) if (s.notes[id]?.state !== "draft") sentNotes.delete(id);
     for (const id of draftEdits.keys()) if (!draftEditable(s.notes[id])) draftEdits.delete(id);
     state.meta = s.board;
-    state.items = Object.entries(s.items).map(([id,it]) => ({...it,id}));
+    state.items = Object.entries(s.items).map(([id,it]) => viewItem(id,it));
     state.decisions = Object.entries(s.decisions).map(([id,d]) => ({...d,id}));
     state.notes = Object.entries(s.notes).map(([id,n]) => ({...n,id}));
-    invalidate();
+    invalidate(previous);
     if (selectedItem && !s.items[selectedItem]) { rememberSelected(null); detailDirty=true; current=null; }
     if (!selectionRestored) {
       selectionRestored=true;
@@ -3075,10 +3110,15 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
         if (base.head === change.activity.from) snapshot.activity = applyActivityDelta(base.activity, change.activity);
         else if (base.head !== change.commit) resync=true;
       }
-      applySnapshot(snapshot,true);
+      // A snapshot that missed events cannot keep what its rules derived, since the change does not say all that moved.
+      applySnapshot(snapshot,true,resync ? undefined : { rules: baseRules, changed: change.changed, ...(change.activity ? { activity: change.activity } : {}) });
       const seeds=changeSeeds(base,snapshot,baseRules,derived,change.changed,change.activity);
-      if (!seeds) rulePresentationDirty=true;
-      else if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of affectedItems(baseRules,derived,seeds)) presentationAffected.add(id); }
+      const affected=seeds && affectedItems(baseRules,derived,seeds);
+      if (!affected) { rulePresentationDirty=true; filterRecount=null; }
+      else {
+        if (!rulePresentationDirty) { presentationAffected ??= new Set(); for (const id of affected) presentationAffected.add(id); }
+        for (const id of affected) filterRecount?.add(id);
+      }
       if (resync) void loadSnapshot(active,controller.signal).catch(() => { if (active()) serverDown(next); });
       relocated.forEach(id => { if (snapshot.items[id]) scope.add("group:"+derived.groupOf(id)); });
       // A title that changed, or a target that appeared or went, changes how every reference to it reads.

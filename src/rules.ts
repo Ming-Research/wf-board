@@ -623,8 +623,22 @@ export class DerivedCache {
 }
 
 type RulesInput = Pick<Snapshot, "board" | "items" | "decisions" | "notes" | "owner"> & Partial<Pick<Snapshot, "activity" | "glossaries">>;
-/** `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are scanned from `s`. */
-export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex) } = {}): Rules {
+/** A Rules object built for the state just before one write, with what that write changed: `changed`, every document it
+ * changed (the change event's list), and `activity`, its activity delta. */
+export interface PreviousRules { rules: Rules; changed: ReadonlyArray<{ kind: string; id: string }>; activity?: ActivityDelta }
+/** What a Rules object keeps for the next one to reuse: its derived values, the time it answers for, and why it was built
+ * from scratch (null when it reused its previous one). */
+interface Carried { memo: Map<string, Map<string, unknown>>; closedMemo: Map<string, unknown>; targetStatuses: Map<string, unknown>; intervals?: Array<[number, number]>; now: number; rebuilt: string | null }
+const carried = new WeakMap<Rules, Carried>();
+/** Why `r` derived everything from scratch ("no previous", "minute", "document", "activity", "session"), or null when it
+ * reused the previous Rules object it was given. */
+export function rebuiltBecause(r: Rules): string | null { const kept = carried.get(r); return kept ? kept.rebuilt : "no previous"; }
+/**
+ * `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are
+ * scanned from `s`. `previous`, when given, lets a write that changed no field a status reads keep what was derived before it
+ * (docs/design.md, section 4, Write cost).
+ */
+export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex); previous?: PreviousRules } = {}): Rules {
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
   function stepLine(step: PlanStep): string {
     if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
@@ -1090,7 +1104,49 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       return out;
     });
   }
-  return {
+  // A write that changed no field the statuses read (STATUS_FIELDS) and came in the same minute keeps every derived value but
+  // the checks and their stalled counts of the items it can reach; the activity is derived again from the new index. Returns
+  // why it could not, or null.
+  function reuse(previous: PreviousRules): string | null {
+    const before = previous.rules, was = carried.get(before);
+    if (!was) return "no previous";
+    if (Math.floor(was.now / 60_000) !== Math.floor(now / 60_000)) return "minute";
+    if (!previous.changed.every(d => d.kind === "message" || d.kind === "item" && before.item(d.id) && s.items[d.id] && sameStatus(before.item(d.id)!, s.items[d.id]!))) return "document";
+    // Within one minute a Rules object answers for the first build's time, as DerivedCache does: the kept values were made for it.
+    now = was.now;
+    // A write before that time widens the active time every stalled check reads, which no list of items bounds.
+    if (was.intervals && JSON.stringify(activity().intervals) !== JSON.stringify(was.intervals)) return "activity";
+    // A session's write moves the last activity the status of the items it works on reads (liveDispatches).
+    for (const agent of Object.keys(previous.activity?.agents ?? {})) for (const id of before.dispatchedItems(agent)) {
+      const sessions = was.memo.get("sessions");
+      if (sessions?.has(id) && JSON.stringify(sessions.get(id)) !== JSON.stringify([...new Set(liveDispatches(s, id, now).map(d => d.agent))])) return "session";
+    }
+    // The checks a write can change: those of the items it changed or whose clock or pause spans moved, their owners, the items
+    // they wait on (a pause check names its waiter's title) and that wait on them, and the items whose doing step names one of
+    // them or an owner of it (stallRelated), each with its owners, whose stalled counts read the checks below them.
+    const reach = new Set<string>();
+    const up = (id: string) => { reach.add(id); for (const a of before.ancestors(id)) reach.add(a); };
+    const seeds = [...previous.changed.filter(d => d.kind === "item").map(d => d.id), ...Object.keys(previous.activity?.items ?? {}), ...Object.keys(previous.activity?.pauses ?? {})];
+    for (const id of new Set(seeds)) {
+      up(id);
+      for (const d of before.depsOf(id)) if (d.kind === "item") up(d.id);
+      for (const d of before.dependents(id)) up(d.id);
+      for (const target of [id, ...before.ancestors(id)]) for (const w of before.mentionedBy(target)) up(w);
+    }
+    for (const [name, values] of was.memo) {
+      if (name === "activity") continue;
+      if (name === "index") { memo.set(name, new Map([["", { ...values.get("") as ReturnType<typeof index>, items: new Map(Object.entries(s.items)) }]])); continue; }
+      const copy = new Map(values);
+      if (name === "checks" || name === "stalledBelow") for (const id of reach) copy.delete(id);
+      memo.set(name, copy);
+    }
+    for (const [k, v] of was.closedMemo) closedMemo.set(k, v as "done" | "cancelled" | undefined);
+    for (const [k, v] of was.targetStatuses) targetStatuses.set(k, v as Status | undefined);
+    return null;
+  }
+  const asked = now, rebuilt = options.previous ? reuse(options.previous) : "no previous";
+  if (rebuilt !== null) { now = asked; memo.clear(); }
+  const made: Rules = {
     stepDays, stepLine, planRatio, progressShare,
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
@@ -1112,4 +1168,6 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     compareCandidates: (a, b) => openDependents(b) - openDependents(a)
       || (item(a)?.num ?? Infinity) - (item(b)?.num ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0),
   };
+  carried.set(made, { memo, closedMemo, targetStatuses, now, rebuilt, get intervals() { return memo.get("activity")?.get("") ? activity().intervals : undefined; } });
+  return made;
 }

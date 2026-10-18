@@ -489,6 +489,24 @@ derivation design that replaced this:
   carrying its unfinished dispatch records are reached too. A change of elapsed
   time alone is left to the minute timers, which rescan and repaint everything
   as before; a session's six-hour window running out is such a change.
+- The page builds its rules again for each live change, from the Rules
+  object before it (`rules`' `previous`): a change that wrote only items, in
+  no field a status reads (`STATUS_FIELDS`), keeps every derived value and
+  drops only the checks and stalled counts of the items it can reach — the
+  written items and those whose clock or pause spans moved, their owners,
+  the items they wait on (a pause check names its waiter's title) and that
+  wait on them, and the items whose doing step names one of them or an owner
+  of it, each with its owners. Within one minute it answers for the time of the
+  first build, as the shared rules do. It derives everything from scratch for
+  another change, in a new minute, when a write stamped before that time
+  widens the active time (the store's times have whole seconds, and every
+  stalled check reads the active time), and when a session's write moves it
+  into or out of its window (status reads it). `test/rules-reuse.test.ts`
+  holds it against a derivation from nothing after random writes on a board of
+  the live board's size, and each guard taken out of a copy must fail it. A log
+  write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
+  runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
+  write there is a new snapshot, rebuilt as before.
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
@@ -2276,7 +2294,10 @@ minute tick (elapsed times move with the clock). A click, a fold, a filter, an u
 mark or a draft's overlay changes the view and keeps them, and the view's own cache, the
 indexes a draw reads, is emptied at each draw. What depends on the data alone is kept
 until the data changes: the counts on every project's filter buttons are made in one pass
-over the board, where each button once passed over it, and the cards each head places are
+over the board, where each button once passed over it, and each item's part of them is kept,
+so a live change counts again only the items it reaches (`affectedItems`) and a snapshot or
+the minute counts them all; the page keeps its copy of an item while the item is the same
+object; and the cards each head places are
 found once for each version of an item (a write makes a new object), so a write does not scan
 all the heads again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
@@ -2288,7 +2309,8 @@ comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
 (15 MB on the live board). The page leaves a performance mark for each draw, each build
-of the rules and each count of the filters (`board:render`, `board:rules`,
+of the rules, each build that derived them from scratch, with its reason, and each count of
+every item's filters (`board:render`, `board:rules`, `board:rules-full`,
 `board:filter-counts`) and clears it at once, so the browser test can count them
 (section 11) and a page left open for days piles up nothing.
 
@@ -3988,18 +4010,32 @@ key until the page is quiet counts, those of the rows around the target included
 draws depend on when the baselines of the rows around the target answer, because the
 navigation waits for them 100 ms at most, so the test sets that time and does not leave
 it to the machine or the server: it delivers the answers it recorded on a first walk of
-the board, those of the rows around the target after 60 ms and the others after 20 ms,
-and the landing draws twice at most; it delivers the first after 300 ms, and the landing
-draws exactly three times, the last for the rows alone. The page without the wait, and the page with a wait that has no limit, must be
-reported by the first and the second. Time:
+the board, those of the rows around the target after 300 ms and the others after 20 ms.
+On a copy of the page whose wait is 2 s, the landing draws twice at most: a browser held
+up for less than 1.7 s cannot turn that, where a row answering 40 ms inside the 100 ms
+turned it on a slow runner. On the page itself the landing draws twice and then the late
+rows on their own, every later draw of other items' rows alone; whether two late rows share
+a frame is the browser's timing and not checked. The 100 ms itself is held by the
+fake-clock tests of `test/web.test.ts`. The page without the wait, and the page with a
+wait that has no limit, must be reported by the first and the second. While sessions
+write log entries, each write builds the rules again, derives them from scratch no time
+except in a new minute (the mark `board:rules-full` names the reason) and counts every
+item's filters no time; a page that derives the rules from scratch at every write, and
+one that counts every item's filters, must be reported. Time:
 over 30 landings, the main thread's busy time from the key until the page is quiet
 is at most 0.2 s at the median and 0.3 s at the 90th percentile, with the board
 quiet and with sessions writing three times a second, each run made once. The time
 layer depends on the runner: the same page measured at the median 142 to 205 ms with
 sessions writing in four CI runs, and the speed of a hosted runner differs by up to a
 factor of two between jobs. While sessions write, a press also carries the page's
-handling of the writes that fall into it (about 50 ms for each, the board's rules built
-again), which leaves the limits close. Each change that the counts protect is taken out
+handling of the writes that fall into it, about 1–2 writes in its window of about 375 ms
+at three a second, whether they come before or after the landing. A write derived the
+whole board again for 55–80 ms each until the rules kept what a write cannot reach
+(section 4, Write cost), about 33 ms since (n-writes-stable-study, measured on hosted
+runners); the slowest runners seen run about 1.3 times slower than the one measured, and
+the acceptance of that work measured the page at that speed (CPU throttled 1.3 times). The
+write rate of the test is more than three times the busiest minute of the live board (53
+writes), on purpose. Each change that the counts protect is taken out
 in turn, and a draw made 150 ms slower, with the board quiet and with sessions writing,
 stands for the time layer; each must be reported. After n and m, the page asks for the
 unread list and does not fetch the board.
