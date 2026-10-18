@@ -113,8 +113,8 @@ test("the older list leaves out a session the runner holds, and keeps one a repo
   const [heldKey, held] = job("held", { state: "ci" }, ago(60));
   const [pmKey, pm] = job("pm", { state: "ci" }, ago(600), { dispatches: [dispatch("pm-session", ago(30))] });
   const s = { items: { [heldKey]: held, [pmKey]: pm }, activity: { writes: [], items: {}, agents: { held: [{ item: "held", at: ago(2) }], "pm-session": [{ item: "pm", at: ago(2) }] } } } as unknown as Pick<Snapshot, "items" | "activity">;
-  assert.deepEqual(agentRows(s, NOW).map(r => r.name), ["pm-session"], "the runner's session is drawn in the runner's block, not twice");
+  assert.deepEqual(agentRows(s, NOW, held(s)).map(r => r.name), ["pm-session"], "the runner's session is drawn in the runner's block, not twice");
   // The runner's own writes (its reports, its dispatch lines), the architect's turns it starts and the board's own marks name no dispatch record, so the older list has no row for them.
   const own = { ...s, activity: { writes: [], items: {}, agents: { ...s.activity!.agents, "执行程序": [{ item: "held", at: ago(1) }], "架构师轮次": [{ item: "held", at: ago(1) }], "看板": [{ item: "held", at: ago(1) }], "  执行程序 ": [{ item: "held", at: ago(1) }] } } } as unknown as Pick<Snapshot, "items" | "activity">;
-  assert.deepEqual(agentRows(own, NOW).map(r => r.name), ["pm-session"]);
+  assert.deepEqual(agentRows(own, NOW, held(own)).map(r => r.name), ["pm-session"]);
 });

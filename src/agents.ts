@@ -77,6 +77,9 @@ export function runnerHolds(it: Pick<Item, "runner"> | undefined, d: Dispatch): 
   return !!report && d.role === "工程师" && d.finish === undefined && Math.abs(Date.parse(d.started) - Date.parse(report.started)) <= RUNNER_START_GRACE_MS;
 }
 
+/** An item with its key: the page already holds the board's items so (`ViewItem` in web/app.ts). */
+export type ListedItem = Pick<Item, "dispatches"> & { id: string };
+
 /** The steps in progress on an item: its own steps, which are what a session works on. */
 const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "state" in row && row.state === "doing" ? [row] : []);
 
@@ -85,13 +88,16 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
  * board or was started by that record within AGENT_WINDOW_MS, except the architect's, and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
  * A session no dispatch record names is no programmer the board sent out (the runner, the architect's turns, the board itself, a hand-started
- * session, a name written by mistake) and is not listed.
+ * session, a name written by mistake) and is not listed. The items come as a list with their keys, as the page holds them, not as the
+ * snapshot's keyed object: the page redraws the list on every write, and listing the keys of a board this size again costs more than the
+ * pass over the items.
  */
-export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number): AgentRow[] {
+export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, now: number, items: Iterable<ListedItem>): AgentRow[] {
   const started = new Map<string, Started[]>();
   // The sessions with an unfinished dispatch that is alive, read from the same live dispatches item status reads.
   const alive = new Set<string>();
-  for (const [item, it] of Object.entries(s.items)) {
+  for (const it of items) {
+    const item = it.id;
     for (const dispatch of it.dispatches ?? []) {
       const list = started.get(dispatch.agent);
       if (list) list.push({ item, dispatch }); else started.set(dispatch.agent, [{ item, dispatch }]);

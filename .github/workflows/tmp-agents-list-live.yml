@@ -1,0 +1,56 @@
+name: tmp-agents-list-live
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The main line went red on the n-key writing lane after the merge of the agent list change. This runs the lane as the full CI does (one round
+# of 30 pairs, six times) on three pages, each against the main line before that merge: the page on main now, the page before the merge with
+# one no-op statement (a control: it must read 1), and the page with the fix; and the type check and the tests the fix touches.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-agents-list-live-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: node --test test/agents.test.ts test/runner-rows.test.ts test/dom/runner-block.test.ts test/dom/agents.test.ts
+      - run: node --test test/web.test.ts
+  lane:
+    name: nkey writing x6, ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, control, fix]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The page of the variant
+        run: |
+          case "${{ matrix.variant }}" in
+            main) git checkout origin/main -- src web ;;
+            control) git checkout "$(git rev-parse origin/main^1)" -- src web; echo 'void 0;' >> web/app.ts ;;
+            fix) ;;
+          esac
+          echo "NKEY_BASE=$(git rev-parse origin/main^1)" >> "$GITHUB_ENV"
+      - name: The lane, six times
+        run: |
+          for i in 1 2 3 4 5 6; do
+            node --test --test-concurrency=1 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n time \(writing\): (cand/base|[0-9]+ round)|press-n base" || true
+          done
