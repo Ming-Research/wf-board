@@ -89,8 +89,8 @@ const CASES: Case[] = [
   },
   { test: "agent list", what: "Back does nothing", edits: [app('btn.addEventListener("click", goBack);', 'btn.addEventListener("click", () => {});')], run: checkAgentList, why: /^agent-list: Back does not scroll the list back/ },
   {
-    test: "messages", what: "the list of messages lies behind the page",
-    edits: [page(".messages { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 54px; z-index: 40;", ".messages { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 54px; z-index: -1;")],
+    test: "messages", what: "a layer of the page lies over the open list of messages, not over its button",
+    edits: [page(".messages-panel { margin-top: 6px;", 'body::after { content: ""; position: fixed; top: 40px; right: 0; width: 100%; height: 500px; z-index: 50; }\n.messages-panel { margin-top: 6px;')],
     run: checkMessages, why: /^messages: something on the page covers/,
   },
   { test: "real library", what: "the library's loose security level", edits: [lib('securityLevel: "strict"', 'securityLevel: "loose"')], run: (bp, b) => checkLibrary(bp, b, GIVE_UP), why: /^mermaid-strict: (event handlers|\d+ script elements|javascript: addresses|the text of the diagram ran)/ },
