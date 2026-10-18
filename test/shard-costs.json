@@ -67,7 +67,7 @@
   "test/rules-reuse-c.test.ts": 28.6,
   "test/rules-reuse-guards.test.ts": 12.8,
   "test/rules.test.ts": 0.6,
-  "test/runner-report.test.ts": 3.0,
+  "test/runner-report.test.ts": 2.1,
   "test/session.test.ts": 1.7,
   "test/shutdown.test.ts": 19.7,
   "test/slow-ops.test.ts": 4.7,
@@ -82,5 +82,5 @@
   "test/wake.test.ts": 5.4,
   "test/watch.test.ts": 9.4,
   "test/web.test.ts": 16.4,
-  "test/whole-view.test.ts": 6.0
+  "test/whole-view.test.ts": 2.5
 }
