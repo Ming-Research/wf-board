@@ -47,7 +47,7 @@ const target = () => rand() < 0.5 ? Math.floor(rand() * 90) : Math.floor(rand() 
 const root = mkdtempSync(join(tmpdir(), "probe-store-")), repo = join(root, "repo"), dbFile = join(root, "board.db");
 mkdirSync(repo);
 const git = (argv: string[], input?: string) => {
-  const r = spawnSync("git", ["-c", "gc.auto=0", "-c", "maintenance.auto=false", ...argv], { cwd: repo, input, encoding: "utf8", maxBuffer: 1 << 28 });
+  const r = spawnSync("git", ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "user.name=wf-board", "-c", "user.email=w@x.invalid", ...argv], { cwd: repo, input, encoding: "utf8", maxBuffer: 1 << 28 });
   if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
   return r.stdout;
 };
