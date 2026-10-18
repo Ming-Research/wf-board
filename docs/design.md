@@ -3878,7 +3878,9 @@ on the live board.
   landing on the tree's row and 返回 coming back, and every tree click still
   landing with a cell unfolded.
 - CI on GitHub-hosted runners: the full CI on each main-line merge and, on a
-  pull request, when the engineer starts it (below), with a temporary quick
+  pull request, when the engineer starts it (below), without the browser tests
+  unless the engineer sets the input `browser`; the browser tests run on each
+  main-line merge and nightly; a temporary quick
   workflow for the pushes in between; the benchmarks run by hand as a
   workflow (`.github/workflows/bench.yml`): the write-path benchmark reports and never fails the run,
   and the history-query benchmark fails it when a check fails.
@@ -4051,7 +4053,8 @@ updated or retired on purpose.
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
 `test` in 8 shards, `e2e` and `result`) takes about 12 minutes with its queue,
-all of it the browser tests, and a change under way is pushed many times. A push to a pull request branch therefore does not
+nearly all of it the browser tests, which a run started by hand leaves out
+unless it is given the input `browser`; a change under way is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
 and changes the test jobs and the job list in `needs` of `result`, which reads
 only the jobs it lists.
@@ -4115,7 +4118,8 @@ only the jobs it lists.
   `gh workflow run ci.yml --ref <branch>` and wait with
   `wait-ci.mjs <owner/repo> <PR> <sha>`. Green on the head commit is what lets
   the pull request be marked ready; a later push needs a new run.
-- **The main line** runs the full CI on every push, as before.
+- **The main line** runs the full CI on every push, as before, with the browser
+  tests, which also run every night.
 - **No leak**: the job `no-tmp-workflow` fails when any `tmp-*` file is in
   `.github/workflows`. It runs in every full CI beside the other jobs, so the
   last run before a merge stops a temporary workflow that was not deleted, and
@@ -4232,10 +4236,10 @@ checked within a minute of the push; two runs of one configuration differed by
 It starts from the start of the attempt, not from the creation of the run, so a
 rerun does not count the time before it.
 
-The gate is set to `TIME_GATE=report` in `ci.yml`: the browser tests still take
-minutes on every pull request, so the total is over the line every time and a red
-gate would say nothing. The item that moves them off the pull request's path sets
-`enforce`, and a total over the line then fails `result` and the status
+The gate is set to `TIME_GATE=report` in `ci.yml`: a run started by hand with
+`browser` set still runs the browser tests, which take minutes, so its total is
+over the line and a red gate would say nothing. The item that moves the browser
+checks out of the full CI sets `enforce`, and a total over the line then fails `result` and the status
 `full-ci`. The shard table reads the jobs named `test shard N` and their step
 `tests`; when it finds none, the summary says so, which shows a rename.
 

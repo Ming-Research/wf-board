@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Run the browser tests after a merge, not in a pull request's full CI
+
+Nodes: testing/ci-time-gate
+
+Summary: A run of the full CI started by hand leaves out the browser tests unless it is given the input `browser`; the browser tests run on each main-line push and every night, so a pull request's full CI takes the time of the script tests only. The time gate stays report-only, because a run with the browser tests still goes over the line; the node's condition for enforcing it now names the browser checks leaving the full CI. The study is in docs/design.md, section Fast checks while writing.
+
 ## 2026-10-18 Keep the page's rules across log writes and count the writes in the press-n test
 
 Nodes: storage/write-path/page-rules-reuse, testing/press-n
