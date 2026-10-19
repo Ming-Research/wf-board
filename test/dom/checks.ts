@@ -556,7 +556,10 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
  * nearest the top of the screen. With the cursor moved to an end of the list by j or k instead of a click, n and N start from the cursor.
  * Families: wrap-n, wrap-card, wrap-cursor. */
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
+  const early = bp.treeRows().length;
+  await bp.settle();
   const v: string[] = [], rows = bp.treeRows();
+  console.log(`WRAPDBG rows before settle ${early}, after ${rows.length}`);
   if (!rows.length) return v;
   const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
   if (freshRows.length) {
