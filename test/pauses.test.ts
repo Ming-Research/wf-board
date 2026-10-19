@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PauseGraph, sameShape } from "../src/pauses.ts";
+import { PauseGraph, pauseSignature, sameShape } from "../src/pauses.ts";
 import type { PauseEvent, PauseShape } from "../src/pauses.ts";
 import { rules } from "../src/rules.ts";
 import type { Item } from "../src/model.ts";
@@ -128,4 +128,40 @@ test("the events of random changes are those of the page's own rules on the whol
       for (const id of model.keys()) assert.equal(graph.pausedBy(id), oracle.get(id), `walk ${walk} step ${step}: pausedBy ${id}`);
     }
   }
+});
+
+test("the signature of an item file changes with each field the pause spans read, in each way a file may write it, and with no other edit", () => {
+  const base = "title: A\ngroup: P\nhead: text\nlog:\n  - at: 2026-10-11T01:00:00Z\n    text: entry\nplan:\n  - id: accept\n    text: Accepted\n    state: todo\n    accept: true\nupdated: 2026-10-11T01:00:00Z\nrev: 1\n";
+  const changes: Record<string, string> = {
+    group: base.replace("group: P", "group: Q"),
+    "quoted group": base.replace("group: P", "\"group\": P"),
+    record: base.replace("group: P\n", "group: P\nrecord: true\n"),
+    pause: base.replace("group: P\n", "group: P\npaused:\n  reason: Deferred\n  at: 2026-10-11T04:00:00.125Z\n"),
+    "pause in flow style": base.replace("group: P\n", "group: P\npaused: {reason: Deferred, at: 2026-10-11T04:00:00.125Z}\n"),
+    "owned row": base.replace("plan:\n", "plan:\n  - id: c\n    item: c\n    own: true\n"),
+    "owned row in flow style": base.replace("plan:\n", "plan:\n  - {id: c, item: c, own: true}\n"),
+    "owned row made shared in flow style": base.replace("plan:\n", "plan:\n  - {id: c, item: c, own: false}\n"),
+    "quoted row keys": base.replace("plan:\n", "plan:\n  - \"id\": c\n    'item': c\n    \"own\": true\n"),
+    "a row moved to another item": base.replace("plan:\n", "plan:\n  - id: c\n    item: d\n    own: true\n"),
+  };
+  const ordinary: Record<string, string> = {
+    "a log entry": base.replace("    text: entry\nplan:", "    text: entry\n  - at: 2026-10-11T02:00:00Z\n    text: Progress on the item\nplan:"),
+    "a head edit": base.replace("head: text", "head: other text"),
+    "a step done": base.replace("state: todo", "state: done"),
+    "a title": base.replace("title: A", "title: B"),
+    "a row of text that only contains a key's name": base.replace("text: Accepted", "text: Accepted by the subgroup: yes"),
+  };
+  const original = pauseSignature(base);
+  assert.equal(original.paused, false);
+  for (const [name, body] of Object.entries(changes)) assert.notEqual(pauseSignature(body).key, original.key, `${name}: the signature changes`);
+  for (const [name, body] of Object.entries(ordinary)) assert.equal(pauseSignature(body).key, original.key, `${name}: the signature stays`);
+  // The reason of a pause is not a field the spans read, and `subgroup:` is not `group:`.
+  assert.equal(pauseSignature("title: A\nsubgroup: P\nxrecord: true\n").key, "");
+});
+
+test("a file has a pause when a `paused:` line stands at the left margin, however the pause is written", () => {
+  assert.equal(pauseSignature("group: P\npaused:\n  reason: R\n  at: 2026-10-11T04:00:00Z\n").paused, true);
+  assert.equal(pauseSignature("paused: {reason: R, at: 2026-10-11T04:00:00Z}\ngroup: P\n").paused, true);
+  assert.equal(pauseSignature("group: P\nlog:\n  - text: x\n    paused: not at the margin\n").paused, false);
+  assert.equal(pauseSignature("group: P\nunpaused: 1\n").paused, false);
 });

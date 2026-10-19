@@ -22,8 +22,8 @@ import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import { startOfReport, withStateStart } from "./timeline.ts";
-import { PauseGraph, sameShape } from "./pauses.ts";
-import type { PauseShape } from "./pauses.ts";
+import { PauseGraph, pauseSignature, sameShape } from "./pauses.ts";
+import type { PauseShape, PauseSignature } from "./pauses.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
 import { netGit, netGitReason } from "./net-git.ts";
@@ -50,7 +50,12 @@ export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; bef
 /** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
 /** `session`: the writing session's name from the commit's `Session:` trailer; `message` excludes the trailer. */
-export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string }
+export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string; items?: ItemBlobs[] }
+/** An item file a commit changed, as the blobs of its two sides (null: the file did not exist); `log` gives them when asked for `blobs`. */
+export interface ItemBlobs { id: string; before: string | null; after: string | null }
+/** One entry of `git log --raw -z --no-abbrev`: the modes and blob ids of the two sides and the kind of change; its path is the next field. */
+const RAW_ENTRY = /^:\d{6} \d{6} ([0-9a-f]{40}) ([0-9a-f]{40}) [A-Z]$/;
+const NO_BLOB = /^0+$/;
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
@@ -142,12 +147,24 @@ function pauseShape(it: Item | null): PauseShape | null {
 /** One item a commit changes, as the pause replay sees it: its shape before and after, and when the commit changed it. */
 interface PauseChange { id: string; before: PauseShape | null; after: PauseShape | null; updated: string }
 
-/**
- * A line of an item file that names a field the pause replay reads: its project (`group`), its record mark, its pause, and an
- * owned plan row (`item`, `own`). The extended expression of git's pickaxe (-G); the key may be quoted, and may follow `- `,
- * `{` or `, ` of a row written in flow style. A line of free text that happens to look like one only costs a read.
- */
-const PAUSE_FIELD_LINE = `(^|[^[:alnum:]_])["']?(group|record|paused|item|own)["']?[[:space:]]*:`;
+/** The files of items the replay of pauses asks git for at once: their bytes are held until the commits of the chunk are walked. */
+const PAUSE_READ_COMMITS = 256;
+
+type PauseWork = "read" | "signature" | "parse";
+/** Where the time of the replay of pauses went, and how many files it read and parsed (told in its log line). */
+class PauseTally {
+  private readonly ms: Record<PauseWork, number> = { read: 0, signature: 0, parse: 0 };
+  blobs = 0;
+  parsed = 0;
+  async time<T>(part: PauseWork, run: () => Promise<T> | T): Promise<T> {
+    const start = performance.now();
+    try { return await run(); } finally { this.ms[part] += performance.now() - start; }
+  }
+  describe(): string {
+    const ms = (part: PauseWork) => `${Math.round(this.ms[part])} ms`;
+    return `${this.blobs} files read in ${ms("read")}, signatures in ${ms("signature")}, ${this.parsed} parsed in ${ms("parse")}`;
+  }
+}
 
 /** A historical document as read: parsed, with the size of its file for the cache to weigh. */
 interface ReadDocument { doc: unknown | null; size: number }
@@ -650,7 +667,7 @@ export class Store {
   private async loadActivity(): Promise<void> {
     const cache = await this.readStartupCache();
     if (cache) this.lap("read startup cache", `of ${cache.head.slice(0, 12)}`);
-    const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
+    const commits = (await this.log({ blobs: true, ...(cache ? { since: cache.head } : {}) })).reverse();
     allowRange(commits.length);
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
@@ -700,11 +717,11 @@ export class Store {
       }
     }
     this.lap("replay activity", `${commits.length} commits`);
-    await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null, cache ? `${cache.head}..${this.state.head}` : this.state.head);
+    const pauses = await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null);
     activity.writes.sort();
     this.state = sealed({ ...this.state, activity });
     this.activityLoaded = true;
-    this.lap("replay pauses");
+    this.lap("replay pauses", pauses);
     // A scan is the slow path: write what it found at once, so the next start does not scan. A start that only
     // replayed commits leaves the write to the timer, which keeps it quick.
     if (!cache) await this.saveStartupCache();
@@ -779,84 +796,118 @@ export class Store {
     this.cacheTimer.unref();
   }
 
-  /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot. Read each later
-   * changed item once, and only in the commits whose diff names a field the replay reads; never convert whole historical
-   * boards or inspect old item bodies when no pause existed. `prior` is the item projections the cache holds as of its
-   * commit (null: no pause had been set by then), so the replay continues from them; `range` is the commits `commits`
-   * are, for finding the first pause among them. */
-  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null, range: string): Promise<void> {
+  /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot, and never converts
+   * whole historical boards. The walk reads every item file a commit changed once, as the blob `log` named, and takes its
+   * signature (src/pauses.ts) without parsing it; only a file whose signature differs from the one before is parsed, and
+   * only its fields the pause spans read are used. `prior` is the item projections the cache holds as of its commit (null:
+   * no pause had been set by then), so the replay continues from them. Returns what the step did, for its log line. */
+  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null): Promise<string> {
     this.pauseStarted = prior !== null;
-    let graph: PauseGraph, replay: CommitInfo[], after: string;
-    if (prior) {
-      graph = PauseGraph.from(Object.entries(prior).map(([id, it]): [string, PauseShape] => [id, { group: it.group, record: it.record, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.map(row => row.item) }]));
-      replay = commits;
-      after = range;
-    } else {
-      if (!commits.length) return;
-      const firstCommit = await this.firstPauseCommit(commits, range);
-      this.lap("TMP first pickaxe");
-      const first = commits.findIndex(commit => commit.commit === firstCommit);
-      if (first < 0) return;
-      this.pauseStarted = true;
-      const initial = commits[first]!;
-      const shapes: Array<[string, PauseShape]> = [];
-      const paths = (await this.gitRead(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
-      for (const path of paths) {
-        const match = /^items\/(.+)\.yaml$/.exec(path);
-        if (!match) continue;
-        const shape = pauseShape(await this.pauseItem(path, initial.commit, match[1]!, initial.at) ?? null);
-        if (shape) shapes.push([match[1]!, shape]);
+    let graph = prior ? PauseGraph.from(Object.entries(prior).map(([id, it]): [string, PauseShape] => [id, { group: it.group, record: it.record, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.map(row => row.item) }])) : null;
+    // For each item, the blob the walk saw last and its signature (null: the file was deleted).
+    const seen = new Map<string, { blob: string | null; signature: PauseSignature | null }>();
+    const tally = new PauseTally();
+    const sign = async (blob: string, texts: ReadonlyMap<string, Buffer>): Promise<PauseSignature | undefined> => {
+      const text = texts.get(blob) ?? (await tally.time("read", () => this.blobTexts([blob]))).get(blob);
+      return text === undefined ? undefined : tally.time("signature", () => this.fileSignature(text));
+    };
+    for (let from = 0; from < commits.length; from += PAUSE_READ_COMMITS) {
+      const chunk = commits.slice(from, from + PAUSE_READ_COMMITS);
+      // Ask git for the files of the whole chunk at once; it answers them in order, so no read waits for a round trip of its own.
+      const texts = await tally.time("read", () => this.blobTexts(chunk.flatMap(commit => (commit.items ?? []).flatMap(item => item.after ? [item.after] : []))));
+      tally.blobs += texts.size;
+      for (const commit of chunk) {
+        const changed: Array<{ item: ItemBlobs; text: Buffer | null }> = [];
+        let first = false;
+        for (const item of commit.items ?? []) {
+          const text = item.after === null ? null : texts.get(item.after) ?? null;
+          const signature = item.after === null ? null : await sign(item.after, texts);
+          if (signature === undefined) { console.warn(`Skipping unreadable pause history item ${commit.commit}:items/${item.id}.yaml`, "its blob is missing"); continue; }
+          const known = seen.get(item.id);
+          const before = known && known.blob === item.before ? known.signature : item.before === null ? null : await sign(item.before, texts) ?? null;
+          seen.set(item.id, { blob: item.after, signature });
+          if (before && signature && before.key === signature.key) continue;
+          changed.push({ item, text });
+          if (!!before?.paused !== !!signature?.paused) first = true;
+        }
+        if (!graph) {
+          // The first commit that adds or removes a `paused:` line sets the pause history's start; the board as of this commit is its first state.
+          if (!first) continue;
+          graph = await this.firstPauseGraph(activity, commit, tally);
+          this.pauseStarted = true;
+          continue;
+        }
+        const changes: PauseChange[] = [];
+        for (const { item, text } of changed) {
+          const projected = await tally.time("parse", () => this.pauseItem(text, `items/${item.id}.yaml`, commit.commit, item.id, commit.at));
+          tally.parsed++;
+          if (projected === undefined) continue; // An unreadable revision supplies no new evidence.
+          changes.push({ id: item.id, before: graph.shape(item.id), after: pauseShape(projected), updated: projected?.updated ?? commit.at });
+        }
+        this.applyPauses(activity, graph, changes);
       }
-      graph = PauseGraph.from(shapes);
-      this.lap("TMP initial board", `${shapes.length} items`);
-      for (const [id, source] of graph.sources()) (activity.pauses ??= {})[id] = [{ start: graph.shape(source)!.paused!.at }];
-      replay = commits.slice(first + 1);
-      after = `${initial.commit}..${commits.at(-1)!.commit}`;
     }
-    if (!replay.length) return;
-    const touching = await this.pauseCommits(after);
-    this.lap("TMP field pickaxe", `${touching.size} commits of ${replay.length}`);
-    for (const commit of replay) {
-      if (!touching.has(commit.commit)) continue;
-      const changes: PauseChange[] = [];
-      for (const path of commit.files) {
-        const match = /^items\/(.+)\.yaml$/.exec(path);
-        if (!match) continue;
-        const id = match[1]!, projected = await this.pauseItem(path, commit.commit, id, commit.at);
-        if (projected === undefined) continue; // An unreadable revision supplies no new evidence.
-        changes.push({ id, before: graph.shape(id), after: pauseShape(projected), updated: projected?.updated ?? commit.at });
+    return tally.describe();
+  }
+
+  /** The graph of the board as `commit` left it, for the replay to continue from; the items that are paused or sit under a
+   * paused item begin their spans at once. */
+  private async firstPauseGraph(activity: NonNullable<Snapshot["activity"]>, commit: CommitInfo, tally: PauseTally): Promise<PauseGraph> {
+    const listed = (await this.gitRead(["ls-tree", "-r", commit.commit, "--", "items"])).trim().split("\n");
+    const files = listed.flatMap(line => { const match = /^\d+ blob ([0-9a-f]{40})\titems\/(.+)\.yaml$/.exec(line); return match ? [{ blob: match[1]!, id: match[2]! }] : []; });
+    const shapes: Array<[string, PauseShape]> = [];
+    for (let from = 0; from < files.length; from += PAUSE_READ_COMMITS) {
+      const chunk = files.slice(from, from + PAUSE_READ_COMMITS);
+      const texts = await tally.time("read", () => this.blobTexts(chunk.map(file => file.blob)));
+      for (const { blob, id } of chunk) {
+        const shape = pauseShape(await tally.time("parse", () => this.pauseItem(texts.get(blob) ?? null, `items/${id}.yaml`, commit.commit, id, commit.at)) ?? null);
+        tally.parsed++;
+        if (shape) shapes.push([id, shape]);
       }
-      this.applyPauses(activity, graph, changes);
     }
-    this.lap("TMP loop");
+    const graph = PauseGraph.from(shapes);
+    for (const [id, source] of graph.sources()) (activity.pauses ??= {})[id] = [{ start: graph.shape(source)!.paused!.at }];
+    return graph;
   }
 
-  /** The first of `commits` (oldest first, all within `range`) that sets a pause, found by a pickaxe over the range. */
-  private async firstPauseCommit(commits: CommitInfo[], range: string): Promise<string | null> {
-    const matches = new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
-    return commits.find(commit => matches.has(commit.commit))?.commit ?? null;
+  /** The signature of an item file as the replay takes it; the bytes are read as one-byte characters, since only whether two
+   * versions have the same lines matters, and that is the cheapest way for a large text. */
+  private fileSignature(text: Buffer): PauseSignature {
+    return pauseSignature(text.toString("latin1"));
   }
 
-  /** The commits of `range` whose diff adds or removes a line of an item that names a field the pause replay reads: a
-   * pickaxe, so that git compares the files and the replay reads only the items of these commits. The others change no
-   * project, record mark, pause or owned row, and so no pause span. */
-  private async pauseCommits(range: string): Promise<Set<string>> {
-    return new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", PAUSE_FIELD_LINE, range, "--", "items"])).trim().split(/\s+/));
+  /** The files of the given blobs. All the reads are asked of the one `git cat-file --batch` before any answer is waited for,
+   * and the bytes are charged to the budget as a read of a historical file is. A blob git does not have is left out. */
+  private async blobTexts(ids: Iterable<string>): Promise<Map<string, Buffer>> {
+    const budget = this.budget(), unique = [...new Set(ids)];
+    const blobs = await Promise.all(unique.map(id => this.blobs.read(id)));
+    const texts = new Map<string, Buffer>();
+    unique.forEach((id, i) => {
+      const blob = blobs[i];
+      if (!blob) return;
+      budget?.readBytes(blob.length);
+      texts.set(id, blob);
+    });
+    return texts;
   }
 
-  /** Historical schemas are not today's write schema. Extract only the fields
-   * consumed by pausedBy and interval timestamps, ignoring unrelated evolution. */
-  private async pauseItem(path: string, commit: string, id: string, fallbackAt: string): Promise<Item | null | undefined> {
+  /** An item file of an earlier commit as the pause spans read it. Historical schemas are not today's write schema: only the
+   * fields consumed by pausedBy and interval timestamps are taken, ignoring unrelated evolution. Null: the file did not exist. */
+  private pauseItem(text: Buffer | null, path: string, commit: string, id: string, fallbackAt: string): Item | null | undefined {
+    if (text === null) return null;
     try {
-      const raw = await this.readAt(path, commit);
-      if (raw === null) return null;
-      const it = pauseProjection(raw, id, fallbackAt);
+      const it = pauseProjection(this.parsePauseDocument(text, path, commit), id, fallbackAt);
       if (!it) throw new Error("Historical item is not an object");
       return it;
     } catch (error) {
       console.warn(`Skipping unreadable pause history item ${commit}:${path}`, String(error));
       return undefined;
     }
+  }
+
+  /** The YAML of an item file of `commit`, as the core schema reads it. */
+  private parsePauseDocument(text: Buffer, _path: string, _commit: string): unknown {
+    return parse(text.toString("utf8"), { version: "1.2", schema: "core" });
   }
 
   /** Live writes: only ownership, identity or a pause marker can alter inherited pause, so a write that changes none of
@@ -1265,10 +1316,12 @@ export class Store {
     return () => { this.listeners.delete(fn); };
   }
 
-  async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number } = {}): Promise<CommitInfo[]> {
+  /** The commits of a range, newest first, with the files each changed. `blobs`: also the blobs of the two sides of each item file
+   * (`items`), which the same walk of git gives for no more than the names (the start's replay of pauses reads them). */
+  async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number; blobs?: true } = {}): Promise<CommitInfo[]> {
     if ((opts.kind === undefined) !== (opts.id === undefined)) throw new Error("History path needs both kind and id");
     const at = opts.at === undefined ? "HEAD" : await this.resolveCommit(opts.at);
-    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z"];
+    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", ...(opts.blobs ? ["--raw", "--no-abbrev"] : ["--name-only"]), "--no-renames", "-z"];
     if (opts.limit !== undefined) {
       if (!Number.isSafeInteger(opts.limit) || opts.limit < 0) throw new Error("History limit must be a nonnegative integer");
       args.push(`--max-count=${opts.limit}`);
@@ -1298,15 +1351,21 @@ export class Store {
       let message = fields[index++]!.trimEnd();
       const trailer = SESSION_TRAILER.exec(message);
       if (trailer) message = message.slice(0, trailer.index);
-      const files: string[] = [];
+      const files: string[] = [], items: ItemBlobs[] = [];
       // The extra NUL following the format separates metadata from file paths.
       while (index < fields.length && !(fields[index]?.trim().match(/^[0-9a-f]{40}$/))) {
         const file = fields[index++]!.replace(/^\n/, "");
-        if (file) files.push(file);
+        // With `blobs` a path comes after its entry (modes, blob ids, kind of change).
+        const raw = opts.blobs ? RAW_ENTRY.exec(file) : null;
+        if (!raw) { if (file) files.push(file); continue; }
+        const path = fields[index++]!;
+        files.push(path);
+        const item = /^items\/(.+)\.yaml$/.exec(path);
+        if (item) items.push({ id: item[1]!, before: NO_BLOB.test(raw[1]!) ? null : raw[1]!, after: NO_BLOB.test(raw[2]!) ? null : raw[2]! });
       }
       // git just named these as commits, so later reads of them need no rev-parse.
       for (const c of [hash, ...parents]) this.resolved.set(c, c);
-      infos.push({ commit: hash, parents, at, author, message, files, ...(trailer ? { session: trailer[1]!.trim() } : {}) });
+      infos.push({ commit: hash, parents, at, author, message, files, ...(opts.blobs ? { items } : {}), ...(trailer ? { session: trailer[1]!.trim() } : {}) });
     }
     return infos;
   }

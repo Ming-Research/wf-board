@@ -19,6 +19,30 @@ export interface PauseEvent {
   readonly since?: string;
 }
 
+/**
+ * What the pause replay needs to tell about an item file without parsing it: the lines that name a field it reads (its project
+ * `group`, `record`, `paused`, and an owned plan row's `item` and `own`), from the key to the end of the line, and whether the file
+ * has a `paused:` line at the left margin. The fields may be written in block or flow style, with the key quoted or after `- ` or
+ * `{`, so a key counts when the character before it is not a letter, digit or underscore. A line of free text that happens to look
+ * like one only costs a parse. If two versions of a file have the same `key`, they have the same shape.
+ */
+export interface PauseSignature { readonly key: string; readonly paused: boolean }
+
+const FIELD_LINE = /(?:group|record|paused|item|own)["']?[ \t]*:[^\n]*/g;
+const WORD_CHARACTER = /[A-Za-z0-9_]/;
+
+/** The signature of an item file's text. The text may be read in any single-byte encoding: only equality of lines matters. */
+export function pauseSignature(text: string): PauseSignature {
+  let key = "", paused = false;
+  for (const match of text.matchAll(FIELD_LINE)) {
+    const at = match.index;
+    if (at > 0 && WORD_CHARACTER.test(text[at - 1]!)) continue;
+    key += `${match[0]}\n`;
+    if (match[0].startsWith("paused:") && (at === 0 || text[at - 1] === "\n")) paused = true;
+  }
+  return { key, paused };
+}
+
 export function sameShape(a: PauseShape | null, b: PauseShape | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;

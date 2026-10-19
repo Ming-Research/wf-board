@@ -32,7 +32,8 @@ interface Internals {
   git(args: string[], author?: string): Promise<string>;
   startupCacheContents(): StartupCache;
   loadActivity(): Promise<void>;
-  loadPauses(activity: Activity, commits: CommitInfo[], prior: Record<string, unknown> | null, range: string): Promise<void>;
+  loadPauses(activity: Activity, commits: CommitInfo[], prior: Record<string, unknown> | null): Promise<string>;
+  blobTexts(ids: Iterable<string>): Promise<Map<string, Buffer>>;
 }
 const internals = (store: Store) => store as unknown as Internals;
 
@@ -299,24 +300,24 @@ test("pause replay with no commits and no earlier pause asks git nothing", async
   const { store } = await setup(t);
   const calls = t.mock.method(internals(store), "git", async () => { throw new Error("Nothing to replay must not query git"); });
   const activity: Activity = { writes: [], items: {} };
-  await internals(store).loadPauses(activity, [], null, "HEAD");
+  await internals(store).loadPauses(activity, [], null);
   assert.deepEqual(activity, { writes: [], items: {} });
   assert.equal(calls.mock.callCount(), 0);
 });
 
-test("a current cache of a never-paused history needs no pickaxe, also after a restart", async t => {
+test("a current cache of a never-paused history reads no item file for pauses, also after a restart", async t => {
   const { store, dir } = await setup(t);
   await store.commit({ author: "Fixture", message: "Ordinary work", puts: [put("root", item())] });
   await store.saveStartupCache();
-  const scans: string[][] = [];
-  const original = (Store.prototype as unknown as Internals).git;
-  t.mock.method(Store.prototype as unknown as Internals, "git", function (this: Store, args: string[], author?: string) {
-    if (args.includes("-G")) scans.push(args);
-    return original.call(this, args, author);
+  const reads: string[][] = [];
+  const original = (Store.prototype as unknown as Internals).blobTexts;
+  t.mock.method(Store.prototype as unknown as Internals, "blobTexts", function (this: Store, ids: Iterable<string>) {
+    reads.push([...ids]);
+    return original.call(this, ids);
   });
   await internals(store).loadActivity();
   const restarted = await open(dir);
-  assert.equal(scans.length, 0, "a never-paused history up to a current cache is not searched again");
+  assert.deepEqual(reads, [], "a never-paused history up to a current cache has no file to read again");
   assert.equal(restarted.store.snapshot().activity?.pauses, undefined);
   assert.equal(await git(dir, "status", "--porcelain"), "", "the disposable cache is not board content");
 });
@@ -343,7 +344,7 @@ test("a missing cache recovers completed pause intervals, and the cache it write
   assert.equal((await readCache(dir)).pause, null);
 });
 
-test("pickaxe covers only the commits after the cache, and a cache without pauses is refused while an item is paused", async t => {
+test("the replay of pauses covers only the commits after the cache, and a cache without pauses is refused while an item is paused", async t => {
   const { store, dir } = await setup(t);
   await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
   const knownHead = store.snapshot().head;
@@ -353,25 +354,22 @@ test("pickaxe covers only the commits after the cache, and a cache without pause
   const pausedRoot = store.snapshot().items.root!, resumed = structuredClone(pausedRoot); delete resumed.paused;
   resumed.updated = "2026-10-11T08:10:00.250Z";
   await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, pausedRoot.rev)] });
-  const scans: string[][] = [];
+  const logs: string[] = [];
   const original = internals(store).git.bind(store);
-  t.mock.method(internals(store), "git", async (args: string[], author?: string) => { if (args.includes("-G")) scans.push(args); return original(args, author); });
+  t.mock.method(internals(store), "git", async (args: string[], author?: string) => {
+    if (args[0] === "log") logs.push(args[args.indexOf("--") - 1]!);
+    return original(args, author);
+  });
   await internals(store).loadActivity();
-  // The search for the first pause covers the commits after the cache; the search for the commits that name a pause field only those after that pause.
-  const firstPause = (list: string[][]) => list.filter(args => args.includes("^paused:"));
-  assert.equal(firstPause(scans).length, 1);
-  assert.ok(firstPause(scans)[0]!.includes(`${knownHead}..${store.snapshot().head}`));
-  assert.equal(scans.length, 2);
-  const pauseCommit = (await store.log({ limit: 2 }))[1]!.commit;
-  assert.ok(scans.find(args => !args.includes("^paused:"))!.includes(`${pauseCommit}..${store.snapshot().head}`));
+  assert.deepEqual(logs, [`${knownHead}..${store.snapshot().head}`], "one walk of git, over the commits after the cache");
   assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt, end: resumed.updated }]);
   const latest = store.snapshot().items.root!;
   await store.commit({ author: "总管", message: "Pause again", puts: [put("root", { ...latest, paused: { reason: "Deferred", at: "2026-10-11T08:20:00.125Z" } }, latest.rev)] });
   const negative = StartupCache.parse(JSON.parse(await readFile(await cacheFile(dir), "utf8")));
   await writeFile(await cacheFile(dir), JSON.stringify({ ...negative, head: store.snapshot().head, pause: null }));
+  logs.length = 0;
   await internals(store).loadActivity();
-  assert.equal(firstPause(scans).length, 2, "current pauses contradict a cache that records none, so the history is searched whole");
-  assert.equal(firstPause(scans)[1]![firstPause(scans)[1]!.indexOf("-G") + 2], store.snapshot().head);
+  assert.deepEqual(logs, ["HEAD"], "current pauses contradict a cache that records none, so the history is walked whole");
   assert.equal(store.snapshot().activity!.pauses!.root!.length, 2);
 });
 

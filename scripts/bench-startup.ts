@@ -31,7 +31,7 @@ import { stringify } from "yaml";
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   src: { type: "string", default: join(here, "../src") }, label: { type: "string", default: "this tree" }, "report-only": { type: "boolean", default: false },
-  commits: { type: "string", default: "35000" }, steps: { type: "string", default: "3" }, case: { type: "string" }, dir: { type: "string" }, keep: { type: "string" },
+  commits: { type: "string", default: "35000" }, steps: { type: "string", default: "3" }, case: { type: "string" }, dir: { type: "string" },
 } });
 const COMMITS = Number(args.commits), STEPS = Number(args.steps);
 // The live board had 1,965 items at 34,651 commits.
@@ -141,14 +141,14 @@ async function writeRepository(dir: string, total: number): Promise<void> {
 /** One size in a process of its own: open the store with no startup cache and report the steps and a digest of the index. */
 async function runCase(dir: string, src: string): Promise<Record<string, unknown>> {
   const { Store } = await import(pathToFileURL(join(src, "store.ts")).href);
-  const steps: Record<string, number> = {};
+  const steps: Record<string, number> = {}, details: Record<string, string> = {};
   const t0 = performance.now();
-  const store = await Store.open(dir, { startup: (step: string, ms: number) => { steps[step] = Math.round((steps[step] ?? 0) + ms); } });
+  const store = await Store.open(dir, { startup: (step: string, ms: number, detail?: string) => { steps[step] = Math.round((steps[step] ?? 0) + ms); if (detail !== undefined) details[step] = detail; } });
   const total = Math.round(performance.now() - t0);
   const activity = store.snapshot().activity;
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
   const pauses = Object.entries(activity?.pauses ?? {}).sort(([a], [b]) => a < b ? -1 : 1);
-  return { total, steps, items: Object.keys(store.snapshot().items).length, pauseItems: pauses.length, pauseSpans: pauses.reduce((n, [, spans]) => n + (spans as unknown[]).length, 0),
+  return { total, steps, pauseDetail: details["replay pauses"], items: Object.keys(store.snapshot().items).length, pauseItems: pauses.length, pauseSpans: pauses.reduce((n, [, spans]) => n + (spans as unknown[]).length, 0),
     pausesDigest: digest(pauses), activityDigest: digest({ ...activity, pauses: undefined }) };
 }
 
@@ -183,7 +183,6 @@ try {
         ok();
       });
     });
-    if (args.keep && size === sizes.at(-1)) execFileSync("cp", ["-r", dir, args.keep]);
     await rm(dir, { recursive: true, force: true });
   }
 } finally {

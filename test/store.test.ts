@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { setTimeout } from "node:timers/promises";
 import { parse } from "yaml";
 import { Item } from "../src/model.ts";
+import type { PauseSignature } from "../src/pauses.ts";
 import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc } from "../src/store.ts";
 
 const exec = promisify(execFile);
@@ -702,17 +703,17 @@ test("moving under and out of an already paused owner freezes only the inherited
   assert.deepEqual((await Store.open(dir)).snapshot().activity!.pauses, expected);
 });
 
-test("pause replay reads only native items from the first pause onward and never normalizes historical snapshots", async t => {
+test("pause replay parses only native items from the first pause onward and never normalizes historical snapshots", async t => {
   const { store } = await setup(t);
   await store.commit({ author: "Fixture", message: "Old native work", puts: [put("root", item())] });
   const beforePause = store.snapshot().head;
   const internals = store as unknown as {
-    readAt(path: string, commit: string): Promise<unknown | null>;
+    parsePauseDocument(text: Buffer, path: string, commit: string): unknown;
     comparisonSnapshot(commit: string): Promise<unknown>;
     loadActivity(): Promise<void>;
   };
-  const originalRead = internals.readAt.bind(store), reads: Array<{ path: string; commit: string }> = [];
-  t.mock.method(internals, "readAt", async (path: string, commit: string) => { reads.push({ path, commit }); return originalRead(path, commit); });
+  const originalParse = internals.parsePauseDocument.bind(store), reads: Array<{ path: string; commit: string }> = [];
+  t.mock.method(internals, "parsePauseDocument", (text: Buffer, path: string, commit: string) => { reads.push({ path, commit }); return originalParse(text, path, commit); });
   t.mock.method(internals, "comparisonSnapshot", async () => { throw new Error("Whole historical snapshots must not be normalized for pause clocks"); });
   await internals.loadActivity();
   assert.deepEqual(reads, [], "boards without a pause need no historical item bodies");
@@ -759,12 +760,12 @@ test("pause replay tolerates historical schema changes and logs unreadable item 
   root = store.snapshot().items.root!;
   const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
   await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
-  const internals = store as unknown as { readAt(path: string, commit: string): Promise<unknown | null>; loadActivity(): Promise<void> };
-  const original = internals.readAt.bind(store), warnings: string[] = [];
+  const internals = store as unknown as { parsePauseDocument(text: Buffer, path: string, commit: string): unknown; loadActivity(): Promise<void> };
+  const original = internals.parsePauseDocument.bind(store), warnings: string[] = [];
   t.mock.method(console, "warn", (...parts: unknown[]) => { warnings.push(parts.join(" ")); });
-  t.mock.method(internals, "readAt", async (path: string, commit: string) => {
+  t.mock.method(internals, "parsePauseDocument", (text: Buffer, path: string, commit: string) => {
     if (commit === paused.commit && path === "items/unreadable.yaml") throw new Error("Malformed historical YAML");
-    const raw = await original(path, commit);
+    const raw = original(text, path, commit);
     if (commit !== paused.commit || !raw || typeof raw !== "object") return raw;
     if (path === "items/root.yaml") return { ...raw, futureField: { ignored: true } };
     if (path === "items/child.yaml") return { ...raw, plan: { malformed: true } };
@@ -785,7 +786,7 @@ async function scanPauses(dir: string, store: Store) {
   return structuredClone(store.snapshot().activity!.pauses ?? {});
 }
 
-test("pause replay reads an item only in the commits whose diff names a pause field, however many commits lie between", async t => {
+test("pause replay parses an item only in the commits that change a line naming a pause field, however many commits lie between", async t => {
   const pausedAt = "2026-10-11T04:00:00.125Z", resumedAt = "2026-10-11T04:10:00.250Z";
   const counts: number[] = [];
   for (const ordinary of [3, 30]) {
@@ -800,53 +801,32 @@ test("pause replay reads an item only in the commits whose diff names a pause fi
     root = store.snapshot().items.root!;
     const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
     await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
-    const internals = store as unknown as { readAt(path: string, commit: string): Promise<unknown | null> };
-    const original = internals.readAt.bind(store), reads: string[] = [];
-    t.mock.method(internals, "readAt", async (path: string, commit: string) => { reads.push(path); return original(path, commit); });
+    const internals = store as unknown as { parsePauseDocument(text: Buffer, path: string, commit: string): unknown };
+    const original = internals.parsePauseDocument.bind(store), reads: string[] = [];
+    t.mock.method(internals, "parsePauseDocument", (text: Buffer, path: string, commit: string) => { reads.push(path); return original(text, path, commit); });
     assert.deepEqual(await scanPauses(dir, store), { root: [{ start: pausedAt, end: resumedAt }], child: [{ start: pausedAt, end: resumedAt }] });
     counts.push(reads.length);
   }
   assert.deepEqual(counts, [3, 3], "the two items at the first pause and the owner at its resume, whether 3 or 30 other writes lie between");
 });
 
-test("the pickaxe of the pause replay finds a change of each field it reads, in each way an item file may write it", async t => {
+test("log with blobs names the blobs of the two sides of each item file a commit changed, and none for a file that was not there", async t => {
   const { dir, store } = await setup(t);
-  const internals = store as unknown as { pauseCommits(range: string): Promise<Set<string>> };
-  await mkdir(join(dir, "items"), { recursive: true });
-  const write = async (body: string) => {
-    await writeFile(join(dir, "items/x.yaml"), body);
-    await git(dir, "add", "-A");
-    await git(dir, "-c", "user.name=t", "-c", "user.email=t@wf-board.invalid", "commit", "-q", "-m", "raw");
-    return git(dir, "rev-parse", "HEAD");
-  };
-  const base = "title: A\ngroup: P\nhead: text\nlog:\n  - at: 2026-10-11T01:00:00Z\n    text: entry\nplan:\n  - id: accept\n    text: Accepted\n    state: todo\n    accept: true\nupdated: 2026-10-11T01:00:00Z\nrev: 1\n";
-  const first = await write(base);
-  const changes: Record<string, string> = {
-    group: base.replace("group: P", "group: Q"),
-    "quoted group": base.replace("group: P", "\"group\": P"),
-    record: base.replace("group: P\n", "group: P\nrecord: true\n"),
-    pause: base.replace("group: P\n", "group: P\npaused:\n  reason: Deferred\n  at: 2026-10-11T04:00:00.125Z\n"),
-    "owned row": base.replace("plan:\n", "plan:\n  - id: c\n    item: c\n    own: true\n"),
-    "owned row in flow style": base.replace("plan:\n", "plan:\n  - {id: c, item: c, own: true}\n"),
-    "quoted row keys": base.replace("plan:\n", "plan:\n  - \"id\": c\n    'item': c\n    \"own\": true\n"),
-  };
-  const ordinary: Record<string, string> = {
-    "a log entry": base.replace("    text: entry\nplan:", "    text: entry\n  - at: 2026-10-11T02:00:00Z\n    text: Progress on the item\nplan:"),
-    "a head edit": base.replace("head: text", "head: other text"),
-    "a step done": base.replace("state: todo", "state: done"),
-  };
-  const found: Record<string, [string, string]> = {}, quiet: Record<string, string> = {};
-  for (const [name, body] of Object.entries(changes)) { const made = await write(body); found[name] = [made, await write(base)]; }
-  for (const [name, body] of Object.entries(ordinary)) { quiet[name] = await write(body); await write(base); }
-  const touching = await internals.pauseCommits(`${first}..HEAD`);
-  for (const [name, [made, removed]] of Object.entries(found)) {
-    assert.ok(touching.has(made), `${name}: the commit that writes it is found`);
-    assert.ok(touching.has(removed), `${name}: the commit that removes it is found`);
-  }
-  for (const [name, commit] of Object.entries(quiet)) assert.ok(!touching.has(commit), `${name}: a commit that names no such field is left out`);
+  const blob = (commit: string, id: string) => git(dir, "rev-parse", "--verify", "-q", `${commit}:items/${id}.yaml`).catch(() => null);
+  const added = await store.commit({ author: "Fixture", message: "Add", puts: [put("a", item()), put("b", item())] });
+  const a = store.snapshot().items.a!;
+  const changed = await store.commit({ author: "Fixture", message: "Change", puts: [put("a", { ...a, updated: at, log: [...a.log, { at, text: "Entry" }] }, a.rev)] });
+  await store.commit({ author: "Fixture", message: "Remove", deletes: [{ kind: "item", id: "b", expectRev: store.snapshot().items.b!.rev }] });
+  const commits = (await store.log({ blobs: true })).reverse(), items = (message: string) => commits.find(commit => commit.message === message)!.items!;
+  assert.deepEqual(items("Add"), [{ id: "a", before: null, after: await blob(added.commit, "a") }, { id: "b", before: null, after: await blob(added.commit, "b") }]);
+  assert.deepEqual(items("Change"), [{ id: "a", before: await blob(added.commit, "a"), after: await blob(changed.commit, "a") }]);
+  assert.deepEqual(items("Remove"), [{ id: "b", before: await blob(changed.commit, "b"), after: null }]);
+  assert.ok(commits.every(commit => commit.files.length >= (commit.items?.length ?? 0)), "the files are listed as without blobs");
+  assert.deepEqual((await store.log()).map(commit => commit.files), commits.map(commit => commit.files).reverse(), "the same files as the log that gives names only");
+  assert.equal((await store.log())[0]!.items, undefined);
 });
 
-test("pause replay by the pickaxe gives what reading every commit gives, and what the live writes gave", async t => {
+test("pause replay by the signatures gives what parsing every changed file gives, and what the live writes gave", async t => {
   const { dir, store } = await setup(t);
   let seed = 11;
   const random = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
@@ -899,10 +879,13 @@ test("pause replay by the pickaxe gives what reading every commit gives, and wha
   assert.ok(Object.keys(live).length > 3, "the history pauses some items");
   assert.ok(Object.values(live).some(spans => spans.length > 1 || spans[0]?.end !== undefined), "and resumes some");
   const scanned = await scanPauses(dir, store);
-  const internals = store as unknown as { pauseCommits(range: string): Promise<Set<string>> };
-  t.mock.method(internals, "pauseCommits", async () => new Set((await git(dir, "rev-list", "HEAD")).split("\n")));
-  const everyCommit = await scanPauses(dir, store);
-  assert.deepEqual(scanned, everyCommit, "the commits the pickaxe leaves out change no pause");
+  // With a signature of its own for every file, each change of a file is parsed.
+  const internals = store as unknown as { fileSignature(text: Buffer): PauseSignature };
+  const original = internals.fileSignature.bind(store);
+  let distinct = 0;
+  t.mock.method(internals, "fileSignature", (text: Buffer) => ({ ...original(text), key: String(distinct++) }));
+  const everyChange = await scanPauses(dir, store);
+  assert.deepEqual(scanned, everyChange, "the files whose signature did not change change no pause");
   assert.deepEqual(scanned, live, "a restart gives what the live writes gave");
 });
 
@@ -917,10 +900,10 @@ test("pause replay tracks historical ownership targets even when a row ID is reu
   const root = store.snapshot().items.root!;
   await store.commit({ author: "总管", message: "Retarget part", puts: [put("root", { ...root, updated: movedAt,
     plan: [{ id: "second", item: "second", own: true }, ...item().plan] }, root.rev)] });
-  const internals = store as unknown as { readAt(path: string, commit: string): Promise<unknown | null>; loadActivity(): Promise<void> };
-  const original = internals.readAt.bind(store);
-  t.mock.method(internals, "readAt", async (path: string, commit: string) => {
-    const raw = await original(path, commit);
+  const internals = store as unknown as { parsePauseDocument(text: Buffer, path: string, commit: string): unknown; loadActivity(): Promise<void> };
+  const original = internals.parsePauseDocument.bind(store);
+  t.mock.method(internals, "parsePauseDocument", (text: Buffer, path: string, commit: string) => {
+    const raw = original(text, path, commit);
     if (path !== "items/root.yaml" || !raw || typeof raw !== "object") return raw;
     const fields = raw as Item;
     return { ...fields, plan: fields.plan.map(row => "item" in row ? { ...row, id: "historical-part" } : row) };
