@@ -276,7 +276,7 @@ test("an item line ends with the first sentence of its 何时 section, cut at 40
   assert.doesNotMatch(line(text, "dep")!, /何时/);
   // A condition longer than the cut ends with an ellipsis after its first 40 characters.
   const long = lookText(view(board([{ id: "r", plan: owns("long") }, { id: "long", head: `**何时**：${"甲".repeat(60)}。` }])));
-  assert.ok(line(long, "long")!.endsWith(`· 何时：${"甲".repeat(40)}…`), line(long, "long"));
+  assert.ok(line(long, "long")!.endsWith(`· 何时：${"甲".repeat(40)}…`), line(long, "long")!);
 });
 
 // ---- the marks, over the tool, on a board with a repository ----
