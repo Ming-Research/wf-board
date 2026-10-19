@@ -35,6 +35,10 @@ matches what the artifact board offered.
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
   old board, bounded by the heap they are estimated to hold. Design section 4,
   Request budgets.
+- `src/pauses.ts`: the graph the pause spans of the activity index come from (each item's project, record mark, pause and owned items, and the
+  owner of each), changed in place by the items of a commit, so the replay of a history and a live write cost the changed items and their
+  subtrees, and the signature of an item file (the lines that name those fields), by which the replay parses only a file that changed them
+  (design section 5, the activity index).
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line, the start-up step timings and the start-up memory line (the heap in use
@@ -144,6 +148,9 @@ matches what the artifact board offered.
   synthetic board of the live board's size with a long history); the same workflow
   runs it on this tree, where a failed check fails the run, and on the base commit,
   as a report only.
+- `scripts/bench-startup.ts`: the start-up scan benchmark (the time of each step of a start with no startup cache, and a digest of the
+  activity index, on a synthetic history of the live board's shape at three sizes, each double the one before); the same workflow runs it on
+  this tree, where a failed check fails the run, and on the base commit, as a report only.
 - `scripts/bench-page.ts`: the page benchmark (the open page's busy time per `set_tags` and
   log change event, in jsdom on a board of the live board's weight, answered from recorded
   server answers so the time is the page's own); the same workflow runs it on this tree three

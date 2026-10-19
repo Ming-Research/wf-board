@@ -411,7 +411,8 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    A request over a limit fails with an error that says which and how to narrow the
    range (a tool answers with it, a page request with 413).
 3. *Three places charge it*, all in `src/store.ts`: reading one historical file
-   (`readAt`, charged when git is read and not when the cache answers), rebuilding a whole old
+   (`readAt`, charged when git is read and not when the cache answers, and `blobTexts`, by which the
+   start's replay of pauses reads the files of many commits at once), rebuilding a whole old
    board (`comparisonSnapshot`) and reading a git command's output
    (`gitRead`, for `log`, `diff` and `ls-tree`; the commands a write runs, and the
    one read its rollback makes of the head, are not charged). Each also looks at the heap, which counts the garbage not yet
@@ -1155,6 +1156,31 @@ log:
   skipped; unknown fields and malformed plan entries do not prevent startup.
   Live pause indexing uses the same tolerant projection, since conversion
   transactions include legacy before-documents and records with omitted plans.
+  The replay of pause spans costs the commits, not the commits times the size
+  of the board. The one walk of git that lists the commits (`Store.log` with
+  `blobs`) also names the blobs on the two sides of each item file a commit
+  changed, which costs git no more than the names. The replay asks the one
+  `git cat-file --batch` for the files of 256 commits at once and takes from
+  each its signature (`pauseSignature`, `src/pauses.ts`): the lines that name
+  a field the spans read (project, record mark, pause with its time and
+  reason, owned rows), in any way a file may write them, so that two versions
+  with the same signature have the same shape. Only a file whose signature
+  differs from the one the item had before is parsed, and an in-place graph
+  (`PauseGraph`) takes the change; a version that cannot be read is left out
+  with a warning, and the next version of that item is parsed whatever its
+  lines are; the first commit that adds or removes a `paused:` line at the left
+  margin starts the pause history, and the board as of that commit (`ls-tree`
+  and its blobs) is its first state. A write made while the daemon runs goes
+  through the same graph. Measured in CI on a synthetic history of the live
+  board's shape (`scripts/bench-startup.ts`, 35,000 commits, 1,984 items), the
+  step took 4.2 s against 71.2 s before, for 38,237 files read (1.3 s), their
+  signatures (0.3 s) and 4,745 parses (2.3 s), and doubling the commits
+  doubled it (x2.08, x2.16); the index it derives is the same, digest by
+  digest, at 8,750, 17,500 and 35,000 commits. The git pickaxe (`log -G`)
+  that finds the commits naming those lines was the first design and was
+  dropped: git compares the items tree of every commit, so its two passes cost
+  15 s of the 19.5 s the step then took at 35,000 commits, growing with the
+  commits times the items.
   Each write may name the session that made it (`session` on every write
   tool, below); the store records it as a `Session: <name>` trailer on that
   operation's commit, and the same index keeps, per item, the session that
