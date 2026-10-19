@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { startBoard, openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import { DomPage } from "./page.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkEmptyRows, checkTagText, checkCardBox, checkDifficultyChip, checkIdleStatus } from "./checks.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkCardBox, checkDifficultyChip, checkIdleStatus } from "./checks.ts";
 import type { Oracle } from "./checks.ts";
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.slice(0, 60).join("\n"));
@@ -107,6 +107,10 @@ export function pageTests(title: string, keys: string[], { chips = false, passes
     await t.test("a comment saved on a folded list stays in view and its 发送 sends it", async () => {
       await bp.reset({ ...openAll(board), "board-notes": { ["it:" + w.commentItem]: false, ["q:" + w.commentCard]: false } });
       none(await run(bp, async () => checkComments(bp, await oracle(board.store))));
+    });
+    await t.test("a comment that follows another is listed under it and the composer opens there", async () => {
+      await bp.reset({ ...openAll(board), "board-notes": { ["it:" + w.commentItem]: true } });
+      none(await run(bp, () => checkThreads(bp)));
     });
   });
 }

@@ -3814,6 +3814,60 @@ test("a plan row comment goes to its item without an anchor and the comment entr
   const call=p.calls.find(c=>c.path === "/api/notes"); assert.ok(call); assert.equal((call.body as {target:string}).target,"it:child"); assert.equal(Object.hasOwn(call.body as object,"anchor"),false);
 });
 
+// A comment that follows another (its anchor names that note) is a thread: listed right under the comment it follows, indented
+// one step more for each comment it follows in turn, with the composer opened under the comment it is for.
+function threadNotes(): PageFixture {
+  const s = snapshot(), minute = (n: number) => `2026-10-11T01:0${n}:00Z`;
+  const note = (text: string, n: number, fields: Partial<Note> = {}): Note => ({ target: "it:child", kind: "comment", text, at: minute(n), sentAt: minute(n), state: "done", reply: "Reply to " + text, repliedAt: minute(n), repliedBy: "Session", rev: 1, ...fields });
+  const follows = (id: string) => ({ anchor: { kind: "note" as const, id } });
+  s.notes.first = note("First", 1);
+  s.notes.other = note("Other", 2);
+  s.notes.second = note("Second", 3, follows("first"));
+  s.notes.third = note("Third", 4, follows("second"));
+  s.notes.fourth = note("Fourth", 5, follows("third"));
+  s.notes.fifth = note("Fifth", 6, follows("fourth"));
+  s.notes.orphan = note("Orphan", 7, follows("gone"));
+  return s;
+}
+const noteIds = (list: Element) => list.children.filter(e => e.id.startsWith("note-")).map(e => e.id.slice(5));
+
+test("a comment that follows another is listed right under it with a step of indent for each comment it follows, and says nothing of what it follows", async () => {
+  const p = await page(threadNotes(), [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  const list = p.all().find(e => e.className === "notes")!;
+  assert.deepEqual(noteIds(list), ["first", "second", "third", "fourth", "fifth", "other", "orphan"], "followers come under the comment they follow, not at the time they were written");
+  const box = (id: string) => p.all().find(e => e.id === "note-" + id)!, steps = (id: string) => classes(box(id)).filter(c => /^d\d$/.test(c));
+  assert.deepEqual(["first", "other", "orphan"].map(steps), [[], [], []], "a comment on its own is not indented");
+  assert.deepEqual(["second", "third", "fourth", "fifth"].map(steps), [["d1"], ["d2"], ["d3"], ["d3"]], "the indent stops at three steps");
+  for (const id of ["second", "third", "fourth", "fifth"]) assert.ok(classes(box(id)).includes("follow") && !markup(box(id)).includes("关于"), id + " is under its comment, so it does not name it");
+  assert.ok(!classes(box("first")).includes("follow"));
+  assert.match(markup(box("orphan")), /关于一条回复/, "a comment whose note is not in the list stays where its time puts it and names what it follows");
+});
+
+test("c on a comment opens the composer under that comment and its followers, and the saved comment names it", async () => {
+  const p = await page(threadNotes(), unread("note", "first"), null, undefined, { notesOpen: { "it:child": true }, response: path => path === "/api/notes" ? reply({ id: "saved" }) : undefined }); await expand(p);
+  p.key("n"); await settle();
+  assert.ok(classes(p.all().find(e => e.id === "note-first")!).includes("cur"), "n selected the first comment");
+  p.key("c"); await settle();
+  const ta = p.all().find(e => e.id === "ed-it_child")!, list = p.all().find(e => e.className === "notes")!, editor = ta.parentElement!;
+  assert.ok(classes(editor).includes("editor") && classes(editor).includes("follow") && classes(editor).includes("d1"), "the composer is indented as a follower of the first comment");
+  const at = list.children.indexOf(editor);
+  assert.deepEqual([list.children[at - 1]!.id, list.children[at + 1]!.id], ["note-fifth", "note-other"], "after the last comment of the thread, before the next comment on its own");
+  assert.match((ta as Element & { placeholder: string }).placeholder, /接着/);
+  ta.value = "Follow up"; await ta.handlers.get("input")![0]!({});
+  await editor.querySelector(".save")!.click(); await p.flush();
+  const call = p.calls.find(c => c.path === "/api/notes")!;
+  assert.deepEqual((call.body as { anchor: unknown }).anchor, { kind: "note", id: "first" });
+  assert.equal((call.body as { target: string }).target, "it:child");
+});
+
+test("a comment on the item goes at the end of the list, after every thread", async () => {
+  const p = await page(threadNotes(), [], null, undefined, { notesOpen: { "it:child": true } }); await expand(p);
+  p.key("c"); await settle();
+  const list = p.all().find(e => e.className === "notes")!, editor = p.all().find(e => e.id === "ed-it_child")!.parentElement!;
+  assert.equal(list.children.at(-1), editor);
+  assert.ok(!classes(editor).includes("follow"));
+});
+
 test("complete plans render without storage and phone CSS retains the glyph gutter", async () => {
   const s=nativeSnapshot(); s.items.child!.plan=planWork([planStep("a","A","done"),planStep("b","B","dropped"),planStep("c","C","done")]);
   const expected=s.items.child!.plan.map(row=>planRowDomId("child",row.id));

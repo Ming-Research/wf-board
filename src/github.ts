@@ -52,6 +52,11 @@ export function queryText(branch: boolean, numbers: readonly number[]): string {
 } }`;
 }
 
+/** The query for the checks on one commit of a repository, by the commit's id (the deploy job's: it asks for the commit it is about to
+ * deploy, not for the main line's newest, which may have moved on since it fetched). */
+export const COMMIT_CHECKS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!) { repository(owner: $owner, name: $name) {
+  object(oid: $oid) { ... on Commit { oid ${CHECKS} } } } }`;
+
 const Context = z.discriminatedUnion("__typename", [
   z.object({
     __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), startedAt: z.string().nullable(),
@@ -77,6 +82,10 @@ const Response = z.object({
   errors: z.array(z.object({ message: z.string() })).optional(),
 });
 const Named = z.object({ number: z.number(), state: z.enum(["OPEN", "MERGED", "CLOSED"]), mergedAt: z.string().nullable(), url: z.string() });
+const CommitResponse = z.object({
+  data: z.object({ repository: z.object({ object: z.object({ oid: z.string(), statusCheckRollup: Rollup }).nullable() }).nullable() }).nullable(),
+  errors: z.array(z.object({ message: z.string() })).optional(),
+});
 
 type CheckRun = Extract<z.infer<typeof Context>, { __typename: "CheckRun" }>;
 const NOT_RUN = new Set(["NEUTRAL", "SKIPPED"]);
@@ -164,6 +173,19 @@ export function parseResponse(repo: string, text: string): RepoState {
   };
 }
 
+/** Reads the answer of `COMMIT_CHECKS_QUERY`: the checks on the commit as `summarize` reads them. A commit GitHub does not know is an
+ * error, not "no checks", which would wait for checks that can never come. */
+export function parseCommitChecks(repo: string, commit: string, text: string): Checks {
+  let json: unknown;
+  try { json = JSON.parse(text); } catch { throw new Error(`${repo}: GitHub's answer is not JSON`); }
+  const parsed = CommitResponse.safeParse(json);
+  if (!parsed.success) throw new Error(`${repo}: GitHub's answer has an unexpected shape: ${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  const repository = parsed.data.data?.repository;
+  if (!repository) throw new Error(`${repo}: ${parsed.data.errors?.map(e => e.message).join("; ") || "GitHub returned no repository"}`);
+  if (!repository.object) throw new Error(`${repo}: GitHub does not know the commit ${commit}`);
+  return summarize(repository.object.statusCheckRollup);
+}
+
 /** Runs `gh` with these arguments and returns what it printed; rejects with the error, whose `stdout` holds what was printed before it failed. */
 export type Gh = (args: string[]) => Promise<string>;
 export const runGh: Gh = args => new Promise((resolve, reject) => {
@@ -172,23 +194,34 @@ export const runGh: Gh = args => new Promise((resolve, reject) => {
   });
 });
 
+/** Asks GitHub's GraphQL API through `gh` for `repo` (`Owner/Name`) and returns the answer's text. `variables` are extra strings. */
+async function graphql(gh: Gh, repo: string, variables: string[], query: string): Promise<string> {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new Error(`repo ${repo}: expected Owner/Name`);
+  // -f sends the value as a string; -F would read "@file" and turn "true" or "12" into other types.
+  const args = ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, ...variables.flatMap(v => ["-f", v]), "-f", `query=${query}`];
+  // gh exits with an error when the answer holds any GraphQL error, such as a PR number that does not exist, yet still prints it.
+  try { return await gh(args); }
+  catch (error) {
+    const printed = (error as { stdout?: unknown }).stdout;
+    if (typeof printed !== "string" || !printed.trim()) throw new Error(`${repo}: gh failed: ${error instanceof Error ? error.message : String(error)}`);
+    return printed;
+  }
+}
+
 /** GitHub through the `gh` command line, which is signed in as the owner. */
 export function ghSource(gh: Gh = runGh): GithubSource {
   return {
     async query(repo, { branch, numbers }) {
-      const [owner, name] = repo.split("/");
-      if (!owner || !name) throw new Error(`repo ${repo}: expected Owner/Name`);
-      // -f sends the value as a string; -F would read "@file" and turn "true" or "12" into other types.
-      const args = ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, ...(branch ? ["-f", `ref=refs/heads/${branch}`] : []), "-f", `query=${queryText(!!branch, numbers)}`];
-      let text: string;
-      // gh exits with an error when the answer holds any GraphQL error, such as a PR number that does not exist, yet still prints it.
-      try { text = await gh(args); }
-      catch (error) {
-        const printed = (error as { stdout?: unknown }).stdout;
-        if (typeof printed !== "string" || !printed.trim()) throw new Error(`${repo}: gh failed: ${error instanceof Error ? error.message : String(error)}`);
-        text = printed;
-      }
-      return parseResponse(repo, text);
+      return parseResponse(repo, await graphql(gh, repo, branch ? [`ref=refs/heads/${branch}`] : [], queryText(!!branch, numbers)));
     },
+  };
+}
+
+/** The checks on one commit (a full object id) of `repo`, read from GitHub through `gh`: what the deploy job asks before it deploys. */
+export function ghCommitChecks(gh: Gh = runGh): (repo: string, commit: string) => Promise<Checks> {
+  return async (repo, commit) => {
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`commit ${commit}: expected a full object id`);
+    return parseCommitChecks(repo, commit, await graphql(gh, repo, [`oid=${commit}`], COMMIT_CHECKS_QUERY));
   };
 }

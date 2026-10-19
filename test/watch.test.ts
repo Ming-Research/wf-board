@@ -8,7 +8,7 @@ import { ops } from "../src/ops.ts";
 import { changesSection, rules } from "../src/rules.ts";
 import { Wake } from "../src/wake.ts";
 import { GithubWatch, decide, mergeRows, mergedRows, pushKey, watchedPulls } from "../src/watch.ts";
-import { ghSource, parseResponse, queryText, summarize } from "../src/github.ts";
+import { COMMIT_CHECKS_QUERY, ghCommitChecks, ghSource, parseResponse, queryText, summarize } from "../src/github.ts";
 import type { Checks, Gh, GithubSource, PullState, RepoState } from "../src/github.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import { agentSocket, asArchitect, server } from "./helpers.ts";
@@ -155,6 +155,35 @@ test("gh exits with an error when the answer holds a GraphQL error; what it prin
   assert.deepEqual((await ghSource(partial).query("a/b", { numbers: [99] })).named, []);
   const silent: Gh = async () => { throw Object.assign(new Error("gh: command not found"), { stdout: "" }); };
   await assert.rejects(ghSource(silent).query("a/b", { numbers: [] }), /a\/b: gh failed: gh: command not found/);
+});
+
+test("the checks on one commit are asked for by its id and read as a PR's are; a commit GitHub does not know, a bad id and a gh that fails are errors", async () => {
+  const sha = "a".repeat(40), calls: string[][] = [];
+  const text = (object: unknown) => JSON.stringify({ data: { repository: { object } } });
+  const gh = (reply: string): Gh => async args => { calls.push(args); return reply; };
+  const checksOn = (rollupOrNull: unknown) => ghCommitChecks(gh(text({ oid: sha, statusCheckRollup: rollupOrNull })))("Ming-Research/wf-board", sha);
+  assert.deepEqual(await checksOn(rollup("FAILURE", run("test", "SUCCESS"), run("e2e", "FAILURE"))), { state: "failure", failed: ["e2e"] });
+  const args = calls[0]!;
+  assert.deepEqual(args.slice(0, 2), ["api", "graphql"]);
+  for (const expected of ["owner=Ming-Research", "name=wf-board", `oid=${sha}`, `query=${COMMIT_CHECKS_QUERY}`]) assert.equal(args[args.indexOf(expected) - 1], "-f", `${expected} goes as a string (-f)`);
+  assert.match(COMMIT_CHECKS_QUERY, /object\(oid: \$oid\) \{ \.\.\. on Commit \{ oid statusCheckRollup/);
+  // The same reading as for a PR: a cancelled run that another replaced says nothing, a commit with no check is not green, a run not finished is pending.
+  assert.equal((await checksOn(rollup("FAILURE", run("test", "SUCCESS"), run("e2e", "CANCELLED"), run("e2e", "SUCCESS")))).state, "success");
+  assert.equal((await checksOn(null)).state, "none");
+  assert.equal((await checksOn(rollup("PENDING", run("test", "SUCCESS"), run("e2e", null, "QUEUED")))).state, "pending");
+  assert.equal((await checksOn({ contexts: { pageInfo: { hasNextPage: true }, nodes: [run("test", "SUCCESS")] } })).state, "pending", "checks beyond one answer may fail");
+  // A commit GitHub has no object for is not "no checks yet": waiting for it would never end.
+  await assert.rejects(ghCommitChecks(gh(text(null)))("a/b", sha), /a\/b: GitHub does not know the commit a{40}/);
+  // The id goes into the request as a string and is checked first: anything but a full id never reaches gh.
+  const before = calls.length;
+  await assert.rejects(ghCommitChecks(gh(""))("a/b", "main"), /expected a full object id/);
+  await assert.rejects(ghCommitChecks(gh(""))("nonsense", sha), /expected Owner\/Name/);
+  assert.equal(calls.length, before);
+  const silent: Gh = async () => { throw Object.assign(new Error("gh: command not found"), { stdout: "" }); };
+  await assert.rejects(ghCommitChecks(silent)("a/b", sha), /a\/b: gh failed: gh: command not found/);
+  const refused: Gh = async () => { throw Object.assign(new Error("exit 1"), { stdout: JSON.stringify({ data: { repository: null }, errors: [{ message: "Could not resolve to a Repository" }] }) }); };
+  await assert.rejects(ghCommitChecks(refused)("a/b", sha), /Could not resolve to a Repository/);
+  await assert.rejects(ghCommitChecks(gh("<html>"))("a/b", sha), /not JSON/);
 });
 
 // --- The board --------------------------------------------------------------------------------------------------------------------

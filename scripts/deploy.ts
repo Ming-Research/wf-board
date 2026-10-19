@@ -1,6 +1,6 @@
 // One run of the deploy job; launchd starts it every five minutes (ops/wf-board-deploy.plist, installed by
-// scripts/install-service.ts deploy). The logic is src/deploy.ts; this wires it to git, npm, launchctl, the daemon's HTTP port and
-// the owner's notifications. It reads the checkout it lives in, so it deploys the checkout the daemon runs from.
+// scripts/install-service.ts deploy). The logic is src/deploy.ts; this wires it to git, gh (the checks of the commit to deploy), npm,
+// launchctl, the daemon's HTTP port and the owner's notifications. It reads the checkout it lives in, so it deploys the checkout the daemon runs from.
 // Environment (each with the live board's value as default): WF_BOARD_REPO (the checkout), WF_BOARD_PORT, WF_BOARD_LABEL (the daemon's launchd label),
 // WF_BOARD_DEPLOY_STATE (the state file), WF_BOARD_DEPLOY_WAIT_MS and WF_BOARD_DEPLOY_STABLE_MS (the health wait),
 // WF_BOARD_DEPLOY_NET_CAP_MS (the longest a fetch may run) and WF_BOARD_DEPLOY_FETCH_RETRY_MS (the wait between its tries); tests shorten them.
@@ -12,6 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { PushRefused, deployOnce, refusesRequest } from "../src/deploy.ts";
 import type { DeployState } from "../src/deploy.ts";
+import { ghCommitChecks } from "../src/github.ts";
 import { macNotify } from "../src/notify.ts";
 import { NET_GIT_CAP_MS, netGitOutput } from "../src/net-git.ts";
 
@@ -48,6 +49,8 @@ await deployOnce({
     try { const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) }); return res.ok && ((await res.json()) as { ok?: unknown }).ok === true; }
     catch { return false; }
   },
+  // GitHub's checks on the commit about to be deployed, through `gh` as the daemon's look at the main line reads them (src/github.ts).
+  checks: ghCommitChecks(),
   post: async push => {
     const res = await fetch(`${base}/api/wake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(push), signal: AbortSignal.timeout(5000) });
     if (res.ok) return;
