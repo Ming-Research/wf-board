@@ -4822,7 +4822,9 @@ temporary workflow `tmp-accept`, which also holds the acceptance runs of the con
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
 waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (the current page with that edit,
-judged against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page).
+judged against the current page when it differs from the base, else against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page). Against
+the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
+15 ms more per draw ×1.005 (board-cpu-usage).
 
 **Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
 (the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two
