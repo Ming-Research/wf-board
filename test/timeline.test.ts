@@ -231,10 +231,10 @@ test("the text of a line says its span, its totals and each segment with what it
   const text = timelineText("i", "一件活", timelineOf({ starts, dispatches: [sent(0, 40)], now: ms(400) }));
   const lines = text.split("\n");
   assert.equal(lines[0], "i · 一件活 · 共 6 小时 40 分（10-19 08:00Z 起，还没完）");
-  assert.equal(lines[1], "合计：干活 30 分 · 等 CI 1 小时 · 等主人 1 小时 50 分 · 等事件 3 小时 20 分；其中放下等待 6 小时");
-  assert.ok(lines.some(l => l === "  10-19 08:00Z · 干活 · 30 分"), lines.join("\n"));
-  assert.ok(lines.some(l => l === "  10-19 08:30Z · 等 CI · 10 分"), lines.join("\n"));
-  assert.ok(lines.some(l => l === "  10-19 08:40Z · 等 CI（放下等待） · 50 分"));
+  assert.equal(lines[1], "合计：干活 30 分钟 · 等 CI 1 小时 · 等主人 1 小时 50 分 · 等事件 3 小时 20 分；其中放下等待 6 小时");
+  assert.ok(lines.some(l => l === "  10-19 08:00Z · 干活 · 30 分钟"), lines.join("\n"));
+  assert.ok(lines.some(l => l === "  10-19 08:30Z · 等 CI · 10 分钟"), lines.join("\n"));
+  assert.ok(lines.some(l => l === "  10-19 08:40Z · 等 CI（放下等待） · 50 分钟"));
   assert.ok(lines.some(l => l === "  10-19 09:30Z · 等主人（放下等待） · 1 小时 50 分 · 卡 k1、k2"));
   assert.ok(lines.some(l => l === "  10-19 11:20Z · 等事件（放下等待） · 3 小时 20 分 · 执行程序重启（到 10-19 13:00Z） · 还在这里"));
   assert.match(timelineText("i", "一件活", timelineOf({ starts: undefined, now: ms(1) })), /没有报告过这件活的状态/);
@@ -265,11 +265,11 @@ test("the tool answers for one item with its line and for none with the longest 
   await report("b", "running", "2026-10-19T11:00:00Z");
   const one = await call({ id: "a" });
   assert.equal(one.error, false);
-  assert.match(one.text, /^a · 中文检查 · 共 3 小时（10-19 09:00Z 起，还没完）\n合计：干活 30 分 · 等 CI 30 分 · 等架构师 2 小时\n/);
+  assert.match(one.text, /^a · 中文检查 · 共 3 小时（10-19 09:00Z 起，还没完）\n合计：干活 30 分钟 · 等 CI 30 分钟 · 等架构师 2 小时\n/);
   assert.match(one.text, /  10-19 10:00Z · 等架构师 · 2 小时 · 还在这里$/);
   const all = await call({});
   assert.equal(all.error, false);
-  assert.match(all.text, /^在跑的活里最长的 2 个等待段（看了 2 件；10-19 12:00Z 的数）\n  a · 中文检查 · 等架构师 · 2 小时 · 10-19 10:00Z 起，还在等\n  a · 中文检查 · 等 CI · 30 分 · 10-19 09:30Z 起，到 10-19 10:00Z$/);
+  assert.match(all.text, /^在跑的活里最长的 2 个等待段（看了 2 件；10-19 12:00Z 的数）\n  a · 中文检查 · 等架构师 · 2 小时 · 10-19 10:00Z 起，还在等\n  a · 中文检查 · 等 CI · 30 分钟 · 10-19 09:30Z 起，到 10-19 10:00Z$/);
   assert.match((await call({ limit: 1 })).text, /^在跑的活里最长的 1 个等待段/);
   const bad = await call({ id: "nothing" });
   assert.equal(bad.error, true);
