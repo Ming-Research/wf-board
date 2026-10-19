@@ -4694,8 +4694,10 @@ garbage collector inside it) found three sources, and the lane removes each:
   opens its windows in a random order and then collects fully, so no window is always the one whose page was built first.
 - *What is left.* Measured with all of the above, over 32 single rounds per phase (run 39192981801 of `tmp-accept`), a copy of the base in
   the changed page's place read ×0.9979 [0.9898, 1.0060] writing and ×1.0073 [1.0011, 1.0135] quiet, the twin ×0.9972 and ×1.0054: in the
-  quiet phase the base read about 0.6% faster than the other two, a bias whose source was not found. It is known and not removed; the
-  confirmation of a red (Time, above) keeps it from turning a page the same as its base red.
+  quiet phase the base read about 0.6% faster than the other two. A second set of 36 rounds per phase on the same code (run 39193425761)
+  read the copy ×1.0013 [0.9956, 1.0070] quiet and ×0.9967 [0.9905, 1.0030] writing, so the first may be chance or a bias of a few
+  tenths of a percent whose source was not found. It is known and not searched further; the confirmation of a red (Time, above) keeps it
+  from turning a page the same as its base red.
 
 With the first two and the balanced cycle (before the last two were found), over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
 (±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
