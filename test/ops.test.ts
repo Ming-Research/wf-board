@@ -994,7 +994,8 @@ test("delete_project removes the project's empty glossary with it, and a term is
   await op.createProject({ author: "Mine", name: "Mine" });
   await op.setTerm({ author: "Mine", term: "词一", definition: "d" });
   await op.setTerm({ author: "Mine", term: "词二", definition: "d" });
-  const refusal = /^project Mine: not empty, it still holds 2 terms \(词一, 词二\); move its items with move_item_project \(their cards and notes go with them\) and remove its terms with delete_term \(project Mine\), then delete it$/;
+  // assert.rejects reads the error as text, which starts with the name of its class, so these two patterns are not anchored at the start.
+  const refusal = /project Mine: not empty, it still holds 2 terms \(词一, 词二\); move its items with move_item_project \(their cards and notes go with them\) and remove its terms with delete_term \(project Mine\), then delete it$/;
   await assert.rejects(op.deleteProject({ ...asArchitect, name: "Mine" }), refusal);
   // Only the architect names another project's glossary, and the term must be in it.
   await assert.rejects(op.deleteTerm({ author: "Firn", session: "someone", project: "Mine", term: "词一" }), rx`author: only ${ARCHITECT_WRITER} may remove a term from another project's glossary`);
@@ -1077,7 +1078,7 @@ test("delete_project takes the project out of tag project lists and refuses whil
   await op.setTag({ ...asArchitect, name: "唯一", meaning: "m", projects: ["Mine"] });
   await op.setTag({ ...asArchitect, name: "全部", meaning: "m" });
   const before = store.snapshot();
-  await assert.rejects(op.deleteProject({ ...asArchitect, name: "Mine" }), /^project Mine: tags 唯一 apply to it alone; give them another project list with set_tag, or remove them with remove_tag, and then delete the project$/);
+  await assert.rejects(op.deleteProject({ ...asArchitect, name: "Mine" }), /project Mine: tags 唯一 apply to it alone; give them another project list with set_tag, or remove them with remove_tag, and then delete the project$/);
   assert.deepEqual(store.snapshot(), before);
   await op.removeTag({ ...asArchitect, name: "唯一" });
   await op.deleteProject({ ...asArchitect, name: "Mine" });
