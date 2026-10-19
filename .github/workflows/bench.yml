@@ -1,8 +1,9 @@
 name: bench
-# Benchmarks, run by hand: scripts/bench-writes.ts (the write path) and scripts/bench-changes.ts (the history queries), on this
-# branch and on the commit it started from, scripts/bench-page.ts (the page's work per change event) on this branch three times
-# on each of four runners, scripts/bench-pairs.ts (the write path in interleaved pairs against the base) on four runners, and
-# the peak memory at two numbers of writes.
+# Benchmarks, run by hand: scripts/bench-writes.ts (the write path), scripts/bench-changes.ts (the history queries) and
+# scripts/bench-startup.ts (the start with no startup cache), on this branch and on the commit it started from,
+# scripts/bench-page.ts (the page's work per change event) on this branch three times on each of four runners,
+# scripts/bench-pairs.ts (the write path in interleaved pairs against the base) on four runners, and the peak memory at two
+# numbers of writes.
 on:
   workflow_dispatch:
     inputs:
@@ -50,6 +51,21 @@ jobs:
           [ -d "$RUNNER_TEMP/bench-base" ] || git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           [ -e "$RUNNER_TEMP/bench-base/node_modules" ] || ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
           node scripts/bench-changes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src" --report-only
+      # What a start with no startup cache costs in each step on a history of the live board's shape (docs/design.md, section 5, the
+      # activity index). This one fails the run when a check fails: the replay of pauses takes at most 10 s at 35,000 commits and at most
+      # 2.5 times as long for double the commits.
+      - name: Start-up scan benchmark
+        run: node scripts/bench-startup.ts --label "this tree"
+      - name: Start-up scan benchmark on the base (informational)
+        if: always()
+        continue-on-error: true
+        env:
+          BENCH_BASE: ${{ inputs.base }}
+        run: |
+          base=$(git merge-base HEAD "$BENCH_BASE")
+          [ -d "$RUNNER_TEMP/bench-base" ] || git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
+          [ -e "$RUNNER_TEMP/bench-base/node_modules" ] || ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
+          node scripts/bench-startup.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src" --report-only
   # The write path's CPU in interleaved rounds of the base, its twin and this tree (scripts/bench-pairs.ts), on four runners at
   # once: each runner's own ratio and interval, since single runs on different runners differ more than the change measured.
   pairs:
