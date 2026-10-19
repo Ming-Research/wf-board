@@ -6,4 +6,4 @@ Rejected:
 - Eight shards: rejected because with the suite at 906 seconds of file time the step `tests` of a shard took 33 to 56 seconds and the run 73 seconds, over the 60 the time gate allows.
 - Twelve shards: rejected because the longest job took 61 seconds, over the line, where sixteen took 46 to 51.
 - Sixteen shards: rejected because with the large files split the shard that ended last ended 49 to 56 seconds after the start of the run in four runs (median 53), over the 50 seconds that a typical run aims at, where twenty ended it 46 to 51 seconds after the start in five runs (median 50).
-- Twenty-four shards: rejected because its longest job (41 seconds, one run) was one second shorter than twenty's (42, one run) and each run needs four more jobs, each paying its own set-up of 10 to 15 seconds.
+- Twenty-four shards: rejected because its longest job (41 seconds, one run) was one second shorter than twenty's (42, one run) and each run needs four more jobs, each paying its own set-up (10 to 15 seconds when this was measured, 7 to 10 in 8 jobs that found a cache of `node_modules`, [The set-up of a job](../../docs/design.md#the-set-up-of-a-job)).
