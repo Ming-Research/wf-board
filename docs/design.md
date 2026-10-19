@@ -244,7 +244,11 @@ The daemon uses well under that:
    clients start to reconnect and are refused. MCP has no stream.
 3. A request already running, a tool call included, may finish. The connection
    it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
-   every connection that is left is closed.
+   every connection that is left is closed. The architect's timed wake, when one
+   is being made, reads the history without a request: the server answers that
+   it is closed after that read, or after the same two seconds, so that what the
+   caller does next (the commit of the reading state; in a test, removing the
+   data directory) does not meet a read still running.
 4. A push that is running is ended (below). The owner's reading state is committed locally, and the process exits.
 
 A push takes 4.1 to 6.6 seconds (Storage), more than the five seconds launchd allows, so
