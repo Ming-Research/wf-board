@@ -22,6 +22,7 @@ jobs:
   start:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       statuses: write
     steps:
@@ -35,6 +36,7 @@ jobs:
   # and the main line's own run catches one that got in anyway. It runs beside the other jobs: the run's result lists it.
   no-tmp-workflow:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -48,13 +50,10 @@ jobs:
           fi
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/node-modules
       - run: npm run check
   # The script tests in 20 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
   # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 60 seconds
@@ -62,17 +61,14 @@ jobs:
   test:
     name: test shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: tests
@@ -90,6 +86,7 @@ jobs:
   nkey:
     name: nkey ${{ matrix.part }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -98,11 +95,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: Base page
         env:
@@ -111,50 +104,51 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
-  # Writes the result of a run started by hand to the commit it ran on. A cancelled run's result job writes nothing: the
-  # pending its start wrote stands until the next run of the commit. A push to the main line writes nothing; its checks
-  # are listed on the commit. `needs` lists every job whose result counts: a project adds each of its test jobs here.
-  # It also reads how long the run took (scripts/ci-time-gate.ts) and puts the time of each job into the run's summary.
+  # Writes the result of a run started by hand to the commit it ran on. It starts with the run, not after the other jobs, and
+  # waits in scripts/ci-time-gate.ts until every other job of the run has ended: a job that waits for the others (`needs`) starts
+  # 2 to 3 seconds after the last of them ends and has its own set-up to do then, which was 6 to 9 seconds of a run. So no job of
+  # this run may use `needs`: the jobs the run lists before they can start are all it waits for (test/ci-workflow.test.ts holds this).
+  # The script writes the status itself: success when every job succeeded or was skipped and the total is not red, else failure.
+  # A run that is cancelled ends this job too and writes nothing: the pending its start wrote stands until the next run of
+  # the commit. A push to the main line writes nothing; its checks are listed on the commit. The script also reads how long the run
+  # took and puts the time of each job into the run's summary (docs/design.md, section 11, The time gate).
+  # This job has no timeout of its own: a job that GitHub cancels for its timeout runs no step after it, so the status would stay
+  # pending. Each of its steps has one instead (5 minutes, the script's 15): a step that times out fails, and the step after it writes
+  # the failure. The jobs it waits for have 10 minutes each, counted from when they start to run, not from the queue: a job that hangs
+  # is cancelled and the script writes a failure that names it, unless the job started so late that the script's step ends first, and
+  # then the failure is written without its name. test/ci-workflow.test.ts holds that the timeouts are there and that a job's is
+  # shorter than the script's, not the numbers.
   result:
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-    needs: [start, no-tmp-workflow, check, test, nkey]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       statuses: write
       actions: read
     steps:
       - uses: actions/checkout@v5
+        timeout-minutes: 5
         with:
           sparse-checkout: scripts/ci-time-gate.ts
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v5
+        timeout-minutes: 5
         with:
           node-version: 24
-      # enforce: a total over 60 seconds from the start of the run to the end of its last job fails this step, and then the run and
-      # the status `full-ci` (docs/design.md, section 11, The time gate). The step does not stop the one after it, which writes the
-      # status.
-      - id: gate
-        continue-on-error: true
+      # enforce: a total over 60 seconds from the start of the run to the status fails the status, the step and with them the run
+      # (docs/design.md, section 11, The time gate).
+      - id: result
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
           TIME_GATE: enforce
         run: node scripts/ci-time-gate.ts
-      - env:
+      # The script writes the status whatever it finds, a failure of its own included; this step is for a script that could not
+      # run at all, did not end in its 15 minutes or came after a set-up step that timed out, so that the status does not stay pending for a run that is over.
+      - if: ${{ failure() && steps.result.outputs.written != 'true' }}
+        timeout-minutes: 5
+        env:
           GH_TOKEN: ${{ github.token }}
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-          GATE: ${{ steps.gate.outcome }}
-          GATE_TOTAL: ${{ steps.gate.outputs.total }}
         run: |
-          state=success
-          for r in $RESULTS; do [ "$r" = success ] || [ "$r" = skipped ] || state=failure; done
-          description="full CI $state ($RESULTS)"
-          if [ "$state" = success ] && [ "$GATE" != success ]; then
-            state=failure
-            total="${GATE_TOTAL:+$GATE_TOTAL s}"
-            description="full CI failure (time gate: ${total:-no result})"
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$state" -f context=full-ci \
-            -f description="$description" \
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=failure -f context=full-ci \
+            -f description="full CI failure (the result job ended without a status)" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-      - if: ${{ steps.gate.outcome != 'success' }}
-        run: exit 1
