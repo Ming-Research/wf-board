@@ -8,6 +8,12 @@ Nodes: page/diagrams/data-charts
 
 Summary: Item text could draw flow and structure diagrams but no data chart, and the library the page bundles already draws a bar and line chart (`xychart`) that the page left unusable: its first series color is `#ECECFF`, 1.17:1 on a white page, a Chinese category without quotes is a lexical error, and a bar chart without a y range is cut at the smallest value. The page now gives the library eight series colors for each theme, a clear plate and a height of 360 px, so a chart is written in the same fence as any diagram and drawn in the page's colors; the checks are in the DOM layer (what the page asks) and in the browser layer (what the real library draws). A chart library with a fence of its own, a renderer of our own and images were refused. The grounds, the refused alternatives and the measurements are in the node and in docs/design.md, section 7, Diagrams, Data charts.
 
+## 2026-10-19 Mark an item as standing
+
+Nodes: plans/standing, plans, mcp/whole-view
+
+Summary: The board could not say that a long-term promise with work under it, such as keeping board operations within their limits, is work that is always in force and never completes, so a never-ticked acceptance step held it up and status and the checks took it for an item about to complete: read on a copy of the board of 2026-10-16, four of the ten such items raised the check `only-acceptance-left` and all ten raised `difficulty-missing`. An item may now carry `standing: true`, set only by the architect and excluding the record mark, with no acceptance step and no difficulty. It is in progress while it is not paused or cancelled, whatever its rows say; its rows for other standing items are resolved and uncounted, and neither make the target awaited nor conflict with its pause; the checks that ask for acceptance or a rating do not apply; a row of an ordinary item that owns or waits for a standing item is refused, since it could never be resolved; the items it owns stay needed and startable; the whole view lists it only when something works on it. The first design also gave the sub-items of a standing item their own stored priority; the item priority was removed on 2026-10-17, so that part was dropped. The refused alternatives (a never-ticked acceptance step, a record, a tag the checks skip, a flag on a plan row) are in the node; the derivation is in docs/design.md, section 5, Standing items.
+
 ## 2026-10-19 Flag a head older than a ruling
 
 Nodes: cards

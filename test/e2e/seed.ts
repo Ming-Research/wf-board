@@ -4,6 +4,8 @@
 import { Store } from "../../src/store.ts";
 import type { DocKind, OpenOptions } from "../../src/store.ts";
 import { ownerOps } from "../../src/owner-ops.ts";
+import type { Ops } from "../../src/ops.ts";
+import { ARCHITECT, ARCHITECT_SESSION } from "../../src/model.ts";
 import type { Generated } from "./board-gen.ts";
 
 export async function seedBoard(dir: string, gen: Generated, opts: Pick<OpenOptions, "maintenance"> = {}): Promise<{ store: Store; commits: string[] }> {
@@ -17,6 +19,11 @@ export async function seedBoard(dir: string, gen: Generated, opts: Pick<OpenOpti
   }
   await ownerOps(store).read({ through: commits[gen.readBefore - 1]! });
   return { store, commits };
+}
+
+/** The generated board has no project for the architect, and a write by author Architect needs one (src/ops.ts, requireAuthor): adds it, once. */
+export async function addArchitectProject(op: Pick<Ops, "createProject">, store: Store): Promise<void> {
+  if (!store.snapshot().board.projects.some(p => p.name === ARCHITECT)) await op.createProject({ author: ARCHITECT, session: ARCHITECT_SESSION, name: ARCHITECT });
 }
 
 /** Rewrites one stored document through the store, as a session's write would: the page hears it on its event stream. */

@@ -7,6 +7,8 @@
 import { rules } from "../../src/rules.ts";
 import type { Rules } from "../../src/rules.ts";
 import { unreadSteps } from "../../src/history.ts";
+import { boardTags, tagApplies } from "../../src/model.ts";
+import { addArchitectProject } from "./seed.ts";
 import type { Snapshot } from "../../src/model.ts";
 import type { Store } from "../../src/store.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
@@ -252,7 +254,8 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
   // Only items whose tree row is rendered: a row under a folded parent is not in the page.
   const shown = new Set(await page.evaluate(() => [...document.querySelectorAll('[id^="it-"]')].map(e => e.id.slice(3))));
   const ids = Object.keys(o.s.items).filter(id => !o.s.items[id]!.record && shown.has(id));
-  const withStatus = (status: string) => ids.find(id => o.r.statusOf(id) === status);
+  // A standing item is in progress with no share of its plan, so it is none of the rows these checks look for; it has its own below.
+  const withStatus = (status: string) => ids.find(id => !o.s.items[id]!.standing && o.r.statusOf(id) === status);
   const part = withStatus("wip"), idle = withStatus("idle"), todo = withStatus("todo");
   if (!part) v.push("progress-band: the board has no item in progress");
   if (!todo) v.push("progress-band: the board has no todo item");
@@ -298,6 +301,26 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
       if (!image.includes("linear-gradient") || fromAt < 0 || toAt <= fromAt) v.push(`progress-band (${scheme}): ${id}'s gradient does not run from ${got.from} to ${got.to}: ${image}`);
     }
   }
+  // A standing item is in progress and has no share of its plan, so its tree row draws no band and no count of rows done, and its 常设 tag
+  // lies on the title's line inside the row (docs/design.md, section 7).
+  const standing = ids.find(id => o.s.items[id]!.standing);
+  if (!standing) v.push("standing-tag: the board has no standing item in the tree");
+  else for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const got = await page.evaluate((key: string) => {
+      const row = document.getElementById("it-" + key)?.querySelector<HTMLElement>(":scope > .item-row.tree-row") ?? null;
+      const tag = row?.querySelector<HTMLElement>(".standing-tag") ?? null, title = row?.querySelector<HTMLElement>(".item-title") ?? null;
+      const box = (e: Element | null) => { if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+      return { row: box(row), band: !!row?.querySelector(".progress-band"), count: !!row?.querySelector(".steps-ratio"), text: tag?.textContent ?? null, tag: box(tag), title: box(title) };
+    }, standing);
+    if (!got.row) { v.push(`standing-tag (${scheme}): ${standing} has no tree row`); continue; }
+    if (got.band) v.push(`standing-tag (${scheme}): ${standing} carries a progress band`);
+    if (got.count) v.push(`standing-tag (${scheme}): ${standing} shows a count of rows done`);
+    if (got.text !== "常设" || !got.tag || !got.title) { v.push(`standing-tag (${scheme}): ${standing} shows no 常设 tag after its title (${JSON.stringify(got.text)})`); continue; }
+    if (got.tag.right - got.tag.left <= 0) v.push(`standing-tag (${scheme}): ${standing}'s tag has no width`);
+    if (!(got.tag.top < got.title.bottom && got.tag.bottom > got.title.top)) v.push(`standing-tag (${scheme}): ${standing}'s tag is not on its title's line (${got.tag.top}–${got.tag.bottom} against ${got.title.top}–${got.title.bottom})`);
+    if (got.tag.left < got.row.left - 1 || got.tag.right > got.row.right + 1) v.push(`standing-tag (${scheme}): ${standing}'s tag lies outside its row (${got.tag.left}–${got.tag.right} against ${got.row.left}–${got.row.right})`);
+  }
   // A selected row keeps its highlight: its band is drawn at 45 % opacity, and an unselected band at full opacity.
   if (part) {
     await bp.select(part);
@@ -311,4 +334,21 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
   }
   await page.emulateMedia({ colorScheme: "light" });
   return v;
+}
+
+/**
+ * A standing item on the board, a top item of the project the generated board's unpaused witness lives in, for the checks that need one.
+ * It has one done and one todo step, as an ordinary item with a band and a count would: a probe with no rows could not show a page that draws them.
+ */
+export async function seedStanding(board: BoardServer): Promise<void> {
+  const s = board.store.snapshot();
+  if (s.items["standing-probe"]) return;
+  await addArchitectProject(board.ops, board.store);
+  const group = s.items[board.gen.witness.unpaused]!.group;
+  // Tags are required of a new item when the vocabulary offers its project one.
+  const tag = boardTags(s.board).find(x => tagApplies(x, group));
+  await board.ops.createItem({ author: "Architect", session: "架构师", key: "standing-probe", group, title: "Standing probe", standing: true, ...(tag ? { tags: [tag.name] } : {}) });
+  for (const row of [{ id: "done", text: "A step done", state: "done" }, { id: "next", text: "A step to do", state: "todo" }] as const) {
+    await board.ops.setPlan({ author: "Architect", session: "架构师", id: "standing-probe", row });
+  }
 }

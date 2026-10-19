@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
 import type { BoardServer } from "./harness.ts";
 import type { Hooks } from "./board-server.ts";
-import { oracle, checkFullWidth, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout, checkProgressBands } from "./invariants.ts";
+import { oracle, checkFullWidth, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout, checkProgressBands, seedStanding } from "./invariants.ts";
 import { checkSmoke, planItems, cardSample, checkAgentList, checkRunnerTable, checkMessages } from "./browser-checks.ts";
 import { checkCompact } from "./mermaid-compact.ts";
 import { WAIT, showHead, atNarrow, checkLibrary, checkFitWindows, checkZoom, checkActual, checkKeep, checkColors, seedPipeline, seedOne } from "./mermaid-checks.ts";
@@ -57,7 +57,8 @@ test("a closed card shows only its line while folded, and what is under it once 
   none(await checkCardFold(bp, o, cardSample(o, board.gen.witness)));
 });
 
-test("progress bands are as wide as the plan's share, in both colour schemes", LONG, async () => {
+test("progress bands are as wide as the plan's share, in both colour schemes, and a standing item draws none and keeps its 常设 tag on the title's line", LONG, async () => {
+  await seedStanding((await open()).board);
   const { board, bp } = await fresh();
   none(await checkProgressBands(bp, await oracle(board.store)));
 });

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { startBoard, openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import { DomPage } from "./page.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkCardBox, checkDifficultyChip, checkIdleStatus } from "./checks.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrap, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkCardBox, checkDifficultyChip, checkIdleStatus } from "./checks.ts";
 import type { Oracle } from "./checks.ts";
 
 const none = (v: string[]) => assert.equal(v.length, 0, v.length + " violations:\n" + v.slice(0, 60).join("\n"));
@@ -47,6 +47,7 @@ function families(bp: DomPage, board: BoardServer, projects?: Share): Record<str
     filters: ["project filters count, show and hide the right items" + (projects ? ` (part ${projects.part + 1} of ${projects.of}: the projects at positions ${projects.part}, ${projects.part + projects.of}, ...)` : ""),
       o => checkFilters(bp, o, o.s.board.projects.map(p => p.name).filter((_, k) => !projects || k % projects.of === projects.part))],
     search: ["search finds and shows items and cards", o => checkSearch(bp, o)],
+    wrap: ["n and the arrows wrap around the list from its bottom row and from the cursor", o => checkWrap(bp, o)],
   };
 }
 
