@@ -2332,7 +2332,53 @@ and the board pushes nothing from it.
   parent's candidates of every level one by one (at most 10).
   The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
   of the live board's shape it stays under 1500 characters and shorter than the todo lists of
-  `brief`. The character counts were not measured again after the limits went.
+  `brief`. That board has little work set aside (one pause, no 何时 section), so a second test fills
+  the rows of both pools (four projects, items with 20-character titles, reasons and 何时 sentences long
+  enough to be cut, ten rows of the part for each pool) and reads the longest the whole answer can be:
+  4837 characters, 3206 of them the part for the work set aside (read on 2026-10-19), which the test holds to 5000. A row of the part
+  is about 150 characters here, so the cap of ten rows for a pool is what bounds the part. It is not lowered
+  because the rows are taken a project at a time and the live board has eight projects: a cap under
+  eight could drop a project from the part. The character counts of the first board were not measured
+  again after the limits went.
+- *Work set aside.* A queue is refilled from this read, and a read that listed only what could
+  be started hid the rest: when the owner changed a principle, six items of one project that
+  had been paused, or had been left in a backlog with a written start condition, became
+  startable, and the answer "no work is left" was given from the candidates alone. After each
+  pool's candidates the answer therefore has a part, "另有", for the work of that pool that
+  `candidates` cannot offer, which the candidates' count (`total`, 候选 N) does not include.
+  `candidates` in `src/candidates.ts` builds it from `asideItems`, one function of the same
+  snapshot, and the text is read at the server's clock (the time of a pause and of a change is
+  turned into "how long").
+  - *Which items.* Open work items that are rated 1–5, held by nobody (an open engineer
+    dispatch holds, as for candidates), and have no open sub-item (a parent is its sub-items'
+    business, as in the whole view). Two kinds. *Paused*: `isPaused` is true, by a pause marker
+    on the item (`carrier` is the item) or on an item above it. *With a condition*: status
+    todo or idle, not `startable` (nobody needs it, as in a backlog that no unpaused root needs, or
+    its next step carries a wait text), and the head has a 何时 section. A startable item with a 何时 section is a
+    candidate, and a blocked one is not listed: the plan names what it waits for.
+  - *What a row says.* A paused row: the item, the carrier when it is not the item itself ("因 X
+    暂停"), who paused (the project of the log entry `暂停：…` written with the pause, found by the
+    time the marker carries), the day, how long, and the reason cut to 40 characters. A row of a
+    condition: the item, the first sentence of its 何时 section (cut to 60 characters) and how
+    long since the item last changed (`lastChange` of the whole view). The 何时 section is
+    the one `splitHead` finds (`src/head-sections.ts`), as `context` finds sections, so there is one
+    definition of a title: a bold title with a colon after it or alone, or a heading, a title inside a fenced
+    block not counting; `whenText` takes its first paragraph (the text after a bold title on the same
+    line included) up to a blank line or a fenced block.
+  - *Grouping.* More than 3 items (of any level) under one pause marker are one row of the
+    carrier and the count, and more than 3 items with a condition under one parent are one row of
+    the parent and the count, each at the place of the first of its items, as the groups of
+    candidates; `under=<item>` lists, besides the candidates directly under the item, at most 10
+    paused items whose pause is on it and at most 10 items with a condition directly under it.
+  - *Size.* At most `ASIDE_ROWS` (10) rows for a pool, taken a project at a time (the first row of
+    every project, then the second of every project) so that a project with a few items is
+    not crowded out by one with hundreds, and the header counts the items by project; the rows
+    not listed are counted. The part is absent, and the answer is as before, when the pool has no
+    such work. Ordered inside a project: paused work first, then work with a condition, the
+    longest-waiting first.
+  - *Not in the count and not chosen.* The part is for reading, like the rows above it: the board
+    does not say that a paused item should be resumed or that a condition holds; the reader (the
+    architect, who also decides the pause) judges.
 
 **The whole view.** `whole_view` answers in one call what the board's open work is doing, so the
 architect no longer assembles it from `overview`, `list` and `candidates`, and the owner's
