@@ -705,7 +705,7 @@ derivation design that replaced this:
   list, and under 2 KB a write after it, the unread list itself growing by a stop a write; in the pairs below this
   tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what chains of 50 and of 200 writes leave reachable
   after full collections (at most 5 of 51 and of 201: the cache's two and up to three more seen on hosted runners, a few and
-  not in proportion to the chain; each of the two chains keeps all 51). A prospective state inside a
+  not in proportion to the chain; a chain that keeps every state keeps all of them). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
