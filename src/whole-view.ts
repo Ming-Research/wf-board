@@ -134,6 +134,8 @@ export function wholeView(s: Input, r: Rules, now: number): WholeView {
     if (r.isBacklog(id) && !report) { c.backlog++; continue; }
     // A parent with open sub-items is its sub-items' business; it is a row of its own only when a session works on it itself.
     if (!report && !engineer && r.children(id).some(child => r.isOpenWork(child))) continue;
+    // A standing item is a promise in force, not work waiting for someone: it is a row only when the runner or a session works on it.
+    if (!report && !engineer && r.isStanding(id)) continue;
     c.remaining++;
     if (r.isPaused(id)) {
       const source = r.pausedBy(id) ?? id, marker = s.items[source]?.paused, src = s.items[source] ?? it;
