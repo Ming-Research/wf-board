@@ -579,7 +579,7 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
       // Where a row the lap did not expect (or expected and missed) stands: drawn in the tree, and the unread documents that name it.
       const named = (id: string) => [...o.docs].filter(d => d === "item:" + id || o.s.decisions[d.slice(9)]?.item === id && d.startsWith("decision:")
         || d.startsWith("note:") && [o.s.notes[d.slice(5)]?.target].some(t => t === "it:" + id || t?.startsWith("q:") && o.s.decisions[t.slice(2)]?.item === id));
-      const where = (id: string) => `${id} [${rows.includes(id) ? "in" : "not in"} the tree, ${o.fresh.has(id) ? "unread" : "not unread"}: ${named(id).join(" ") || "no unread document"}]`;
+      const where = (id: string) => `${id} [${rows.includes(id) ? "in" : "not in"} the tree, ${o.fresh.has(id) ? "unread" : "not unread"}: ${named(id).join(" ") || "no unread document"}; ${o.r.statusOf(id)}, above it ${o.r.ancestors(id).map(a => a + (rows.includes(a) ? "+" : "-")).join(" ") || "nothing"}]`;
       v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}; unexpected ${seen.filter(id => !lap.includes(id)).map(where).join("; ")}; missed ${lap.filter(id => !seen.includes(id)).map(where).join("; ")}`);
     }
   }
