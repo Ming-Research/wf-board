@@ -5105,8 +5105,20 @@ seen, not how much faster one is). The job with `needs`, before the change, 5 ru
 one after the other (39202882081, 39202980543, 39203070138, 39203166365,
 39203263653): 65, 59, 61, 60, 65; the run was created 1 to 2 after the call, the
 last check ended 49 to 57 after the run was created, the status came 7 to 9 after
-that. The job that waits, with the cache of `node_modules`, 15 runs in three
-batches of 5: BATCHES.
+that. The job that waits, with the cache of `node_modules`, 20 runs in four
+batches of 5, one batch after the other on the branch: 56, 51, 49, 54, 53 (the
+first three on the commit that added the job, the last two on the next, which only
+added design-record text; the cache was still one step); 69, 50, 56, 52, 52 (the
+cache as two steps); 54, 52, 63, 52, 52 (the same files as the batch
+before, and a check that cancelled runs write nothing); and 54, 54, 51, 52, 55 on the commit with the final
+files (runs 39210778465, 39210872937, 39210964807, 39211048155 and 39211138157,
+called at 06:35:15, 06:36:14, 06:37:12, 06:38:07 and 06:39:04 and their statuses
+at 06:36:09, 06:37:08, 06:38:03, 06:38:59 and 06:39:59; the last check ended 48 to
+51 after the run was created and the status 2 to 3 after it). The 20 runs: median
+52.5, 18 at 56 or less. Only the last batch has the timeouts of the jobs, which the
+earlier ones lack; the files that the CI runs in it differ from the head's only by
+the design record and the temporary workflow that took the measurement (`git diff`
+on `.github`, `scripts`, `test`, `package.json`, `package-lock.json`).
 In the runs over 60 one job started late on the runner pool (34 and 27 seconds
 after the rest of the run, which started within 4); of 59 runs started by hand
 before the change 7 had a job that started more than 8 seconds late, up to 28.
