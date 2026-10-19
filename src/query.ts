@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Check, Rules } from "./rules.ts";
-import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep } from "./rules.ts";
+import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep, checkKey } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
@@ -538,10 +538,9 @@ export interface ChangesReport {
   /** The changes that are not rows above: counted by kind and by session; the documents themselves only with `detail`. */
   others: { items: number; cards: number; notes: number; bySession: Record<string, number>; groups: AreaGroups };
 }
-/** A flag's name on a row: its short label, else its text without a count that changes while the flag stays. */
+/** A flag's name on a row, for people to read: its short label, else its text without a count that changes while the flag stays.
+ * It names a flag on a row; whether two flags are the same one is `checkKey`'s, never the name's. */
 const flagName = (c: Check): string => c.label ?? c.text.replace(/（现在 \d+ 个）/, "");
-/** What makes a flag the same flag on two boards: its name and what it points at. */
-const flagKey = (c: Check): string => `${flagName(c)}|${c.target ? `${c.target.kind}:${c.target.id}` : ""}`;
 /** The kind of flag, for counting: the name up to the first colon, since some carry the item they name after it. */
 const flagKind = (c: Check): string => flagName(c).split("：")[0]!;
 function nameList(checks: readonly Check[]): string[] {
@@ -628,7 +627,7 @@ export async function changesReport(store: Store, s: Snapshot, since: string, f:
     const now = r.checks(id);
     if (!now.length) continue;
     if (createdIds.has(id)) { created.find(c => c.id === id)!.flags = nameList(now); continue; }
-    const known = new Set(rOld.checks(id).map(flagKey)), added = now.filter(c => !known.has(flagKey(c)));
+    const known = new Set(rOld.checks(id).map(checkKey)), added = now.filter(c => !known.has(checkKey(c)));
     if (!added.length) continue;
     flags.push({ item: id, project: r.projectOf(id), flags: nameList(added), by: [...(writers.get(id) ?? [])] });
     for (const c of added) flagCounts[flagKind(c)] = (flagCounts[flagKind(c)] ?? 0) + 1;
