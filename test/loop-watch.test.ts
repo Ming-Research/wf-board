@@ -87,6 +87,7 @@ test("the line tells the load average as it is when the stall is told, with two 
 test("a stall is told after the timer's callback, when the entries of its collections have arrived", () => {
   const waiting: (() => void)[] = [];
   const { collected, lines, watch: w } = watcher({ settle: read => { waiting.push(read); } });
+  w.tick(100);
   w.tick(1200);
   assert.deepEqual(lines, [], "nothing is told while the telling waits");
   // The entries of a collection that ran in the stall are handed over now, one that began before the stretch with it.
