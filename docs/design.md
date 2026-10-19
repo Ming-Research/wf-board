@@ -1693,8 +1693,12 @@ so their open work stays reachable.
 Their rows in every plan always show the state glyph, title and link;
 following a link opens the hidden item's detail without changing filters.
 Unread changes on a closed item, its cards and replies remain in 新 and the
-navigation stops. Reading and reviewing them does not require drawing the
-item in the default tree.
+navigation stops. A closed item that holds such content, or has an item below it
+that does, is the one exception to the default: the tree draws it dimmed until the
+content is read (owner, 2026-10-14), so n and the new-content counts reach only rows
+on screen. A page kept open draws the same rows as a page loaded after the same
+writes: when what is unread changes, the group of a row that came or went is drawn
+again, without waiting for the minute's redraw.
 
 #### Checks
 

@@ -3025,6 +3025,7 @@ test("done and cancelled items holding unread item, card or reply content show d
     p.key("m"); await p.flush();
     assert.deepEqual(p.calls.filter(c=>c.path === "/api/read").map(c=>c.body),[{doc:kind+":"+id,through:stepId}]);
     assert.ok(!p.all().some(e=>e.innerHTML === "新 1 ›"));
+    assert.ok(!rowOf(p,"child"),"once read, the closed item leaves the tree at once, as it is not on a page loaded now");
   });
 });
 
