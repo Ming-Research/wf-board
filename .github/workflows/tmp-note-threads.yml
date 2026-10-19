@@ -1,7 +1,8 @@
 name: tmp-note-threads
 # Temporary: delete before the last full CI, which fails while this file exists.
-# The full CI's n-key time parts (test/nkey), which the change made slower by about 5% (the second sort of each comment list),
-# with the unit tests of the list order and the fake-DOM page that the fix touches.
+# The full CI's n-key time parts (test/nkey): the first full run read the page 5.1% slower than its base while writing (the second
+# sort of each comment list, since removed), the next 4.0% slower on a quiet board. Each part is run on three runners with 3 rounds each
+# (NKEY_FLOOR=3), to tell a cost of the change from the lane's noise.
 on:
   push:
     branches-ignore: [main]
@@ -27,12 +28,13 @@ jobs:
       - run: node --test test/threads.test.ts test/web.test.ts
         if: ${{ !cancelled() }}
   nkey:
-    name: nkey ${{ matrix.part }}
+    name: nkey ${{ matrix.part }} ${{ matrix.run }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         part: [time-writing, time-quiet]
+        run: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -46,3 +48,5 @@ jobs:
       - name: Base page
         run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
+        env:
+          NKEY_FLOOR: 3
