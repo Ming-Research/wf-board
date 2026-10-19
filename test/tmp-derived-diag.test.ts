@@ -335,25 +335,27 @@ function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: num
   }
   return { states, rules: made, last: state };
 }
-test("DIAG collection attempts", async t => {
+test("DIAG collection attempts at two lengths", async t => {
   setFlagsFromString("--expose-gc");
   const collect = runInNewContext("gc") as () => void;
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
+  const start = store.snapshot(), id = Object.keys(start.items)[0]!;
   const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
   const aliveIdx = (refs: WeakRef<object>[]) => refs.map((r, i) => (r.deref() !== undefined ? i : -1)).filter(i => i >= 0);
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const cache = new DerivedCache(), writes = 50;
-    const { states, rules: made, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now(), writes);
-    const per: string[] = [];
-    for (let round = 0; round < 3; round++) {
-      await new Promise(resolve => setImmediate(resolve));
-      collect();
-      per.push(`${alive(made)}/${alive(states)}`);
-      if (alive(made) <= 3 && alive(states) <= 3) break;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    for (const writes of [50, 200]) {
+      const cache = new DerivedCache();
+      const { states, rules: made, last } = chainOfStates(cache, start, id, Date.now(), writes);
+      const per: string[] = [];
+      for (let round = 0; round < 3; round++) {
+        await new Promise(resolve => setImmediate(resolve));
+        collect();
+        per.push(`${alive(made)}/${alive(states)}`);
+        if (alive(made) <= 3 && alive(states) <= 3) break;
+      }
+      console.log(`DIAG attempt ${attempt} writes ${writes} rounds ${per.join(" ")} made [${aliveIdx(made).join(",")}] states [${aliveIdx(states).join(",")}]`);
+      assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
     }
-    const bad = alive(made) > 3 || alive(states) > 3;
-    console.log(`DIAG attempt ${attempt} ${bad ? "FAIL" : "ok"} rounds ${per.join(" ")} made [${aliveIdx(made)}] states [${aliveIdx(states)}]`);
-    assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
   }
 });
 

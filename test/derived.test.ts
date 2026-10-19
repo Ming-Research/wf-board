@@ -335,25 +335,37 @@ function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: num
   }
   return { states, rules: made, last: state };
 }
+/** The most Rules objects, and the most states, of a chain that may stay reachable after a full collection. The cache holds two: the newest
+ * state and the one before it. Up to three more have been seen reachable on hosted runners, always at fixed places of the chain (its first
+ * state and its tenth, in 3 of 52 runs of 40 chains each; 4 of 51 after three collections, 5 of 51 after one), not at the newest
+ * states and not more of them with more writes, so they are not the cache's. A cache that kept a step per state keeps all of them. */
+const REACHABLE = 5;
+/** A cache of its own over a chain of `writes` states, collected up to three times (a WeakRef keeps its target until the current job
+ * ends, so each collection runs in a job of its own), then how many of the chain's Rules objects and states are still reachable. */
+async function reachableAfterChain(collect: () => void, start: Snapshot, id: string, writes: number): Promise<{ rules: number; states: number }> {
+  const cache = new DerivedCache();
+  const { states, rules: made, last } = chainOfStates(cache, start, id, Date.now(), writes);
+  const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
+  for (let round = 0; round < 3; round++) {
+    await new Promise(resolve => setImmediate(resolve));
+    collect();
+    if (alive(made) <= REACHABLE && alive(states) <= REACHABLE) break;
+  }
+  assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
+  return { rules: alive(made), states: alive(states) };
+}
 test("the shared cache holds the state before the newest one and none older, however many writes follow", async t => {
   setFlagsFromString("--expose-gc");
   const collect = runInNewContext("gc") as () => void;
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
-  const cache = new DerivedCache(), writes = 50;
-  const { states, rules: made, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now(), writes);
-  // A chain keeps every earlier state and Rules object; the cache holds the newest and the one before it. A stray reference
-  // outside the cache (the test's own frames) may keep one more, so three are allowed of the 51.
-  const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
-  // A WeakRef keeps its target until the current job ends, so each collection runs in a job of its own. One full collection has once
-  // left 5 of the 51 on a hosted runner; up to three are run, which a chain survives all the same.
-  for (let round = 0; round < 3; round++) {
-    await new Promise(resolve => setImmediate(resolve));
-    collect();
-    if (alive(made) <= 3 && alive(states) <= 3) break;
+  const start = store.snapshot(), id = Object.keys(start.items)[0]!;
+  // The same bound at two lengths: a chain of 200 states must leave no more reachable than one of 50, which a cache keeping every
+  // state, or one in every few, does not.
+  for (const writes of [50, 200]) {
+    const left = await reachableAfterChain(collect, start, id, writes);
+    assert.ok(left.rules <= REACHABLE, `${left.rules} of ${writes + 1} Rules objects are still reachable after a collection`);
+    assert.ok(left.states <= REACHABLE, `${left.states} of ${writes + 1} states are still reachable after a collection`);
   }
-  assert.ok(alive(made) <= 3, `${alive(made)} of ${writes + 1} Rules objects are still reachable after a collection`);
-  assert.ok(alive(states) <= 3, `${alive(states)} of ${writes + 1} states are still reachable after a collection`);
-  assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {

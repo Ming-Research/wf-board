@@ -1,17 +1,17 @@
 name: tmp-derived-flake
-# Temporary (ci-gate-margin): the collection test of the derived cache, 40 attempts in one process, under V8 flags that change when
-# code is compiled. Delete before the last full CI.
+# Temporary (ci-gate-margin): the rewritten collection test of the derived cache. `diag`: 30 attempts at 50 and at 200 writes in one
+# process, with the indices that stay reachable. `witness`: the test against a cache that keeps every state it was given (it must
+# fail), and `control`: the same file unchanged (it must pass). Delete before the last full CI.
 on:
   push:
     branches-ignore: [main]
 jobs:
-  flake:
+  diag:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        flags: ["--stack-size=984", "--no-concurrent-recompilation", "--no-opt", "--no-opt --no-maglev", "--jitless"]
-        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -19,6 +19,34 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: run
         run: |
-          timeout 200 node ${{ matrix.flags }} test/tmp-derived-diag.test.ts > out.txt 2>&1 || true
-          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE "${{ matrix.flags }}" ${{ matrix.rep }} /' || true
-          echo "DIAGEND \"${{ matrix.flags }}\" ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt) fails=$(grep -ac 'DIAG attempt.*FAIL' out.txt)"
+          timeout 250 node test/tmp-derived-diag.test.ts > out.txt 2>&1 || true
+          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE ${{ matrix.rep }} /' || true
+          echo "DIAGEND ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt)"
+  witness:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [control, leak-all]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: patch
+        if: matrix.kind == 'leak-all'
+        run: |
+          python3 -I - <<'PY'
+          p = "src/rules.ts"
+          s = open(p).read()
+          old = "    this.step = { after, before, changed, ...(activity ? { activity } : {}) };"
+          assert s.count(old) == 1
+          leak = "    (this as unknown as { kept?: object[] }).kept = [...((this as unknown as { kept?: object[] }).kept ?? []), before];\n"
+          open(p, "w").write(s.replace(old, leak + old))
+          PY
+          git diff --stat
+      - name: run
+        run: |
+          timeout 200 node --test --test-reporter=spec test/derived.test.ts > out.txt 2>&1; code=$?
+          echo "WITNESS ${{ matrix.kind }} exit=$code"
+          grep -a "still reachable after a collection" out.txt | head -3 | sed 's/^/WITNESS ${{ matrix.kind }} /'
+          grep -a -E "^ℹ (pass|fail) " out.txt | sed 's/^/WITNESS ${{ matrix.kind }} /'
