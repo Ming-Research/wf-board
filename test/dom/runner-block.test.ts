@@ -1,6 +1,6 @@
 // The runner's block of the agent list on the page in a DOM library: the work the runner holds is a row each with the state its report
 // gives, the level of its session and, for a turn running, what the runner last beat; the older list does not draw the same session
-// twice. The rows' rules are tested on plain data in test/runner-rows.test.ts, the table's form in test/dom/runner-table.test.ts; where
+// twice. The rows' rules are tested on plain data in test/runner-rows.test.ts, the table's form in test/dom/runner-table.ts; where
 // the block lies is not a question for this layer. docs/design.md, section 7, Agent list.
 
 import { test } from "node:test";

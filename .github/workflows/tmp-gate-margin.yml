@@ -1,5 +1,5 @@
 name: tmp-gate-margin
-# Temporary (ci-gate-margin): the time of the runner-table test file and of its parts, on push.
+# Temporary (ci-gate-margin): the time of the runner-table test files and of the parts of a scenario, on push.
 on: push
 jobs:
   phases:
@@ -11,8 +11,12 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: phases of one scenario
         run: node scripts/tmp-phases.ts --profile
-      - name: runner-table alone
-        run: node --test --test-reporter=spec test/dom/runner-table.test.ts 2>&1 | grep -v "^GET " | cut -c1-200
+      - name: each runner-table file alone
+        run: |
+          for f in test/dom/runner-table.test.ts test/dom/runner-table-spoiled-1.test.ts test/dom/runner-table-spoiled-2.test.ts test/dom/runner-table-spoiled-3.test.ts; do
+            echo "== $f"
+            node --test --test-reporter=./scripts/test-times-reporter.ts $f 2>&1 | grep -v "^GET " | head -8
+          done
   shard:
     runs-on: ubuntu-latest
     steps:
@@ -20,5 +24,6 @@ jobs:
       - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: the three files of shard 1 as the shard runs them
-        run: time node --test --test-reporter=spec test/dom/runner-table.test.ts test/dom/page-filters-after-1.test.ts test/query.test.ts 2>&1 | grep -v "^GET " | cut -c1-200 | tail -30
+      - name: the files of a shard that holds the heaviest page files, as the shard runs them
+        run: |
+          time node --test --test-reporter=./scripts/test-times-reporter.ts test/dom/runner-table-spoiled-1.test.ts test/dom/runner-table-spoiled-2.test.ts test/dom/runner-table-spoiled-3.test.ts test/dom/runner-table.test.ts test/dom/page-filters-after-1.test.ts test/query.test.ts 2>&1 | grep -v "^GET " | head -14
