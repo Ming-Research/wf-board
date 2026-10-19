@@ -51,10 +51,10 @@ test("the line tells the CPU time of the process since the timer's last firing, 
   total.cpu = 5030; w.tick(200);
   total.cpu = 5930; w.tick(1200);
   assert.equal(lines.length, 1);
-  assert.equal(reading(lines[0]!, "cpu"), 900, lines[0]);
+  assert.equal(reading(lines[0]!, "cpu"), 900, lines[0]!);
   // The second stall is counted from the first line's reading.
   total.cpu = 6330; w.tick(2300);
-  assert.equal(reading(lines[1]!, "cpu"), 400, lines[1]);
+  assert.equal(reading(lines[1]!, "cpu"), 400, lines[1]!);
 });
 
 test("the line tells the time the process spent in garbage collection since the timer's last firing, not its total", () => {
@@ -63,9 +63,9 @@ test("the line tells the time the process spent in garbage collection since the 
   total.gc = 810; w.tick(200);
   total.gc = 880; w.tick(1200);
   assert.equal(lines.length, 1);
-  assert.equal(reading(lines[0]!, "gc"), 70, lines[0]);
+  assert.equal(reading(lines[0]!, "gc"), 70, lines[0]!);
   total.gc = 1280; w.tick(2300);
-  assert.equal(reading(lines[1]!, "gc"), 400, lines[1]);
+  assert.equal(reading(lines[1]!, "gc"), 400, lines[1]!);
 });
 
 test("the line tells the load average as it is when the stall is told, with two decimals", () => {
@@ -87,7 +87,7 @@ test("the readings of a stall are taken after the timer's callback, when the ent
   total.gc = 70;
   assert.equal(waiting.length, 1);
   waiting[0]!();
-  assert.equal(reading(lines[0]!, "gc"), 70, lines[0]);
+  assert.equal(reading(lines[0]!, "gc"), 70, lines[0]!);
 });
 
 test("the meters of the process turn the CPU time into milliseconds, add its user and system parts and take the first load average", () => {
