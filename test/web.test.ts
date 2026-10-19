@@ -1571,6 +1571,79 @@ test("filter counts kept per item through live changes equal those of a page ope
   assert.equal(count("board:filter-counts")-counted,0,"no change counted every item again");
 });
 
+// A write that reused the rules keeps the page's structure too (the order of the items, the stops that wait on the owner, the
+// unread stops, the counts by status). After every kind of change the header, the item tree and the open item read as they do on a
+// page opened on the same board, and the structure is made again exactly when the change could have moved it.
+async function structureScenario(reverts: Revert[] = []) {
+  const work=(rows:PlanRow[],fields:Partial<Item>={}):Item=>({title:"Work",group:"P",updated:at,rev:1,links:[],log:[],plan:planWork(rows),...fields});
+  const open=(fields:Partial<Decision>={}):Decision=>({item:"p1",question:"如何做？",options:[{key:"A",text:"甲",recommended:true},{key:"B",text:"乙"},{key:"C",text:"丙"}],status:"open",updated:at,rev:1,...fields});
+  let s:Snapshot={board:{title:"Structure",projects:[{name:"P"},{name:"Q"}],tags:[{name:"看板",meaning:"看板的事"}]},head:"a".repeat(40),owner:{},notes:{},glossaries:{},items:{
+    p1:work([ownedRow("p2"),ownedRow("p3"),cardRow("c1"),cardRow("c2"),cardRow("c3"),planStep("w","Work","todo")],{head:"[[q:c2]]\n\n[[q:c3]]\n\n[[q:c1]]"}),
+    p2:work([planStep("w","Work","doing")]),
+    p3:work([planStep("w","Work","todo")]),
+    q1:work([sharedRow("p3"),planStep("w","Work","todo")],{group:"Q"}),
+  },decisions:{c1:open({blocks:"等主人裁定"}),c2:open({question:"第二个？"}),c3:open({question:"第三个？"})}};
+  let list:unknown[]=unread("item","p2");
+  const response=(path:string)=>path === "/api/unread" ? reply({steps:list}) : undefined;
+  // The clock stands still, so no minute passes between a page's first build of the rules and a write.
+  const now=()=>Date.parse("2026-10-11T01:30:30Z");
+  const opened=async()=> { const p=await page(s,list,null,undefined,{now,response}); await p.flush(); await rowOf(p,"p1").querySelector(".item-head")!.click(); await p.flush(); return p; };
+  const seen=(p:Awaited<ReturnType<typeof page>>)=>["summary","areas","item-detail"].map(id=>markup(p.roots.get(id)!)).join("\n--\n");
+  const p=await page(s,list,null,undefined,{now,reverts,response}); await p.flush(); await rowOf(p,"p1").querySelector(".item-head")!.click(); await p.flush();
+  const it=(id:string)=>s.items[id]!;
+  const step=(doc:string,id:string)=>unread("item",doc,id.repeat(40))[0]!;
+  // `keeps`: the structure stays as it was; `steps`: the unread list after the change.
+  const changes:Array<{what:string;docs:Array<{kind:string;id:string;after:unknown}>;keeps:boolean;steps?:unknown[]}>=[
+    {what:"a log entry",docs:[{kind:"item",id:"p2",after:{...it("p2"),log:[{at,text:"progress"}]}}],keeps:true},
+    {what:"a new title",docs:[{kind:"item",id:"p3",after:{...it("p3"),title:"Third"}}],keeps:true},
+    {what:"a tag and a difficulty",docs:[{kind:"item",id:"p2",after:{...it("p2"),tags:["看板"],difficulty:2}}],keeps:true},
+    {what:"a new unread step",docs:[{kind:"item",id:"p3",after:{...it("p3"),title:"Third again"}}],keeps:true,steps:[...unread("item","p2"),step("p3","e")]},
+    {what:"the head placing the cards in another order",docs:[{kind:"item",id:"p1",after:{...it("p1"),head:"[[q:c3]]\n\n[[q:c2]]\n\n[[q:c1]]"}}],keeps:false},
+    {what:"an ask",docs:[{kind:"item",id:"p3",after:{...it("p3"),ask:{text:"选哪个？"}}}],keeps:false},
+    {what:"a card ruled",docs:[{kind:"decision",id:"c2",after:open({question:"第二个？",status:"ruled",choice:"A",rev:2})}],keeps:false},
+    {what:"a new card",docs:[{kind:"decision",id:"c4",after:open({item:"p2",question:"第四个？"})}],keeps:false},
+    {what:"a new item under an owner",docs:[{kind:"item",id:"p4",after:work([planStep("w","Work","doing")])},{kind:"item",id:"p3",after:{...it("p3"),plan:planWork([ownedRow("p4"),planStep("w","Work","todo")])}}],keeps:false},
+    {what:"a log entry on the new item",docs:[{kind:"item",id:"p4",after:{...work([planStep("w","Work","doing")]),log:[{at,text:"progress"}]}}],keeps:true},
+    {what:"an item deleted",docs:[{kind:"item",id:"q1",after:null}],keeps:false},
+    {what:"a pause",docs:[{kind:"item",id:"p1",after:{...it("p1"),paused:{reason:"等",at}}}],keeps:false},
+    {what:"a log entry and the unread list emptied",docs:[{kind:"item",id:"p2",after:{...it("p2"),log:[{at,text:"more"}]}}],keeps:true,steps:[]},
+  ];
+  const differences:string[]=[], wrong:string[]=[];
+  for (const [k,{what,docs,keeps,steps}] of changes.entries()) {
+    const was={structure:p.marks.get("board:structure") ?? 0,stops:p.marks.get("board:stops") ?? 0};
+    const items={...s.items}, decisions={...s.decisions};
+    for (const doc of docs) {
+      const target=doc.kind === "item" ? items : decisions as Record<string,unknown>;
+      if (doc.after) target[doc.id]={...doc.after as object,rev:(((doc.kind === "item" ? s.items : s.decisions)[doc.id] as {rev:number} | undefined)?.rev ?? 0)+1} as never; else delete target[doc.id];
+    }
+    s={...s,items,decisions};
+    if (steps) list=steps;
+    await p.change(String(k+1).repeat(40),docs.map(doc=>({...doc,after:doc.after && (doc.kind === "item" ? items : decisions as Record<string,unknown>)[doc.id]}))); await p.flush();
+    const fresh=await opened();
+    if (seen(p) !== seen(fresh)) differences.push(what);
+    const rebuilt=(p.marks.get("board:structure") ?? 0)-was.structure, stops=(p.marks.get("board:stops") ?? 0)-was.stops;
+    if (keeps && (rebuilt !== 0 || stops !== 0)) wrong.push(`${what}: the structure was made again (${rebuilt} times, the stops ${stops})`);
+    if (!keeps && (rebuilt === 0 || stops === 0)) wrong.push(`${what}: the structure was kept`);
+  }
+  return {differences,wrong,freshStops:p.marks.get("board:fresh-stops") ?? 0};
+}
+test("the structure the page keeps through live changes reads as a page opened on the same board, and is made again when a change could move it", async () => {
+  const { differences, wrong } = await structureScenario();
+  assert.deepEqual(differences,[],"after every change the page reads as one opened on the same board");
+  assert.deepEqual(wrong,[]);
+});
+test("the structure kept through live changes is reported by a page that keeps too much", async t => {
+  const kept='    const reused = previous !== undefined && why === null && previous.changed.every(d => d.kind === "message" || previous.rules.item(d.id)?.head === s.items[d.id]?.head);';
+  for (const [what,reverts,change] of [
+    ["a head that places the cards in another order does not make it again",[{file:"web/app.ts",edit:"the head does not make the structure again",find:kept,replace:'    const reused = previous !== undefined && why === null;'}],"the head placing the cards in another order"],
+    ["rules derived from scratch do not make it again",[{file:"web/app.ts",edit:"the structure is kept through rules built from scratch",find:kept,replace:'    const reused = previous !== undefined;'}],"an ask"],
+    ["a new unread step does not make the unread stops again",[{file:"web/app.ts",edit:"the unread stops are made once",find:'keptFor("allFreshStops", [steps], freshStopsNow)',replace:'keptCached("allFreshStops", freshStopsNow)'}],"a new unread step"],
+  ] as const) await t.test(what,async()=> {
+    const { differences } = await structureScenario([...reverts]);
+    assert.ok(differences.includes(change),"the comparison names "+change+" (it named: "+(differences.join(", ") || "nothing")+")");
+  });
+});
+
 test("SSE burst renders once per frame and fetches unread once", async () => {
   const frames=new Frames(), p=await page(snapshot(),[],null,undefined,{frames,notesOpen:{"it:area":true}}); await expand(p,"area"); await p.flush(); const renders=p.renders.length, reads=p.calls.filter(c=>c.path === "/api/unread").length;
   for(let i=0;i<10;i++) p.emit(String(i).repeat(40),[{kind:"note",id:"burst",after:{target:"it:area",kind:"comment",text:"Burst "+i,at,state:"sent",rev:i+1}}]);
