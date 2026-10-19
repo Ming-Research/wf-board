@@ -188,6 +188,19 @@ function newKey(s: Snapshot, key: string): void {
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
 interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
+/** The answer's line for an owned row the write made or changed that starts behind rows of its owner's plan not done yet: the item
+ * stays blocked until they are done, and `after: []` on its row starts it at once. Nothing when every such row has come up. */
+function behindNote(before: Snapshot, after: Snapshot, newRules: ReturnType<typeof rules>, written: ReadonlySet<string>): string | undefined {
+  const lines: string[] = [];
+  for (const id of written) for (const row of after.items[id]?.plan ?? []) {
+    if (!("item" in row && row.own) || !newRules.isOpenWork(row.item)) continue;
+    const was = before.items[id]?.plan?.find(r => "item" in r && r.item === row.item && r.own);
+    if (was !== undefined && isDeepStrictEqual(was, row)) continue;
+    const waits = newRules.ownerRowWaits(row.item);
+    if (waits.length) lines.push(`${row.item} is blocked: its row in ${id}'s plan waits for ${waits.join(", ")}, not done yet; to start it at once, give that row after: [] (create_item's after, or set_plan on ${id})`);
+  }
+  return lines.length ? lines.join("; ") : undefined;
+}
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -400,6 +413,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (work.replayed) return { ...work.replayed, repeated: true as const };
         if (!anyAuthor) requireAuthor(s, a.author);
         // A write of messages alone changes no item, card or note: no rule of the board reads it, so none is checked.
+        let behind: string | undefined;
         if (work.board || work.puts.some(p => p.kind !== "message")) {
           // Validate the prospective board, including indirect effects on children,
           // dependents and items whose owner actions a card/note write changes.
@@ -420,6 +434,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
           const afterRules = candidate();
           withinScope(s, a, partList, work);
           const checked = requiredCheckItems(s, next, work, beforeRules, afterRules);
+          behind = behindNote(s, next, afterRules, written);
           // Pause permission covers open work resumed through any indirect effect,
           // including unwritten descendants. Closing work is allowed when its
           // explicit marker stays intact; reopening will restore that pause.
@@ -458,7 +473,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         trace?.lap("check");
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
-          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(work.note === undefined ? {} : { note: work.note }) };
+          const note = [work.note, behind].filter((line): line is string => line !== undefined).join("; ");
+          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(note === "" ? {} : { note }) };
         } catch (error) {
           if (error instanceof ConflictError) {
             if (!overwrite) continue;
