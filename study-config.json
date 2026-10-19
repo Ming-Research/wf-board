@@ -1,7 +1,11 @@
 {
  "args": [
   "--series",
-  "15"
+  "15",
+  "--pairs",
+  "4",
+  "--members",
+  "default,default-twin,semi4-g50"
  ],
  "variants": [
   {
@@ -21,8 +25,28 @@
    },
    "rate": 18,
    "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
+   "phases": 1,
+   "idle": 15
+  },
+  {
+   "name": "default-twin",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 1,
+   "idle": 15
   },
   {
    "name": "semi4-g50",
@@ -44,36 +68,13 @@
    },
    "rate": 18,
    "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
+   "phases": 1,
+   "idle": 15
   },
   {
-   "name": "rt-semi4-g50",
-   "flags": [],
-   "env": {
-    "STUDY_V8_FLAGS": "--max-semi-space-size=4 --heap-growing-percent=50"
-   },
-   "mix": {
-    "unread": 45,
-    "step": 31,
-    "snapshot": 3,
-    "context": 7,
-    "list": 3,
-    "notes": 3,
-    "messages": 3,
-    "changes": 1,
-    "append_log": 4
-   },
-   "rate": 18,
-   "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
-  },
-  {
-   "name": "semi2-g50",
+   "name": "osize",
    "flags": [
-    "--max-semi-space-size=2",
-    "--heap-growing-percent=50"
+    "--optimize-for-size"
    ],
    "env": {},
    "mix": {
@@ -89,53 +90,8 @@
    },
    "rate": 18,
    "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
-  },
-  {
-   "name": "semi8-g50",
-   "flags": [
-    "--max-semi-space-size=8",
-    "--heap-growing-percent=50"
-   ],
-   "env": {},
-   "mix": {
-    "unread": 45,
-    "step": 31,
-    "snapshot": 3,
-    "context": 7,
-    "list": 3,
-    "notes": 3,
-    "messages": 3,
-    "changes": 1,
-    "append_log": 4
-   },
-   "rate": 18,
-   "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
-  },
-  {
-   "name": "rt-g50",
-   "flags": [],
-   "env": {
-    "STUDY_V8_FLAGS": "--heap-growing-percent=50"
-   },
-   "mix": {
-    "unread": 45,
-    "step": 31,
-    "snapshot": 3,
-    "context": 7,
-    "list": 3,
-    "notes": 3,
-    "messages": 3,
-    "changes": 1,
-    "append_log": 4
-   },
-   "rate": 18,
-   "perPhase": 4320,
-   "phases": 2,
-   "idle": 20
+   "phases": 1,
+   "idle": 15
   }
  ]
 }

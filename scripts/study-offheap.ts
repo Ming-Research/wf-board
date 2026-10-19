@@ -24,13 +24,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   variants: { type: "string", default: '[{"name":"default","flags":[],"env":{}}]' },
   phases: { type: "string", default: "4" }, "per-phase": { type: "string", default: "5000" }, conc: { type: "string", default: "8" },
-  idle: { type: "string", default: "30" }, only: { type: "string" }, series: { type: "string", default: "15" }, scale: { type: "string", default: "1" }, "start-wait": { type: "string", default: "3" },
+  idle: { type: "string", default: "30" }, only: { type: "string" }, pairs: { type: "string" }, members: { type: "string" }, series: { type: "string", default: "15" }, scale: { type: "string", default: "1" }, "start-wait": { type: "string", default: "3" },
 } });
 const PHASES = Number(args.phases), PER_PHASE = Number(args["per-phase"]), CONC = Number(args.conc), IDLE = Number(args.idle), SCALE = Number(args.scale), START_WAIT = Number(args["start-wait"]);
 /** A variant: V8 flags and environment for the daemon, and optionally the weights of the kinds of request (default: the live mix), the
  * requests per phase and a rate in requests a second (0: as fast as the daemon answers). */
 interface Variant { name: string; flags: string[]; env: Record<string, string>; mix?: Record<string, number>; perPhase?: number; rate?: number; phases?: number; idle?: number }
-const VARIANTS = (JSON.parse(args.variants!) as Variant[]).filter(v => args.only === undefined || v.name === args.only);
+const DEFINED = JSON.parse(args.variants!) as Variant[];
+/** The runs in order: with `--pairs N --members a,b,c`, N rounds of a, b and c one after the other (interleaved, so that a slow stretch of the
+ * runner lands on every member), else the variants named by `--only` (all by default). */
+const RUNS: Array<{ variant: Variant; round: number }> = args.pairs !== undefined
+  ? Array.from({ length: Number(args.pairs) }, (_, r) => args.members!.split(",").map(name => ({ variant: DEFINED.find(v => v.name === name)!, round: r + 1 }))).flat()
+  : DEFINED.filter(v => args.only === undefined || v.name === args.only).map(variant => ({ variant, round: 1 }));
 const SERIES_S = Number(args.series);
 const LIVE_MIX: Record<string, number> = { unread: 40, step: 22, snapshot: 4, context: 12, list: 4, notes: 3, messages: 3, changes: 3, append_log: 9 };
 const SHAPE = { items: Math.round(1942 * SCALE), decisions: Math.round(839 * SCALE), notes: Math.round(1210 * SCALE) };
@@ -256,15 +261,15 @@ const { files, ids } = blockBoard(SHAPE);
 writeBoard(board, files);
 console.log(`platform ${process.platform} ${process.arch}, node ${process.version}, board: ${SHAPE.items} items, ${SHAPE.decisions} cards, ${SHAPE.notes} notes, ${files.size} files, built in ${Math.round(performance.now() - built)} ms`);
 
-const results: Array<{ variant: string; flags: string[]; env: Record<string, string>; startupLine: string; samples: Sample[]; loads: Array<Awaited<ReturnType<typeof load>>>; series: Sample[] }> = [];
+const results: Array<{ variant: string; round: number; flags: string[]; env: Record<string, string>; startupLine: string; samples: Sample[]; loads: Array<Awaited<ReturnType<typeof load>>>; series: Sample[] }> = [];
 try {
-  for (const variant of VARIANTS) {
-    const dir = join(root, `board-${variant.name}`);
+  for (const { variant, round } of RUNS) {
+    const dir = join(root, `board-${variant.name}-${round}`);
     cpSync(board, dir, { recursive: true });
     const samples: Sample[] = [], loads: Array<Awaited<ReturnType<typeof load>>> = [], series: Sample[] = [];
     let daemon;
     try { daemon = await startDaemon(dir, variant, TOKEN, credentials); }
-    catch (error) { console.log(`STUDY ${JSON.stringify({ variant: variant.name, failed: String(error).slice(0, 800) })}`); continue; }
+    catch (error) { console.log(`STUDY ${JSON.stringify({ variant: variant.name, round, failed: String(error).slice(0, 800) })}`); continue; }
     try {
       await sleep(START_WAIT * 1000);
       samples.push(await daemon.sample("start"));
@@ -288,8 +293,9 @@ try {
       samples.push(await daemon.sample("gc + 10s"));
     } finally { daemon.child.kill("SIGTERM"); await sleep(500); }
     const startupLine = daemon.startup();
-    results.push({ variant: variant.name, flags: variant.flags, env: variant.env, startupLine, samples, loads, series });
+    results.push({ variant: variant.name, round, flags: variant.flags, env: variant.env, startupLine, samples, loads, series });
     console.log(`STUDY ${JSON.stringify(results.at(-1))}`);
+    rmSync(dir, { recursive: true, force: true });
   }
 } finally { rmSync(root, { recursive: true, force: true }); }
 

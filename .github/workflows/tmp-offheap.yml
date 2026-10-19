@@ -9,15 +9,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, semi4-g50, rt-semi4-g50, semi2-g50, semi8-g50, rt-g50]
-        rep: [1, 2, 3]
-    name: study ${{ matrix.variant }} ${{ matrix.rep }}
+        runner: [1, 2, 3]
+    name: pairs ${{ matrix.runner }}
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - name: Study
         run: |
-          node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --only "${{ matrix.variant }}" --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
+          node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
           grep -v '^STUDY ' study-output.txt >> "$GITHUB_STEP_SUMMARY"
