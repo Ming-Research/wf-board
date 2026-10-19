@@ -21,6 +21,17 @@ const MIN_ZOOM = 0.5, MAX_ZOOM = 6, STEP = 1.25;
  * The gaps reach ELK only through web/mermaid-entry.ts. */
 const COMPACT = { look: "classic", flowchart: { look: "classic", padding: 8, nodeSpacing: 20, rankSpacing: 20 } };
 
+/** The colors of a data chart (`xychart`), eight for the series in order, light and dark, from the data-viz palette checked against this page's
+ * surfaces (#ffffff and #182020): the library's own first series is #ECECFF, 1.17:1 against a white page, which hides the bars and lines. The
+ * keys are the library's themes ("default" is the light one). A settings block at the start of a diagram wins over these. */
+const CHART_COLORS = {
+  default: "#2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4,#008300,#6250d6,#e34948",
+  dark: "#3987e5,#d95926,#199e70,#c98500,#d55181,#008300,#9085e9,#e66767",
+};
+/** A chart's other settings: the library's dark theme gives a chart a #333 plate of its own, so the plate is clear and the page's surface shows;
+ * and 360 px high instead of the library's 500, so that a chart takes the room of a few lines of text. */
+const CHART = { xyChart: { height: 360 } };
+
 let library: Promise<Mermaid> | undefined;
 function load(): Promise<Mermaid> {
   library ??= import(LIBRARY).then((module: { default: Mermaid }) => module.default, (error: unknown) => { library = undefined; throw error; });
@@ -196,7 +207,7 @@ function fail(block: HTMLElement, message: string) {
 }
 
 function draw(block: HTMLElement) {
-  const source = block.querySelector("code")?.textContent ?? "", theme = dark() ? "dark" : "default", key = theme + "\n" + source;
+  const source = block.querySelector("code")?.textContent ?? "", theme = dark() ? "dark" as const : "default" as const, key = theme + "\n" + source;
   const known = drawn.get(key);
   // The copy gets ids of its own: the first copy of the same diagram may be hidden (a folded section), and the markers a line points at
   // are found by id.
@@ -215,7 +226,9 @@ function draw(block: HTMLElement) {
         // A syntax error is reported here, in the block, not as a picture of a bomb added to the end of the page.
         suppressErrorRendering: true,
         fontFamily: getComputedStyle(document.body).fontFamily,
+        themeVariables: { xyChart: { plotColorPalette: CHART_COLORS[theme], backgroundColor: "transparent" } },
         ...COMPACT,
+        ...CHART,
       });
       const { svg } = await mermaid.render(id, source);
       drawn.set(key, { svg, id });

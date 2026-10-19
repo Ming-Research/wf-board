@@ -2795,6 +2795,37 @@ library's `dark` theme when the page shows its dark colors (the owner's
 `data-theme` attribute on the root element, else the system's) and `default` otherwise,
 and are drawn again when either changes.
 
+Data charts. A bar or line chart is a `xychart` in the same `mermaid` fence: the library the page
+already bundles draws it (the pinned 12.2.0 opens a chart on either `xychart` or `xychart-beta`), so the
+fence, the strict level, the toolbar, the theme, the cache of drawings and the checks carry over, and
+nothing is added to the bundle. What the page adds is configuration, given to the library with the rest
+at each draw: `themeVariables.xyChart.plotColorPalette`, the eight series colors in a fixed order for the
+library's `default` (light) and `dark` themes; `themeVariables.xyChart.backgroundColor` set to
+`transparent`; and `xyChart.height` of 360. The library's own first series color is `#ECECFF`, 1.17:1
+against a white page (its second, `#8493A6`, is 3.13:1), which hides the first series; the page's first
+color is 4.42:1 on white and 4.56:1 on the dark surface (WCAG 2 gives 3:1 as the floor for a mark). The
+eight colors are the reference palette of the data-viz skill, run through its validator on this page's
+two surfaces, `#ffffff` and `#182020`: the light set passes the lightness band, the chroma floor, the
+separation of neighbors under color-vision simulation (worst pair 9.1, target 8) and the normal-vision
+floor (worst pair 19.6, floor 15), and warns that its aqua, yellow and pink are under 3:1 on white, so a chart
+with several series names each series, which makes the library draw a legend (measured: it draws none for
+a series without a name); the dark set passes all five checks. The library's dark theme gives a chart a
+`#333` plate of its own, so the plate is made clear and the page's surface shows; the height is 360
+where the library's is 500, so that a chart takes the room of a few lines of text. A settings block at the
+start of a chart wins over these, as for any diagram (`showDataLabel: true` is one such setting).
+What `xychart` cannot draw: scatter, side-by-side or stacked bars, error bars and log axes; two `bar`
+series are drawn over each other. Three things in what the library does decide whether a chart is right,
+all measured on the page's own library: a Chinese category name without quotes is a lexical error
+(`["一月", "二月"]` draws, `[一月, 二月]` does not); a bar chart without a range on the y axis starts it at
+the smallest value, which cuts the bars (`y-axis "秒" 0 --> 500` keeps the zero); and a data label's font
+size follows the bar width, 60 px for 2 bars, 46 for 4, 29 for 6, 22 for 8 and 18 for 12 in a chart of
+700 by 360 whose axis labels are 14 px, so `showDataLabel` suits a chart of six bars or more. The text of
+a chart (title, categories, series names) is plain text under the strict level: a title that carries an
+`<img onerror>` is drawn as characters. How a chart is written for agents is in the shared rules'
+section on writing items, the board's rule block `item-writing`; the grounds and the refused
+alternatives (a chart library with a fence of its own, a renderer of our own, images) are in the node
+`page/diagrams/data-charts`.
+
 Glossary links. In item heads, steps and log entries, card questions, option names
 and details, a card's ruling and legacy text, and note texts and replies, a glossary
 term links to its definition. The page has no glossary section. Titles are not linked. Terms
@@ -4622,7 +4653,8 @@ it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand,
 shade at the edge with more) and the toolbar and the bar read in both color schemes; a
 view survives a live update that leaves the source alone and a changed source starts
 at the default size; the page configures the library for a compact drawing (the classic look,
-padding 8, gaps of 20). The stand-in is what the page depends on of the library and nothing
+padding 8, gaps of 20), and for a data chart gives it the series colors of the page's color scheme, a clear plate and a
+height of 360. The stand-in is what the page depends on of the library and nothing
 more: the same text gives the same drawing, its ids and their references begin with the id
 the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
 page's. The widths come from the model of the boxes, not from a layout; the model also
@@ -4639,7 +4671,9 @@ frontmatter win over the page's in the real library; a diagram is as wide as its
 window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in the box or the page;
 an enlarged diagram can be scrolled to both its ends,
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
-a view and the page's scroll survive a live update; labels and lines read in both color schemes; and a drawing is
+a view and the page's scroll survive a live update; labels and lines read in both color schemes; the real library draws a
+chart with a bar series and a line series in the page's first two series colors in each scheme, with a clear plate, its Chinese
+labels and the height the page asks for (`checkChart`, inside the test that checks the library); and a drawing is
 compact: a synthetic role chart (28 arrows, 2406 px high against the library's own 3420) and a synthetic chart
 with three lanes (17 arrows, 1657 px against 2477) stay under 2500 and 1900 px high; their boxes are as far apart
 as the page asked, 20 px (60 px for a chart whose settings block asks for 60); no arrow enters a box from the side

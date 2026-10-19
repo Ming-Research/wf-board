@@ -1,0 +1,67 @@
+name: tmp-quick
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  dom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # The diagram checks of the DOM layer, with the pages that have the chart settings taken out, and the count of the browser file's tests.
+      - run: node --test --test-reporter=spec test/dom/mermaid-page.test.ts test/dom/mermaid-view.test.ts test/browser-limits.test.ts
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --only-shell chromium
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - name: browser file on the page
+        run: timeout 120 node --test --test-reporter=spec test/e2e/browser.e2e.ts
+      # The browser file on the page with one chart setting taken out at a time: each run must be red with the line the check reports.
+      - name: browser file without the series colors
+        run: |
+          sed -i 's/plotColorPalette: CHART_COLORS\[theme\], //' web/mermaid.ts
+          git diff --stat
+          npm run build:web
+          code=0; timeout 120 node --test --test-reporter=spec test/e2e/browser.e2e.ts > spoiled.log 2>&1 || code=$?
+          tail -60 spoiled.log
+          test "$code" -ne 0
+          grep -q "mermaid-chart (light): the bars are filled" spoiled.log
+          git checkout web/mermaid.ts
+      - name: browser file without the clear plate
+        run: |
+          sed -i 's/, backgroundColor: "transparent"//' web/mermaid.ts
+          git diff --stat
+          npm run build:web
+          code=0; timeout 120 node --test --test-reporter=spec test/e2e/browser.e2e.ts > spoiled.log 2>&1 || code=$?
+          tail -60 spoiled.log
+          test "$code" -ne 0
+          grep -q "mermaid-chart (.*): the chart's plate is" spoiled.log
+          git checkout web/mermaid.ts
+      - name: browser file without the chart height
+        run: |
+          sed -i '/^        \.\.\.CHART,$/d' web/mermaid.ts
+          git diff --stat
+          npm run build:web
+          code=0; timeout 120 node --test --test-reporter=spec test/e2e/browser.e2e.ts > spoiled.log 2>&1 || code=$?
+          tail -60 spoiled.log
+          test "$code" -ne 0
+          grep -q "mermaid-chart (.*): the chart's view box is" spoiled.log
+          git checkout web/mermaid.ts
