@@ -8,6 +8,12 @@ Nodes: mcp/look
 
 Summary: The architect read the board one item at a time (1,193 `context` calls in eleven sessions) because the reads that show a whole each showed a corner, and six paused items were missed when the queue of engineers was filled. A new read, `look`, answers with the tree the owner's board shows, one line for each open work item, in a budget of lines the caller sets: it opens the subtrees that need a reader first, folds a pause into one line with its reason, counts a project's backlog apart, and puts every open item in a line or in a count. What a session saw at its last look is kept in the daemon's memory as a signature for each open item (not in the data repository), so the next look marks what changed, including changes no write made. The grounds and the refused alternatives (a tree option on `whole_view`, only the time of the last look, a commit for each look, listing every item) are in the node; the shape is in docs/design.md, section 6, The look.
 
+## 2026-10-19 Mark an item as standing
+
+Nodes: plans/standing, plans, mcp/whole-view
+
+Summary: The board could not say that a long-term promise with work under it, such as keeping board operations within their limits, is work that is always in force and never completes, so a never-ticked acceptance step held it up and status and the checks took it for an item about to complete: read on a copy of the board of 2026-10-16, four of the ten such items raised the check `only-acceptance-left` and all ten raised `difficulty-missing`. An item may now carry `standing: true`, set only by the architect and excluding the record mark, with no acceptance step and no difficulty. It is in progress while it is not paused or cancelled, whatever its rows say; its rows for other standing items are resolved and uncounted, and neither make the target awaited nor conflict with its pause; the checks that ask for acceptance or a rating do not apply; a row of an ordinary item that owns or waits for a standing item is refused, since it could never be resolved; the items it owns stay needed and startable; the whole view lists it only when something works on it. The first design also gave the sub-items of a standing item their own stored priority; the item priority was removed on 2026-10-17, so that part was dropped. The refused alternatives (a never-ticked acceptance step, a record, a tag the checks skip, a flag on a plan row) are in the node; the derivation is in docs/design.md, section 5, Standing items.
+
 ## 2026-10-19 Flag a head older than a ruling
 
 Nodes: cards
