@@ -341,12 +341,16 @@ test("the shared cache holds the state before the newest one and none older, how
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
   const cache = new DerivedCache(), writes = 50;
   const { states, rules: made, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now(), writes);
-  // A WeakRef keeps its target until the current job ends.
-  await new Promise(resolve => setImmediate(resolve));
-  collect();
   // A chain keeps every earlier state and Rules object; the cache holds the newest and the one before it. A stray reference
   // outside the cache (the test's own frames) may keep one more, so three are allowed of the 51.
   const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
+  // A WeakRef keeps its target until the current job ends, so each collection runs in a job of its own. One full collection has once
+  // left 5 of the 51 on a hosted runner; up to three are run, which a chain survives all the same.
+  for (let round = 0; round < 3; round++) {
+    await new Promise(resolve => setImmediate(resolve));
+    collect();
+    if (alive(made) <= 3 && alive(states) <= 3) break;
+  }
   assert.ok(alive(made) <= 3, `${alive(made)} of ${writes + 1} Rules objects are still reachable after a collection`);
   assert.ok(alive(states) <= 3, `${alive(states)} of ${writes + 1} states are still reachable after a collection`);
   assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
