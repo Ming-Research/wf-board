@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Draw the runner's work on the agent list as a table
+
+Nodes: page/agent-list
+
+Summary: The runner's rows were small cards of two or three lines that did not line up: the item's key came first in monospace, a long state text wrapped into a box that pushed the next rows down, a commit id, a path of the runner's machine and an item key stood in the text, and the level and the elapsed time were written twice. The rows are now the rows of a table, one line each: the title first with the level as a number, the state in a word, one line of what the work does or waits for (cut to one line, the whole on the hover), how long in the state and how long in all, with the keys on hovers only, commit ids and machine paths left out, and the work a person has to look at ordered first; in a narrow column a row falls to three lines. The decision that the block lists every job the runner holds, unfolded, is kept; only its wording "in the whole view's words" is dropped, because the list now has words of its own. Grounds and the rejected groups by state and tidied cards are in the node; the derivation is in docs/design.md, section 7, Agent list.
+
 ## 2026-10-18 Keep the page's structure through a write that reused the rules
 
 Nodes: storage/write-path/page-rules-reuse, testing/press-n
