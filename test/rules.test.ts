@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, CHECK_KINDS, CHECK_LABEL, checkKind, checkKey, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, APPROACH_STALE_LABEL, HEAD_REVISED_LOG, headRevisedAt, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
+import { rules, CHECK_KINDS, CHECK_LABEL, checkKind, checkKey, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, stageOf, APPROACH_STALE_LABEL, HEAD_REVISED_LOG, headRevisedAt, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -937,6 +937,26 @@ test("a plan is read by stages only when it has a research row and an impl row, 
   assert.equal(rules(s).stages("a")?.total, 2);
 });
 
+test("review is a stage between impl and ci, with rounds, and the plan that has none is still complete", () => {
+  // The id is a stage's only without the acceptance mark and with a round of 2 or more, as for the other stages.
+  assert.deepEqual(stageOf(step("review")), { kind: "review", round: 1 });
+  assert.deepEqual(stageOf(step("review-2")), { kind: "review", round: 2 });
+  assert.equal(stageOf(step("review", "todo", { accept: true })), undefined, "an acceptance step is not a stage");
+  assert.equal(stageOf(step("review-1")), undefined);
+  assert.equal(stageOf(step("code-review")), undefined);
+  const s = snapshot({ a: {} });
+  // The item stands at the review: the current stage is the one in progress, named for what it is.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("review", "doing"), step("ci"), tests(), step("accept"), step("merge")];
+  assert.deepEqual(rules(s).stages("a"), { done: 2, total: 6, share: 2.5 / 6, current: { id: "review", kind: "review", round: 1, label: "审查" } }, "six stages, the review one half");
+  // Findings sent the work back: a second round of implementation and review follows the settled rows.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("review", "done"), step("ci", "dropped"), tests(), step("accept", "dropped"), step("impl-2", "done"), step("review-2", "doing"), step("ci-2")];
+  assert.deepEqual(rules(s).stages("a")?.current, { id: "review-2", kind: "review", round: 2, label: "审查·2" });
+  // A plan without a review is complete as before: the stage is not required.
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci"), tests(), step("accept"), step("merge")];
+  assert.equal(rules(s).stages("a")?.total, 4);
+  assert.equal(rules(s).stages("a")?.current?.kind, "ci");
+});
+
 const held = (fields: Partial<Item> = {}): Partial<Item> => ({ dispatches: [{ agentId: "id-eng", agent: "eng", role: "工程师", level: 2, model: "Sonnet", started: T1 }], ...fields });
 const formatCheck = (s: Snapshot, id: string) => rules(s).checks(id).find(c => c.label === STAGE_FORMAT_LABEL)?.text;
 const goodStages = () => [step("research", "done"), step("impl", "doing"), step("ci"), tests(), step("accept"), step("merge")];
@@ -971,6 +991,23 @@ test("an item an engineer holds is flagged when its plan lacks a stage or has th
   assert.equal(formatCheck(s, "a"), undefined, "going back appends a round and breaks no order");
   s.items.a!.plan = [step("research", "done"), step("impl-2"), step("impl", "done"), step("ci", "done"), tests(), step("accept")];
   assert.match(formatCheck(s, "a")!, /impl-2.*impl/s, "a second round before the first");
+});
+
+test("the format check puts review between impl and ci and names it among the stages", () => {
+  const s = snapshot({ a: held() });
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("review", "doing"), step("ci"), tests(), step("accept"), step("merge")];
+  assert.equal(formatCheck(s, "a"), undefined, "review after impl and before ci");
+  s.items.a!.plan = [step("research", "done"), step("review", "doing"), step("impl", "done"), step("ci"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /review.*impl/s, "review before impl");
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci", "done"), step("review", "doing"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /ci.*review/s, "review after ci");
+  s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("review", "done"), step("ci", "done"), tests(), step("accept", "dropped"), step("impl-2", "done"), step("review-2", "doing"), step("ci-2"), step("accept-2")];
+  assert.equal(formatCheck(s, "a"), undefined, "a second round of review follows the first");
+  s.items.a!.plan = [step("research", "done"), step("impl", "doing"), step("review-2"), step("review"), tests(), step("accept")];
+  assert.match(formatCheck(s, "a")!, /review-2.*review/s, "rounds of review must rise");
+  // The text lists the stage ids from the one table, review among them.
+  s.items.a!.plan = [step("write", "doing"), accept()];
+  assert.match(formatCheck(s, "a")!, /research、impl、review、ci、accept、merge、verify/);
 });
 
 test("the format check reads who holds the item: an open engineer dispatch or a runner report that is not done", () => {

@@ -63,6 +63,8 @@ matches what the artifact board offered.
   daemon's memory only and sent to the page as the event `live`; `src/runner-rows.ts`: the runner's block of the agent list, one row
   for each piece of work the runner holds, read from its report on the item, the dispatch record and the beats (design section 7,
   Agent list, The live view of a turn). Imported by the server and bundled into the page.
+- `src/runner-heartbeat.ts`: the time of the runner's last heartbeat (`report_heartbeat`), kept in memory and in a local file, and the minute check
+  that tells the architect once when none has come for 10 minutes (design section 8, The runner's heartbeat). Only the runner and the architect call it.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect or the runner
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.

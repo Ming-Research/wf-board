@@ -1,0 +1,33 @@
+name: tmp-board-runner-fits
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-board-runner-fits-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # The test files the change touches or reads: the stages and their format check, the dispatch tallies, the heartbeat and its push,
+      # the tool count, the table of push kinds and the frame table in the design document, the review step of the candidates read.
+      - run: node --test --test-reporter=spec test/rules.test.ts test/dispatch.test.ts test/runner-heartbeat.test.ts test/mcp.test.ts test/retire-pm.test.ts test/wake-agents.test.ts test/wake.test.ts test/candidates.test.ts test/runner-report.test.ts test/access.test.ts test/web.test.ts
