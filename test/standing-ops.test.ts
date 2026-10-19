@@ -91,7 +91,7 @@ test("update_item marks an item standing and ordinary again, logging what it tak
 test("a done or cancelled item cannot become standing; a standing item can be cancelled, reopened and paused", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ ...asArchitect, key: "fin", group: author, title: "Finished work", accept: "Done", difficulty: 2 });
-  await op.setPlan({ author, id: "fin", row: { id: "accept", accept: true, text: "Done", state: "done" } });
+  await op.setPlan({ author, id: "fin", row: { id: "acc", accept: true, text: "Done", state: "done" } });
   await op.createItem({ ...asArchitect, key: "gone", group: author, title: "Dropped work", accept: "Never", difficulty: 2 });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "Dropped" });
   assert.equal(rules(store.snapshot()).statusOf("fin"), "done");

@@ -126,6 +126,9 @@ test("a refused plan names the row and the id that broke it", () => {
   assert.match(late, /row 1 "work"/);
   assert.match(late, /"later" is not one/);
   assert.match(late, /after must name earlier rows/);
+  assert.match(late, /"later" is not one; it stands at this row or below it; reorder the rows so that it comes first, or take it out of after/, "a row that stands later says to reorder");
+  const unknown = message([step("work", "todo", { after: ["nowhere"] }), accept()]);
+  assert.match(unknown, /"nowhere" is not one; the plan has no row with that id/, "a row that is not in the plan says so");
   assert.match(PlanInput.safeParse([{ id: "work", text: "Work", state: "todo", after: ["dep"] }, { item: "dep", own: false }]).error!.issues[0]!.message, /row 1 "work"/);
 });
 

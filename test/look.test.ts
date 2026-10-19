@@ -312,7 +312,7 @@ test("a session's second look marks what changed, what is new and what finished 
   await b.op.appendLog({ ...asArchitect, id: "alpha", text: "写了一条" });
   await b.op.setStatus({ ...asArchitect, id: "beta", status: "cancelled", log: "不做了" });
   await b.item("gamma");
-  await b.op.setPlan({ ...asArchitect, id: "dep", row: { id: "accept", text: "通过", state: "done", accept: true } });
+  await b.op.setPlan({ ...asArchitect, id: "dep", row: { id: "acc", text: "通过", state: "done", accept: true } });
   const second = await b.call({ session: "s1" });
   assert.match(second.text.split("\n")[0]!, /上次看在 .*前：变了 3 件 · 新出现 1 件 · 收尾 2 件（做完、取消）/);
   assert.match(line(second.text, "alpha")!, /^\*/, "alpha was written");
