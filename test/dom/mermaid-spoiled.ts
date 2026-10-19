@@ -12,6 +12,9 @@ export const SPOILED = {
   noError: mermaid("a bad block shows no error", 'note.textContent = "图画不出来：" + message;', 'note.textContent = "";'),
   loose: mermaid("the library runs with the loose security level", 'securityLevel: "strict"', 'securityLevel: "loose"'),
   noCompact: mermaid("the page asks the library for nothing of the look and the gaps", "        ...COMPACT,\n", ""),
+  noChartColors: mermaid("the page gives the library no chart colors", '        themeVariables: { xyChart: { plotColorPalette: CHART_COLORS[theme], backgroundColor: "transparent" } },\n', ""),
+  lightChartColors: mermaid("a chart has the light colors in the dark scheme", "plotColorPalette: CHART_COLORS[theme]", "plotColorPalette: CHART_COLORS.default"),
+  noChartSize: mermaid("the page leaves a chart at the library's height", "        ...CHART,\n", ""),
   eager: mermaid("the library is asked for at start", 'if (typeof MutationObserver === "undefined") return;', 'if (typeof MutationObserver === "undefined") return;\n  void load();'),
   // Draws only until the first diagram is drawn, the way a page that draws from its first render alone would (with lateDraw, which takes out the other place the page draws a repainted item's diagrams).
   firstOnly: mermaid("only the first render is drawn", "new MutationObserver(records => {\n", "new MutationObserver(records => {\n    if (drawn.size) return;\n"),

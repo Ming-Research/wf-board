@@ -28,9 +28,9 @@ function pushes(wake: Wake): string[] {
 const architectEvents = (wake: Wake) => wake.agent(ARCHITECT_SESSION).pending().frames.map(f => f.event);
 const RETIRED = ["stalled", "timed", "review", "finished", "pr-red", "pr-orphan", "no-answer"];
 
-test("the board pushes twelve kinds and none goes to a PM stream", () => {
+test("the board pushes thirteen kinds and none goes to a PM stream", () => {
   assert.deepEqual(Object.keys(WAKE_KINDS).sort(), [
-    "ask-alive", "backup-behind", "card-ruled", "dep-merged", "deployFailed", "deployed", "item-done", "main-red", "message", "note", "slow-op", "timed-architect",
+    "ask-alive", "backup-behind", "card-ruled", "dep-merged", "deployFailed", "deployed", "item-done", "main-red", "message", "note", "runner-stopped", "slow-op", "timed-architect",
   ]);
   for (const [kind, spec] of Object.entries(WAKE_KINDS)) assert.notEqual(spec.to, "pm", kind);
 });
@@ -39,6 +39,7 @@ test("the kinds the PM acted on go to the architect, or to the session holding t
   const to = (kind: WakeKind): unknown => WAKE_KINDS[kind].to;
   assert.equal(to("backup-behind"), "architect");
   assert.equal(to("slow-op"), "architect");
+  assert.equal(to("runner-stopped"), "architect");
   assert.deepEqual(to("main-red"), { holder: "item", otherwise: "architect" });
   assert.deepEqual(to("deployFailed"), { holder: "item", otherwise: "architect" });
   // The ask goes to the session that holds the item it names; the liveness round only asks sessions that hold one.

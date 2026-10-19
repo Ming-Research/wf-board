@@ -193,6 +193,35 @@ test("the architect's turn joins the row of the work that asks the architect, an
   assert.equal(rowsOf(s, open(), [architect("asks", { at: ago(5) })], NOW).find(r => r.item === "asks")!.architect!.silent, true);
 });
 
+test("a review round joins the row of the work that waits for it, only while the report is a wait that began before the beat", () => {
+  const s = snap(
+    job("reviewed", { state: "wait", what: "审查中：Ming-Research/wf-board#9 头提交 abc1234（Opus 3 级）", since: ago(4) }),
+    job("quiet", { state: "wait", what: "审查中：Ming-Research/wf-board#10 头提交 def5678（Opus 3 级）", since: ago(10) }),
+    // A wait that began after the round's last beat is not that round's.
+    job("later", { state: "wait", what: "主线下一次合入", since: ago(1) }),
+    job("ci", { state: "ci", since: ago(4) }),
+    job("back", { state: "running" }),
+  );
+  const review = (item: string, fields: Partial<LiveEntry> = {}) => beat(item, { role: "审查", turn: 1, turnStartedAt: ago(3), action: "读 src/rules.ts", ...fields });
+  const rows = rowsOf(s, open(), [review("reviewed"), review("quiet", { at: ago(5) }), review("later", { at: ago(2) }), review("ci"), review("back")], NOW);
+  const by = Object.fromEntries(rows.map(r => [r.item, r]));
+  assert.deepEqual(by.reviewed!.review, { turn: 1, startedAt: NOW - 3 * 60_000, action: "读 src/rules.ts", heardAt: NOW - 10_000, silent: false });
+  // The state stays a wait; the word says it is a review round, and the round's number.
+  assert.deepEqual([by.reviewed!.state, by.reviewed!.label, by.later!.label], ["wait", "审查 第 1 轮", "等事件"]);
+  assert.deepEqual([by.later!.review, by.ci!.review, by.back!.review], [undefined, undefined, undefined], "an earlier wait's beat, a CI wait and a turn running have no review");
+  assert.equal(by.back!.live, undefined, "the engineer's turn is not read from a beat of the review");
+  // A review round counts as a turn running when the rows are ordered.
+  assert.deepEqual(rows.map(r => r.item), ["back", "quiet", "reviewed", "ci", "later"]);
+  const nameOf = () => undefined;
+  assert.deepEqual(runnerLine(by.reviewed!, NOW, nameOf), { text: "审查中：读 src/rules.ts", full: "审查第 1 轮 · 这一轮 3 分钟 · 读 src/rules.ts", silent: false });
+  const bare = rowsOf(s, open(), [review("reviewed", { action: undefined })], NOW).find(r => r.item === "reviewed")!;
+  assert.equal(runnerLine(bare, NOW, nameOf).text, "审查中，这一轮 3 分钟", "a beat with no action");
+  assert.deepEqual([runnerLine(by.quiet!, NOW, nameOf).text, runnerLine(by.quiet!, NOW, nameOf).silent], ["审查没有动静 5 分钟", true]);
+  // With no beat the row says what the report says.
+  const none = rowsOf(s, open(), [], NOW).find(r => r.item === "reviewed")!;
+  assert.deepEqual([none.review, none.label, runnerLine(none, NOW, nameOf).text === none.waitFor], [undefined, "等事件", true]);
+});
+
 test("the older list leaves out a session the runner holds, and keeps one a report merely sits on", () => {
   const [heldKey, held] = job("held", { state: "ci" }, ago(60));
   const [pmKey, pm] = job("pm", { state: "ci" }, ago(600), { dispatches: [dispatch("pm-session", ago(30))] });

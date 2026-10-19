@@ -5,7 +5,7 @@
 // diagram with its Chinese labels and a size, a block that does not parse shows the library's error and leaves the rest alone; the
 // library's strict security level leaves nothing of a hostile text that runs; a diagram drawn twice has no id twice and the visible copy's
 // line markers are its own, which depends on how the real library names its ids; the settings in a diagram's own frontmatter win over the
-// page's, which the real library applies; a diagram is as wide as itself or its box, whichever is less, at two window widths, with nothing
+// page's, which the real library applies; a data chart (`xychart`) is drawn in the colors the page gives it, with its Chinese labels and the height the page asks for, in both color schemes; a diagram is as wide as itself or its box, whichever is less, at two window widths, with nothing
 // to scroll sideways in the box or the page; the buttons and Ctrl with the wheel zoom, the plain wheel scrolls the page and nothing else,
 // an enlarged diagram can be scrolled to both its ends and dragged, and 适应宽度 restores the default size; the 60%, 90% and 100% buttons
 // draw a diagram wider than a narrow box at that share of its size; a diagram keeps its zoom, its sideways scroll and the page's scroll
@@ -14,7 +14,7 @@
 
 import { ops } from "../../src/ops.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
-import { fence, FIT_HEAD, SMALL, WIDE, PIPELINE, GOOD, BAD, HEAD, OWN } from "./mermaid-charts.ts";
+import { fence, FIT_HEAD, SMALL, WIDE, PIPELINE, GOOD, BAD, HEAD, OWN, CHART } from "./mermaid-charts.ts";
 
 // The sources are in mermaid-charts.ts.
 export { fence, FIT_HEAD, SMALL, WIDE };
@@ -241,6 +241,52 @@ export async function checkOwn(bp: BoardPage, wait: number): Promise<string[]> {
   const m = fill.match(/\d+/g)?.map(Number);
   if (!m) return [`mermaid-own: the diagram has no box to read the color of (fill ${JSON.stringify(fill)})`];
   return (m[0]! + m[1]! + m[2]!) / 3 < 140 ? [] : [`mermaid-own: the diagram asks for the dark theme in its frontmatter and the page does not use it: its boxes are filled ${fill} on a light page`];
+}
+
+/** The colors the page gives the first two series of a chart in each scheme (docs/design.md, section 7, Diagrams, Data charts: each is at least 3:1
+ * against the page's surface). The library's own are #ECECFF, which is 1.17:1 on a white page, and #8493A6. */
+const CHART_SERIES = { light: ["#2a78d6", "#eb6834"], dark: ["#3987e5", "#d95926"] } as const;
+/** The real library draws a data chart (`xychart`) in the page's colors: in each color scheme the bars are the first color and the line the second, the library's plate is clear
+ * (its dark theme gives a chart one of its own), the labels keep their Chinese and the chart is as high as the page asks (360 px). What the page asks of the library is the DOM layer's
+ * (`checkChartConfig` in test/dom/mermaid-checks.ts); that the library does it is here. */
+export async function checkChart(bp: BoardPage, wait: number): Promise<string[]> {
+  const waited = await settled(bp, 1, wait);
+  if (waited) return [`mermaid-chart: ${waited}`];
+  const v: string[] = [];
+  const read = () => bp.page.evaluate(() => {
+    const fig = document.querySelector("#item-detail .mermaid-fig");
+    return {
+      bars: [...fig?.querySelectorAll(".bar-plot-0 rect") ?? []].map(r => r.getAttribute("fill")),
+      lines: [...fig?.querySelectorAll(".line-plot-1 path") ?? []].map(p => p.getAttribute("stroke")),
+      plate: fig?.querySelector("rect.background")?.getAttribute("fill") ?? null,
+      labels: [...fig?.querySelectorAll("text") ?? []].map(t => t.textContent ?? ""),
+      box: fig?.querySelector("svg")?.getAttribute("viewBox") ?? null,
+    };
+  });
+  for (const scheme of ["light", "dark"] as const) {
+    await bp.page.emulateMedia({ colorScheme: scheme });
+    const [bar, line] = CHART_SERIES[scheme], what = `mermaid-chart (${scheme})`;
+    // A chart drawn for the other scheme is replaced a moment after the scheme changes.
+    try {
+      await bp.page.waitForFunction(({ bar, line }) => {
+        const fig = document.querySelector("#item-detail .mermaid-fig");
+        const fills = [...fig?.querySelectorAll(".bar-plot-0 rect") ?? []].map(r => r.getAttribute("fill"));
+        const strokes = [...fig?.querySelectorAll(".line-plot-1 path") ?? []].map(p => p.getAttribute("stroke"));
+        return fills.length > 0 && fills.every(f => f === bar) && strokes.length > 0 && strokes.every(s => s === line);
+      }, { bar, line }, { timeout: GIVE_UP });
+    } catch {
+      const got = await read();
+      v.push(`${what}: the bars are filled ${JSON.stringify(got.bars)} and the line is stroked ${JSON.stringify(got.lines)}, not ${bar} and ${line}`);
+      continue;
+    }
+    const got = await read();
+    if (got.bars.length !== 3) v.push(`${what}: ${got.bars.length} bars, expected 3`);
+    if (got.plate !== "transparent") v.push(`${what}: the chart's plate is ${JSON.stringify(got.plate)}, not "transparent"`);
+    if (!["一月", "二月", "三月", "全量", "快速"].every(l => got.labels.includes(l))) v.push(`${what}: the chart lost its Chinese labels: ${JSON.stringify(got.labels)}`);
+    if (!got.box?.endsWith(" 700 360")) v.push(`${what}: the chart's view box is ${JSON.stringify(got.box)}, not 700 by 360`);
+  }
+  await bp.page.emulateMedia({ colorScheme: "light" });
+  return v;
 }
 
 /** What the toolbar says about the size of the first diagram, against how large the diagram is drawn as a share of its own width; null when they agree. */
@@ -474,6 +520,7 @@ export const seedOne = async (board: BoardServer, id: string) => setHead(board, 
 export const seedTwice = async (board: BoardServer, id: string) => { await setHead(board, id, "正文。\n\n**参考：同一张图**\n" + fence(GOOD)); await addLog(board, id, "同一张图又画一次：\n\n" + fence(GOOD)); };
 export const seedFit = async (board: BoardServer, id: string) => setHead(board, id, FIT_HEAD);
 export const seedOwn = async (board: BoardServer, id: string) => setHead(board, id, fence(OWN));
+export const seedChart = async (board: BoardServer, id: string) => setHead(board, id, fence(CHART));
 export const seedPipeline = async (board: BoardServer, id: string) => setHead(board, id, fence(PIPELINE));
 /** The window at about the width of a phone held sideways, where the page puts the list and the detail side by side in two narrow columns. */
 export const NARROW = { width: 700, height: 1000 };
@@ -496,7 +543,7 @@ export async function atNarrow<T>(bp: BoardPage, fn: () => Promise<T>): Promise<
 }
 
 /** What the real library does with a head's blocks: a good one is drawn and a bad one shows its error (checkHead), a hostile text runs nothing
- * (checkStrict), the same diagram drawn twice has no id twice (checkIds), and a diagram's own settings win over the page's (checkOwn). */
+ * (checkStrict), the same diagram drawn twice has no id twice (checkIds), a diagram's own settings win over the page's (checkOwn), and a data chart is drawn in the page's colors (checkChart). */
 export async function checkLibrary(bp: BoardPage, board: BoardServer, wait = WAIT): Promise<string[]> {
   const v: string[] = [];
   await showHead(bp, board, seedHead);
@@ -508,6 +555,8 @@ export async function checkLibrary(bp: BoardPage, board: BoardServer, wait = WAI
   v.push(...await checkIds(bp, wait));
   await showHead(bp, board, seedOwn);
   v.push(...await checkOwn(bp, wait));
+  await showHead(bp, board, seedChart);
+  v.push(...await checkChart(bp, wait));
   return v;
 }
 
