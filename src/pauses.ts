@@ -30,8 +30,9 @@ export interface PauseEvent {
 export interface PauseSignature { readonly key: string; readonly paused: boolean }
 
 const FIELD_LINE = /(?:group|record|paused|item|own)["']?[ \t]*:[^\n]*/g;
-/** The lines under a key: the ones indented, up to the next at the left margin. */
-const LINES_UNDER = /(?:\n[ \t]+[^\n]*)*/y;
+/** The lines under a key: the indented ones and the blank ones among them (a text block may hold blank lines), up to the next
+ * line at the left margin. */
+const LINES_UNDER = /(?:\n(?:[ \t]+[^\n]*)?)*/y;
 const WORD_CHARACTER = /[A-Za-z0-9_]/;
 
 /** The signature of an item file's text. The text may be read in any single-byte encoding: only equality of lines matters. */

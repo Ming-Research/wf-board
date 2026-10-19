@@ -173,6 +173,11 @@ test("the signature of an item file changes with each field the pause spans read
   const quoted = "group: P\n\"paused\":\n  reason: R\n  at: 2026-10-11T04:00:00Z\nplan:\n  - item: c\n    own: true\n";
   assert.notEqual(pauseSignature(quoted).key, pauseSignature(quoted.replace("reason: R", "reason: S")).key);
   assert.notEqual(pauseSignature(quoted).key, pauseSignature(quoted.replace("item: c", "item: d")).key);
+  // A reason written as a block of text may hold blank lines; what follows them is still under the pause.
+  const blank = "group: P\npaused:\n  reason: |\n    first\n\n    second\n  at: 2026-10-11T04:00:00Z\nplan:\n  - item: c\n    own: true\n";
+  for (const [from, to] of [["second", "third"], ["04:00:00Z", "05:00:00Z"], ["item: c", "item: d"]] as const) {
+    assert.notEqual(pauseSignature(blank).key, pauseSignature(blank.replace(from, to)).key, `${from} to ${to}, after a blank line under the pause`);
+  }
 });
 
 test("a file has a pause when a `paused:` line stands at the left margin, however the pause is written", () => {
