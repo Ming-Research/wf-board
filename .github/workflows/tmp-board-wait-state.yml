@@ -52,6 +52,6 @@ jobs:
           test/whole-view.test.ts|a wait for an event is among the waiting
           test/runner-rows.test.ts|a wait for an event is a row in its words
           test/runner-rows.test.ts|the state column says each state in a word or two
-          test/dom/runner-block.test.ts|a wait for an event is drawn in its words
+          test/dom/runner-block.test.ts|a wait for an event is drawn with the event
           LIST
           exit $fail
