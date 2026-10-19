@@ -326,7 +326,7 @@ observers of the change (`listeners`) and the rest of the call. The steps are co
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
 limits), its ordinary log line carries them after a semicolon:
-`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git add 14 ms, git commit 2400 ms, ...`.
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git commit 2400 ms, ...`.
 A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
@@ -794,8 +794,10 @@ derivation design that replaced this:
   runner's 95% interval within 0.410–0.459, the twin against the base within ±1.8 to
   ±4.0%), 26.0 to 35.5 ms of CPU against 60.3 to 84.9 ms, the highest upper bound of a
   95% interval 36.4 ms (board-cpu-usage).
-- A write starts two git processes: `git add` of its paths and `git commit --only` of
-  the same paths, which commits exactly them whatever else is staged, so a file staged
+- A write starts one or two git processes: `git add` of the paths new to the head, when
+  it has any, and `git commit --only` of all its paths, which commits exactly them whatever
+  else is staged (it takes a path the head has, changed or deleted, as the working tree
+  holds it, and refuses one git does not know, hence the `git add` of new files), so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
   checked the index with `git diff --cached` and refused). The commit's summary line
   names the new commit in full (`core.abbrev=no`), and its author time is read through
@@ -806,7 +808,12 @@ derivation design that replaced this:
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
   the store's own code around them. The process costs here were taken from the profile of that
-  first version, with its heap; they were not measured again after the fix.
+  first version, with its heap; they were not measured again after the fix. The cost of
+  starting a process grows with the size of the process that starts it: on a hosted
+  runner, `git --version` started 200 times took 2.7, 3.6 and 5.9 ms a start with the
+  starting process at 73, 330 and 903 MB, 1.4, 2.3 and 3.7 ms of that process's CPU
+  (ci-gate-45); this is why a write that changes only documents the head has skips the
+  `git add`.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,

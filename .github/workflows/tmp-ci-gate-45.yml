@@ -76,7 +76,9 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
-      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
+      - env:
+          NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
   # Writes the result of a run started by hand to the commit it ran on. It starts with the run, not after the other jobs, and
   # waits in scripts/ci-time-gate.ts until every other job of the run has ended: a job that waits for the others (`needs`) starts
   # 2 to 3 seconds after the last of them ends and has its own set-up to do then, which was 6 to 9 seconds of a run. So no job of
@@ -129,3 +131,17 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=failure -f context=full-ci \
             -f description="full CI failure (the result job ended without a status)" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  # The new store test watched failing on the store of the main line, which adds every path it writes.
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: |
+          git checkout origin/main -- src/store.ts
+          if node --test --test-name-pattern="adds only the files new to the head" test/store.test.ts; then echo "the test passed on the old store"; exit 1; fi
+          echo "the test failed on the old store, as it should"

@@ -1175,11 +1175,14 @@ export class Store {
       if (txn.planConversionReport) { mkdirSync(join(this.dir, "import"), { recursive: true }); atomicWrite(join(this.dir, reportPath), txn.planConversionReport); }
       if (numbersChanged) atomicWrite(join(this.dir, numbersPath), validated(Numbers, { next: nextNum }, numbersPath));
       trace?.lap("files");
-      await this.git(["add", "--", ...paths]);
+      // `git commit --only` takes a path that is in the head as it is in the working tree, changed or deleted, but refuses one git
+      // does not know: only the files new to the head are added first, so a write that changes documents already there is one git
+      // process (docs/design.md, section 4, Write cost).
+      const added = paths.filter((path, i) => i < changed.length ? changed[i]!.before === null && changed[i]!.after !== null : path === reportPath || !this.numbersInHead);
+      if (added.length) await this.git(["add", "--", ...added]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
       // `--only` commits exactly these paths, whatever else is staged, so nothing staged by hand enters a board commit; the
-      // summary line names the new commit in full, and its time is read through the long-lived cat-file process: two git
-      // processes a write (docs/design.md, section 4, Write cost).
+      // summary line names the new commit in full, and its time is read through the long-lived cat-file process.
       const summary = await this.git(["-c", "commit.gpgsign=false", "-c", "core.abbrev=no", "commit", "--only", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : []), "--", ...paths], txn.author);
       const head = /^\[[^\n\]]* ([0-9a-f]{40})\]/m.exec(summary)?.[1];
       const object = head && await this.blobs.object(head);

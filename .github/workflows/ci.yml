@@ -105,7 +105,9 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then base="$PUSHED_FROM"; else base=$(git merge-base origin/main HEAD); fi
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
-      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
+      - env:
+          NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
   # Writes the result of a run started by hand to the commit it ran on. It starts with the run, not after the other jobs, and
   # waits in scripts/ci-time-gate.ts until every other job of the run has ended: a job that waits for the others (`needs`) starts
   # 2 to 3 seconds after the last of them ends and has its own set-up to do then, which was 6 to 9 seconds of a run. So no job of
