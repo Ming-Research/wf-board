@@ -841,3 +841,19 @@ test("the unread list continued over new commits equals the list derived from no
   for (const [k, list] of given.entries()) assert.equal(JSON.stringify(list.steps), list.text, `the list given after write ${k}`);
   assert.ok(given.some(({ steps }, k) => k > 0 && steps.at(-1)?.commits.length! > 1), "some stop was extended over several commits");
 });
+
+test("a version given by another run of the store is answered with the whole list", async t => {
+  const { store, op } = await board(t);
+  const cursor = store.snapshot().head;
+  await op.setPlan({ author, id: "a", row: { id: "first", state: "todo", text: "first new entry" } });
+  const head = store.snapshot().head;
+  // The page holds the list of everything after `cursor`, the first list a run of the store made.
+  const held = await unreadSince(await Store.open(store.dir), cursor, {}, head);
+  assert.ok(held.steps.length, "the held list has a stop");
+  // The daemon restarts; on the same head the owner has read everything, and this is again the run's first list.
+  const restarted = await Store.open(store.dir);
+  const answer = await unreadSince(restarted, head, {}, head, held.version);
+  assert.notEqual(answer.version, held.version, "a new run never repeats a version of the run before");
+  assert.equal(answer.keep, undefined, "the held list is not kept");
+  assert.deepEqual(answer.steps, [], "the whole list, which is empty");
+});

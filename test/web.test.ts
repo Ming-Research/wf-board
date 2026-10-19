@@ -3510,6 +3510,14 @@ test("等你 panel is kept through a change that leaves its rows, and drawn agai
   await p.change("c".repeat(40),[{kind:"decision",id:"plain",after:s.decisions.plain}]); await p.flush();
   assert.equal(panel().children.filter(e=>e.className === "waitrow").length,3);
   assert.ok(!panel().children.some(e=>e.className === "waitmore"),"no plain card is left, so no plain-card line");
+  // The same ask moves to another item drawn the same way: every row reads as before, but the row jumps to the other item.
+  s.items.twin={...s.items.hot!,ask:undefined};
+  await p.change("d".repeat(40),[{kind:"item",id:"twin",after:s.items.twin}]); await p.flush();
+  s.items.twin={...s.items.twin,ask:{text:"Hot ask"},rev:2}; s.items.hot={...s.items.hot!,ask:undefined,rev:2};
+  await p.change("a".repeat(40),[{kind:"item",id:"hot",after:s.items.hot},{kind:"item",id:"twin",after:s.items.twin}]); await p.flush();
+  const moved=panel().children.filter(e=>e.className === "waitrow").find(e=>e.innerHTML.includes("Hot ask"))!;
+  await moved.click(); await p.flush();
+  assert.ok(p.all().find(e=>e.id === "detail-it-twin"),"the row jumps to the item that asks now");
 });
 test("等你 panel shortens a long card question at 40 characters", async () => {
   const s=snapshot(), q40="问".repeat(40), q41=q40+"题";

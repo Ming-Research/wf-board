@@ -1,6 +1,7 @@
 import { PLAN_CONVERSION_MESSAGE } from "./convert-plans.ts";
 import { stringify } from "yaml";
 import { setImmediate } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import { changedItemSteps, stepsChanged } from "./legacy-rules.ts";
 import type { Item as LegacyItem } from "./legacy-model.ts";
 import type { Store, DocKind, CommitInfo } from "./store.ts";
@@ -70,7 +71,14 @@ export interface Step {
 interface Computed { key: string; head: string; version: string; walk: Promise<Walk>; steps: Promise<Step[]> }
 const memo = new WeakMap<Store, Computed[]>();
 const KEPT = 4;
-let versions = 0;
+// A version names the head, this store's run and a count within the run. The run is drawn at random, so that a page that kept its
+// list across a restart of the daemon is not told by the new run's count, which starts again from nothing, that its list still holds.
+const runs = new WeakMap<Store, { run: string; count: number }>();
+function nextVersion(store: Store, head: string): string {
+  let run = runs.get(store);
+  if (!run) runs.set(store, run = { run: randomUUID().slice(0, 8), count: 0 });
+  return `${head}.${run.run}.${++run.count}`;
+}
 function readKey(cursor: string | undefined, marks: Record<string, string>): string {
   return (cursor ?? "") + "|" + JSON.stringify(Object.entries(marks).sort(([a], [b]) => a.localeCompare(b)));
 }
@@ -84,7 +92,7 @@ function computed(store: Store, cursor: string | undefined, readMarks: Record<st
     const earlier = base && await base.walk.catch(() => undefined);
     return earlier && await inHistory(store, earlier.head, head) ? continueWalk(store, earlier, head) : startWalk(store, cursor, marks, head);
   })();
-  const entry: Computed = { key, head, version: `${head}.${++versions}`, walk, steps: walk.then(w => finish(store, w)) };
+  const entry: Computed = { key, head, version: nextVersion(store, head), walk, steps: walk.then(w => finish(store, w)) };
   memo.set(store, [...list, entry].slice(-KEPT));
   entry.steps.catch(() => { const now = memo.get(store); if (now?.includes(entry)) memo.set(store, now.filter(c => c !== entry)); });
   return entry;

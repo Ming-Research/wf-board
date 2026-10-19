@@ -605,9 +605,11 @@ derivation design that replaced this:
   newest such step, and no Rules object keeps the one it was built from: the first version kept a step for
   every state, each holding the state before it, and a closure of every Rules object read the options that
   held the Rules object before it, so each kept every earlier state reachable and the daemon's peak RSS grew
-  by about 1.25 MB a write (732 MB after 300 writes, 2,227 MB after 1,500, on a hosted runner); after the fix
-  the heap left after a full collection grows 5.6 KB a write over 1,500 writes, against 5.0 KB on the base,
-  both for the growing unread list. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
+  by about 1.25 MB a write (732 MB after 300 writes, 2,227 MB after 1,500, on a hosted runner). After the fix,
+  with the owner 4,000 commits behind, the heap left after a full collection grows 22 KB a write over 300 writes
+  and 5.7 KB over 1,500 (peak RSS 529 and 726 MB): from these two, about 6 MB once, the kept walk of the unread
+  list, and under 2 KB a write after it, the unread list itself growing by a stop a write; in the pairs below this
+  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
   (at most 3 of 51; each of the two chains keeps all 51). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
@@ -688,14 +690,15 @@ derivation design that replaced this:
   state from nothing: in the profile of the replay with nothing unread, the rules'
   memoized derivations (`cached` in `src/rules.ts`) took 16.3 ms a write, the profiler's
   own cost included. With the
-  continued list, the shared rules' reuse and the commit below, single runs gave 31.2 and
-  43.3 ms with the owner 4,000 commits behind, and 23.8 and 30.4 ms with nothing unread:
-  hosted runners differ by more than 10 ms for the same code, so the comparison is made in
+  continued list, the shared rules' reuse and the commit below, a single run gave 35.9 ms
+  with the owner 4,000 commits behind and 25.4 ms with nothing unread (45.8 ms on the base):
+  hosted runners differ by more than 20 ms for the same code, so the comparison is made in
   interleaved pairs (`scripts/bench-pairs.ts`: on each of four hosted runners, ten rounds
   of the merge base, its twin and this tree in an order drawn each round, 200 writes each,
-  the owner 4,000 commits behind). There a write cost ×0.440 to ×0.451 of the base (every
-  runner's 95% interval within 0.427–0.457, the twin against the base within ±1.2 to
-  ±2.6%), 21.5 to 34.1 ms of CPU against 48.8 to 75.6 ms (board-cpu-usage).
+  the owner 4,000 commits behind). There a write cost ×0.418 to ×0.448 of the base (every
+  runner's 95% interval within 0.410–0.459, the twin against the base within ±1.8 to
+  ±4.0%), 26.0 to 35.5 ms of CPU against 60.3 to 84.9 ms, the highest upper bound of a
+  95% interval 36.4 ms (board-cpu-usage).
 - A write starts two git processes: `git add` of its paths and `git commit --only` of
   the same paths, which commits exactly them whatever else is staged, so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
@@ -707,7 +710,8 @@ derivation design that replaced this:
   since), the profile of a `set_tags` write gave
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
-  the store's own code around them; with the commit's two, the write costs 31.2 ms.
+  the store's own code around them. The process costs here were taken from the profile of that
+  first version, with its heap; they were not measured again after the fix.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,

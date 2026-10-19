@@ -18,7 +18,7 @@
   "test/credentials.test.ts": 4.0,
   "test/data-dir.test.ts": 0.6,
   "test/deploy.test.ts": 23.1,
-  "test/derived.test.ts": 16.1,
+  "test/derived.test.ts": 11.7,
   "test/difficulty.test.ts": 6.7,
   "test/dispatch.test.ts": 7.5,
   "test/dom/agents-spoiled-1.test.ts": 20.8,
@@ -58,7 +58,7 @@
   "test/head-edit-write.test.ts": 1.5,
   "test/head-edit.test.ts": 0.2,
   "test/highlight.test.ts": 0.2,
-  "test/history.test.ts": 11.7,
+  "test/history.test.ts": 15.8,
   "test/http.test.ts": 4.6,
   "test/journal.test.ts": 3.0,
   "test/lean.test.ts": 3.5,
@@ -106,7 +106,7 @@
   "test/standing.test.ts": 0.6,
   "test/startup-cache.test.ts": 20.6,
   "test/stateless.test.ts": 13.0,
-  "test/store.test.ts": 10.4,
+  "test/store.test.ts": 12.3,
   "test/tags.test.ts": 3.6,
   "test/test-shard.test.ts": 0.2,
   "test/threads.test.ts": 0.2,
@@ -114,7 +114,7 @@
   "test/wake-agents.test.ts": 3.0,
   "test/wake.test.ts": 3.7,
   "test/watch.test.ts": 8.9,
-  "test/web.test.ts": 18.8,
+  "test/web.test.ts": 23.3,
   "test/whole-view.test.ts": 6.3,
-  "test/write-trace.test.ts": 5.9
+  "test/write-trace.test.ts": 8.1
 }

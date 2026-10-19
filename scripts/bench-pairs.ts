@@ -44,7 +44,7 @@ for (let round = 1; round <= ROUNDS; round++) {
     if (run.status !== 0 || !line) { process.stderr.write(run.stderr); throw new Error(`bench-writes (${side.label}, round ${round}) ended with ${run.status} and printed ${line ? "a result" : "no result"}`); }
     const result = JSON.parse(line.slice("BENCH ".length)) as { cpuMsPerWrite: number; peakRssMB: number; heapGrowthKBPerWrite: number };
     cpu[side.label]!.push(result.cpuMsPerWrite); rss[side.label]!.push(result.peakRssMB); heap[side.label]!.push(result.heapGrowthKBPerWrite);
-    console.log(`round ${round} ${side.label}: ${result.cpuMsPerWrite} ms/write, peak RSS ${result.peakRssMB} MB, heap +${result.heapGrowthKBPerWrite} KB/write`);
+    console.log(`round ${round} ${side.label}: ${result.cpuMsPerWrite} ms/write, peak RSS ${result.peakRssMB} MB, heap ${result.heapGrowthKBPerWrite >= 0 ? "+" : ""}${result.heapGrowthKBPerWrite} KB/write`);
   }
 }
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;

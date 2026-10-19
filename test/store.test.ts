@@ -399,6 +399,21 @@ test("preexisting staged files cannot enter a board transaction", async t => {
   assert.deepEqual(ats, [new Date(stamp!).toISOString()], "the write's time is its commit's author time");
 });
 
+test("a board document changed by hand is refused at the next start, unless a board write to it came first", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("b", item())] });
+  // Hand edits staged in two documents: the board writes one of them before the next start.
+  for (const id of ["a", "b"]) await writeFile(join(dir, `items/${id}.yaml`), (await readFile(join(dir, `items/${id}.yaml`), "utf8")).replace("An item", "Edited by hand"));
+  await git(dir, "add", "items/a.yaml", "items/b.yaml");
+  await store.commit({ author: "a", message: "Update", puts: [put("a", item("Written by the board"), 1)] });
+  assert.equal(await git(dir, "diff", "--cached", "--name-only"), "items/b.yaml", "the write committed its own document, over the hand edit");
+  await assert.rejects(Store.open(dir), /uncommitted changes: M {2}items\/b\.yaml$/);
+  // Once the remaining edit is undone, the board opens with the board's own version of the document it wrote.
+  await git(dir, "reset", "-q", "--", "items/b.yaml");
+  await git(dir, "checkout", "--", "items/b.yaml");
+  assert.equal((await Store.open(dir)).snapshot().items.a!.title, "Written by the board");
+});
+
 async function pauseCommit(dir: string) {
   const marker = join(dir, "hook-ready");
   const release = join(dir, "hook-release");
