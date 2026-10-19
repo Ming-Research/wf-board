@@ -1574,7 +1574,9 @@ test("filter counts kept per item through live changes equal those of a page ope
 // A write that reused the rules keeps the page's structure too (the order of the items, the stops that wait on the owner, the
 // unread stops, the counts by status). After every kind of change the header, the item tree and the open item read as they do on a
 // page opened on the same board, and the structure is made again exactly when the change could have moved it.
-async function structureScenario(reverts: Revert[] = []) {
+// `until`: the change after which the run stops. A page that kept too much can fail in a later draw nobody awaits (a stale id of a deleted
+// item), so a run that looks for one change stops at it.
+async function structureScenario(reverts: Revert[] = [], until?: string) {
   const work=(rows:PlanRow[],fields:Partial<Item>={}):Item=>({title:"Work",group:"P",updated:at,rev:1,links:[],log:[],plan:planWork(rows),...fields});
   const open=(fields:Partial<Decision>={}):Decision=>({item:"p1",question:"如何做？",options:[{key:"A",text:"甲",recommended:true},{key:"B",text:"乙"},{key:"C",text:"丙"}],status:"open",updated:at,rev:1,...fields});
   let s:Snapshot={board:{title:"Structure",projects:[{name:"P"},{name:"Q"}],tags:[{name:"看板",meaning:"看板的事"}]},head:"a".repeat(40),owner:{},notes:{},glossaries:{},items:{
@@ -1623,12 +1625,13 @@ async function structureScenario(reverts: Revert[] = []) {
     if (steps) list=steps;
     // A page that kept what it should not can fail on the stale ids; that is a difference too.
     try { await p.change(String(k+1).repeat(40),docs.map(doc=>({...doc,after:doc.after && (doc.kind === "item" ? items : decisions as Record<string,unknown>)[doc.id]}))); await p.flush(); }
-    catch { differences.push(what); continue; }
+    catch { differences.push(what); if (what === until) break; continue; }
     const fresh=await opened();
     if (seen(p) !== seen(fresh)) differences.push(what);
     const rebuilt=(p.marks.get("board:structure") ?? 0)-was.structure, stops=(p.marks.get("board:stops") ?? 0)-was.stops;
     if (keeps && (rebuilt !== 0 || stops !== 0)) wrong.push(`${what}: the structure was made again (${rebuilt} times, the stops ${stops})`);
     if (!keeps && (rebuilt === 0 || stops === 0)) wrong.push(`${what}: the structure was kept`);
+    if (what === until) break;
   }
   return {differences,wrong,freshStops:p.marks.get("board:fresh-stops") ?? 0};
 }
@@ -1644,7 +1647,7 @@ test("the structure kept through live changes is reported by a page that keeps t
     ["rules derived from scratch do not make it again",[{file:"web/app.ts",edit:"the structure is kept through rules built from scratch",find:kept,replace:'    const reused = previous !== undefined;'}],"an ask"],
     ["a new unread step does not make the unread stops again",[{file:"web/app.ts",edit:"the unread stops are made once",find:'keptFor("allFreshStops", [steps], freshStopsNow)',replace:'keptCached("allFreshStops", freshStopsNow)'}],"a new unread step"],
   ] as const) await t.test(what,async()=> {
-    const { differences } = await structureScenario([...reverts]);
+    const { differences } = await structureScenario([...reverts],change);
     assert.ok(differences.includes(change),"the comparison names "+change+" (it named: "+(differences.join(", ") || "nothing")+")");
   });
 });
