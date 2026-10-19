@@ -28,6 +28,7 @@ jobs:
       - run: npm run build:web
       - run: npm run check
       - run: node --test test/web.test.ts
+      - run: node --test --test-concurrency=1 test/nkey/counts.nkey.ts
       - run: |
           echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
           node --test test/e2e/tmp-probe-page-write.e2e.ts
