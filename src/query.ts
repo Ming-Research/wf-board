@@ -372,13 +372,14 @@ export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRep
   }
   return [...out.values()];
 }
-/** The PRs a step of item `id` is the merge row of: none unless it is a merge step (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
+/** The PRs a step of item `id` is the merge row of: none unless it is an open merge row (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
 export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
-  return mergePullsIn(s, s.items[id]?.head, step, repos);
+  const item = s.items[id];
+  return mergePullsIn(s, item?.head, item?.plan ?? [], step, repos);
 }
-/** The same for a step of an item whose head is `head`, which need not be the one the snapshot holds. */
-export function mergePullsIn(s: Snapshot, head: string | undefined, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
-  if (!isOpenMergeStep(step)) return [];
+/** The same for a step of an item whose head and plan are `head` and `plan`, which need not be the ones the snapshot holds. */
+export function mergePullsIn(s: Snapshot, head: string | undefined, plan: readonly PlanRow[], step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {
+  if (!isOpenMergeStep(step, plan)) return [];
   const named = pullsIn(s, step.text, repos), counted = new Set(countedPulls(named.map(prKey), pullsIn(s, changesSection(head), repos).map(prKey)));
   return named.filter(p => counted.has(prKey(p)));
 }
