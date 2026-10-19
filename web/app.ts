@@ -804,13 +804,21 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
-  // When the owner selected another item since n last landed (a click in the tree), n starts from that item: the
-  // first stop at or below its row, and its reverse the last stop above it (owner, 2026-10-14).
+  // The item the selection belongs to: the one the cursor is on (j and k move it without opening detail; so does a click on
+  // a card or a comment), else the one whose detail is shown. The arrows, n and its reverse all start from its row.
+  function selectionHome(): string | null {
+    const key = containerOf(effectiveSelection());
+    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : null;
+    return home && index().byId.has(home) ? home : null;
+  }
+  // When the owner selected another item since n last landed (a click in the tree, or j and k down to it), n starts from that
+  // item: the first stop at or below its row, and its reverse the last stop above it (owner, 2026-10-14).
   function selectionRow() {
-    if (!selectedItem) return null;
+    const home = selectionHome();
+    if (!home) return null;
     const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
-    if (landed === selectedItem) return null;
-    const row = boardPlace().get(selectedItem) ?? -1;
+    if (landed === home) return null;
+    const row = boardPlace().get(home) ?? -1;
     return row < 0 ? null : row;
   }
   function goNextFresh() {
@@ -994,8 +1002,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
     // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
     // last stop above it, wrapping around at the list's ends.
-    const order = boardPlace();
-    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const order = boardPlace(), home = selectionHome();
     const row = home && order.has(home) ? order.get(home)! : -1;
     const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
     let n = -1;

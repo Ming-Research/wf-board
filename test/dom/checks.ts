@@ -553,7 +553,8 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
 /** n and the right arrow wrap around the list as it stands. With the bottom row of the left tree selected, n lands on the first row of
  * the tree holding unread content (or on the bottom row itself when that holds some), and a lap of n visits every such row once, in tree
  * order; the right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
- * nearest the top of the screen. Families: wrap-n, wrap-card. */
+ * nearest the top of the screen. With the cursor moved to an end of the list by j or k instead of a click, n and N start from the cursor.
+ * Families: wrap-n, wrap-card, wrap-cursor. */
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
   const v: string[] = [], rows = bp.treeRows();
   if (!rows.length) return v;
@@ -575,6 +576,24 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
     }
     const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
     if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
+  }
+  // j and k move the cursor over the rows without selecting them, so the row clicked or landed on last is not the cursor's. n goes
+  // from the cursor's row all the same: from the bottom row wrapping to the first row holding unread content, and N from the top row
+  // wrapping to the last such row. Family: wrap-cursor.
+  if (freshRows.length > 1) {
+    const middle = freshRows[Math.floor(freshRows.length / 2)]!, cursor = () => bp.$("#areas .item.cur")?.id.slice(3) ?? null;
+    const carry = async (to: string, key: "j" | "k") => {
+      for (let k = 0; k < 2 * rows.length + 2 && cursor() !== to; k++) { bp.key(key); await bp.settle(); }
+      return cursor() === to;
+    };
+    // The middle row is clicked and n lands on it; j or k then carries the cursor away from it to an end of the list.
+    for (const [from, key, end, expected] of [["n", "j", last, o.fresh.has(last) ? last : freshRows[0]!], ["N", "k", rows[0]!, freshRows.at(-1)!]] as const) {
+      await bp.select(middle); bp.blur(); bp.key("n"); await bp.settle();
+      if (!await carry(end, key)) { v.push(`wrap-cursor: ${key} did not carry the cursor from ${middle} to ${end}, it stands on ${cursor()}`); continue; }
+      bp.key(from); await bp.settle();
+      const sel = bp.selected();
+      if (sel !== expected) v.push(`wrap-cursor: ${from} with the cursor moved by ${key} to ${end} landed on ${sel}, expected ${expected}`);
+    }
   }
   // Select the last row holding a waiting card (and no ask): the right arrow must go to its own card.
   const waiting = (id: string) => o.r.cardsOf(id).filter(k => o.r.cardWaiting(k)).length > 0;

@@ -895,6 +895,11 @@ test("after the owner selects another item in the tree, n goes to the first new 
   // Without the fix n went on from where it last landed (child), not from the item the owner clicked.
   await selectWide(p,"plain"); p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"n starts from the clicked item");
   await selectWide(p,"child"); p.key("N"); await p.flush(); assert.deepEqual(cur(),["area"],"its reverse goes to the last stop above the clicked item");
+  // j and k move the cursor without selecting an item: n starts from the cursor, not from the item last clicked or landed on.
+  await selectWide(p,"area"); p.key("j"); p.key("j"); await p.flush(); assert.deepEqual(cur(),["plain"],"j carried the cursor to the last row");
+  p.key("n"); await p.flush(); assert.deepEqual(cur(),["plain"],"n starts from the cursor moved by j");
+  p.key("k"); await p.flush(); assert.deepEqual(cur(),["child"],"k carried the cursor up one row");
+  p.key("N"); await p.flush(); assert.deepEqual(cur(),["area"],"its reverse starts from the cursor moved by k");
 });
 
 test("shared plan rows are one line: no owner or origin line under them", async () => {

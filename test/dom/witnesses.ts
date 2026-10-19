@@ -26,8 +26,7 @@ const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop 
     if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
     // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
     // last stop above it, wrapping around at the list's ends.
-    const order = boardPlace();
-    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const order = boardPlace(), home = selectionHome();
     const row = home && order.has(home) ? order.get(home)! : -1;
     const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
     let n = -1;
@@ -44,6 +43,18 @@ const ARROW_OLD = `    const all = stops();
     const pos = (st: {id:string;item:string|null}) => { const e = get(st.id) || (st.item ? get("it-" + st.item) : null); return e ? e.getBoundingClientRect().top : Infinity; };
     if (dir > 0) { const n = all.findIndex(st => pos(st) > 0); goStop(n >= 0 ? n : 0); }
     else { let n = -1; all.forEach((st, i) => { if (pos(st) < 0) n = i; }); goStop(n >= 0 ? n : all.length - 1); }
+`;
+// The row n and its reverse start from, in the form it has now and in the form it had when only a click set it.
+const HOME_NEW = `    const home = selectionHome();
+    if (!home) return null;
+    const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
+    if (landed === home) return null;
+    const row = boardPlace().get(home) ?? -1;
+`;
+const HOME_OLD = `    if (!selectedItem) return null;
+    const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
+    if (landed === selectedItem) return null;
+    const row = boardPlace().get(selectedItem) ?? -1;
 `;
 // The purple and red numbers as they were before 1ecc074: the stops a number leads to are found when it is drawn, not when it is clicked.
 const BADGES_NOW = [
@@ -254,6 +265,12 @@ const WITNESSES: Witness[] = [
     bug: "the right arrow chose the card nearest the top of the screen instead of the next one in the list (owner, 2026-10-14)",
     // The old step body, back where the new one stands.
     reverts: [app("the arrows step by the list's rows", ARROW_NEW, ARROW_OLD)], family: "wrap-card",
+    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+  },
+  {
+    bug: "n and its reverse went on from the row last clicked or landed on, not from the row the j and k cursor stood on (owner, 2026-10-14)",
+    // The start of n is the selected item alone, which j and k leave as it was.
+    reverts: [app("n starts from the selected item, not the cursor", HOME_NEW, HOME_OLD)], family: "wrap-cursor",
     run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
   },
   {
