@@ -11,6 +11,7 @@ import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
 import { LiveStore } from "./live.ts";
 import { RunnerHeartbeat } from "./runner-heartbeat.ts";
+import { LookMemory } from "./look.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
 import { ghToken, restSource } from "./ci-source.ts";
@@ -61,7 +62,9 @@ async function main() {
   // Tells when the event loop was held for long, which a write's slow git command may be the sign of (src/loop-watch.ts).
   watchLoop();
   const credentials = new Credentials(credentialFile);
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential }) });
+  // What each session saw at its last `look` lives in the daemon's memory only (docs/design.md, section 6, The look); a server object serves one request, so the one memory is handed to each.
+  const looks = new LookMemory();
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential, looks }) });
   lap("create wake, watch and server");
   server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside

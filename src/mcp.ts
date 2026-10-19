@@ -8,6 +8,7 @@ import * as q from "./query.ts";
 import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import { candidates, candidatesText, candidatesUnder, candidatesUnderText } from "./candidates.ts";
 import { BUCKETS, BUCKET_TEXT, wholeView, wholeViewText } from "./whole-view.ts";
+import { DEFAULT_ROWS, LookMemory, MAX_ROWS, MIN_ROWS, look, lookText } from "./look.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
@@ -234,8 +235,9 @@ const links = z.array(Link).describe("Relevant links as {label, url}; use qualif
  * request's credential said about the writer (src/credentials.ts): none when it carried none, which leaves reads and the old
  * self-reported writes; a refusal when it carried one that is not valid, which refuses every call.
  * `budget`: what one tool call may read of the history (src/budget.ts); tests give a small one.
+ * `looks`: what each session saw at its last `look` (src/look.ts); the daemon's one memory for all its requests, since a server object serves one request.
  */
-export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits }): McpServer {
+export function createMcpServer({ store, ops, now, wake, slow, credential, budget = REQUEST_LIMITS, looks = new LookMemory() }: { store: Store; ops: Ops; now?: () => string; wake?: Wake; slow?: SlowOps; credential?: Resolved; budget?: BudgetLimits; looks?: LookMemory }): McpServer {
   const server = new McpServer({ name: "wf-board", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   // The SDK checks a call's arguments before the handler runs and answers a mistake with the bare check text, which names no
   // parameter that would have worked. Each tool's handler checks them itself (`register`) and answers with the tool's parameters,
@@ -300,6 +302,22 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("whole_view", `Where does every open work item stand? One pass over the board, each open work item in one of five kinds, most pressing first: ${BUCKETS.map(b => `${b} (${BUCKET_TEXT[b]})`).join(", ")}. overdue: working or waiting past the limit for its state, or reported as an exception; unattended: unfinished rows but no session, no pause and nothing the board knows it waits for (half done first, then not started); working: the runner reports a turn in progress, or a live session holds the item; waiting: the runner reports it waits for CI, a card, the architect, items, a 14900K run or a merge, or the plan shows it blocked, with what for and how long; parked: a pause marker holds it, listed once per pause with how many items stand under it. The answer is the totals, up to a few rows per kind with the rest counted, and what each project has left; items in a backlog are counted, not listed. bucket lists one kind in full (up to 40 rows); project narrows to one project.`, {
     bucket: z.enum(BUCKETS).describe("List only this kind, in full.").optional(), project: text("Exact configured project name: only its items.").optional(),
   }, a => { const x = read(); return wholeViewText(wholeView(x.snapshot, x.rules, now ? Date.parse(now()) : Date.now()), a); });
+  register("look", `Where does all the open work stand, from the roots down, in one answer? The tree the owner's board shows, each project's top items and the items they own, one line for each item, in a budget of lines (rows, default ${DEFAULT_ROWS}). Each line: the item, its status (进行中, 卡住, 停滞, 未开始, 暂停), what the runner reports it is doing or waiting for with the turn it is on, 没人管 (nobody holds it) or 等太久 (waiting past the limit for its state), how long it has been so, its check flags, and * when it changed or + when it is new since this session's last look. The budget opens the subtrees that need a reader first: those with an item nobody holds or waiting too long, then work being done, then check flags, then a pause; an item that carries a pause marker is one line with its reason and how long (expand opens it). A line not opened ends with 下面 N 件 and the count in each status. Work in a project's backlog (a record's items) is counted apart, as 待选池, and is a line of its own to open. Every open work item is a line or inside a count: done and cancelled items and records are not counted. session is the name the marks are kept under (a connection with a credential has one of its own, and a session you name besides is kept apart from it, so name your own when you share the connection): the answer's first line says what changed, what is new and what finished since this session's last look; without a session or a credential nothing is remembered or marked; the last look is kept in the board's memory only (the 16 newest sessions), so the first look after a restart marks nothing. projects: project names, none for all. expand: item keys (or a pool's or a project's) to open with the nodes above them, in the order given, as many as the budget holds; the answer says which did not fit.`, {
+    projects: z.array(text("Exact configured project name.")).describe("Only these projects; omitted or empty means every project.").optional(),
+    rows: z.number().int().min(MIN_ROWS).max(MAX_ROWS).describe(`The most lines the answer takes, at least one per project; default ${DEFAULT_ROWS}.`).optional(),
+    expand: z.array(Key).describe("Items to open, with the nodes above them: their children are listed, however low they stand in the order of opening.").optional(),
+    session,
+  }, a => {
+    const x = read(), at = now ? Date.parse(now()) : Date.now();
+    // The memory is kept under the credential's session and the session the call names, so that a subagent on the architect's connection
+    // (which names its own) neither reads nor replaces the conversation's last look; with only one of the two, under that one, and with neither not at all.
+    const own = credential?.ok ? credential.who.session : undefined, named = a.session?.trim() || undefined;
+    const caller = own === undefined ? named : named === undefined || named === own ? own : `${own} / ${named}`;
+    const previous = caller ? looks.get(caller) : undefined;
+    const view = look(x.snapshot, x.rules, at, { projects: a.projects, rows: a.rows, expand: a.expand }, previous, caller !== undefined);
+    if (caller) looks.set(caller, { at, sigs: view.sigs });
+    return lookText(view);
+  });
   register("followups", "Coordinator follow-up: sent owner notes older than the given age, with their projects.", { minutes: z.number().nonnegative().describe("Age threshold in minutes, exclusive; zero returns all older pending work.") }, a => { const x = read(); return JSON.stringify(q.followups(x.snapshot,x.rules,a,now?.())); });
   register("search", "Where is this text mentioned? Search Chinese or other substrings across titles, heads, plan text, target goals, target values, current values, comparison baselines, logs, decisions and owner notes. Read context for a hit before editing it.", {
     query: text("Case-insensitive substring to find, including Chinese text."), filters: z.object({ ...scope, status: statuses, kind: z.array(z.enum(["item", "card", "note"])).describe("Search only these document kinds.").optional(), since: Time.describe("Only fields with timestamps at or after this ISO time; logs and notes use their own times.").optional(), limit: limit(20) }).strict().describe("Narrow the matches to relevant board context.").optional(),
