@@ -619,7 +619,7 @@ export interface Snapshot {
      * agent list reads it (src/agents.ts). Like `sessions`, an observation of writes, not an assignment of work. */
     agents?: Record<string, AgentTouch[]>;
     /** Per item, the reports of the runner that began a state of the work, oldest first, from the commits of `report_state`
-     * (src/timeline.ts, docs/design.md, section 7, Agent list). The page and the `timeline` tool draw the work's line from it. */
+     * (src/timeline.ts, docs/design.md, section 7, Agent list). The page and the `timeline` tool cut each agent's line from it. */
     states?: Record<string, readonly StateStart[]>;
   };
 }

@@ -1,9 +1,10 @@
-// The timeline of a piece of work: the states it went through, as segments with a kind, a start and a length. The runner's reports are
-// commits, so the store derives each item's list of state starts from the history (`activity.states`, advanced by `withStateStart`
-// on every write and by the history replay alike); this file turns that list, the item's dispatch records, its pause spans and its
-// end into segments. The `timeline` tool prints the result and the page draws it, both from this one function, like src/whole-view.ts.
-// docs/design.md, section 7, "Agent list", gives the reasons for each rule.
+// The timeline of an agent: what one session did from its start to its end, as segments with a kind, a start and a length. An agent is one
+// dispatch record. The runner's reports are commits, so the store derives each item's list of state starts from the history
+// (`activity.states`, advanced by `withStateStart` on every write and by the history replay alike); this file cuts that list to the span of
+// one dispatch, with the item's pause spans, into segments. The `timeline` tool prints the result and the page draws it, both from this one
+// function, like src/whole-view.ts. docs/design.md, section 7, "Agent list", gives the reasons for each rule.
 
+import { RUNNER_START_GRACE_MS } from "./agents.ts";
 import { RUNNER_STATES } from "./model.ts";
 import type { Dispatch, Item, RunnerState, Snapshot, StateStart } from "./model.ts";
 import type { Rules } from "./rules.ts";
@@ -48,16 +49,14 @@ export function withStateStart(list: readonly StateStart[] | undefined, start: S
   return next.length > STATE_STARTS_MAX ? next.slice(next.length - STATE_STARTS_MAX) : next;
 }
 
-/** What a segment is: the kinds a reported state makes, then `paused`. */
+/** What a segment is: `work` (a turn of the agent runs), the things it waits for, and `paused` (the item was paused). */
 export const SEGMENT_KINDS = ["work", "ci", "owner", "architect", "items", "run", "wait", "merge", "person", "closing", "paused"] as const;
 export type SegmentKind = (typeof SEGMENT_KINDS)[number];
 export const SEGMENT_TEXT: Readonly<Record<SegmentKind, string>> = {
   work: "干活", ci: "等 CI", owner: "等主人", architect: "等架构师", items: "等条目", run: "等 14900K", wait: "等事件", merge: "等合入", person: "要人看", closing: "待收尾", paused: "暂停",
 };
-/** The kinds in which the work waits for something outside the engineer: the segments a session put down (`down`) is marked on. */
-export const WAITING_KINDS: ReadonlySet<SegmentKind> = new Set<SegmentKind>(["ci", "owner", "architect", "items", "run", "wait", "merge"]);
-/** The kinds the longest-wait list counts: the waits, and the work stopped for a person to look at. */
-const STALLED_KINDS: ReadonlySet<SegmentKind> = new Set<SegmentKind>([...WAITING_KINDS, "person"]);
+/** The kinds the longest-wait list counts: the waits for something outside the agent, and the work stopped for a person to look at. */
+const STALLED_KINDS: ReadonlySet<SegmentKind> = new Set<SegmentKind>(["ci", "owner", "architect", "items", "run", "wait", "merge", "person"]);
 
 export function kindOf(start: Pick<StateStart, "state" | "to">): SegmentKind {
   switch (start.state) {
@@ -73,38 +72,40 @@ export function kindOf(start: Pick<StateStart, "state" | "to">): SegmentKind {
   }
 }
 
-/** A stretch of the line, in ms of the board's clock. `down`: the work waits and no engineer session is open (the session was put down). */
+/** A stretch of an agent's line, in ms of the board's clock. */
 export interface Segment {
   kind: SegmentKind;
   from: number;
   to: number;
-  down?: true;
   cards?: readonly string[];
   items?: readonly string[];
   what?: string;
   until?: string;
 }
-export interface Timeline {
+/** The line of one agent: one dispatch, from its start to its end (else to now), cut into segments. */
+export interface AgentLine {
+  agentId: string;
+  agent: string;
+  role: Dispatch["role"];
+  level: number;
   from: number;
-  /** The end of the line: the end of the work, else now. */
+  /** The end of the line: when the session ended or the work was over, else now. */
   to: number;
   segments: Segment[];
-  /** Milliseconds spent in each kind of segment; `down` is the part of the waits spent with no session open, which the kinds count too. */
+  /** Milliseconds spent in each kind of segment. */
   totals: Record<SegmentKind, number>;
-  down: number;
-  /** Set when the work is over: done, or cancelled. */
-  ended?: { kind: "done" | "cancelled"; at: number };
+  /** Set when the session is over: the result its dispatch ended with, or that the work ended before it did. */
+  ended?: { at: number; result: string };
 }
 
-export interface TimelineInput {
+export interface LineInput {
+  /** The item's state starts (`activity.states`), whichever agent they fell to. */
   starts: readonly StateStart[] | undefined;
-  /** The item's dispatch records: only the engineers' count. */
-  dispatches?: ReadonlyArray<Pick<Dispatch, "role" | "started" | "finish">> | undefined;
+  dispatch: Pick<Dispatch, "agentId" | "agent" | "role" | "level" | "started" | "finish">;
   /** The spans the item was paused, an inherited pause included (`activity.pauses`). */
   pauses?: ReadonlyArray<{ start: string; end?: string }> | undefined;
-  /** When the work began if that is earlier than its first report (the report's `started`). */
-  began?: string | undefined;
-  ended?: Timeline["ended"] | undefined;
+  /** When the work was over, if it was: a session still open then ends there. */
+  over?: { at: number; text: string } | undefined;
   now: number;
 }
 
@@ -137,35 +138,41 @@ function overlay(segments: Segment[], spans: Span[], inside: (piece: Segment) =>
   return out;
 }
 
-/** Neighbouring segments that are the same thing (a stretch cut by a gap that changed nothing for it) joined into one. */
+/** Neighbouring segments that are the same thing (a state reported again a moment after the session began) joined into one. */
 function coalesced(segments: Segment[]): Segment[] {
   const out: Segment[] = [];
   for (const seg of segments) {
     const last = out.at(-1);
-    if (last && last.to === seg.from && last.kind === seg.kind && !last.down === !seg.down && last.what === seg.what && last.until === seg.until && sameList(last.cards, seg.cards) && sameList(last.items, seg.items)) last.to = seg.to;
+    if (last && last.to === seg.from && last.kind === seg.kind && last.what === seg.what && last.until === seg.until && sameList(last.cards, seg.cards) && sameList(last.items, seg.items)) last.to = seg.to;
     else out.push({ ...seg });
   }
   return out;
 }
 
+const zeroTotals = () => Object.fromEntries(SEGMENT_KINDS.map(k => [k, 0])) as Record<SegmentKind, number>;
+
 /**
- * The line of one piece of work at `now`: a segment for each stretch it spent in a state, the work's kind where the runner reported it,
- * `paused` where the item was paused (what it waited for then is not told), and the waits marked `down` where no engineer session was
- * open: between a session's end and the next one's start, which is how a session put down while it waits shows. Empty when the runner
- * never reported on it.
+ * The line of one agent at `now`: the session begins with a turn, so it is `work` until the first state the runner reports after its
+ * start; from there each reported state is a segment of the kind it makes, until the session's end (its dispatch finished, or the work
+ * was over, else now). `paused` replaces the stretches the item was paused in (what it waited for then is not told). The time before
+ * the session began and between two sessions is on no line. No segments when the runner reported nothing from the start of the session
+ * (RUNNER_START_GRACE_MS before it) to its end: a session the runner did not run has no line.
  */
-export function timelineOf(input: TimelineInput): Timeline {
-  const starts = [...input.starts ?? []].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  const totals = Object.fromEntries(SEGMENT_KINDS.map(k => [k, 0])) as Record<SegmentKind, number>;
-  if (!starts.length) return { from: input.now, to: input.now, segments: [], totals, down: 0 };
-  const first = Date.parse(starts[0]!.at), began = input.began === undefined ? first : Math.min(first, Date.parse(input.began));
-  const end = Math.max(input.ended?.at ?? input.now, began);
-  let segments: Segment[] = [];
-  starts.forEach((start, i) => {
-    const from = i === 0 ? began : Date.parse(start.at), to = i + 1 < starts.length ? Date.parse(starts[i + 1]!.at) : end;
-    if (!(to > from)) return;
+export function lineOf(input: LineInput): AgentLine {
+  const d = input.dispatch, from = Date.parse(d.started), totals = zeroTotals();
+  const finished = d.finish ? Date.parse(d.finish.ended) : undefined;
+  const over = finished === undefined && input.over && input.over.at <= input.now ? input.over : undefined;
+  const to = Math.max(from, finished ?? over?.at ?? input.now);
+  const ended = finished !== undefined ? { at: finished, result: d.finish!.result } : over ? { at: Math.max(from, over.at), result: over.text } : undefined;
+  const line: AgentLine = { agentId: d.agentId, agent: d.agent, role: d.role, level: d.level, from, to, segments: [], totals, ...(ended ? { ended } : {}) };
+  const at = (start: StateStart) => Date.parse(start.at);
+  const starts = [...input.starts ?? []].sort((a, b) => at(a) - at(b));
+  if (!(to > from) || !starts.some(start => at(start) >= from - RUNNER_START_GRACE_MS && at(start) <= to)) return line;
+  const inside = starts.filter(start => at(start) > from && at(start) <= to);
+  let segments: Segment[] = [{ kind: "work", from, to: inside[0] ? at(inside[0]) : to }];
+  inside.forEach((start, i) => {
     segments.push({
-      kind: kindOf(start), from: Math.min(from, end), to: Math.min(to, end),
+      kind: kindOf(start), from: at(start), to: i + 1 < inside.length ? at(inside[i + 1]!) : to,
       ...(start.cards === undefined ? {} : { cards: start.cards }), ...(start.items === undefined ? {} : { items: start.items }),
       ...(start.what === undefined ? {} : { what: start.what }), ...(start.until === undefined ? {} : { until: start.until }),
     });
@@ -173,29 +180,34 @@ export function timelineOf(input: TimelineInput): Timeline {
   segments = segments.filter(seg => seg.to > seg.from);
   // A pause covers whatever the state was: the pieces inside it become one stretch of `paused`.
   const paused = joined((input.pauses ?? []).map(p => [Date.parse(p.start), p.end === undefined ? Infinity : Date.parse(p.end)] as const));
-  segments = overlay(segments, paused, piece => ({ kind: "paused", from: piece.from, to: piece.to }));
-  // The gaps between an engineer's session ending and the next one starting; the last session ended leaves a gap that does not close.
-  const engineers = (input.dispatches ?? []).filter(d => d.role === "工程师").sort((a, b) => Date.parse(a.started) - Date.parse(b.started));
-  const gaps = joined(engineers.flatMap((d, i): Span[] => d.finish ? [[Date.parse(d.finish.ended), i + 1 < engineers.length ? Date.parse(engineers[i + 1]!.started) : Infinity] as const] : []));
-  segments = coalesced(overlay(segments, gaps, piece => WAITING_KINDS.has(piece.kind) ? { ...piece, down: true } : piece));
-  let down = 0;
-  for (const seg of segments) { totals[seg.kind] += seg.to - seg.from; if (seg.down) down += seg.to - seg.from; }
-  return { from: began, to: end, segments, totals, down, ...(input.ended ? { ended: input.ended } : {}) };
+  line.segments = coalesced(overlay(segments, paused, piece => ({ kind: "paused", from: piece.from, to: piece.to })));
+  for (const seg of line.segments) totals[seg.kind] += seg.to - seg.from;
+  return line;
 }
 
 /** When the work was over: the time its last plan row was done or dropped, or an item cancelled when it was last written. */
-export function endOf(it: Item, r: Pick<Rules, "statusOf">, id: string): Timeline["ended"] | undefined {
+export function endOf(it: Item, r: Pick<Rules, "statusOf">, id: string): { kind: "done" | "cancelled"; at: number } | undefined {
   if (it.status === "cancelled") return { kind: "cancelled", at: Date.parse(it.updated) };
   if (r.statusOf(id) !== "done") return undefined;
   const dates = it.plan.flatMap(row => "state" in row ? [row.doneAt, row.droppedAt].flatMap(at => at === undefined ? [] : [Date.parse(at)]) : []);
   return { kind: "done", at: dates.length ? Math.max(...dates) : Date.parse(it.updated) };
 }
 
-/** The line of an item on the board, from its state starts, dispatch records, pause spans and end. */
-export function timelineOfItem(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, r: Pick<Rules, "statusOf">, id: string, now: number): Timeline {
+type Board = Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] };
+/** The line of a dispatch of an item on the board, from the item's state starts, pause spans and end. */
+export function lineOfDispatch(s: Board, r: Pick<Rules, "statusOf">, id: string, dispatch: Dispatch, now: number): AgentLine {
+  const it = s.items[id]!, end = endOf(it, r, id);
+  return lineOf({ starts: s.activity?.states?.[id], dispatch, pauses: s.activity?.pauses?.[id], over: end && { at: end.at, text: end.kind === "done" ? "活做完了" : "活取消了" }, now });
+}
+/** The lines of the agents an item went through, oldest first; a session with no line (the runner reported nothing in it) is left out. */
+export function linesOfItem(s: Board, r: Pick<Rules, "statusOf">, id: string, now: number): AgentLine[] {
   const it = s.items[id];
-  if (!it) return timelineOf({ starts: undefined, now });
-  return timelineOf({ starts: s.activity?.states?.[id], dispatches: it.dispatches, pauses: s.activity?.pauses?.[id], began: it.runner?.started, ended: endOf(it, r, id), now });
+  return (it?.dispatches ?? []).slice().sort((a, b) => Date.parse(a.started) - Date.parse(b.started)).map(d => lineOfDispatch(s, r, id, d, now)).filter(line => line.segments.length);
+}
+/** The line of one agent: the dispatch of `item` with this session id, or undefined when the item has no such dispatch. */
+export function lineOfAgent(s: Board, r: Pick<Rules, "statusOf">, id: string, agentId: string, now: number): AgentLine | undefined {
+  const d = s.items[id]?.dispatches?.find(x => x.agentId === agentId);
+  return d && lineOfDispatch(s, r, id, d, now);
 }
 
 // --- drawing --------------------------------------------------------------------------------------------------------
@@ -220,59 +232,69 @@ export function waitsFor(seg: Pick<Segment, "cards" | "items" | "what" | "until"
   const parts = [seg.cards?.length ? `卡 ${seg.cards.join("、")}` : "", seg.items?.length ? `条目 ${seg.items.join("、")}` : "", seg.what ? seg.what + (seg.until ? `（到 ${clockText(Date.parse(seg.until))}）` : "") : ""];
   return parts.filter(Boolean).join(" · ");
 }
-/** The name of a segment as the lists say it. */
-export function segmentLabel(seg: Pick<Segment, "kind" | "down">): string {
-  return SEGMENT_TEXT[seg.kind] + (seg.down ? "（放下等待）" : "");
-}
 
-/** The most segments of one line the tool lists; a longer line lists the newest and counts the rest. */
-export const TIMELINE_ROWS = 60;
+/** The most segments of one line the tool lists, and the most agents of one item; a longer line lists the newest and counts the rest. */
+export const TIMELINE_ROWS = 30, TIMELINE_AGENTS = 12;
 /** The default and the most rows of the longest-wait list. */
 export const LONGEST_DEFAULT = 10, LONGEST_MAX = 40;
+/** How far back the agents that have ended are listed, and how many of them. */
+export const RECENT_MS = 24 * 3600_000, RECENT_MAX = 10;
 
-/** One wait: the segment, joined with the ones next to it that wait for the same thing, and whether it goes on now. */
-export interface LongWait { id: string; kind: SegmentKind; from: number; to: number; ongoing: boolean; down: boolean; waits: string }
+/** One wait: a segment of a waiting kind, and whether it goes on now. */
+export interface LongWait { item: string; agent: string; kind: SegmentKind; from: number; to: number; ongoing: boolean; waits: string }
 
-/**
- * The longest waits over the given lines, longest first: every stretch in a waiting kind (or stopped for a person), the pieces a pause or a
- * session put down cut apart left whole where they wait for the same thing. A wait that goes on counts up to the end of its line.
- */
-export function longestWaits(lines: ReadonlyArray<{ id: string; timeline: Timeline }>, limit: number): LongWait[] {
+/** The longest waits over the given lines, longest first: every segment in a waiting kind (or stopped for a person). A wait that goes on counts up to the end of its line. */
+export function longestWaits(lines: ReadonlyArray<{ item: string; line: AgentLine }>, limit: number): LongWait[] {
   const out: LongWait[] = [];
-  for (const { id, timeline } of lines) {
-    const goesOn = (to: number) => to === timeline.to && !timeline.ended;
-    let open: LongWait | undefined, openKey = "";
-    for (const seg of timeline.segments) {
-      if (!STALLED_KINDS.has(seg.kind)) { open = undefined; continue; }
-      const key = `${seg.kind}\0${waitsFor(seg)}`;
-      if (open && openKey === key && open.to === seg.from) { open.to = seg.to; open.down ||= !!seg.down; open.ongoing = goesOn(seg.to); continue; }
-      openKey = key;
-      open = { id, kind: seg.kind, from: seg.from, to: seg.to, ongoing: goesOn(seg.to), down: !!seg.down, waits: waitsFor(seg) };
-      out.push(open);
+  for (const { item, line } of lines) {
+    for (const seg of line.segments) {
+      if (STALLED_KINDS.has(seg.kind)) out.push({ item, agent: line.agent, kind: seg.kind, from: seg.from, to: seg.to, ongoing: seg.to === line.to && !line.ended, waits: waitsFor(seg) });
     }
   }
-  return out.sort((a, b) => (b.to - b.from) - (a.to - a.from) || (a.id < b.id ? -1 : a.id > b.id ? 1 : a.from - b.from)).slice(0, limit);
+  return out.sort((a, b) => (b.to - b.from) - (a.to - a.from) || (a.item < b.item ? -1 : a.item > b.item ? 1 : a.from - b.from)).slice(0, limit);
 }
 
 const cut = (text: string, max: number): string => { const chars = [...text.replace(/\s+/g, " ").trim()]; return chars.length <= max ? chars.join("") : `${chars.slice(0, max).join("")}…`; };
-
-/** One item's line as the tool's text: the span, the totals by kind and the segments, newest TIMELINE_ROWS of them. */
-export function timelineText(id: string, title: string, t: Timeline): string {
-  if (!t.segments.length) return `${id} · ${cut(title, 24)} · 执行程序没有报告过这件活的状态，没有线。`;
-  const span = t.to - t.from, kinds = SEGMENT_KINDS.filter(k => t.totals[k] > 0);
-  const head = `${id} · ${cut(title, 24)} · 共 ${spanText(span)}（${clockText(t.from)} 起，${t.ended ? `${t.ended.kind === "done" ? "做完于" : "取消于"} ${clockText(t.ended.at)}` : "还没完"}）`;
-  const totals = kinds.map(k => `${SEGMENT_TEXT[k]} ${spanText(t.totals[k])}`).join(" · ") + (t.down ? `；其中放下等待 ${spanText(t.down)}` : "");
-  const rows = t.segments.slice(-TIMELINE_ROWS).map(seg => {
+const whoText = (line: AgentLine): string => `${line.agent}（${line.role}，难度 ${line.level}）`;
+/** The totals of a line by kind, as the tool and the page hover say them. */
+export function totalsText(line: AgentLine): string {
+  return SEGMENT_KINDS.filter(k => line.totals[k] > 0).map(k => `${SEGMENT_TEXT[k]} ${spanText(line.totals[k])}`).join(" · ");
+}
+function lineBlock(line: AgentLine): string[] {
+  const head = `${whoText(line)} · 共 ${spanText(line.to - line.from)}（${clockText(line.from)} 起，${line.ended ? `结束于 ${clockText(line.ended.at)}，${line.ended.result}` : "还在跑"}）`;
+  const rows = line.segments.slice(-TIMELINE_ROWS).map(seg => {
     const waits = waitsFor(seg);
-    return `  ${clockText(seg.from)} · ${segmentLabel(seg)} · ${spanText(seg.to - seg.from)}${waits ? ` · ${waits}` : ""}${seg.to === t.to && !t.ended ? " · 还在这里" : ""}`;
+    return `  ${clockText(seg.from)} · ${SEGMENT_TEXT[seg.kind]} · ${spanText(seg.to - seg.from)}${waits ? ` · ${waits}` : ""}${seg.to === line.to && !line.ended ? " · 还在这里" : ""}`;
   });
-  const more = t.segments.length > TIMELINE_ROWS ? [`  … 前面还有 ${t.segments.length - TIMELINE_ROWS} 段没列出`] : [];
-  return [head, `合计：${totals}`, ...more, ...rows].join("\n");
+  const more = line.segments.length > TIMELINE_ROWS ? [`  … 前面还有 ${line.segments.length - TIMELINE_ROWS} 段没列出`] : [];
+  return [head, `合计：${totalsText(line)}`, ...more, ...rows];
 }
 
-/** The longest waits among the lines as the tool's text; `titles` gives an item's title. */
-export function longestWaitsText(waits: readonly LongWait[], titles: (id: string) => string, lines: number, now: number): string {
-  if (!waits.length) return `没有在跑的活有等待段（看了 ${lines} 件在跑的活）。`;
-  const rows = waits.map(w => `  ${w.id} · ${cut(titles(w.id), 24)} · ${SEGMENT_TEXT[w.kind]}${w.down ? "（含放下等待）" : ""} · ${spanText(w.to - w.from)} · ${clockText(w.from)} 起${w.ongoing ? "，还在等" : `，到 ${clockText(w.to)}`}${w.waits ? ` · ${w.waits}` : ""}`);
-  return [`在跑的活里最长的 ${waits.length} 个等待段（看了 ${lines} 件；${clockText(now)} 的数）`, ...rows].join("\n");
+/** The lines of the agents an item went through as the tool's text, newest TIMELINE_AGENTS of them, each with its newest TIMELINE_ROWS segments. */
+export function timelineText(id: string, title: string, lines: readonly AgentLine[]): string {
+  if (!lines.length) return `${id} · ${cut(title, 24)} · 执行程序没有在这件活的会话里报过状态，没有代理的线。`;
+  const shown = lines.slice(-TIMELINE_AGENTS), before = lines.length - shown.length;
+  return [`${id} · ${cut(title, 24)} · 经过 ${lines.length} 个代理${before ? `（前 ${before} 个没列出）` : ""}`, ...shown.flatMap(line => lineBlock(line))].join("\n");
+}
+
+/** One agent of the board-wide answer: the item it works on (or worked on), its line and the item's title. */
+export interface ListedLine { item: string; title: string; line: AgentLine }
+
+/**
+ * The tool's answer without an item: the agents running, the agents that ended in the last RECENT_MS (the newest RECENT_MAX), and the longest
+ * waits among the running ones. A running agent is a session with no end on an item still open.
+ */
+export function agentsText(running: readonly ListedLine[], recent: readonly ListedLine[], waits: readonly LongWait[], titles: (id: string) => string, now: number): string {
+  const row = ({ item, title, line }: ListedLine) => {
+    const last = line.segments.at(-1)!, waiting = waitsFor(last);
+    return `  ${item} · ${cut(title, 24)} · ${whoText(line)} · ${line.ended ? `结束于 ${clockText(line.ended.at)}，${line.ended.result}` : `现在${SEGMENT_TEXT[last.kind]} ${spanText(line.to - last.from)}`} · 共 ${spanText(line.to - line.from)}（${totalsText(line)}）${waiting && !line.ended ? ` · ${waiting}` : ""}`;
+  };
+  const longest = waits.length
+    ? waits.map(w => `  ${w.item} · ${cut(titles(w.item), 24)} · ${w.agent} · ${SEGMENT_TEXT[w.kind]} · ${spanText(w.to - w.from)} · ${clockText(w.from)} 起${w.ongoing ? "，还在等" : `，到 ${clockText(w.to)}`}${w.waits ? ` · ${w.waits}` : ""}`)
+    : ["  没有"];
+  return [
+    `在跑的代理 ${running.length} 个（${clockText(now)} 的数）`, ...running.map(row),
+    `最近 ${RECENT_MS / 3600_000} 小时里收尾的代理 ${recent.length} 个（最多列 ${RECENT_MAX} 个）`, ...recent.map(row),
+    `在跑的代理里最长的 ${waits.length} 个等待段`, ...longest,
+  ].join("\n");
 }

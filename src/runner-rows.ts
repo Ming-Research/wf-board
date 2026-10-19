@@ -26,7 +26,9 @@ export interface RunnerTurn {
 export interface RunnerRow {
   /** The item the runner holds; also the engineer session's name. */
   item: string;
+  /** The engineer session's name, and the id of its dispatch record (what the agent's line is read from, src/timeline.ts). */
   agent: string;
+  agentId: string;
   level: number;
   model: string;
   effort?: string;
@@ -147,7 +149,7 @@ export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork
     if (!dispatch) continue;
     const since = Date.parse(report.since);
     const row: RunnerRow = {
-      item, agent: dispatch.agent, level: dispatch.level, model: dispatch.model, ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
+      item, agent: dispatch.agent, agentId: dispatch.agentId, level: dispatch.level, model: dispatch.model, ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
       state: report.state, label: stateWord(report), note: listText(report.note ?? ""), since, started: Date.parse(report.started),
       ...(report.items === undefined ? {} : { waitItems: report.items }), ...(report.cards === undefined ? {} : { waitCards: report.cards }),
       ...(report.what === undefined ? {} : { waitFor: listText(report.what) + (report.until === undefined ? "" : untilText(report.until)) }),

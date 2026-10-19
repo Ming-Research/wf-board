@@ -6,7 +6,7 @@ import type { RunnerRow } from "../src/runner-rows.ts";
 import type { LiveEntry } from "../src/live.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
-import { timelineOfItem, segmentLabel, clockText, drawLength, LONG_SEGMENT_MS, SEGMENT_KINDS, SEGMENT_TEXT } from "../src/timeline.ts";
+import { lineOfAgent, clockText, drawLength, totalsText, LONG_SEGMENT_MS, SEGMENT_TEXT } from "../src/timeline.ts";
 import type { Segment } from "../src/timeline.ts";
 import { rules, placedCardsOf, cardMarker, draftEditable, isPlainPick, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
 import type { ActivityDelta, PreviousRules, Rules } from "../src/rules.ts";
@@ -1912,24 +1912,24 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     box.appendChild(el("span", "rt-since", esc(spanText(now - runnerStateSince(x))))).title = x.state === "running" ? "这一轮跑了多久" : "在这个状态已经多久";
     const spent = "共 " + spanText(now - x.started) + (x.turns === undefined ? "" : " · " + x.turns + " 轮") + (x.cost === undefined ? "" : " · $" + x.cost.toFixed(2));
     box.appendChild(el("span", "rt-total", esc(spent))).title = "这件活开始以来的时间、轮数和花费（执行程序报的）";
-    box.appendChild(timelineBar(x.item, now));
+    box.appendChild(timelineBar(x, now));
     return box;
   }
-  // The line of the work (src/timeline.ts): a segment for each stretch it spent in a state, as long as the time it took, so the longest wait is the
+  // The line of the agent (src/timeline.ts): a segment for each stretch of its session, as long as the time it took, so the longest wait is the
   // widest segment. A stretch over three hours is drawn shorter, with a gap in it; its hover says the whole time.
   function segmentTip(seg: Segment) {
     const names = (kind: "item" | "card", keys: readonly string[]) => keys.map(key => runnerName(kind, key) ?? key).join("、");
     const waits = [seg.cards?.length ? "卡：" + names("card", seg.cards) : "", seg.items?.length ? "条目：" + names("item", seg.items) : "", seg.what ?? ""].filter(Boolean).join("\n");
-    return [segmentLabel(seg) + " · " + spanText(seg.to - seg.from) + " · " + clockText(seg.from) + " 起", waits,
-      seg.kind === "paused" ? "条目被暂停了，这段时间它在等什么看不出" : "", seg.down ? "没有工程师会话开着：会话放下了，活在等" : "", seg.to - seg.from > LONG_SEGMENT_MS ? "这一段太长，画短了，中间的缺口不按时间" : ""].filter(Boolean).join("\n");
+    return [SEGMENT_TEXT[seg.kind] + " · " + spanText(seg.to - seg.from) + " · " + clockText(seg.from) + " 起", waits,
+      seg.kind === "paused" ? "条目被暂停了，这段时间它在等什么看不出" : "", seg.to - seg.from > LONG_SEGMENT_MS ? "这一段太长，画短了，中间的缺口不按时间" : ""].filter(Boolean).join("\n");
   }
-  function timelineBar(id: string, now: number) {
-    const t = timelineOfItem(snapshot, derived, id, now), bar = el("span", "rt-line");
-    bar.dataset.segments = String(t.segments.length);
-    if (!t.segments.length) return bar;
-    bar.title = "共 " + spanText(t.to - t.from) + "：" + SEGMENT_KINDS.filter(k => t.totals[k] > 0).map(k => SEGMENT_TEXT[k] + " " + spanText(t.totals[k])).join(" · ") + (t.down ? "；其中放下等待 " + spanText(t.down) : "");
-    for (const seg of t.segments) {
-      const cell = el("span", "tl tl-" + seg.kind + (seg.down ? " down" : ""));
+  function timelineBar(x: RunnerRow, now: number) {
+    const line = lineOfAgent(snapshot, derived, x.item, x.agentId, now), bar = el("span", "rt-line");
+    bar.dataset.segments = String(line?.segments.length ?? 0);
+    if (!line?.segments.length) return bar;
+    bar.title = "这个代理共 " + spanText(line.to - line.from) + "：" + totalsText(line);
+    for (const seg of line.segments) {
+      const cell = el("span", "tl tl-" + seg.kind);
       cell.dataset.kind = seg.kind;
       // The length in minutes is the unit, at least one so that a short segment keeps a share of the bar (the stylesheet gives it a pixel at least).
       cell.style.flexGrow = String(Math.max(drawLength(seg.to - seg.from) / 60_000, 1));
@@ -1940,9 +1940,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     return bar;
   }
   // What the bar is drawn from, to a minute: a repaint with the same segments is skipped.
-  function timelineShown(id: string, now: number) {
-    const t = timelineOfItem(snapshot, derived, id, now);
-    return t.segments.map(seg => [seg.kind, seg.from, Math.floor(seg.to / 60_000), !!seg.down, seg.cards, seg.items, seg.what]);
+  function timelineShown(x: RunnerRow, now: number) {
+    const line = lineOfAgent(snapshot, derived, x.item, x.agentId, now);
+    return line?.segments.map(seg => [seg.kind, seg.from, Math.floor(seg.to / 60_000), seg.cards, seg.items, seg.what]) ?? null;
   }
   // The line that holds the rows which are not running: a count that opens them, below the running rows.
   function agentOthers(rows: AgentRow[]) {
@@ -1969,7 +1969,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The rows behind the closed line are not drawn, so only their number can change what is on screen.
     // The runner's rows: what each says, in the units it is drawn in (minutes), and the title it draws.
     const runnerShown = (x: RunnerRow) => [x.item, x.agent, x.level, x.model, x.effort, x.state, x.label, x.needsPerson, x.overdue, runnerLine(x, now, runnerName),
-      spanText(now - runnerStateSince(x)), spanText(now - x.started), x.turns, x.cost, index().byId.get(x.item)?.title ?? null, timelineShown(x.item, now)];
+      spanText(now - runnerStateSince(x)), spanText(now - x.started), x.turns, x.cost, index().byId.get(x.item)?.title ?? null, timelineShown(x, now)];
     const signature = JSON.stringify([agentsOpen, othersOpen, runner.map(runnerShown), running.map(shown), othersOpen ? others.map(shown) : others.length]);
     if (signature === agentsSignature) return;
     agentsSignature = signature;

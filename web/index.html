@@ -211,15 +211,14 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
   .runner-row > .rt-line { grid-area: line; }
 }
 
-/* The line of a piece of work in the runner's block (src/timeline.ts): one segment for each state, as long as the time it took. A wait with no
-   engineer session open is striped; a stretch drawn shorter than it was has a gap in it. The colours (`--tl-*`) are in the three theme blocks above. */
+/* The line of an agent in the runner's block (src/timeline.ts): one segment for each stretch of its session, as long as the time it took. A
+   stretch drawn shorter than it was has a gap in it. The colours (`--tl-*`) are in the three theme blocks above. */
 /* A segment is at least one pixel wide, and the cut between two is drawn inside them, so that a line of a hundred segments still fits the cell. */
 .rt-line { display: flex; height: 10px; min-width: 0; overflow: hidden; border-radius: 2px; align-self: center; }
 .tl { position: relative; flex: 1 1 0; min-width: 1px; box-shadow: inset -1px 0 0 var(--surface); background: var(--tl-work); }
 .tl-work { background: var(--tl-work); } .tl-ci { background: var(--tl-ci); } .tl-owner { background: var(--tl-owner); } .tl-architect { background: var(--tl-architect); }
 .tl-items { background: var(--tl-items); } .tl-run { background: var(--tl-run); } .tl-wait { background: var(--tl-wait); } .tl-merge { background: var(--tl-merge); }
 .tl-person { background: var(--tl-person); } .tl-closing { background: var(--tl-closing); } .tl-paused { background: var(--tl-paused); }
-.tl.down { background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, .55) 0 2px, transparent 2px 5px); }
 .tl-gap { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--surface); transform: skewX(-20deg); }
 
 .agitem { min-width: 0; font-size: 13.5px; }

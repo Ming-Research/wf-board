@@ -31,15 +31,17 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   assert.ok(card, "and a card with a plain question");
   const bp = await DomPage.open(t, board, { reverts }), runner = (id: string) => ({ author: s.items[id]!.group, session: "执行程序" });
   const base = bp.changes();
+  // The jobs began two hours ago: each agent's line is its session's span, so the work before the state it reports is a segment of its own.
+  const began = new Date(now - 2 * 3600_000).toISOString();
   let n = 0;
   for (const id of [running, failed, waiting, asking]) {
-    await board.ops.dispatchStart({ ...runner(id), id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1` });
+    await board.ops.dispatchStart({ ...runner(id), id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1`, startedAt: began });
     n++;
   }
-  await board.ops.reportState({ ...runner(asking), id: asking, state: "ask", to: "owner", cards: [card] });
-  await board.ops.reportState({ ...runner(failed), id: failed, state: "exception", note: "提交 0578e89 的 CI 红了，日志在 ~/Library/Logs/wf-board.log" });
-  await board.ops.reportState({ ...runner(waiting), id: waiting, state: "items", items: [waitedFor] });
-  await board.ops.reportState({ ...runner(running), id: running, state: "running", note: "第 1 轮", turns: 1, cost: 0.5 });
+  await board.ops.reportState({ ...runner(asking), id: asking, state: "ask", to: "owner", cards: [card], startedAt: began });
+  await board.ops.reportState({ ...runner(failed), id: failed, state: "exception", note: "提交 0578e89 的 CI 红了，日志在 ~/Library/Logs/wf-board.log", startedAt: began });
+  await board.ops.reportState({ ...runner(waiting), id: waiting, state: "items", items: [waitedFor], startedAt: began });
+  await board.ops.reportState({ ...runner(running), id: running, state: "running", note: "第 1 轮", turns: 1, cost: 0.5, startedAt: began });
   await board.ops.reportLive({ ...runner(running), id: running, role: "工程师", turn: 1, turnSeconds: 125, idleSeconds: 4, action: "改 /Users/user/dev/x/web/app.ts" });
   await bp.waitChanges(base + n + 4);
   await bp.waitFor(() => /app\.ts/.test(bp.$(`.runner-row[data-agent="${running}"] .rt-what`)?.textContent ?? ""), "the beat's action on the row");
@@ -71,14 +73,15 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     const said = sayings(row);
     assert.doesNotMatch(said, /0578e89|\/Users|Library\/Logs|~\//, `${id}: no commit id and no path of the machine`);
   }
-  // The line of the work (src/timeline.ts): one report each, so one segment of the kind the state makes, which says on hover what it is.
-  for (const [id, kind, label] of [[running, "work", "干活"], [failed, "person", "要人看"], [waiting, "items", "等条目"], [asking, "owner", "等主人"]] as const) {
-    const segments = bp.$$(".rt-line .tl", by(id));
-    assert.deepEqual(segments.map(x => x.dataset.kind), [kind], `${id}: the line has one segment, of the kind its state makes`);
-    assert.ok(segments[0]!.classList.contains("tl-" + kind), `${id}: the segment is coloured by its kind`);
-    assert.match(segments[0]!.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
+  // The line of the agent (src/timeline.ts): its session began with a turn, then one segment of the kind its reported state makes (the state `running` is the turn itself),
+  // and each segment says on hover what it is.
+  for (const [id, kinds, label] of [[running, ["work"], "干活"], [failed, ["work", "person"], "要人看"], [waiting, ["work", "items"], "等条目"], [asking, ["work", "owner"], "等主人"]] as const) {
+    const segments = bp.$$(".rt-line .tl", by(id)), last = segments.at(-1)!;
+    assert.deepEqual(segments.map(x => x.dataset.kind), kinds, `${id}: the line has a segment of the work and one of the state it reports`);
+    assert.ok(last.classList.contains("tl-" + kinds.at(-1)), `${id}: the segment is coloured by its kind`);
+    assert.match(last.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
   }
-  assert.match(bp.$(".rt-line .tl", by(asking))!.getAttribute("title")!, new RegExp(s.decisions[card]!.question.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "an ask's segment says the question of the card it waits for");
+  assert.match(bp.$$(".rt-line .tl", by(asking)).at(-1)!.getAttribute("title")!, new RegExp(s.decisions[card]!.question.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "an ask's segment says the question of the card it waits for");
   // What each row says in the wide column: the last action of the turn, the note, the titles of what it waits for, the question of the card.
   assert.equal(bp.$(".rt-what", by(running))!.textContent, "改 app.ts");
   assert.equal(bp.$(".rt-what", by(failed))!.textContent, "的 CI 红了，日志在 wf-board.log");
@@ -124,7 +127,7 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   },
   {
     bug: "a segment of the line was not coloured by its kind",
-    reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind + (seg.down ? " down" : ""));', 'const cell = el("span", "tl" + (seg.down ? " down" : ""));')], reason: /the segment is coloured by its kind/,
+    reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind);', 'const cell = el("span", "tl");')], reason: /the segment is coloured by its kind/,
   },
   {
     bug: "a click on the title opened nothing",
