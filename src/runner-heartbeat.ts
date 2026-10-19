@@ -11,7 +11,7 @@ export interface RunnerHeartbeatOptions {
   /** Called once for each stretch of silence, with the time (ISO) of the last heartbeat and the limit in milliseconds. */
   tell: (lastBeat: string, limitMs: number) => void;
   now?: () => number;
-  /** Where the last heartbeat is kept, outside the board's data and out of git, so a restart does not lose it; without it, in memory only. */
+  /** Where the last heartbeat is kept, in a file git does not track, so a restart does not lose it; without it, in memory only. */
   file?: string;
   limitMs?: number;
 }
