@@ -103,7 +103,7 @@ test("a report is checked: a list of at most eight pools with distinct keys, who
   assert.deepEqual(checkedPools([]), []);
   assert.deepEqual(checkedPools([{ pool: " 1 ", label: " 1 级 ", slots: 0, running: 0 }]), [{ pool: "1", label: "1 级", slots: 0, running: 0 }], "texts are trimmed");
   const bad: Array<[unknown, RegExp]> = [
-    ["x", /^pools: give a list of pools$/],
+    ["x", /^Error: pools: give a list of pools$/],
     [Array.from({ length: POOLS_MAX + 1 }, (_, i) => pool({ pool: `p${i}` })), /at most 8 pools/],
     [[null], /pools\.0: give an object/],
     [[[]], /pools\.0: give an object/],

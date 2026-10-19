@@ -165,12 +165,12 @@ export async function slotsLine(t: Hooks, reverts: Revert[] = []) {
   assert.equal(bp.visible(bp.$("#agents")), true, "the slots alone make the list appear");
   assert.equal(slots()!.classList.contains("idle"), false, "ten minutes with nothing to start does not mark the line");
   assert.equal(bp.$("#agents .agents-toggle")!.textContent, "▾ 代理 0", "no session runs: the heading counts none");
-  assert.deepEqual(board.told, [], "and the owner is told nothing");
+  assert.equal(board.told.length, 0, "and the owner is told nothing");
   // An hour and a minute of nothing to start: the line is marked, and the owner is told once.
   board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 2, dryForSeconds: 3660 }]);
   await bp.waitFor(() => /已 1 小时 1 分$/.test(slots()?.textContent ?? ""), "the line to count past the hour", 10_000);
   assert.equal(slots()!.classList.contains("idle"), true, "an hour with nothing to start marks the line");
-  assert.deepEqual(board.told.map(x => x.title), ["名额空着 · 1 级"], "the owner is told once");
+  assert.deepEqual(board.told.map((x: { title: string }) => x.title), ["名额空着 · 1 级"], "the owner is told once");
   // The line stays under the heading when the list is folded: it is what the owner must see without opening anything.
   bp.click(bp.$("#agents .agents-toggle"), "the heading");
   await bp.settle();
