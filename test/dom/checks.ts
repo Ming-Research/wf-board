@@ -601,15 +601,21 @@ async function wrapCursor(bp: DomPage, o: Oracle, rows: string[]): Promise<strin
   if (!rows.length) return v;
   const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
   if (freshRows.length < 2) return v;
-  const middle = freshRows[Math.floor(freshRows.length / 2)]!, cursor = () => bp.$("#areas .item.cur")?.id.slice(3) ?? null;
+  const cursor = () => bp.$("#areas .item.cur")?.id.slice(3) ?? null;
   const carry = async (to: string, key: "j" | "k") => {
     for (let k = 0; k < 2 * rows.length + 2 && cursor() !== to; k++) { bp.key(key); await bp.settle(); }
     return cursor() === to;
   };
-  // The middle row is clicked and n lands on it; j or k then carries the cursor away from it to an end of the list.
-  for (const [from, key, end, expected] of [["n", "j", last, o.fresh.has(last) ? last : freshRows[0]!], ["N", "k", rows[0]!, freshRows.at(-1)!]] as const) {
-    await bp.select(middle); bp.blur(); bp.key("n"); await bp.settle();
-    if (!await carry(end, key)) { v.push(`wrap-cursor: ${key} did not carry the cursor from ${middle} to ${end}, it stands on ${cursor()}`); continue; }
+  // A row is clicked and n lands on it; j or k then carries the cursor away from it to an end of the list. The row is the third
+  // from that end among the rows holding unread content, so the cursor has a short way to go, and the stop a press of n would
+  // wrongly go on to (the next one) is neither the first nor the last such row, which a press from the cursor's row reaches.
+  const third = freshRows.length >= 3;
+  for (const [from, key, end, expected, start] of [
+    ["n", "j", last, o.fresh.has(last) ? last : freshRows[0]!, freshRows[third ? freshRows.length - 3 : 0]!],
+    ["N", "k", rows[0]!, freshRows.at(-1)!, freshRows[third ? 2 : freshRows.length - 1]!],
+  ] as const) {
+    await bp.select(start); bp.blur(); bp.key("n"); await bp.settle();
+    if (!await carry(end, key)) { v.push(`wrap-cursor: ${key} did not carry the cursor from ${start} to ${end}, it stands on ${cursor()}`); continue; }
     bp.key(from); await bp.settle();
     const sel = bp.selected();
     if (sel !== expected) v.push(`wrap-cursor: ${from} with the cursor moved by ${key} to ${end} landed on ${sel}, expected ${expected}`);
