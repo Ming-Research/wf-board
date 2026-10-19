@@ -5373,7 +5373,7 @@ seconds (26–48). What the lane does:
 - *A time budget of 34 seconds on the test process's clock* (`TIME_BUDGET_MS`, `performance.now()`, the clock of the `lap` lines). A round stops pairing once
   the budget has passed and it has made 16 pairs (`MIN_PAIRS`, `keepPairing` in `test/nkey/stats.ts`); a further round begins only if one as long as the
   last would end by the budget (`roundFits`). A round cut short has a twin over fewer pairs, whose interval is wider by t(n−1)/√n against t(29)/√30 for the
-  same spread, so the floor is widened by that factor in the logs of the ratio (`floorAt`: 20 pairs ×1.25, 16 pairs ×1.37) and the twin still has to
+  same spread, so the floor is widened by that factor in the logs of the ratio (`floorAt`: 20 pairs ×1.25, 16 pairs ×1.43) and the twin still has to
   show the noise per pair the floor was measured at; more pairs than 30 keep the floor (pooled rounds were read against it before). The budget ends the
   test step at most about 2 seconds after it (the report, closing the windows, the process): 36 seconds. The job is that and the set-up (median 11 s,
   90th percentile 14 s). A run that ends with the twin still wider than the floor says "undecided" as after the third round, and passes.
@@ -5396,8 +5396,13 @@ seconds a round per millisecond of the base press):
   the last the 15 ms page below, 8 of the readings those of confirmation runs): ×1.26 to ×2.11, the interval's half width 1.9% to 7.5% (20.9% once, on a runner
   whose base press took 31 ms), the lower bound of the interval 1.20 at the least. The 4 readings of run 39250210058 read ×1.36 to ×1.53 and were "undecided"
   only because their floor was set to 0.1%.
+- *The floors, kept from before*: they were measured with the witness pressed in every round, and now it is pressed for its first 10 pairs only, so after
+  them a pair has one window fewer. The twin over 30 pairs in the 6 jobs of run 39249580114 that the budget did not cut read ±1.7% to ±3.3% (writing, 4 jobs)
+  and ±2.3% and ±4.2% (quiet, 2 jobs), inside 7.6% and 6.9% and in the range of the first rounds measured before (median 3.1%, 90th percentile 6.2%, writing,
+  58 runs). That does not measure the floors again; measure them with `NKEY_FLOOR=3` if the single-round twin of a part reads above its floor in more than
+  1 of 10 runs of the same commit (it did in 1 of 58 before).
 - *A round cut at the budget* (run 39249580114, `NKEY_BUDGET_S` of 20 and 1): 16 to 17 pairs, the floor widened from 7.6% to 11.0% (writing) and from 6.9% to
-  10.0% (quiet), as the arithmetic says (×1.37 for 16 pairs); the cut twins read ±2.2% to ±4.2%, the changed page ×0.999 to ×1.034 (ok), the witness red.
+  10.0% (quiet), as the arithmetic says (×1.43 for 16 pairs); the cut twins read ±2.2% to ±4.2%, the changed page ×0.999 to ×1.034 (ok), the witness red.
 - *A round the budget keeps from beginning* (run 39250210058, a floor of 0.1% that no twin meets): at the budget of 34 s a first round that ended at 31.0 s was
   not followed by a second ("a further round did not fit in the time budget of 34 s") and the witness was "undecided", a warning, the job green; at 1 s the
   round was cut to 16 pairs and no further round was begun; a run that ended its first round early made all 3 rounds and was undecided as before.
