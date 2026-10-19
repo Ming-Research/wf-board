@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Continue the unread list and the daemon's rules from the state before
+
+Nodes: storage/write-path, storage/write-path/page-rules-reuse
+
+Summary: After the quick fixes a `set_tags` write still cost the daemon 46.5 ms of CPU on a hosted runner with nothing unread, and 67 to 76 ms with the owner 4,000 commits behind, because the open page asked for the whole unread list after every change event and each new head walked the history from the read cursor again; the daemon also derived the rules of every published state from nothing, 10 to 15 ms, where the page already built them from the state before. The unread list is now carried on over the new commits of each head and the page gets only the stops after those its version shares; the daemon's rule cache is told which state each published one was made from and reuses the page's step. The refused alternatives (the page deriving the list, the change pushed with every event) are in the node; the numbers are in docs/design.md, section 4, Write cost.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards

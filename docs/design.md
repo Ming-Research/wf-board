@@ -590,7 +590,11 @@ derivation design that replaced this:
   reads, the check scan, the "before" side of a write's validation) within the
   same minute; a Rules object reads the clock only for elapsed time (active
   time, doing days), so its results are exactly `rules(snapshot, t)` for the
-  time `t` of the first read in that minute. A prospective state inside a
+  time `t` of the first read in that minute. The store tells the cache which
+  state each published one was made from, with the write's changed documents and
+  activity delta (`DerivedCache.follows`), and the Rules object of the new state
+  is built from that state's one, as the page builds its own (below): it then
+  answers for the time that one answered for, in the same minute (`answersFor`). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
@@ -626,8 +630,8 @@ derivation design that replaced this:
   holds it against a derivation from nothing after random writes on a board of
   the live board's size, and each guard taken out of a copy must fail it. A log
   write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
-  runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
-  write there is a new snapshot, rebuilt as before.
+  runner, n-writes-stable-study). The daemon's shared rules reuse the same way since
+  board-cpu-usage (the numbers are in the unread list's point below).
 - The page keeps what depends only on the rules' structure and on ids through a write that
   reused the rules (section 7, The page): the order of the items, the stops that wait on the
   owner, the unread stops, the counts by status and the ancestors and waiters of open work, which
@@ -649,11 +653,34 @@ derivation design that replaced this:
   0.97 times, 0.88–1.07, and 0.91 times, 0.86–0.96).
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
+- The owner's unread list is continued, not walked again. The walk of the history
+  after the read cursor (`src/history.ts`) keeps where it stands: its stops, whether
+  the last is still open to the next commit of the same author on the same document,
+  and how many commits it has passed. A head that descends from the head of the newest
+  walk of the same cursor and read marks carries that walk on over its new commits
+  alone, copying the open stop before it extends it; a finished stop is kept while the
+  walked one is the same object ending at the same commit, so the lists of two heads
+  share the stops neither changed. Each list has a version, and the page sends the
+  version it holds (`GET /api/unread?since=`): the answer is the number of stops that
+  stay (`keep`) and the stops after them, or the whole list when the server no longer
+  keeps that version or the reading state moved. `test/history.test.ts` holds the
+  continued list, and the page's spliced one, equal to the list derived from nothing
+  after random writes, owner comments and reads. Before, each change event made the
+  page fetch the whole list again (347 KB with 1,000 stops) and each new head walked
+  the history from the cursor again: with the owner 4,000 commits behind, a `set_tags`
+  write cost the daemon 67 to 76 ms of CPU against 46.5 ms with nothing unread (a
+  hosted runner, `scripts/bench-writes.ts --unread 4000`, board-cpu-usage).
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
 peak memory, and the characters of each project's brief); the `bench` workflow
-runs it by hand on this tree and on a base commit, without gating.
+runs it by hand on this tree and on a base commit, without gating; `--unread N`
+puts the owner's cursor N commits back and asks for the unread list after each write,
+as the open page does, and `--profile` prints where the CPU went.
+`scripts/bench-page.ts` measures the page's side: the real page in jsdom on a board of
+the live board's weight (`test/e2e/live-board.ts`), given the change events of real
+`set_tags` and log writes with the server's answers recorded beforehand, so the time
+is the page's own; it prints the busy time from each event until the page is quiet.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -2692,7 +2719,12 @@ second draw and not one draw for each row. A baseline that is slower than that, 
 comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
-(15 MB on the live board). The page leaves a performance mark for each draw, each build
+(15 MB on the live board). After a live change it asks with the version of the list it
+holds and splices in what the server says changed (section 4, Write cost). The panel of
+work that waits on the owner is drawn again only when its rows' markup changes, and the
+whole view is made again when the board changes or a minute passes, not when only the
+unread list does: a `set_tags` write, which moves the unread list, otherwise drew the
+header twice, the panel and the whole view each time. The page leaves a performance mark for each draw, each build
 of the rules, each build that derived them from scratch, with its reason, each count of
 every item's filters, each time the structure is made again, with its reason, and each time
 the list of stops that wait on the owner and the list of unread stops are made (`board:render`,
