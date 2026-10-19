@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, CHECK_KINDS, CHECK_LABEL, checkKind, checkKey, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
+import { rules, CHECK_KINDS, CHECK_LABEL, checkKind, checkKey, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, APPROACH_STALE_LABEL, HEAD_REVISED_LOG, headRevisedAt, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -986,6 +986,68 @@ test("the format check reads who holds the item: an open engineer dispatch or a 
   assert.deepEqual(flagged, ["dispatch", "running"], "a finished dispatch, a reviewer, a finished runner report and a finished item are not held");
 });
 
+const staleCheck = (s: Snapshot, id: string) => rules(s).checks(id).find(c => c.label === APPROACH_STALE_LABEL)?.text;
+const headRevised = (at: string, reason = "Rewrote the approach") => ({ at, by: "Architect", text: `${HEAD_REVISED_LOG}${reason}` });
+const ruledAt = (item: string, at: string, fields: Partial<Decision> = {}): Partial<Decision> => ({ item, status: "ruled", choice: "A", ruledAt: at, ...fields });
+
+test("an item whose card was ruled after its head was last revised is flagged, and revising the head clears it", () => {
+  const T3 = "2026-10-13T00:00:00Z";
+  const s = snapshot({ stale: { created: T0 }, revised: { created: T0, log: [headRevised(T2)] } }, { one: ruledAt("stale", T1, { question: "Which wakeup?" }), two: ruledAt("revised", T1) });
+  assert.match(staleCheck(s, "stale")!, /^做法待更新：决策卡「Which wakeup\?」2026-10-11T00:00:00Z 裁定，晚于条目头最后一次修改（2026-10-10T00:00:00Z）。用 update_item/, "it names the card, when it was ruled and when the head was last revised");
+  assert.equal(staleCheck(s, "revised"), undefined, "a head revised after the ruling answers it");
+  // The same item before and after the revision: the log entry is the whole difference.
+  s.items.stale!.log = [headRevised(T2)];
+  assert.equal(staleCheck(s, "stale"), undefined, "the entry update_item writes clears the check");
+  // A later ruling asks again, and with two rulings the text names the latest and counts the other.
+  s.decisions.three = Decision.parse({ item: "stale", question: "And then?", options: [{ key: "A", text: "choose" }], status: "ruled", choice: "A", ruledAt: T3, updated: T3, rev: 1 });
+  assert.match(staleCheck(s, "stale")!, /「And then\?」2026-10-13T00:00:00Z 裁定，晚于条目头最后一次修改（2026-10-12T00:00:00Z）/);
+  s.decisions.four = Decision.parse({ item: "stale", question: "Last?", options: [{ key: "A", text: "choose" }], status: "ruled", choice: "A", ruledAt: T3, updated: T3, rev: 1 });
+  assert.match(staleCheck(s, "stale")!, /（另有 1 张也在之后裁定）/);
+});
+
+test("the head's last revision is read from the creation and the log's head entries, to the second, and from nothing else", () => {
+  assert.equal(headRevisedAt({ log: [] }), -Infinity, "an item with neither is older than any ruling");
+  assert.equal(headRevisedAt({ created: T1, log: [] }), Date.parse(T1) / 1000);
+  assert.equal(headRevisedAt({ created: T1, log: [headRevised(T0)] }), Date.parse(T1) / 1000, "an entry cannot make the head older than its creation");
+  assert.equal(headRevisedAt({ created: T0, log: [headRevised(T1), headRevised(T2), headRevised(T1)] }), Date.parse(T2) / 1000, "the latest entry counts, wherever it stands");
+  assert.equal(headRevisedAt({ created: T0, log: [{ at: T2, by: "Architect", text: "Evidence for the approach" }, { at: T2, by: "Architect", text: "难度：未评 → 2" }] }), Date.parse(T0) / 1000, "other log entries are not a revision of the head");
+  // The item's own `updated` is any write at all and does not count: a plan row written after the ruling leaves the head as it was.
+  const s = snapshot({ a: { created: T0, updated: T2, log: [{ at: T2, by: "Architect", text: "Checked a plan row" }] } }, { q: ruledAt("a", T1) });
+  assert.ok(staleCheck(s, "a"), "a write of anything but the head does not answer a ruling");
+  // The log stamps to the second and a ruling may carry milliseconds: the same second is not later.
+  const sameSecond = snapshot({ a: { created: T0, log: [headRevised("2026-10-11T00:00:05Z")] } }, { q: ruledAt("a", "2026-10-11T00:00:05.900Z") });
+  assert.equal(staleCheck(sameSecond, "a"), undefined, "ruled within the second of the revision");
+  sameSecond.decisions.q = Decision.parse({ ...sameSecond.decisions.q, ruledAt: "2026-10-11T00:00:06.000Z" });
+  assert.ok(staleCheck(sameSecond, "a"), "ruled in the next second");
+  // A head created after the ruling (a copy of an old card's text) is not older than it.
+  const created = snapshot({ a: { created: T2 } }, { q: ruledAt("a", T1) });
+  assert.equal(staleCheck(created, "a"), undefined);
+  // An item with no creation time and no head entry has a head older than every ruling.
+  const undated = snapshot({ a: {} }, { q: ruledAt("a", T0) });
+  assert.match(staleCheck(undated, "a")!, /最后一次修改（没有记录）/);
+});
+
+test("only a ruled card with a ruling time of an open, unpaused work item raises the stale-approach check", () => {
+  const done = [step("work", "done"), accept("done")];
+  const s = snapshot({
+    open: { created: T0 }, closed: { created: T0, plan: done }, dropped: { created: T0, status: "cancelled" }, note: { created: T0, record: true },
+    paused: { created: T0, paused: { reason: "Owner deferred", at: T1 } }, owned: { created: T0, paused: { reason: "Owner deferred", at: T1 }, plan: workPlan([own("child")]) }, child: { created: T0 },
+    undecided: { created: T0 }, withdrawn: { created: T0 }, unstamped: { created: T0 },
+  }, {
+    a: ruledAt("open", T1), b: ruledAt("closed", T1), c: ruledAt("dropped", T1), d: ruledAt("note", T1), e: ruledAt("paused", T1), f: ruledAt("owned", T1), g: ruledAt("child", T1),
+    h: { item: "undecided", status: "open" }, i: { item: "withdrawn", status: "withdrawn", ruledAt: T1 }, j: { item: "unstamped", status: "ruled", choice: "A" }, k: ruledAt("open", T1, { kind: "inquiry" }),
+  });
+  const flagged = Object.keys(s.items).filter(id => staleCheck(s, id) !== undefined).sort();
+  assert.deepEqual(flagged, ["open"], "an open card, a withdrawn one and a ruling without a time do not count; nor does a finished, cancelled, record or paused item (child: paused through its owner)");
+  assert.equal(rules(s).statusOf("child"), "paused");
+  // Resumed, the paused item is asked.
+  delete s.items.paused!.paused;
+  assert.ok(staleCheck(s, "paused"), "a resumed item is asked");
+  // The kind of the card is not narrowed: an inquiry card ruled after the head asks as a design card does.
+  const inquiry = snapshot({ a: { created: T0 } }, { q: ruledAt("a", T1, { kind: "inquiry" }) });
+  assert.ok(staleCheck(inquiry, "a"));
+});
+
 test("every kind of check is registered once under a fixed id, and a board that raises them all meets no id outside the registry", () => {
   const s = snapshot({
     // Missing dependencies, an item and a card.
@@ -1006,7 +1068,9 @@ test("every kind of check is registered once under a fixed id, and a board that 
     pausedTarget: { paused: { reason: "Owner deferred", at: T1 } }, pauseWaiter: { plan: workPlan([shared("pausedTarget")]) },
     engineer: held({ plan: workPlan([step("work")]) }),
     quiet: { plan: workPlan([step("work", "doing")]) },
-  }, { "loose-card": { item: "cards" } });
+    // A card ruled after the head was written.
+    ruledLater: { created: T0 },
+  }, { "loose-card": { item: "cards" }, "ruled-later": ruledAt("ruledLater", T1) });
   s.items.noPlan!.plan = [];
   s.board.tags = [{ name: "标签", meaning: "For the second project", projects: ["Second"] }];
   s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0 } };

@@ -1,0 +1,22 @@
+name: tmp-approach-stale
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-approach-stale-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # The files that read or write checks, heads and rulings.
+      - run: node --test test/rules.test.ts test/ops.test.ts test/ops-roles.test.ts test/journal.test.ts test/derived.test.ts test/rules-reuse-a-1.test.ts test/rules-reuse-b-1.test.ts test/rules-reuse-c-1.test.ts test/rules-reuse-guards.test.ts test/rules-oracle.test.ts test/query.test.ts test/mcp.test.ts

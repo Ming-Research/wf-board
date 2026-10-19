@@ -200,6 +200,21 @@ export const CARD_MIN_OPTIONS = 3;
 export const OPTIONS_LABEL = "选项不足";
 /** The label of the check on an engineer's item whose plan lacks a stage or has the stages out of order. */
 export const STAGE_FORMAT_LABEL = "大步骤格式";
+/** The label of the check on an open item whose head was last revised before the owner ruled one of its cards. */
+export const APPROACH_STALE_LABEL = "做法待更新";
+/** What every log entry `update_item` writes for a changed head starts with: the one place that knows the wording, since the check above reads the time of the last such entry as when the head was last revised. */
+export const HEAD_REVISED_LOG = "改了 head：";
+const wholeSeconds = (time: string): number => Math.floor(Date.parse(time) / 1000);
+/**
+ * When an item's head was last revised, in whole seconds (the log stamps to the second, a card's `ruledAt` may carry milliseconds): the later of its
+ * creation and the last log entry that says the head changed. An item with neither (written before the board dated its items, head never revised since)
+ * has no time, which is older than any ruling. Not stored as a field of its own: the log already holds it, written by the same commit as the head.
+ */
+export function headRevisedAt(it: Pick<Item, "created" | "log">): number {
+  let at = it.created === undefined ? -Infinity : wholeSeconds(it.created);
+  for (const entry of it.log) if (entry.text.startsWith(HEAD_REVISED_LOG)) at = Math.max(at, wholeSeconds(entry.at));
+  return at;
+}
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
 /** What the board knows of one kind of check, apart from its text. */
 export interface CheckKind {
@@ -238,6 +253,7 @@ export const CHECK_KINDS = {
   "waits-in-text": { label: WAITS_TEXT_LABEL },
   "pause-conflict": { label: "暂停冲突" },
   "stage-format": { label: STAGE_FORMAT_LABEL },
+  "approach-stale": { label: APPROACH_STALE_LABEL },
 } as const satisfies Record<string, CheckKind>;
 export type CheckId = keyof typeof CHECK_KINDS;
 export const checkKind = (id: CheckId): CheckKind => CHECK_KINDS[id];
@@ -1246,6 +1262,18 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         if (isOpenWork(id) && heldByEngineer(it)) {
           const problems = stageProblems(it.plan);
           if (problems.length) out.push(check("stage-format", `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`));
+        }
+        // A ruling can settle how the work is done, and the head's 做法 is where the owner reads it: a card ruled after the head was last
+        // revised asks for a rewrite. Paused work is not asked, as for 无人推进 and 在等文字; it is asked again once it resumes.
+        if (isOpenWork(id) && !isPaused(id)) {
+          const ruled = own.flatMap(key => { const d = index().decisions.get(key); return d?.status === "ruled" && d.ruledAt !== undefined ? [d] : []; });
+          const revised = ruled.length ? headRevisedAt(it) : -Infinity, later = ruled.filter(d => wholeSeconds(d.ruledAt!) > revised);
+          if (later.length) {
+            const last = later.reduce((a, b) => Date.parse(b.ruledAt!) > Date.parse(a.ruledAt!) ? b : a), question = last.question.replace(/\s+/g, " ").trim();
+            const ruling = `决策卡「${question.length > 40 ? `${question.slice(0, 40)}…` : question}」${last.ruledAt} 裁定${later.length > 1 ? `（另有 ${later.length - 1} 张也在之后裁定）` : ""}`;
+            const was = Number.isFinite(revised) ? new Date(revised * 1000).toISOString().replace(".000Z", "Z") : "没有记录";
+            out.push(check("approach-stale", `做法待更新：${ruling}，晚于条目头最后一次修改（${was}）。用 update_item 把「做法」改写成选定的设计：机制、触发条件、否决了什么和为什么，语言或接口类的改动附前后代码例子；PR 里的设计文档只作细节出处。做法本来就对，也要改写 head 记下这次裁定，例如写进「以前的决定」`));
+          }
         }
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);

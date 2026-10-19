@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's 做法 could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check 做法待更新 on an open, unpaused work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, a paused item is asked once it resumes, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards

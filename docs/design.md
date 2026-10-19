@@ -1560,9 +1560,48 @@ registry, and a test raises every registered kind on one board.
 | `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
 | `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+| `approach-stale` | 做法待更新 (label `做法待更新`: an open, unpaused work item with a ruled card whose `ruledAt`, in whole seconds, is later than the head's last revision, below; the text names the latest such card and when it was ruled and the head last revised, says what the rewrite is, and counts the other cards ruled since; one check per item; a write is not refused) | no |
+
+**做法待更新 (`approach-stale`).** The owner reads how a piece of work is done
+from its item's head, section 做法, and not from the pull request's design
+document, so a ruling that the head does not follow leaves the owner without the
+design (the example that raised it: an item whose research, direction card and design
+approval were done while its 做法 still named the possible directions). The check
+compares two times that are already on the board:
+
+- *The head's last revision*: the later of the item's `created` and the `at` of the
+  latest log entry whose text starts with `改了 head：` (`HEAD_REVISED_LOG`, written by
+  `update_item` in the same commit as every change of the head, with the reason it
+  requires; `headRevisedAt` in `src/rules.ts`). An item with neither has no time, which is
+  older than any ruling: `created` is absent on 417 of the live board's 1,941 items,
+  written before the board dated them. 4,836 log entries on the live board start with
+  the words (both read from the data on 2026-10-19), so the revisions made since the board
+  dated its items are in the log.
+- *The ruling*: the `ruledAt` of a card of the item with status `ruled` (a card
+  withdrawn or still open, or ruled with no `ruledAt`, is not counted). The kind of the
+  card is not looked at: a ruling of an inquiry or a rule card can settle how the work is
+  done as well, and the owner's ruling on the card that asked for this check names any card.
+- *Later*: in whole seconds. The log stamps to the second and a card's `ruledAt` may carry
+  milliseconds, so a head revised in the second of the ruling is not older than it.
+- *Whom it asks*: open work only, that is, not done, not cancelled and not a record, and not
+  effectively paused: no session works on a paused item, as for 无人推进 and 在等文字,
+  and the check comes back when the item resumes. A write is never refused for it.
+- *How it clears*: `update_item` changes the head, which writes a log entry later than the
+  ruling. An approach that the ruling left as it was is written down too, for example in
+  the section 以前的决定 of the head; the check cannot tell a rewrite from a touch-up, which
+  is the cost of a check that needs no new data.
+
+The reuse of the rules after a write (section 4, above) needs nothing for it: a ruling is
+a change of a decision, which makes the rules again from nothing, and a revision of the
+head is a change of the item, whose checks are derived again. Rejected: a field `headRevisedAt` on the item (the log entry of the same
+commit already says it, and every old item would need a backfill), a comparison with
+`updated` (any write moves it, so a log line after the ruling would hide a head that
+follows no ruling), copying the design document of the pull request into the item (a
+private repository to read from the page, a long English text for implementers, and it does
+not keep the 做法 current), and the check on design cards only.
 
 Effectively paused items retain all form checks, including provisional plans
-and missing acceptance. They receive no stalled check and no 在等文字 check.
+and missing acceptance. They receive no stalled check, no 在等文字 check and no 做法待更新 check.
 An owner linked only by its owned row does not raise 暂停冲突: its row
 already waits on the owner and may make the parent blocked. Shared needs
 still raise the check on the paused target.
