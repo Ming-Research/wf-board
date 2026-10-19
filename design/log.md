@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Record the architect's turns as dispatches
+
+Nodes: items, responsibility/identities, responsibility/credentials, page/agent-list
+
+Summary: The dispatch record took only the roles engineer and review, so a turn of the architect that the runner starts to answer an engineer or to check a merge left no record: the engineer's wait for the architect was one stretch on its line, with no telling how much of it was a queue and how much the architect thinking, and the cost of the turns was in no total. The record now also takes the role architect, on the item the turn is asked about. It is a record only: the dispatch tool issues it no credential, since a dispatch credential is the access of its role and this one would be the architect's whole access for every caller of the tool, the runner without a credential included, which the decision on the runner's own credential refused for the same reason; so the architect's session names, which a turn is named by, are reserved from the other two roles only. A turn has one result of its own, turn ended, and no counts, and the summary lists the turns apart as it lists the sessions put down to wait: in the number of dispatches and the cost, with the number that ended and their minutes, and in none of the four results, the rework share or the means. The agent list does not list a record of this role, so the list is as it was; the timeline already drew a line of work for the role. The refused alternatives (a credential for the role, a place among the four results, a summary that leaves the turns out) are in `items`; the shape is in docs/design.md, section 5, Dispatch records.
+
 ## 2026-10-19 Judge the CI time gate without the wait for a runner
 
 Nodes: testing/ci-time-gate

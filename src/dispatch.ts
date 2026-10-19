@@ -2,7 +2,7 @@
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
-import { DISPATCH_OUTCOMES, DISPATCH_ROLES, DISPATCH_SIGNALS, PARKED_RESULT, milliDollars } from "./model.ts";
+import { ARCHITECT_ROLE, DISPATCH_OUTCOMES, DISPATCH_ROLES, DISPATCH_SIGNALS, PARKED_RESULT, milliDollars } from "./model.ts";
 import type { Dispatch, Item, Snapshot } from "./model.ts";
 
 type Role = (typeof DISPATCH_ROLES)[number];
@@ -43,25 +43,28 @@ export function dispatchRows(s: Snapshot, f: DispatchFilters = {}): DispatchRow[
 /** One table row: the rows of one level, role or tag. Costs are whole thousandths of a dollar so sums are exact. */
 export interface Tally {
   label: string;
-  /** Every dispatch; `open` of them have not ended, `parked` ended because their work waits, and `results` counts the rest. */
+  /** Every dispatch; `open` of them have not ended, `parked` ended because their work waits, `turns` are the architect's, and `results` counts the rest. */
   n: number;
   open: number;
   results: Record<Outcome, number>;
   /** The sessions put down while their work waits (放下等待): how many, and the milliseconds from start to end added up. They are no outcome of the work, so they are in `n` and `costMilli` and in none of the figures below. */
   parked: { count: number; ms: number };
+  /** The architect's turns that ended: how many, and the milliseconds from start to end added up. A turn answers a question and comes to no outcome of the work, so like a parked session it is in `n` and `costMilli` and in none of the figures below. */
+  turns: { count: number; ms: number };
   /** (返工后通过 + 换人) over the ended dispatches that are an outcome. */
   rework: { count: number; ended: number };
-  /** Mean kickbacks over ended engineer dispatches, mean rounds over ended review dispatches; parked ones left out. */
+  /** Mean kickbacks over ended engineer dispatches, mean rounds over ended review dispatches; parked sessions and the architect's turns left out. */
   kickbacks: { sum: number; n: number };
   rounds: { sum: number; n: number };
   costMilli: number;
 }
 export function tally(label: string, rows: readonly DispatchRow[]): Tally {
-  const t: Tally = { label, n: rows.length, open: 0, results: Object.fromEntries(DISPATCH_OUTCOMES.map(r => [r, 0])) as Record<Outcome, number>, parked: { count: 0, ms: 0 }, rework: { count: 0, ended: 0 }, kickbacks: { sum: 0, n: 0 }, rounds: { sum: 0, n: 0 }, costMilli: 0 };
+  const t: Tally = { label, n: rows.length, open: 0, results: Object.fromEntries(DISPATCH_OUTCOMES.map(r => [r, 0])) as Record<Outcome, number>, parked: { count: 0, ms: 0 }, turns: { count: 0, ms: 0 }, rework: { count: 0, ended: 0 }, kickbacks: { sum: 0, n: 0 }, rounds: { sum: 0, n: 0 }, costMilli: 0 };
   for (const { dispatch: d } of rows) {
     const f = d.finish;
     if (!f) { t.open++; continue; }
     t.costMilli += milliDollars(f.cost);
+    if (d.role === ARCHITECT_ROLE) { t.turns.count++; t.turns.ms += Date.parse(f.ended) - Date.parse(d.started); continue; }
     if (f.result === PARKED_RESULT) { t.parked.count++; t.parked.ms += Date.parse(f.ended) - Date.parse(d.started); continue; }
     t.results[f.result]++;
     t.rework.ended++;
@@ -98,13 +101,14 @@ export function summarize(rows: readonly DispatchRow[]): Summary {
 const mean = (m: { sum: number; n: number }) => m.n ? (m.sum / m.n).toFixed(2) : "-";
 function tallyLine(t: Tally): string {
   const ratio = t.rework.ended ? `${Math.round(t.rework.count / t.rework.ended * 100)}%（${t.rework.count}/${t.rework.ended}）` : "-";
-  return [`${t.label}：派活 ${t.n}（进行中 ${t.open}）`, ...DISPATCH_OUTCOMES.map(r => `${r} ${t.results[r]}`), `${PARKED_RESULT} ${t.parked.count}（共 ${Math.round(t.parked.ms / 60_000)} 分钟，不算上面四种结果）`, `返工比例 ${ratio}`, `平均打回 ${mean(t.kickbacks)}`, `平均轮数 ${mean(t.rounds)}`, `花费 ${dollars(t.costMilli)}`].join(" · ");
+  return [`${t.label}：派活 ${t.n}（进行中 ${t.open}）`, ...DISPATCH_OUTCOMES.map(r => `${r} ${t.results[r]}`), `${PARKED_RESULT} ${t.parked.count}（共 ${Math.round(t.parked.ms / 60_000)} 分钟，不算上面四种结果）`, `${ARCHITECT_ROLE}轮次 ${t.turns.count}（共 ${Math.round(t.turns.ms / 60_000)} 分钟，不算上面四种结果）`, `返工比例 ${ratio}`, `平均打回 ${mean(t.kickbacks)}`, `平均轮数 ${mean(t.rounds)}`, `花费 ${dollars(t.costMilli)}`].join(" · ");
 }
 function usageText(d: NonNullable<Dispatch["finish"]>): string {
   return `输入 ${d.usage.input}，写缓存 ${d.usage.cacheWrite}，读缓存 ${d.usage.cacheRead}，输出 ${d.usage.output}`;
 }
 const signalsText = (f: NonNullable<Dispatch["finish"]>) => f.signals.length ? f.signals.map(s => s.note ? `${s.kind}（${s.note}）` : s.kind).join("、") : "无";
-const countsText = (d: Dispatch) => d.role === "工程师" ? `报告 ${d.finish!.reports} 次，打回 ${d.finish!.kickbacks} 次` : `审查 ${d.finish!.rounds} 轮`;
+/** What the counts of an ended dispatch say, by role; an architect's turn carries none. */
+const countsText = (d: Dispatch) => d.role === "工程师" ? `报告 ${d.finish!.reports} 次，打回 ${d.finish!.kickbacks} 次` : d.role === "审查" ? `审查 ${d.finish!.rounds} 轮` : undefined;
 
 /** The text of `dispatches`: the tallies, and with `rows` one line per dispatch. */
 export function dispatchReport(rows: readonly DispatchRow[], withRows = false): string {
@@ -118,7 +122,7 @@ export function dispatchReport(rows: readonly DispatchRow[], withRows = false): 
 }
 export function dispatchLine({ item, dispatch: d }: DispatchRow): string {
   const f = d.finish, head = `${minute(d.started)}${f ? `–${minute(f.ended)}` : "起，进行中"} · ${item} · 会话 ${d.agent}（号 ${d.agentId}） · ${d.role} · ${d.level} 级 ${d.model}${d.effort ? ` ${d.effort}` : ""}`;
-  return f ? `${head} · ${countsText(d)} · ${f.result} · 失败信号：${signalsText(f)} · 用量 ${usageText(f)} · ${dollars(milliDollars(f.cost))}${f.waited === undefined ? "" : ` · 等待 ${f.waited} 分钟`}${f.note ? ` · 备注：${f.note}` : ""}${d.did ? ` · 做：${d.did}` : ""}` : `${head}${d.did ? ` · 做：${d.did}` : ""}`;
+  return f ? `${head} · ${[countsText(d), f.result].filter(Boolean).join(" · ")} · 失败信号：${signalsText(f)} · 用量 ${usageText(f)} · ${dollars(milliDollars(f.cost))}${f.waited === undefined ? "" : ` · 等待 ${f.waited} 分钟`}${f.note ? ` · 备注：${f.note}` : ""}${d.did ? ` · 做：${d.did}` : ""}` : `${head}${d.did ? ` · 做：${d.did}` : ""}`;
 }
 
 /** The log line `dispatch_start` appends to the item. */
@@ -128,7 +132,7 @@ export function startLogLine(d: Dispatch): string {
 /** The log line `dispatch_finish` appends: every column of the ended dispatch. */
 export function finishLogLine(d: Dispatch, corrected: boolean): string {
   const f = d.finish!;
-  return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${f.result}，${countsText(d)}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
+  return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${[f.result, countsText(d)].filter(Boolean).join("，")}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
 }
 
 /** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf

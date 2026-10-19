@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, dispatchResultProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, CardKind, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -727,25 +727,27 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The token is made inside the write, which may run again after a conflict: the last one made is the one committed.
       const issued: { token?: string } = {};
       const result = await edit(a, "dispatch.start", "dispatch_start", (it, s, at) => {
-        if (isArchitectName(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
+        // An architect's turn is a record only: it gets no credential, so the architect's session names, which the turn is named by, are not reserved from it.
+        const turn = a.role === ARCHITECT_ROLE;
+        if (!turn && isArchitectName(a.agent)) throw new OpError(`agent ${a.agent}: that is the architect's session name; a dispatch's credential under it would be taken for the architect's`);
         if (isRunnerSession(a.agent)) throw new OpError(`agent ${a.agent}: that is the runner's session name, which no dispatch carries`);
         for (const [id, other] of Object.entries(s.items)) {
           const clash = other.dispatches?.find(d => d.agentId === a.agentId);
           if (clash) throw new OpError(`agentId ${a.agentId}: already recorded on ${id} for session ${clash.agent}; an agentId names one dispatch on the whole board`);
         }
-        issued.token = newToken();
-        const d = parse(Dispatch, { agentId: a.agentId, agent: a.agent, role: a.role, level: a.level, model: a.model, ...(a.effort === undefined ? {} : { effort: a.effort }), ...(a.worktree === undefined ? {} : { worktree: a.worktree }), started: dispatchTime(a.startedAt, at, "startedAt"), ...(a.did === undefined ? {} : { did: a.did }), credential: hashToken(issued.token) });
+        issued.token = turn ? undefined : newToken();
+        const d = parse(Dispatch, { agentId: a.agentId, agent: a.agent, role: a.role, level: a.level, model: a.model, ...(a.effort === undefined ? {} : { effort: a.effort }), ...(a.worktree === undefined ? {} : { worktree: a.worktree }), started: dispatchTime(a.startedAt, at, "startedAt"), ...(a.did === undefined ? {} : { did: a.did }), ...(issued.token === undefined ? {} : { credential: hashToken(issued.token) }) });
         return { ...it, updated: at, dispatches: [...it.dispatches ?? [], d], log: [...it.log, entry(a.author, at, startLogLine(d))] };
       }, false, ` ${a.agent}`);
-      return { ...result, credential: issued.token! };
+      return issued.token === undefined ? result : { ...result, credential: issued.token };
     },
     dispatchFinish: a => edit(a, "dispatch.finish", "dispatch_finish", (it, _s, at) => {
       const list = it.dispatches ?? [], i = list.findIndex(d => d.agentId === a.agentId);
       if (i < 0) throw new OpError(`agentId ${a.agentId}: not dispatched on ${a.id}; recorded here: ${list.map(d => `${d.agentId} (${d.agent})`).join(", ") || "none"}`);
       const old = list[i]!;
       if (old.finish && !a.replace) throw new OpError(`agentId ${a.agentId}: already ended at ${old.finish.ended} as ${old.finish.result}; pass replace: true to correct it`);
-      // Which counts a dispatch carries follows its role; the wrong ones are refused by name rather than dropped.
-      const problem = dispatchCountProblem(old.role, a);
+      // Which counts and which result a dispatch carries follow its role; the wrong ones are refused by name rather than dropped.
+      const problem = dispatchCountProblem(old.role, a) ?? dispatchResultProblem(old.role, a.result);
       if (problem) throw new OpError(problem);
       const ended = dispatchTime(a.endedAt, at, "endedAt");
       if (Date.parse(ended) < Date.parse(old.started)) throw new OpError(`endedAt ${ended}: earlier than the start ${old.started}`);

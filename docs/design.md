@@ -816,14 +816,14 @@ log:
   entry per agent session the architect or the runner started on it (a dispatch), in the
   columns of the dispatch format the architect keeps. An entry holds
   `agentId` (the session's full id, unique on the whole board), `agent` (its
-  name), `role` (`工程师` or `审查`), `level` (1–5), `model`, optional
+  name), `role` (`工程师`, `审查` or `架构师`), `level` (1–5), `model`, optional
   `effort`, `worktree`, `started` and `did` (which rows of the item the
   session does, one line), `credential` (the SHA-256 of the token the session
-  writes with, from the start until the dispatch ends; section 9), and once
+  writes with, from the start until the dispatch ends; section 9; an architect dispatch has none), and once
   the session has ended a `finish` block:
-  `ended`; `result` (`一次通过`, `返工后通过`, `换人`, `放弃` or `放下等待`); the counts,
+  `ended`; `result` (`一次通过`, `返工后通过`, `换人`, `放弃` or `放下等待`, and `轮次结束` for an architect dispatch alone); the counts,
   `reports` and `kickbacks` for an engineer and `rounds` (review rounds: the first review and each re-review count one) for a review, never
-  the other role's; optional `waited` minutes (spent waiting for the owner,
+  the other role's, and none for an architect; optional `waited` minutes (spent waiting for the owner,
   the 14900K or a dependency); `signals`, none or several of `验收没过`,
   `架构师打回`, `做法被否`, `长时间没进展`, `换模型`, each at most once and
   each with an optional note; `usage` (`input`, `cacheWrite`, `cacheRead`,
@@ -865,6 +865,23 @@ log:
     `放弃`, as the runner did until this result existed, which put every long wait into the count of
     abandoned work; a flag beside the result, which would leave a result for a session that has none;
     leaving the session without a record, which would drop its cost.
+  - `架构师` is the role of a turn of the architect that the runner starts on an item to answer an
+    engineer's question or to check a merge, recorded on the item it is asked about. It is a
+    record and nothing else: `dispatch_start` issues it no credential, since a dispatch credential
+    is the access of its role, and one of the role `架构师` is the architect's whole access, which
+    anyone who may call `dispatch_start`, the runner without a credential included, would then
+    hold (the decision on the runner's own credential, section 9, refused the same grant). The
+    architect's session names, which a turn is named by, are therefore not reserved from this
+    role, while they stay reserved from the other two. A turn answers one question and comes to no
+    outcome of the work, so its one result is `轮次结束`, which no other role may give, and it
+    carries no counts. The summary lists the turns apart as it lists `放下等待`: in the number of
+    dispatches and in the cost, with the number that ended and the minutes they ran, and in none of
+    the four result counts, the rework share or the means, because a turn would otherwise sit among
+    the results of the work (as a result it could only be made up) and thin the rework share the
+    levels are judged by. Rejected: counting a turn among the four results; leaving the turns out of
+    the summary whole, which would make a printed total different from the money spent. The line
+    of a turn is drawn by the timeline like a review's, and the agent list does not list it (the
+    runner's block draws the turn from the runner's reports).
   - Not stored: the judgment records for "research first or do directly"
     (item, what was judged and why, how the misjudgment showed, what it should
     have been). They are a different record and stay written by hand in the
@@ -2240,7 +2257,7 @@ instructions within the limit and free of rule text.
 | `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them; a row of a record or a standing item says `record: true` or `standing: true`, as `context` and `search` rows do |
 | `overview(group?, status?, detail?)` | The board at a glance | By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged; `detail` gives every area with its counts, owner actions waiting, blocked items and flags; status narrows those results while retaining area headings (below, Lean replies) |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
-| `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each of the four results (`一次通过`, `返工后通过`, `换人`, `放弃`), those put down while their work waits (`放下等待`, with the minutes they ran, which are in no result count and in none of the next three figures), the rework share (`返工后通过` plus `换人`, over the ended ones that came to a result; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches and the mean rounds over ended review dispatches of those, and the cost, parked ones included; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
+| `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each of the four results (`一次通过`, `返工后通过`, `换人`, `放弃`), those put down while their work waits (`放下等待`, with the minutes they ran, which are in no result count and in none of the next three figures), the architect's turns that ended (role `架构师`, with the minutes they ran, counted the same way), the rework share (`返工后通过` plus `换人`, over the ended ones that came to a result; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches and the mean rounds over ended review dispatches of those, and the cost, parked sessions and the architect's turns included; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
@@ -2657,8 +2674,8 @@ authors `总管` and `PM` is refused by every tool.
 | `rename_tag(name, to)` | Renames a tag in the vocabulary and on every carrying item, with a log line on each, in one commit | Only `Architect`; `to` unused |
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
-| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
-| `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` (the four results or `放下等待`) and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
+| `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept; none for the role `架构师`, which is a record only) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
+| `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse, an architect neither; `result` (the four results or `放下等待`, and `轮次结束` for an architect dispatch alone) and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes no other argument |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
@@ -3205,9 +3222,11 @@ level, and whether that someone is working, waiting or has gone quiet.
   of those. What else writes is no such programmer: on 2026-10-18 three of the five
   rows behind 「其他 5 个」 were programs (the board's own, the runner's own, an
   architect turn that had answered ten minutes before), and the other two a name
-  used by mistake and an old session. None of them has a dispatch record, so none
-  is listed, and no table of program names is kept: a name written by mistake and
-  the architect's helper sessions are left out by the same rule. A turn that ends is
+  used by mistake and an old session. None of them had a dispatch record, so none
+  was listed, and no table of program names is kept: a name written by mistake and
+  the architect's helper sessions are left out by the same rule. The architect's turns
+  have a dispatch record of the role `架构师` now (for their line, below); a record of that
+  role names no row, since the turn is the runner's and is drawn from its reports. A turn that ends is
   gone from the list, and the one running is drawn under the work that asks it (the
   runner's block). A session the owner started by hand (the observer) is not
   listed either; its writes are in the logs of the items it wrote to.
@@ -3402,10 +3421,10 @@ level, and whether that someone is working, waiting or has gone quiet.
     running; one that died with no later session of its role runs to the end of
     the work, else to now. Neighbouring pieces that are the same thing are
     joined.
-  - The architect's turn that answers an engineer's question has no line yet:
-    the board holds no dispatch record of it (the runner's beats live in memory,
-    section 7, The live view of a turn). It will have one when the runner
-    records each turn as a dispatch with a role of its own. That line is work
+  - The architect's turn that answers an engineer's question has a line when
+    the runner records it as a dispatch of the role `架构师` (the runner's beats
+    live in memory, section 7, The live view of a turn, and can give none). That
+    line is work
     from the turn's start to its end, like a review's, because the engineer's
     wait for the answer is already 等架构师 on the engineer's line and the
     turn's own states are not the item's; `lineOf` takes the role into account
@@ -3947,7 +3966,7 @@ writing as `架构师` and the board finding another way to keep the pushes, bec
 credential to tell the turns apart, which is this decision with an extra layer; the runner
 writing the answers itself, because it would translate every judgment write of the architect
 and need the architect's rights itself. The names are for the architect alone: a credential of
-another role under one, and a dispatch for one, are refused (section 9).
+another role under one, and a dispatch of an engineer or a review for one, are refused (section 9).
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
@@ -3992,7 +4011,7 @@ board, where the owner and later readers find it.
   its day's file (section 5) under the caller's session and project, in one
   commit. The
   recipient is the architect's session, a session with an open dispatch of any
-  role (an engineer or a review; `openAgents` in `src/dispatch.ts`), or the
+  role (an engineer, a review or an architect's turn; `openAgents` in `src/dispatch.ts`), or the
   session of a long-lived credential (the observer, the resource agent).
   Another name, the PM's included, is refused with the names that work, so a mistyped name fails at
   once instead of filling a stream nobody reads. The text is one line of at most
@@ -4467,7 +4486,8 @@ the writer from it.
   - A *dispatch credential* is issued by `dispatch_start`, answered once, and bound to the
     dispatch record: the session's name (`agent`), its role (`工程师` or `审查`), the item the
     dispatch is recorded on (the root of the subtree the session works on) and that item's
-    project. `dispatch_finish` removes it. A session that is stopped and resumed
+    project. A dispatch of the role `架构师` (an architect's turn) is a record only and has none.
+    `dispatch_finish` removes it. A session that is stopped and resumed
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
@@ -4484,7 +4504,7 @@ the writer from it.
   `架构师·观察`, and so on) for the architect
   (section 6), and skips the process checks for them. A
   file entry of another role under any such name is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
-  under a name that does not start with `架构师` or in another project than `Architect`, and so is `dispatch_start` for an agent whose name starts with `架构师` or is `执行程序`
+  under a name that does not start with `架构师` or in another project than `Architect`, and so is `dispatch_start` of an engineer or a review for an agent whose name starts with `架构师`, and of any role for `执行程序`
   (spaces around it are ignored, as everywhere the board compares it). An entry of the role `PM` is refused as a
   role the file does not know (`LONG_LIVED_ROLES` in `src/model.ts`), and `PM` is an ordinary session name. A name that merely contains `架构师`
   (`x架构师`) is an ordinary session name. The credentials of the conversation, of the turns and of the other architect
