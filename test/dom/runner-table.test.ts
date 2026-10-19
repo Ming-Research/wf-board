@@ -52,6 +52,14 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   assert.equal(rows.length, 4);
   const header = bp.$("#agents .runner-head");
   assert.deepEqual([...header!.children].map(c => c.textContent), ["标题", "状态", "在做或在等", "这个状态", "合计", "时间线"], "the columns are named");
+  // The legend under the header lists each kind some row draws, once, in the order of the kinds; each swatch is coloured as its segments are.
+  const items = [...bp.$$("#agents .runner-legend-item")];
+  assert.deepEqual(items.map(c => c.textContent), ["干活", "等主人", "等条目", "要人看"], "the legend lists the kinds the rows draw, in order, and no other");
+  for (const item of items) {
+    const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
+    assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
+    assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
+  }
   // A person's work first (the longest in its state first), then the turn running, then the waiting.
   assert.deepEqual(new Set(rows.slice(0, 2).map(r => r.dataset.agent)), new Set([failed, asking]), "an ask to the owner and an exception come first");
   assert.deepEqual(rows.slice(2).map(r => r.dataset.agent), [running, waiting], "then the turn running, then what waits");
@@ -144,6 +152,14 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "a segment of the line was not coloured by its kind",
     reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind);', 'const cell = el("span", "tl");')], reason: /the segment is coloured by its kind/,
+  },
+  {
+    bug: "a swatch of the legend had no colour of its kind",
+    reverts: [app("the swatch has no kind", 'item.appendChild(el("i", "tl-swatch tl-" + kind));', 'item.appendChild(el("i", "tl-swatch"));')], reason: /the swatch of 干活 is the colour class/,
+  },
+  {
+    bug: "the legend listed every kind, not those the rows draw",
+    reverts: [app("the legend lists all kinds", "SEGMENT_KINDS.filter(kind => seen.has(kind)).forEach", "SEGMENT_KINDS.forEach")], reason: /the legend lists the kinds the rows draw/,
   },
   {
     bug: "every segment of a line was drawn as long as the next",
