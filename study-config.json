@@ -1,4 +1,137 @@
 {
-  "args": ["--phases", "2", "--per-phase", "1500", "--idle", "10"],
-  "variants": [{ "name": "default", "flags": [], "env": {} }]
+ "args": [
+  "--phases",
+  "2",
+  "--per-phase",
+  "1500",
+  "--idle",
+  "10"
+ ],
+ "variants": [
+  {
+   "name": "only-unread",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "unread": 1
+   },
+   "perPhase": 1500,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-step",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "step": 1
+   },
+   "perPhase": 1500,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-snapshot",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "snapshot": 1
+   },
+   "perPhase": 150,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-context",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "context": 1
+   },
+   "perPhase": 1500,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-list",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "list": 1
+   },
+   "perPhase": 600,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-notes",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "notes": 1
+   },
+   "perPhase": 600,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-messages",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "messages": 1
+   },
+   "perPhase": 600,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-changes",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "changes": 1
+   },
+   "perPhase": 600,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "only-append_log",
+   "flags": [],
+   "env": {},
+   "mix": {
+    "append_log": 1
+   },
+   "perPhase": 150,
+   "phases": 1,
+   "idle": 5
+  },
+  {
+   "name": "live-mix",
+   "flags": [],
+   "env": {}
+  },
+  {
+   "name": "live-mix-semi8",
+   "flags": [
+    "--max-semi-space-size=8"
+   ],
+   "env": {}
+  },
+  {
+   "name": "live-mix-semi4",
+   "flags": [
+    "--max-semi-space-size=4"
+   ],
+   "env": {}
+  },
+  {
+   "name": "live-mix-osize",
+   "flags": [
+    "--optimize-for-size"
+   ],
+   "env": {}
+  }
+ ]
 }

@@ -27,7 +27,11 @@ const { values: args } = parseArgs({ options: {
   idle: { type: "string", default: "30" }, scale: { type: "string", default: "1" }, "start-wait": { type: "string", default: "3" },
 } });
 const PHASES = Number(args.phases), PER_PHASE = Number(args["per-phase"]), CONC = Number(args.conc), IDLE = Number(args.idle), SCALE = Number(args.scale), START_WAIT = Number(args["start-wait"]);
-const VARIANTS = JSON.parse(args.variants!) as Array<{ name: string; flags: string[]; env: Record<string, string> }>;
+/** A variant: V8 flags and environment for the daemon, and optionally the weights of the kinds of request (default: the live mix), the
+ * requests per phase and a rate in requests a second (0: as fast as the daemon answers). */
+interface Variant { name: string; flags: string[]; env: Record<string, string>; mix?: Record<string, number>; perPhase?: number; rate?: number; phases?: number; idle?: number }
+const VARIANTS = JSON.parse(args.variants!) as Variant[];
+const LIVE_MIX: Record<string, number> = { unread: 40, step: 22, snapshot: 4, context: 12, list: 4, notes: 3, messages: 3, changes: 3, append_log: 9 };
 const SHAPE = { items: Math.round(1942 * SCALE), decisions: Math.round(839 * SCALE), notes: Math.round(1210 * SCALE) };
 const mb = (bytes: number) => +(bytes / 1048576).toFixed(1);
 const sleep = (ms: number) => new Promise<void>(ok => setTimeout(ok, ms));
@@ -118,6 +122,12 @@ function vmmap(pid: number): Record<string, number> {
     out[`${name} dirty+swap`] = +((out[`${name} dirty+swap`] ?? 0) + dirty + swapped).toFixed(1);
     out[`${name} virt`] = +((out[`${name} virt`] ?? 0) + sizeMB(m[2]!)).toFixed(1);
   }
+  const group = (re: RegExp, suffix: string) => +Object.entries(out).filter(([k]) => re.test(k) && k.endsWith(suffix)).reduce((n, [, v]) => n + v, 0).toFixed(1);
+  out["V8 pages res"] = group(/^(Memory Tag 255|App-Specific Tag 16)(?! \()/, " res");
+  out["V8 pages dirty+swap"] = group(/^(Memory Tag 255|App-Specific Tag 16)(?! \()/, " dirty+swap");
+  out["malloc res"] = group(/^(MALLOC|Malloc)/, " res");
+  out["malloc dirty+swap"] = group(/^(MALLOC|Malloc)/, " dirty+swap");
+  out["malloc empty res"] = group(/^(MALLOC|Malloc).*\(empty\)/, " res");
   const zone = /DefaultMallocZone\S*\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)%/.exec(text);
   if (zone) { out["malloc zone allocated"] = +sizeMB(zone[6]!).toFixed(1); out["malloc zone frag"] = +sizeMB(zone[7]!).toFixed(1); }
   return out;
@@ -144,8 +154,8 @@ async function startDaemon(dir: string, variant: { flags: string[]; env: Record<
   const child = spawn(process.execPath, [...variant.flags, "--import", `data:text/javascript,${encodeURIComponent(PRELOAD)}`, join(here, "../src/main.ts")], {
     env: { ...process.env, ...variant.env, WF_BOARD_DATA: dir, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "3600000", WF_BOARD_CREDENTIALS: credentials, STUDY_STATS: stats, STUDY_CMD: cmd },
     stdio: ["ignore", "pipe", "pipe"] });
-  let log = "";
-  const take = (d: Buffer) => { log += d; if (log.length > 200_000) log = log.slice(-100_000); };
+  let log = "", startup = "";
+  const take = (d: Buffer) => { log += d; if (log.length > 200_000) log = log.slice(-100_000); const m = /startup memory: [^\n]*/.exec(String(d)); if (m) startup = m[0]; };
   child.stdout.on("data", take); child.stderr.on("data", take);
   let healthy = false;
   for (let i = 0; i < 600 && !healthy && child.exitCode === null; i++) {
@@ -167,7 +177,7 @@ async function startDaemon(dir: string, variant: { flags: string[]; env: Record<
     const spaces = Object.fromEntries(j.spaces.map(s => [s.space_name, { size: mb(s.space_size), used: mb(s.space_used_size), physical: mb(s.physical_space_size) }]));
     return { phase, ps: +ps.toFixed(1), os, v8, spaces };
   };
-  return { child, port, sample, log: () => log };
+  return { child, port, sample, log: () => log, startup: () => startup };
 }
 
 // ---- the load -------------------------------------------------------------------------------------------------------
@@ -175,32 +185,47 @@ async function startDaemon(dir: string, variant: { flags: string[]; env: Record<
 /** A seeded generator, so every variant is served the same sequence. */
 function prng(seed: number) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 2 ** 32; }; }
 
-/** A mix like the live board's over a stretch (counted in its service log): page reads of the unread list and its steps, snapshots,
- * the tools agents call, and a few writes. The page's read cursor never moves, so the writes add unread commits. */
-async function load(port: number, token: string, ids: string[], count: number, seed: number): Promise<{ writes: number; ms: number; failed: number }> {
+/** The kinds of request in the weights of `mix` (the live board's counted in its service log by default): page reads of the unread
+ * list and its steps, snapshots, the tools agents call, and a few writes. The page's read cursor never moves, so the writes add unread commits. */
+async function load(port: number, token: string, ids: string[], count: number, seed: number, mix: Record<string, number>, rate: number): Promise<{ writes: number; ms: number; failed: Record<string, string> }> {
   const rnd = prng(seed), base = `http://127.0.0.1:${port}`;
   const client = new Client({ name: "study", version: "1" }); client.onerror = () => {};
   await client.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   let steps: Array<{ id: string; docs: Array<{ kind: string; id: string }> }> = [];
-  let writes = 0, failed = 0, next = 0;
+  let writes = 0, next = 0;
+  const failed: Record<string, string> = {};
+  const fail = (kind: string, why: string) => { const key = `${kind}`; failed[key] = failed[key] === undefined ? `1: ${why.slice(0, 160)}` : `${Number.parseInt(failed[key]!) + 1}${failed[key]!.slice(failed[key]!.indexOf(":"))}`; };
+  const kinds = Object.keys(mix), total = kinds.reduce((n, k) => n + mix[k]!, 0);
   const pick = <T,>(xs: T[]): T => xs[Math.floor(rnd() * xs.length)]!;
-  const get = async (path: string) => { const r = await fetch(base + path); if (!r.ok) { failed++; await r.arrayBuffer(); return undefined; } return await r.json() as unknown; };
+  const get = async (kind: string, path: string) => { const r = await fetch(base + path); if (!r.ok) { fail(kind, `${r.status} ${(await r.text()).slice(0, 100)}`); return undefined; } return await r.json() as unknown; };
+  const call = async (kind: string, name: string, a: Record<string, unknown>) => { const res = await client.callTool({ name, arguments: a }).catch(error => ({ isError: true, content: [{ text: String(error) }] })); if (res.isError) fail(kind, JSON.stringify(res.content).slice(0, 200)); };
   const started = performance.now();
   const one = async () => {
-    const r = rnd();
-    if (r < 0.40 || (r < 0.62 && steps.length === 0)) { const j = await get("/api/unread") as { steps?: typeof steps } | undefined; if (j?.steps) steps = j.steps; return; }
-    if (r < 0.62) { const s = pick(steps), d = s.docs[0]; if (d) await get(`/api/step?id=${encodeURIComponent(s.id)}&kind=${d.kind}&doc=${encodeURIComponent(d.id)}`); return; }
-    if (r < 0.66) { await get("/api/snapshot"); return; }
-    const call = async (name: string, a: Record<string, unknown>) => { const res = await client.callTool({ name, arguments: a }).catch(() => undefined); if (!res || res.isError) failed++; };
-    if (r < 0.78) return call("context", { id: pick(ids) });
-    if (r < 0.82) return call("list", {});
-    if (r < 0.85) return call("notes", {});
-    if (r < 0.88) return call("messages", {});
-    if (r < 0.91) return call("changes", {});
-    writes++;
-    return call("append_log", { id: pick(ids), text: `study write ${writes}: ${"进展 ".repeat(20)}` });
+    let r = rnd() * total, kind = kinds[0]!;
+    for (const k of kinds) { if (r < mix[k]!) { kind = k; break; } r -= mix[k]!; }
+    if (kind === "step" && steps.length === 0) kind = "unread";
+    switch (kind) {
+      case "unread": { const j = await get(kind, "/api/unread") as { steps?: typeof steps } | undefined; if (j?.steps) steps = j.steps; return; }
+      case "step": { const s = pick(steps), d = s.docs[0]; if (d) await get(kind, `/api/step?id=${encodeURIComponent(s.id)}&kind=${d.kind}&doc=${encodeURIComponent(d.id)}`); return; }
+      case "snapshot": await get(kind, "/api/snapshot"); return;
+      case "context": return call(kind, "context", { id: pick(ids) });
+      case "list": return call(kind, "list", {});
+      case "notes": return call(kind, "notes", {});
+      case "messages": return call(kind, "messages", {});
+      case "changes": return call(kind, "changes", {});
+      case "append_log": writes++; return call(kind, "append_log", { id: pick(ids), text: `study write ${writes}: ${"进展 ".repeat(20)}` });
+      default: throw new Error(`unknown kind ${kind}`);
+    }
   };
-  const worker = async () => { while (next < count) { next++; await one(); } };
+  const worker = async () => {
+    while (next < count) {
+      const n = next++;
+      if (rate > 0) { const wait = started + (n / rate) * 1000 - performance.now(); if (wait > 0) await sleep(wait); }
+      await one();
+    }
+  };
+  // Unread steps need the list once before the first step is asked for.
+  await get("unread", "/api/unread").then(j => { const s = (j as { steps?: typeof steps } | undefined)?.steps; if (s) steps = s; });
   await Promise.all(Array.from({ length: CONC }, worker));
   await client.close().catch(() => {});
   return { writes, ms: Math.round(performance.now() - started), failed };
@@ -231,17 +256,17 @@ try {
     try {
       await sleep(START_WAIT * 1000);
       samples.push(await daemon.sample("start"));
-      for (let p = 1; p <= PHASES; p++) {
-        loads.push(await load(daemon.port, TOKEN, ids, PER_PHASE, 1000 + p));
+      for (let p = 1; p <= (variant.phases ?? PHASES); p++) {
+        loads.push(await load(daemon.port, TOKEN, ids, variant.perPhase ?? PER_PHASE, 1000 + p, variant.mix ?? LIVE_MIX, variant.rate ?? 0));
         samples.push(await daemon.sample(`load ${p}`));
       }
-      await sleep(IDLE * 1000);
-      samples.push(await daemon.sample(`idle ${IDLE}s`));
+      await sleep((variant.idle ?? IDLE) * 1000);
+      samples.push(await daemon.sample(`idle ${variant.idle ?? IDLE}s`));
       samples.push(await daemon.sample("after full gc", true));
       await sleep(10_000);
       samples.push(await daemon.sample("gc + 10s"));
     } finally { daemon.child.kill("SIGTERM"); await sleep(500); }
-    const startupLine = daemon.log().split("\n").find(l => l.includes("startup memory")) ?? "";
+    const startupLine = daemon.startup();
     results.push({ variant: variant.name, flags: variant.flags, env: variant.env, startupLine, samples, loads });
     console.log(`STUDY ${JSON.stringify(results.at(-1))}`);
   }
@@ -253,16 +278,16 @@ for (const r of results) {
   console.log(`\n### ${r.variant} (${r.flags.join(" ") || "no flags"}${Object.keys(r.env).length ? "; " + JSON.stringify(r.env) : ""}) on ${process.platform}`);
   console.log(`startup line: ${r.startupLine.replace(/^\S+\s/, "")}; loads: ${JSON.stringify(r.loads)}`);
   const cols = darwin
-    ? ["phase", "ps rss", "footprint", "V8 pages res", "malloc res", "page table", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"]
-    : ["phase", "ps rss", "RssAnon", "RssFile", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"];
+    ? ["phase", "ps rss", "footprint", "V8 pages res", "malloc empty res", "malloc res", "page table", "footprint peak", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"]
+    : ["phase", "ps rss", "RssAnon", "RssFile", "HWM", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"];
   console.log(`| ${cols.join(" | ")} |\n|${cols.map(() => "---").join("|")}|`);
   for (const s of r.samples) {
     const os = s.os, sp = s.spaces;
-    const malloc = Object.entries(os).filter(([k]) => /^Malloc.* res$/.test(k)).reduce((n, [, v]) => n + v, 0);
+    const malloc = os["malloc res"] ?? 0;
     const lo = (sp.large_object_space?.size ?? 0) + (sp.new_large_object_space?.size ?? 0);
     const row = darwin
-      ? [s.phase, s.ps, os.footprintMB, os["App-Specific Tag 16 res"], +malloc.toFixed(1), os["page table in kernel res"], s.v8.heapTotal, s.v8.heapUsed, sp.new_space?.size, sp.old_space?.size, +lo.toFixed(1), sp.code_space?.size, s.v8.external, s.v8.arrayBuffers, s.v8.malloced]
-      : [s.phase, s.ps, os.RssAnon, os.RssFile, s.v8.heapTotal, s.v8.heapUsed, sp.new_space?.size, sp.old_space?.size, +lo.toFixed(1), sp.code_space?.size, s.v8.external, s.v8.arrayBuffers, s.v8.malloced];
+      ? [s.phase, s.ps, os.footprintMB, os["V8 pages res"], os["malloc empty res"], +malloc.toFixed(1), os["page table in kernel res"], os.footprintPeakMB, s.v8.heapTotal, s.v8.heapUsed, sp.new_space?.size, sp.old_space?.size, +lo.toFixed(1), sp.code_space?.size, s.v8.external, s.v8.arrayBuffers, s.v8.malloced]
+      : [s.phase, s.ps, os.RssAnon, os.RssFile, os.VmHWM, s.v8.heapTotal, s.v8.heapUsed, sp.new_space?.size, sp.old_space?.size, +lo.toFixed(1), sp.code_space?.size, s.v8.external, s.v8.arrayBuffers, s.v8.malloced];
     console.log(`| ${row.join(" | ")} |`);
   }
 }
