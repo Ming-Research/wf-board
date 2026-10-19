@@ -76,8 +76,10 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          first=1
           while :; do
             jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            if [ "$first" = 1 ]; then first=0; echo "first poll: $(echo "$jobs" | jq -r '[.jobs[] | "\(.name):\(.status)"] | join(" ")')"; fi
             open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-1-")) | select(.status != "completed")] | length')
             have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-1-"))] | length')
             [ "$have" = 3 ] && [ "$open" = 0 ] && break
@@ -152,8 +154,10 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          first=1
           while :; do
             jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            if [ "$first" = 1 ]; then first=0; echo "first poll: $(echo "$jobs" | jq -r '[.jobs[] | "\(.name):\(.status)"] | join(" ")')"; fi
             open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-2-")) | select(.status != "completed")] | length')
             have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-2-"))] | length')
             [ "$have" = 3 ] && [ "$open" = 0 ] && break
@@ -228,8 +232,10 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          first=1
           while :; do
             jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            if [ "$first" = 1 ]; then first=0; echo "first poll: $(echo "$jobs" | jq -r '[.jobs[] | "\(.name):\(.status)"] | join(" ")')"; fi
             open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-3-")) | select(.status != "completed")] | length')
             have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-3-"))] | length')
             [ "$have" = 3 ] && [ "$open" = 0 ] && break
@@ -304,8 +310,10 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          first=1
           while :; do
             jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            if [ "$first" = 1 ]; then first=0; echo "first poll: $(echo "$jobs" | jq -r '[.jobs[] | "\(.name):\(.status)"] | join(" ")')"; fi
             open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-4-")) | select(.status != "completed")] | length')
             have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-4-"))] | length')
             [ "$have" = 3 ] && [ "$open" = 0 ] && break
