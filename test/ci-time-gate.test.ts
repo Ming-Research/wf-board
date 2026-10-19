@@ -164,7 +164,7 @@ test("a shard at exactly 1.5 times the mean of the others is not slow, and the m
 
 test("a job that is not a shard is left out of the shard table, as is a shard whose tests step has not finished", () => {
   const notShard = job("e2e", 4, 60, [{ name: "tests", started_at: at(10), completed_at: at(58) }]);
-  const unfinished: Job = { name: "test shard 2", conclusion: null, started_at: at(3), completed_at: at(20), steps: [{ name: "tests", started_at: at(15), completed_at: null }] };
+  const unfinished: Job = { name: "test shard 2", conclusion: null, created_at: at(0), started_at: at(3), completed_at: at(20), steps: [{ name: "tests", started_at: at(15), completed_at: null }] };
   const table = shardTable([notShard, unfinished, shard(1, 10), shard(3, 10)]);
   assert.deepEqual(table.map(s => s.name), ["test shard 1", "test shard 3"]);
 });

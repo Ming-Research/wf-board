@@ -105,6 +105,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "script step outcome: ${{ steps.result.outcome }}, conclusion: ${{ steps.result.conclusion }}"
-          written=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/statuses" --jq "[.[] | select(.context == \"full-ci\" and (.target_url | endswith(\"/runs/$GITHUB_RUN_ID\")))] | length")
+          written=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/statuses" --jq "[.[] | select(.context == \"full-ci\" and ((.target_url // \"\") | endswith(\"/runs/$GITHUB_RUN_ID\")))] | length")
           echo "full-ci statuses of this run: $written"
           test "$written" = 0
