@@ -890,7 +890,7 @@ log:
   session does, one line), `credential` (the SHA-256 of the token the session
   writes with, from the start until the dispatch ends; section 9), and once
   the session has ended a `finish` block:
-  `ended`; `result` (`一次通过`, `返工后通过`, `换人` or `放弃`); the counts,
+  `ended`; `result` (`一次通过`, `返工后通过`, `换人`, `放弃` or `放下等待`); the counts,
   `reports` and `kickbacks` for an engineer and `rounds` (review rounds: the first review and each re-review count one) for a review, never
   the other role's; optional `waited` minutes (spent waiting for the owner,
   the 14900K or a dependency); `signals`, none or several of `验收没过`,
@@ -925,6 +925,15 @@ log:
     item's log (`起：…`, `收：…`), the architect's hand-written line in
     machine form: the owner reads only the page, which shows logs and not
     dispatches.
+  - `放下等待` is the result of a session the runner put down because its work waits for something
+    long (a 14900K run, a day of logs after a deploy), and the work goes on in a later session. It is
+    no outcome of the work, so it was never a `放弃`, which says the work was given up, and the summary
+    lists it apart: it is in the number of dispatches and the cost, with the minutes from start to end
+    added up, and it is in none of the four result counts, the rework share or the means of kickbacks and
+    rounds, whose denominators are the ended dispatches that came to a result. Rejected: recording it as
+    `放弃`, as the runner did until this result existed, which put every long wait into the count of
+    abandoned work; a flag beside the result, which would leave a result for a session that has none;
+    leaving the session without a record, which would drop its cost.
   - Not stored: the judgment records for "research first or do directly"
     (item, what was judged and why, how the misjudgment showed, what it should
     have been). They are a different record and stay written by hand in the
@@ -1069,6 +1078,20 @@ log:
   and puts them first by id, ahead of the entries the session already had,
   without repeats; so the list does not depend on the order the store met the
   items in, and a restart gives the list live writes gave.
+  The same index keeps, per item the runner has reported on, the reports that
+  began a state of the work (`activity.states`, read by the agent list and the
+  `timeline` tool, sections 6 and 7): `at` (the report's `since`), `state` and
+  what the state waits for, oldest first, at most 500 of the newest
+  (`STATE_STARTS_MAX`). `startOfReport` in `src/timeline.ts` makes a start from a
+  stored or historical runner report, read leniently, and `withStateStart` adds
+  it unless it repeats the last one, so a report that only moves `at` (a new
+  turn's figures) adds nothing. Live, every written item that carries a
+  report goes through it; a start replays the commits whose message begins
+  `report_state ` (`REPORT_MESSAGE`; 1463 of the 32978 commits of the live
+  board on 2026-10-19), reading the item at each, and no other. The delta of a live
+  update carries the whole new list of each item whose list changed, as for
+  pause spans. The cache holds the lists, so `STARTUP_CACHE_VERSION` is 3 and
+  the first start after this change scans the history once.
   Content commits touching board metadata,
   items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
   owner reading cursors, read-ahead marks or messages do not. Current document timestamps
@@ -1714,7 +1737,7 @@ registry, and a test raises every registered kind on one board.
 | `stalled` | 无人推进 (stalled, above) | no |
 | `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
 | `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter; a standing item's row for a standing item does not count) | no |
-| `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+| `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `review`, `ci`, `accept`, `merge`, `verify`; `review` is the one a plan may leave out), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 | `approach-stale` | 做法待更新 (label `做法待更新`: an open work item with a ruled card whose `ruledAt`, in whole seconds, is later than the head's last revision, below; the text names the latest such card and when it was ruled and the head last revised, says what the rewrite is, and counts the other cards ruled since; one check per item; a write is not refused) | no |
 
 **做法待更新 (`approach-stale`).** The owner reads how a piece of work is done
@@ -1881,7 +1904,7 @@ shows how far each open item is without opening it.
 A plan an engineer wrote by the engineer rules (The plan's stages) is read by
 its stages, so the share and the count say how far the item is in the flow and
 items written with different numbers of detail rows can be compared. A stage
-row is a step without the acceptance mark whose id is `research`, `impl`, `ci`,
+row is a step without the acceptance mark whose id is `research`, `impl`, `review`, `ci`,
 `accept`, `merge` or `verify`, with `-2` and up for the round that going back
 appends (`impl-2`). `Rules.stages` gives the plan's stages only when it has
 both a `research` and an `impl` row, because older plans use `merge`, `impl`
@@ -1892,9 +1915,13 @@ never a stage. Without both rows the plan keeps counting every row, as above. Fo
 read by stages, `Rules.progressShare` and the count on a tree row without a
 band count only the stage rows, with the same weights (done 1, in progress ½)
 and the dropped ones left out; detail rows, sub-item rows and cards do not move
-them. The stage ids and names are the engineer rules' own (研究, 实现, 完整 CI,
-验收, 合入, 线上验证) and `review` is not among them, as this version has no
-review. The tree row also shows the name of the stage the item is at as a small
+them. The stage ids and names are the engineer rules' own (研究, 实现, 审查, 完整 CI,
+验收, 合入, 线上验证), and the table `STAGES` in `src/rules.ts` is the one place that has them: the id
+pattern and the text of the format check are made from it. `review` is the stage a plan may leave
+out, since a version of the rules without a review step has none, so the format check requires only
+`research`, `impl` and `accept`; it comes between `impl` and `ci`, and its rounds (`review-2`) follow the
+rounds of `impl` the same way. Its id is also the id the candidates read takes for the review in
+progress (`isReviewStep`), so a plan's `review` row is both the stage and that step. The tree row also shows the name of the stage the item is at as a small
 muted tag, `实现·2` from the second round on: the first stage in progress,
 else the first not done, none when every stage is done and none on a finished
 or cancelled item. The detail column and the agent list keep the count of all
@@ -2278,12 +2305,13 @@ instructions within the limit and free of rule text.
 | `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them; a row of a record or a standing item says `record: true` or `standing: true`, as `context` and `search` rows do |
 | `overview(group?, status?, detail?)` | The board at a glance | By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged; `detail` gives every area with its counts, owner actions waiting, blocked items and flags; status narrows those results while retaining area headings (below, Lean replies) |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
-| `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
+| `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each of the four results (`一次通过`, `返工后通过`, `换人`, `放弃`), those put down while their work waits (`放下等待`, with the minutes they ran, which are in no result count and in none of the next three figures), the rework share (`返工后通过` plus `换人`, over the ended ones that came to a result; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches and the mean rounds over ended review dispatches of those, and the cost, parked ones included; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog (unless the runner reports on it), in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
 | `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look) |
+| `timeline(id?, limit?)` | Where did the time of an agent go? | An agent is a dispatch record; its line is what the runner reported while the session lasted: segments in order (kind, start, length, what it waited for) and the totals for each kind; an engineer's line is cut from what the runner reported, a review's is one stretch of work. With `id`: the lines of the agents that item went through, oldest first (the newest 12 agents, at most 6000 characters, the earliest segments folded); without: the agents running, the agents whose line ended in the last 24 hours (up to 10) and the longest waits among the running ones, longest first, with how long each has gone on (section 7, Agent list) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -2513,7 +2541,8 @@ not call it.
   the count below it. `expand` opens it one level.
 - *What a line says.* The key, the title cut at 22 characters, the status in the page's words (进行中, 卡住, 停滞, 未开始, 暂停), what
   the runner reports or the live session holds (the whole view's words, with the turn the work is on for a turn in progress), 没人管 or
-  等太久 with its limit, how long it has been so, its check flags, and the item number. The kinds and the time are the whole view's
+  等太久 with its limit, how long it has been so, its check flags, the item number, and for an item whose head has a 何时 section its
+  first sentence, cut at 40 characters, as the last part of the line (the same reading the candidates use). The kinds and the time are the whole view's
   row of the item, and the whole view gives no row to a parent whose sub-items are open nor to a standing item that nobody works on:
   their lines have neither. A line not opened ends with `下面 N 件：` and the items below it by status, then the numbers of
   没人管 and 等太久 and of those changed since the last look, and `待选池 N 件` for the pools below it. An open project or pool line
@@ -2694,8 +2723,9 @@ authors `总管` and `PM` is refused by every tool.
 | `remove_tag(name, replace?)` | Removes a tag | Only `Architect`; refused while any item carries it unless `replace` names another tag applicable to all their projects, which they then receive in the same commit |
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
-| `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
+| `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` (the four results or `放下等待`) and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
+| `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes no other argument |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -3141,6 +3171,46 @@ library's `dark` theme when the page shows its dark colors (the owner's
 `data-theme` attribute on the root element, else the system's) and `default` otherwise,
 and are drawn again when either changes.
 
+Data charts. A bar or line chart is a `xychart` in the same `mermaid` fence: the library the page
+already bundles draws it (the pinned 12.2.0 opens a chart on either `xychart` or `xychart-beta`), so the
+fence, the strict level, the toolbar, the theme, the cache of drawings and the checks carry over, and
+nothing is added to the bundle. What the page adds is configuration, given to the library with the rest
+at each draw: `themeVariables.xyChart.plotColorPalette`, the eight series colors in a fixed order for the
+library's `default` (light) and `dark` themes; `themeVariables.xyChart.backgroundColor` set to
+`transparent`; and `xyChart.height` of 360. The library's own first series color is `#ECECFF`, 1.17:1
+against a white page (its second, `#8493A6`, is 3.13:1), which hides the first series; the page's first
+color is 4.42:1 on white and 4.56:1 on the dark surface (WCAG 2 gives 3:1 as the floor for a mark). The
+eight colors of each set, in series order, are fixed: for the light set `#2a78d6 #eb6834 #1baf7a #eda100
+#e87ba4 #008300 #6250d6 #e34948` against the white surface `#ffffff`, for the dark set `#3987e5 #d95926
+#199e70 #c98500 #d55181 #008300 #9085e9 #e66767` against the dark surface `#182020`. The standard is 3:1,
+computed with the WCAG 2 relative luminance: every dark color meets it (the lowest is
+`#008300`, 3.35:1) and so does every light color except three on white, aqua `#1baf7a` (2.82:1), pink
+`#e87ba4` (2.69:1) and yellow `#eda100` (2.17:1). The legend carries those three, so a chart with several
+series names each series, which makes the library draw a legend (measured: it draws none for a series
+without a name). The library's
+dark theme gives a chart a `#333` plate of its own, so the plate is made clear and the page's surface
+shows; the height is 360 where the library's is 500, so that a chart does not fill the screen (a
+provisional number, not measured: reopen it when a chart with many categories is cramped). When a chart
+sets its own `theme` (for instance `theme: dark` on a light page) the library builds that theme, and the
+chart's text takes the colors of that theme while the plate stays clear: the dark theme's light grey text
+is then nearly invisible on a white page (read from the library's source, not run). A chart that sets
+its own `theme` therefore also sets `themeVariables.xyChart.backgroundColor`, or it cannot be read.
+A settings block at the start of a chart wins over these, as for any diagram (`showDataLabel: true` is one
+such setting).
+What `xychart` cannot draw: scatter, side-by-side or stacked bars, error bars and log axes; two `bar`
+series are drawn over each other, and a chart has one `y-axis`, so one unit (a second unit is a second
+chart). Three things in what the library does decide whether a chart is right,
+all measured on the page's own library: a Chinese category name without quotes is a lexical error
+(`["一月", "二月"]` draws, `[一月, 二月]` does not); a bar chart without a range on the y axis starts it at
+the smallest value, which cuts the bars (`y-axis "秒" 0 --> 500` keeps the zero); and a data label's font
+size follows the bar width, 60 px for 2 bars, 46 for 4, 29 for 6, 22 for 8 and 18 for 12 in a chart of
+700 by 360 whose axis labels are 14 px, so `showDataLabel` suits a chart of six bars or more. The text of
+a chart (title, categories, series names) is plain text under the strict level: a title that carries an
+`<img onerror>` is drawn as characters. How a chart is written for agents is in the shared rules'
+section on writing items, the board's rule block `item-writing`; the grounds and the refused
+alternatives (a chart library with a fence of its own, a renderer of our own, images) are in the node
+`page/diagrams/data-charts`.
+
 Glossary links. In item heads, steps and log entries, card questions, option names
 and details, a card's ruling and legacy text, and note texts and replies, a glossary
 term links to its definition. The page has no glossary section. Titles are not linked. Terms
@@ -3232,7 +3302,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   of level 1 and six above) are as many lines that line up. The columns: the title, with the session's level as a
   small number before it; the state in a word (`stateWord`: 在跑, 等 CI, 等主人,
   等架构师, 等条目, 等 14900K, 等事件, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
-  在跑); one line of what the work does or waits for; how long it has been in that
+  在跑, and the beat of a review round turns 等事件 into 「审查 第 N 轮」); one line of what the work does or waits for; how long it has been in that
   state (for a turn running, how long the turn has run); and the time, turns and cost
   since the work began. The stylesheet cuts the title and the line of text to one
   line, and the hover of each says the rest. The owner's list then has no second
@@ -3242,8 +3312,9 @@ level, and whether that someone is working, waiting or has gone quiet.
   and the cards an ask to the owner names are written as titles and questions,
   with their keys on the hover (`runnerLine`).
   - *The line of text* is the last action of the turn running when the runner
-    beats (the engineer's, or the architect's turn for a work that asks the
-    architect: 「架构师在答：…」), else the report's note (after the event of a `wait`
+    beats (the engineer's; the architect's turn for a work that asks the
+    architect: 「架构师在答：…」; the review round of a work that waits for it:
+    「审查中：…」), else the report's note (after the event of a `wait`
     with its wake time, `waitFor`, as after the titles of the items and the questions
     of the cards a report waits for), else for a turn running
     that the runner has not described, 「还没报这一轮的动作」. A beat not
@@ -3265,11 +3336,19 @@ level, and whether that someone is working, waiting or has gone quiet.
     (`limitOf`, amber); then the turns running; then the waiting ones; the longest
     in their state first within each. The older order put only the late first, so an
     ask to the owner could sit among the quiet waits.
-  - *A narrow list.* In a column narrower than 760 px (the tree's column with an
-    item open is about 300 px) the five cells fall to three lines of a row: the
-    title; the state beside the line of text; the two times. A container query on
-    the list's own width decides, not the window's, because one window holds both
-    layouts.
+  - *A narrow list.* In a column narrower than 900 px (the tree's column with an
+    item open is about 300 px) the six cells fall to four lines of a row: the
+    title; the state beside the line of text; the two times; the line of the
+    agent. A container query on the list's own width decides, not the window's,
+    because one window holds both layouts. The table needs 900 px: the cells that
+    keep their width (6.5, 5 and 12 rem), the least width of the title (8 rem) and
+    of the line (9 rem), the gaps and the padding leave about 723 px of a row
+    spoken for, so the words of what the work does had 53 px in a list 776 px
+    wide and 93 px in one 816 px wide (measured in the browser file on a page
+    with the breakpoint at 760 px), about 37 px at 761 px (deduced from the
+    stylesheet), and have about 175 px at 901 px (deduced); the browser file
+    measures that column at windows from 800 to 1000 px and holds it at 100 px
+    at least.
   - Rejected: a group for each state, which moves a job to another group at each
     report and so makes a job that is watched jump; the earlier small cards kept
     tidy, which at 16 jobs is 32 lines that do not line up; the item's status
@@ -3348,14 +3427,101 @@ level, and whether that someone is working, waiting or has gone quiet.
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
 
+- **The line of an agent.** The owner's question is where each agent's time
+  went: an agent (one dispatch record, one session from its start to its end;
+  an engineer, a review, and the architect's turns once the board holds a record
+  of them) is either working or waiting until it ends, so its life is a line of
+  stretches, each as long as the time it took, and the longest stretch is the
+  stuck place. An item that passed through several agents has several lines;
+  the time before the first session and between two sessions is on no line,
+  because no agent was there to wait. One function, `lineOf` in
+  `src/timeline.ts`, cuts the line from what the board already holds: the item's
+  state starts (`activity.states`, section 5), the dispatch record and the
+  item's pause spans (`activity.pauses`, an inherited pause included). Its
+  segments have a kind, a start, an end and what they wait for; the `timeline`
+  tool prints them (section 6) and the runner's block draws them, so the two
+  give the same numbers.
+  Decisions:
+  - A state start is a report's `since`, not the commit's time: the board stamps
+    both, and `since` is the moment the work entered the state. A report that
+    repeats the state moves `at` only and adds no start. The state starts belong
+    to the item, and the runner reports on the engineer's work: a line takes
+    them from its session's start to its end only when it is an engineer's. A
+    review or an architect's turn waits for nothing (one dispatch is one review
+    or one answer, and the engineer's wait for it is on the engineer's line), so
+    its line is work from its start to its end, with no state start and no
+    pause; if it took the item's starts, a review would show the engineer's
+    waits as its own, such as 等事件 for the whole of the review.
+  - The line has two kinds of stretch. Work (干活) is a turn of the agent running.
+    The others are waits between turns that say what for: 等 CI, 等主人 and
+    等架构师 (an `ask` to each), 等条目, 等 14900K, 等事件 (`wait`, with its words
+    and its wake time), 等合入 (`ready`), 要人看 (`exception`, work stopped for a
+    person) and 待收尾 (`done`, wrapping up); 暂停 is the stretch the item was
+    paused, whatever the state was, whose waits are not told. An engineer waiting
+    for the architect's answer is 等架构师 on the engineer's line.
+  - An engineer's session begins with a turn, so its line is work until the first
+    state the runner reports after its start; a report made no later than the
+    start (and up to five minutes before it, `RUNNER_START_GRACE_MS`) is that
+    turn's own and not a stretch. A session with no report from five minutes
+    before its start to its end, such as one that ran before the runner
+    existed, has no line. The line ends at the dispatch's end. A session with no
+    finish ends when the work was over (its last plan row done or dropped, or
+    the item cancelled) or when the next session of its role on the item began,
+    whichever came first, since one that died without a finish would otherwise
+    run on over the sessions after it, take their states and stay among the
+    running; one that died with no later session of its role runs to the end of
+    the work, else to now. Neighbouring pieces that are the same thing are
+    joined.
+  - The architect's turn that answers an engineer's question has no line yet:
+    the board holds no dispatch record of it (the runner's beats live in memory,
+    section 7, The live view of a turn). It will have one when the runner
+    records each turn as a dispatch with a role of its own. That line is work
+    from the turn's start to its end, like a review's, because the engineer's
+    wait for the answer is already 等架构师 on the engineer's line and the
+    turn's own states are not the item's; `lineOf` takes the role into account
+    for that, and a turn queued more than five minutes after the question still
+    has its line, since a line of work needs no report of the runner.
+  - The runner's block draws the line on the row of its agent, as a bar in its last
+    cell: a segment for each stretch, as long as the time it took up to three
+    hours and a tenth of the rest beyond (`drawLength`), a gap marked in a
+    stretch drawn shorter, a segment at least one pixel wide so a short one can
+    still be pointed at, and each segment's hover saying its kind, its length and
+    start (UTC), what it waits for (the cards' questions and items' titles) and
+    why it looks the way it does. The bar's hover has the totals. The row stays
+    one line high, so the table keeps its form (the Agent list's table rows
+    above). An agent that ended leaves the list; its line is read with the tool.
+  - The longest waits (`longestWaits`) are the waiting stretches of the running
+    agents' lines, a pause is none, and work is not a wait; `exception` is, being
+    work stopped for a person. The running agents are the lines with no end
+    (`listedAgents`); the agents that ended lately are the lines that ended in
+    the last 24 hours by whatever ended them: a finish, the end of the work or a
+    later session.
+  - The tool's answer for one item has at most 6000 characters, as the whole
+    view's has: of the newest 12 agents it folds the earliest segments, as few as
+    bring the answer under, each agent's folded ones into one line of totals by
+    kind, and says in its first line how many of how many were folded. The totals
+    of every agent stay whole.
+  Rejected: one line for the whole piece of work with the stretches that had no
+  session open marked, because the owner asked for each agent and a stretch with
+  no session is nobody's wait; appending a segment to the item at each report,
+  because the item would grow with its reports as a log entry per report would
+  (section 5, Runner reports), work done before the change would have no line
+  unless a second path filled it in from the history, and the past would be
+  stored twice; reading the item file's history for each request, because an
+  item file has hundreds of versions of tens of kilobytes and the page could not
+  be told when the line moved; drawing at true scale, because one wait of a week
+  leaves the day's work a pixel wide; drawing every segment the same width,
+  because the longest wait would not look longest; a block of lines apart from
+  the table, because the title and its line would stand in two places.
+
 ### The live view of a turn
 
 A turn can run ten minutes and more (an engineer's first turn in the second trial run took 9.5
 minutes), and the runner's report on the item changes only when a turn starts or ends,
 so the report cannot say whether a running turn is moving. The runner therefore beats: about
 every 30 seconds, for each turn whose process runs, it calls `report_live` with the item, the
-role (`工程师`, or `架构师` for the architect's turn that answers the engineer's question on
-that item), the turn's number, how many seconds it has run, how many seconds since its last
+role (`工程师`; `审查` for a review round of the engineer's pull request; `架构师` for the architect's
+turn that answers the engineer's question on that item), the turn's number, how many seconds it has run, how many seconds since its last
 action (the runner reads the session transcript's last change) and the action in one line of at
 most 80 characters (for example 「改 web/app.ts」).
 
@@ -3370,6 +3536,11 @@ most 80 characters (for example 「改 web/app.ts」).
 - *The writers* are those of `report_state` (the same part, `item.runner`, section 9): the runner
   from its own session, and the architect. The tool is `write` class of the time limits, but
   it does not wait in the write queue, since it commits nothing.
+- *The review round.* The runner reports a review round of the engineer's pull request as a `wait` on
+  the item and beats for it with the role `审查`. The runner's row reads that beat while the report says
+  `wait` and the beat is not older than the wait (`since`), so the beat of an earlier round, which no report
+  agrees with, is not shown on a later wait; the row's state word then reads 「审查 第 N 轮」 and its line
+  「审查中：…」.
 - *To the page.* The event stream sends a `live` event with all the beats when it opens and after
   every beat (a few entries; the page replaces its list). It is not a change of the board: the page
   counts no change, keeps its snapshot and redraws only the agent list, and only when the minutes
@@ -3501,10 +3672,10 @@ that can disagree with the dispatch; inferring the holder from who last wrote an
 item with a step in progress (the agent list's inference), which another
 session's single write turns to the wrong session.
 
-**What is pushed.** Twelve kinds, defined in one table (`WAKE_KINDS` in
+**What is pushed.** Thirteen kinds, defined in one table (`WAKE_KINDS` in
 `src/wake.ts`; `push` refuses a kind or field set the table does not list).
 Each is something one session has to act on, as the architect's rules and the engineer rules say.
-`note`, `timed-architect`, `backup-behind` and `slow-op` go to the architect; `main-red` and
+`note`, `timed-architect`, `backup-behind`, `runner-stopped` and `slow-op` go to the architect; `main-red` and
 `deployFailed` go to a holder, else to the architect; `dep-merged` goes to the holder of the waiter,
 else to the architect; `deployed`, `item-done`, `ask-alive` and `card-ruled` go to a holder alone; and
 `message` goes to its recipient:
@@ -3527,6 +3698,8 @@ else to the architect; `deployed`, `item-done`, `ask-alive` and `card-ruled` go 
   section 4, Time limits), once per operation per hour;
 - a remote copy of the board's data that has stayed behind for an hour
   (`backup-behind`; section 4, Storage);
+- a runner that has given no heartbeat for 10 minutes after having given one (`runner-stopped`;
+  The runner's heartbeat, below);
 - a deploy result, from the deploy job (section 4, Deploying): `deployed` when
   the checkout moved and the board is healthy on it, `deployFailed` when a
   deploy did not happen. The job asks through `POST /api/wake` (below), and the
@@ -3661,6 +3834,7 @@ the forms the server sends:
 | `{n, at, event:"main-red", repo, project, branch, commit, failed, url, item, pr}` | The newest commit of a configured repository's main line has failed checks and no push was made for this commit. `repo` is `Owner/Name`, `project` the project that owns it, `branch` the main line, `failed` the names of the failed checks, `url` the commit's page. `pr` is the pull request the commit's subject names and `item` the item that delivers it, null when none is found; it goes to the session holding `item`, the architect's when nobody does (Deploys and the red main line) |
 | `{n, at, event:"slow-op", op, ms, limitMs, params}` | A page request or tool call took more than its time limit (section 4, Time limits) and this operation was not told in the last hour. `op` is the operation (`GET /api/snapshot`, `tool context`), `ms` its time, `limitMs` its limit, and `params` a one-line summary of its parameters that holds no body text (a search query shows, cut at 60 characters), empty when it has none. A call that is not the first slow one within the hour is only logged. It goes to the architect's stream |
 | `{n, at, event:"backup-behind", commits, lastSuccess, reason}` | The board's data has had commits the remote lacks for an hour (the copy was last known current an hour ago, or the daemon started an hour ago and none was confirmed since), and no `backup-behind` was pushed since the copy was last current. `commits` is how many it lacks, `lastSuccess` the time (ISO) the copy was last known current, null if not since the start, and `reason` the last push failure's message, null if none. It goes to the architect's stream |
+| `{n, at, event:"runner-stopped", lastBeat, limitMs}` | The runner has given no heartbeat (`report_heartbeat`) for `limitMs` milliseconds (10 minutes) after the later of its last heartbeat and the start of the daemon, and has given one since the board first kept one. `lastBeat` is the time (ISO) of the last heartbeat that was kept, from the run before when none has come since the start. It goes to the architect's stream, once for each stretch of silence: the next heartbeat ends the stretch, and the file that keeps the last heartbeat also keeps that the stretch was told, so a restart of the daemon in the same silence does not tell it again (The runner's heartbeat) |
 | `{n, at, event:"deployed", version, restarted, item, project, title, pr}` | The deploy job moved the checkout and the board is healthy on it, and the commits deployed name pull request `pr`, which `item` delivers. One for each such pull request and item that a session holds, to that session; none otherwise. `version` is the commit now served, `restarted` whether the daemon was restarted (`NO_RESTART` in `src/deploy.ts` says which changes need none) |
 | `{n, at, event:"deployFailed", version, running, reason, item, project, title, pr}` | A deploy did not happen. `version` is the commit not deployed, or null when the job could not find one out (the fetch failed, or the job itself failed), `running` the commit the board serves once the checkout is back on it, else null, and `reason` says why: the daemon did not come up and the checkout went back, going back did not finish (the job tries again), or the checkout was not moved (another branch, local changes, a commit the main line lacks), the checkout was changed by hand while a deploy was unfinished and the job took over from what it holds, the remote could not be fetched, the checks of the head could not be read or were not finished after an hour, or the job itself failed. `item`, `project`, `title` and `pr` are the pull request the commits not deployed name and the item that delivers it, null when none is found. One for each such pull request and item that a session holds, to that session; when none is held, one to the architect, naming the first |
 | `{n, at, event:"item-done", item, project, title, parent}` | An item's status became done (every row done or dropped). One event for each open item `parent` whose plan has a row on it, owned or shared, that a session holds; it goes to the stream of that session, and nothing is pushed for a `parent` nobody holds. `item`, `project` and `title` are the done item's. The set of done items is seeded at start without sending, so a restart announces nothing; an item reopened and done again is announced again |
@@ -4095,6 +4269,53 @@ status code and headers a conditional request needs; the open pull request list 
 as one request for every newest commit, which misses a named pull request beyond its first 100 and
 saves little; telling at the first red check, which the engineer cannot act on while others run.
 
+### The runner's heartbeat
+
+The runner is the one program that stays running and starts every engineer's turn, so when it stops every
+item stops with it and nothing on the board says so: its reports on the items stay as they were and the
+beats of the turns running (section 7, The live view of a turn) stop, which the agent list shows as
+silence on each turn separately. The board therefore watches the runner itself, by one call.
+
+- *The call.* `report_heartbeat` takes no argument besides the writer. The runner calls it at every round of its
+  loop, whether or not a turn is running, at least once a minute. The writers are those of `report_state`
+  (the part `item.runner`, section 9, The runner): the runner from its own session, and the architect.
+  It makes no commit and does not wait in the write queue (`RunnerHeartbeat` in `src/runner-heartbeat.ts`).
+- *The record.* The board keeps the time of the last call by its own clock, in memory and in a local file
+  (`state/runner-heartbeat.json` in the data directory and out of git, as the marks of the other watches are),
+  written at most once a minute, except that telling a silence and ending it by the next heartbeat are written
+  at once. The file lets the last heartbeat outlive a restart: the board is restarted at every deploy, and a
+  runner that stopped in the minutes before one would otherwise never be told. It also holds `told`, whether
+  the silence now running was told, so a restart in the same silence does not tell it again, as the other
+  watches keep their marks in their files (`state/github-watch.json`, `state/ci-watch.json`). A file that is
+  there and cannot be read leaves the runner unwatched until its next heartbeat, and the log says so.
+- *The watch.* A timer of one minute (`src/main.ts`) asks `RunnerHeartbeat.check`. The runner is silent when the
+  later of its last heartbeat and the start of this daemon is more than 10 minutes old. The start counts
+  because the runner could not reach a board that was stopped, and gets the limit from the start to send a
+  heartbeat. A silent runner is told once to the architect as `runner-stopped` (with the time of the last
+  heartbeat), and the next heartbeat ends the silence, so a later one is told again. A restart in the same
+  silence tells nothing, since the file says it was told; the push is made before the mark is written, so a
+  stop between the two repeats the push and does not lose it.
+- *Only after a first heartbeat.* Nothing is told until a heartbeat has been kept, here or in the run before, so a board
+  deployed before the runner calls the tool does not tell of a runner that never promised it.
+- *The limit.* 10 minutes (`RUNNER_SILENT_MS`) is a starting value: the runner's loop was not measured, and the
+  board's own check and the runner's restart by launchd both fit in it. Reopen it if the push comes while the runner
+  is there.
+- *What the board does not do.* It does not look at the runner's process, its files or its port: a board
+  on another machine could not, and the owner required that the board can move. A runner that is there and does not
+  call is the runner's to fix, and the push is the sign of it.
+
+The decision is the node `design/daemon/runner-heartbeat.md`. Rejected:
+
+- The beats of `report_live` as the heartbeat: they are sent only while a turn is running, so a runner that has
+  every item waiting on CI or on a person sends none, and the board could not tell it idle from stopped.
+- The last heartbeat in memory only: the daemon restarts at every deploy, so a runner that stopped in the 10
+  minutes before one would never be told, and the watch would be silent in exactly the case it is for.
+- The heartbeat in the board's data, as a field or a document: each one is a commit in the write queue, 1,440
+  a day at one a minute against the 1,158 writes the whole board made on its busiest measured day (2026-10-16), and 144 a day
+  at one in 10 minutes only to record a time that the board may lose with a restart at the cost of one
+  interval.
+- The board reading the runner's process or answering to its port: rejected for the reason above.
+
 ### The PM is retired
 
 The PM was the session that opened and closed the engineers' sessions by hand and read what the
@@ -4226,7 +4447,7 @@ directly and do not pass through it; the historical authors stay as written (sec
 **The runner.** The runner is the resident program that starts the engineers' turns and
 reports their state on the items (item `runner-mvp`). It has no credential. It calls the board
 as the author of the project of the item it touches, from the session `执行程序`
-(`RUNNER_SESSION` in `src/model.ts`). Three kinds of its calls and what the board does with them:
+(`RUNNER_SESSION` in `src/model.ts`). Four kinds of its calls and what the board does with them:
 
 - `report_state` is a part of the process (`item.runner`), which without a credential only the
   architect can write, so the runner's reports were refused. The board takes the
@@ -4235,6 +4456,9 @@ as the author of the project of the item it touches, from the session `执行程
   reserved like it (no credential file entry and no dispatch carries
   it), and it takes no pushes: the board makes no stream for it. Anything else of the
   process (creating, rating, pausing, cancelling, retitling) is still refused to it.
+- `report_live` and `report_heartbeat` are writes of the same part (`item.runner`) and pass the same way. Neither
+  makes a commit: a beat of a turn is held in memory (section 7, The live view of a turn), and the time of
+  the heartbeat in memory and a local file (section 8, The runner's heartbeat).
 - `dispatch_start` and `dispatch_finish` pass without a credential. They carry no process
   check: without a credential they check the item's project (the author is the item's project,
   as for `append_log`; the tool table in section 6 says so), and over a credential the table
@@ -4968,7 +5192,8 @@ it; an enlarged diagram says it can be moved (a scroll bar of its own, the hand,
 shade at the edge with more) and the toolbar and the bar read in both color schemes; a
 view survives a live update that leaves the source alone and a changed source starts
 at the default size; the page configures the library for a compact drawing (the classic look,
-padding 8, gaps of 20). The stand-in is what the page depends on of the library and nothing
+padding 8, gaps of 20), and for a data chart gives it the series colors of the page's color scheme, a clear plate and a
+height of 360. The stand-in is what the page depends on of the library and nothing
 more: the same text gives the same drawing, its ids and their references begin with the id
 the page gave, text that does not parse is refused, and the frontmatter's theme wins over the
 page's. The widths come from the model of the boxes, not from a layout; the model also
@@ -4985,7 +5210,9 @@ frontmatter win over the page's in the real library; a diagram is as wide as its
 window 1500 px wide and at one 700 px wide, with nothing to scroll sideways in the box or the page;
 an enlarged diagram can be scrolled to both its ends,
 the plain wheel scrolls the page, the 60%, 90% and 100% buttons in a narrow column;
-a view and the page's scroll survive a live update; labels and lines read in both color schemes; and a drawing is
+a view and the page's scroll survive a live update; labels and lines read in both color schemes; the real library draws a
+chart with a bar series and a line series in the page's first two series colors in each scheme, with a clear plate, its Chinese
+labels and the height the page asks for (`checkChart`, inside the test that checks the library); and a drawing is
 compact: a synthetic role chart (28 arrows, 2406 px high against the library's own 3420) and a synthetic chart
 with three lanes (17 arrows, 1657 px against 2477) stay under 2500 and 1900 px high; their boxes are as far apart
 as the page asked, 20 px (60 px for a chart whose settings block asks for 60); no arrow enters a box from the side

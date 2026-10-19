@@ -10,6 +10,7 @@ import { createHttpServer } from "./http.ts";
 import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
 import { LiveStore } from "./live.ts";
+import { RunnerHeartbeat } from "./runner-heartbeat.ts";
 import { LookMemory } from "./look.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
@@ -40,13 +41,16 @@ async function main() {
   if (store.clearedPriority.length) for (const line of priorityReport(store.clearedPriority)) console.info(line);
   // The credentials the agents write with: the long-lived ones are read from a file outside the data directory (src/credentials.ts), the dispatch ones from the data.
   const credentialFile = new CredentialFile(defaultCredentialsPath());
-  // A message may go to the session of any long-lived credential (docs/design.md, Messages).
-  // The runner's beats for the turns running now live in the daemon's memory only (docs/design.md, section 7, The live view of a turn).
-  const live = new LiveStore();
-  const op = ops(store, undefined, { live, sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The pushes to each agent in a directory of their own, kept where git leaves them out so numbers continue across a restart.
   // The marks of the liveness checks are kept too, so a silence already asked is not asked again.
   const wake = new Wake({ dir: await store.localFile("state/wake"), livenessFile: await store.localFile("state/liveness.json") });
+  // The runner's beats for the turns running now live in the daemon's memory only (docs/design.md, section 7, The live view of a turn).
+  const live = new LiveStore();
+  // The time of the runner's last heartbeat is kept in memory and in a local file; a minute timer tells the architect once when it has
+  // been silent for too long (docs/design.md, section 8, The runner's heartbeat).
+  const heartbeat = new RunnerHeartbeat({ tell: (lastBeat, limitMs) => { wake.push("runner-stopped", { lastBeat, limitMs }); }, file: await store.localFile("state/runner-heartbeat.json") });
+  // A message may go to the session of any long-lived credential (docs/design.md, Messages).
+  const op = ops(store, undefined, { live, heartbeat, sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The file of the PM's retired stream (item board-retire-pm-stream): nothing reads it now. Delete this line once it has run on the live board.
   await rm(await store.localFile("state/wake.jsonl"), { force: true });
   // The look at GitHub every five minutes, kept across restarts: a red main line goes to the session holding the item that delivered it, else to the architect; a merged PR marks its merge row done.
@@ -69,13 +73,15 @@ async function main() {
   const push = () => backup.round();
   const timer = setInterval(() => { void push().catch(console.error); }, 10 * 60_000);
   timer.unref();
+  const heartbeatTimer = setInterval(() => heartbeat.check(), 60_000);
+  heartbeatTimer.unref();
   let firstPush: ReturnType<typeof setTimeout> | undefined;
   let stopping = false;
   // Stopping must fit in the 5 seconds launchd allows, and a push takes 4 to 7 seconds. So the owner's reading state is committed
   // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
   // what this run left. A maintenance step that is running ends first (at most about a second); none is started after the signal.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
+    if (stopping) return; stopping = true; clearInterval(timer); clearInterval(heartbeatTimer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
     server.close(error => {
       void (async () => {
         if (error) throw error;

@@ -110,13 +110,19 @@ async function history(store: Store, dir: string) {
   const leaf = store.snapshot().items.leaf!;
   await commit({ author: "Fixture", session: "s-c", message: "Touch a leaf", puts: [put("leaf", { ...leaf, head: "Changed" }, leaf.rev)] });
   await save("head");
+  // The runner's reports are commits `report_state <id> <state>`, read for the state starts: one item, two reports, by a session of its own.
+  const runs = { ...item("Runs"), updated: stamp(12, "000"), runner: { state: "running", since: stamp(12, "000"), at: stamp(12, "000"), started: stamp(12, "000") } };
+  await commit({ author: "Fixture", session: "s-d", message: "report_state runs running", puts: [put("runs", runs)] });
+  const created = store.snapshot().items.runs!;
+  await commit({ author: "Fixture", session: "s-d", message: "report_state runs ci", puts: [put("runs", { ...created, updated: stamp(13, "000"), runner: { ...runs.runner, state: "ci", since: stamp(13, "000"), at: stamp(13, "000") } }, created.rev)] });
+  await save("runner reports");
   return points;
 }
 
 test("a cache saved at any point of the history plus the replay after it derives what the scan derives", async t => {
   const { store, dir } = await setup(t);
   const points = await history(store, dir);
-  assert.deepEqual(points.map(p => p.pause), [false, false, true, true, true, true], "the cache points cover a history with no pause yet and one with pauses set, some ended and some open");
+  assert.deepEqual(points.map(p => p.pause), [false, false, true, true, true, true, true], "the cache points cover a history with no pause yet and one with pauses set, some ended and some open");
   const finalHead = store.snapshot().head;
   await rm(await cacheFile(dir));
   const scan = await open(dir);
@@ -139,7 +145,10 @@ test("a cache saved at any point of the history plus the replay after it derives
     "s-a": [touch("root", 8), touch("child", 3)],
     "s-b": [touch("other", 6), touch("root", 6)],
     "s-c": [touch("leaf", 11), touch("root", 10)],
+    "s-d": [touch("runs", 13)],
   });
+  // The state starts by hand: the two reports of the item, each at the time its report says it entered the state.
+  assert.deepEqual(expected.states, { runs: [{ at: stamp(12, "000"), state: "running" }, { at: stamp(13, "000"), state: "ci" }] });
   for (const point of points) {
     await writeFile(await cacheFile(dir), point.text);
     const start = await open(dir);
@@ -179,6 +188,9 @@ test("a cache that is missing, damaged, of another shape or of another history i
     // Literal versions: the bump that came with the agent index must not be undone without this failing.
     ["the file the version before the agent index wrote", JSON.stringify({ ...good, version: 1, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["version 1 with every field of this version", JSON.stringify({ ...good, version: 1 }), "startup cache malformed"],
+    // Literal version: the bump that came with the state starts must not be undone without this failing.
+    ["the file the version before the state starts wrote", JSON.stringify({ ...good, version: 2, activity: (({ states: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
+    ["the state starts missing", JSON.stringify({ ...good, activity: (({ states: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["an activity field missing", JSON.stringify({ ...good, activity: (({ sessions: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["the agent index missing", JSON.stringify({ ...good, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["an activity field it does not know", JSON.stringify({ ...good, activity: { ...good.activity, touched: {} } }), "startup cache malformed"],

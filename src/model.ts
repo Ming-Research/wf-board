@@ -144,7 +144,12 @@ export const difficultyText = (difficulty: Difficulty): string => `难度 ${diff
  * accepted for them.
  */
 export const DISPATCH_ROLES = ["工程师", "审查"] as const;
-export const DISPATCH_RESULTS = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+/** What a dispatch that ended the work (or gave it up) came to: the four outcomes the tallies count and the rework share is read from. */
+export const DISPATCH_OUTCOMES = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+/** The result of a session the runner put down because its work waits for something long: the work goes on in a later session, so
+ * this is no outcome of the work and the tallies list it apart (docs/design.md section 5, Dispatch records). */
+export const PARKED_RESULT = "放下等待";
+export const DISPATCH_RESULTS = [...DISPATCH_OUTCOMES, PARKED_RESULT] as const;
 export const DISPATCH_SIGNALS = ["验收没过", "架构师打回", "做法被否", "长时间没进展", "换模型"] as const;
 const Count = z.number().int().nonnegative();
 /** US dollars with at most three decimals, so any sum of costs is exact in thousandths (see `milliDollars`). */
@@ -618,9 +623,18 @@ export interface Snapshot {
     /** Per session name, the last two distinct items it wrote to, newest first, from the same trailers. The page's
      * agent list reads it (src/agents.ts). Like `sessions`, an observation of writes, not an assignment of work. */
     agents?: Record<string, AgentTouch[]>;
+    /** Per item, the reports of the runner that began a state of the work, oldest first, from the commits of `report_state`
+     * (src/timeline.ts, docs/design.md, section 7, Agent list). The page and the `timeline` tool cut each agent's line from it. */
+    states?: Record<string, readonly StateStart[]>;
   };
 }
 /** One item a session wrote to and when. */
 export interface AgentTouch { item: string; at: string }
+/**
+ * The runner's report at the moment it began a state of the work: `at` is the report's `since`, and the rest is what the state
+ * says (`to` and `cards` of an ask, `items` of a wait for items, `what` and `until` of a wait for an event). A report that repeats the
+ * state leaves no start of its own. How many the index keeps for one item: STATE_STARTS_MAX in src/timeline.ts.
+ */
+export interface StateStart { at: string; state: RunnerState; to?: "owner" | "architect"; cards?: readonly string[]; items?: readonly string[]; what?: string; until?: string }
 /** How many items an agent keeps in the index and the list. */
 export const AGENT_TOUCHES = 2;

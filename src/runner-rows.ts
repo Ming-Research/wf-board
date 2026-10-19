@@ -26,7 +26,9 @@ export interface RunnerTurn {
 export interface RunnerRow {
   /** The item the runner holds; also the engineer session's name. */
   item: string;
+  /** The engineer session's name, and the id of its dispatch record (what the agent's line is read from, src/timeline.ts). */
   agent: string;
+  agentId: string;
   level: number;
   model: string;
   effort?: string;
@@ -55,6 +57,8 @@ export interface RunnerRow {
   live?: RunnerTurn;
   /** The architect's turn that answers this work's question, when the report says it asks the architect and the runner says it runs one. */
   architect?: RunnerTurn;
+  /** The review round of this work's pull request, when the report says the work waits and the runner says a review runs (the round began after the wait did). */
+  review?: RunnerTurn;
 }
 
 function turnOf(entry: LiveEntry, now: number): RunnerTurn {
@@ -103,15 +107,15 @@ export type NameOf = (kind: "item" | "card", key: string) => string | undefined;
 
 /**
  * What the work is doing or waits on, in one line: the last action of the turn running now (the engineer's, or the architect's for an
- * ask the architect answers), else the report's note; the items it waits for by their titles and the cards by their questions, so no
+ * ask the architect answers, or the review round of a work that waits for it), else the report's note; the items it waits for by their titles and the cards by their questions, so no
  * key stands in the line, and the event a `wait` is for with its wake time. A turn not heard from for LIVE_FRESH_MS reads as silent.
  */
 export function runnerLine(x: RunnerRow, now: number, nameOf: NameOf = () => undefined): RunnerLine {
-  const turn = x.state === "running" ? x.live : x.architect, who = x.state === "running" ? "" : "架构师";
+  const turn = x.state === "running" ? x.live : x.review ?? x.architect, who = x.state === "running" ? "" : x.review ? "审查" : "架构师", doing = x.review ? "审查中" : "架构师在答";
   if (turn) {
     const action = turn.action === undefined ? "" : listText(turn.action);
     const text = turn.silent ? `${who}没有动静 ${spanText(now - turn.heardAt)}`
-      : action ? (who ? `${who}在答：` : "") + action : `${who ? who + "在答，" : ""}这一轮 ${spanText(now - turn.startedAt)}`;
+      : action ? (who ? `${doing}：` : "") + action : `${who ? doing + "，" : ""}这一轮 ${spanText(now - turn.startedAt)}`;
     return { text, full: who + turnLine(turn, now), silent: turn.silent };
   }
   if (x.state === "running") {
@@ -134,7 +138,8 @@ export type HeldItem = ListedItem & Pick<Item, "runner" | "record">;
  * an exception), then the others past the time their state may last, then those with a turn running, then the waiting ones, the
  * longest in their state first. A report with no engineer dispatch of the runner's job open
  * is a leftover and not listed. The beats count only while they agree with the report: an engineer's while the report says a turn
- * runs, the architect's while it says the work asks the architect. The items come as a list, not as the snapshot's keyed object: the
+ * runs, the architect's while it says the work asks the architect, a review's while it says the work waits and the beat is not older
+ * than the wait (the runner reports a review round as a wait, so a beat from before it is an earlier round's). The items come as a list, not as the snapshot's keyed object: the
  * page redraws the list on every write, and listing the keys of a board this size again costs more than the whole pass over the items.
  */
 export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork" | "isPaused">, beats: readonly LiveEntry[], now: number): RunnerRow[] {
@@ -147,7 +152,7 @@ export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork
     if (!dispatch) continue;
     const since = Date.parse(report.since);
     const row: RunnerRow = {
-      item, agent: dispatch.agent, level: dispatch.level, model: dispatch.model, ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
+      item, agent: dispatch.agent, agentId: dispatch.agentId, level: dispatch.level, model: dispatch.model, ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
       state: report.state, label: stateWord(report), note: listText(report.note ?? ""), since, started: Date.parse(report.started),
       ...(report.items === undefined ? {} : { waitItems: report.items }), ...(report.cards === undefined ? {} : { waitCards: report.cards }),
       ...(report.what === undefined ? {} : { waitFor: listText(report.what) + (report.until === undefined ? "" : untilText(report.until)) }),
@@ -164,8 +169,12 @@ export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork
       const beat = byKey.get(`架构师:${item}`);
       if (beat) row.architect = turnOf(beat, now);
     }
+    if (report.state === "wait") {
+      const beat = byKey.get(`审查:${item}`);
+      if (beat && Date.parse(beat.at) >= since) { row.review = turnOf(beat, now); row.label = `审查 第 ${row.review.turn} 轮`; }
+    }
     rows.push(row);
   }
-  const rank = (x: RunnerRow) => x.needsPerson ? 0 : x.overdue ? 1 : x.state === "running" ? 2 : 3;
+  const rank = (x: RunnerRow) => x.needsPerson ? 0 : x.overdue ? 1 : x.state === "running" || x.review ? 2 : 3;
   return rows.sort((a, b) => rank(a) - rank(b) || a.since - b.since || (a.item < b.item ? -1 : a.item > b.item ? 1 : 0));
 }

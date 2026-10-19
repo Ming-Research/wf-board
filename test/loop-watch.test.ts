@@ -180,11 +180,15 @@ test("a loop held by code that computes tells the CPU it used, and one held by a
   const stop = watchLoop({ intervalMs: 20, stallMs: 300, log: line => lines.push(line) });
   try {
     await sleep(60);
-    const from = performance.now();
+    const before = process.cpuUsage(), from = performance.now();
     while (performance.now() - from < 450) { /* computing */ }
+    // What the loop used, as the test counts it: a machine that is busy gives a computing loop only part of the 450 ms.
+    const { user, system } = process.cpuUsage(before), used = (user + system) / 1000;
     await sleep(60);
     const busy = lines.at(-1)!;
-    assert.ok(reading(busy, "cpu") >= reading(busy, "event loop held for") / 2, busy);
+    // The line's stretch holds the loop and, around it, only idle time of the timer's last firings: the CPU it tells is what the
+    // loop used, whatever share of the machine the process was given.
+    assert.ok(Math.abs(reading(busy, "cpu") - used) <= 100, `${busy} (the loop used ${Math.round(used)} ms)`);
     const told = lines.length;
     blockFor(450);
     await sleep(60);

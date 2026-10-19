@@ -60,11 +60,16 @@ matches what the artifact board offered.
   on, waiting, set aside) by the runner's report on it (`item.runner`, written by `report_state`), a live engineer session
   and the plan, in one function that the `whole_view` tool prints and the page draws (design section 6, The whole view;
   section 5, Runner reports). Imported by the server and bundled into the page.
+- `src/timeline.ts`: the line of an agent (one dispatch record, one session): the state starts the store derives from the runner's `report_state` commits
+  (`activity.states`), the segments `lineOf` cuts from them to the span of the dispatch, with the item's pause spans, the longest waits and the text of the
+  `timeline` tool; imported by the server and bundled into the page, which draws the line as a bar in each row of the runner's block (design section 7, Agent list).
 - `src/look.ts`: the look: every open work item in one answer as the tree the owner's board shows, in a budget of lines, and the memory of what each session saw at its last look (daemon memory only), printed by the `look` tool (design section 6, The look).
 - `src/live.ts`: the runner's beats for the turns running now (the turn's number, its length, the last action), kept in the
   daemon's memory only and sent to the page as the event `live`; `src/runner-rows.ts`: the runner's block of the agent list, one row
   for each piece of work the runner holds, read from its report on the item, the dispatch record and the beats (design section 7,
   Agent list, The live view of a turn). Imported by the server and bundled into the page.
+- `src/runner-heartbeat.ts`: the time of the runner's last heartbeat (`report_heartbeat`), kept in memory and in a local file, and the minute check
+  that tells the architect once when none has come for 10 minutes (design section 8, The runner's heartbeat). The board accepts it from the same writers as `report_state`.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect or the runner
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.

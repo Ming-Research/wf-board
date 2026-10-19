@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { Board, Decision, Glossary, GlossaryId, Item, Key, MessageDay, MessageDayId, Note, Numbers, OwnerState, RETIRED_LEVEL } from "./model.ts";
-import type { Snapshot } from "./model.ts";
+import type { Snapshot, StateStart } from "./model.ts";
 import * as Legacy from "./legacy-model.ts";
 import { convertPlans, removeArchives, PLAN_CONVERSION_MESSAGE, updatePlanSummary } from "./convert-plans.ts";
 import type { PlanConversionReport } from "./convert-plans.ts";
@@ -21,6 +21,7 @@ import { rules, DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
+import { startOfReport, withStateStart } from "./timeline.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
 import { netGit, netGitReason } from "./net-git.ts";
@@ -81,6 +82,8 @@ const MERGE_BATCH = "16m";
 /** The persisted short-number counter (model.ts Numbers). */
 const numbersPath = "numbers.yaml";
 export const NUMBERING_MESSAGE = "Number existing items and cards";
+/** How the message of a commit that is the runner's report on an item begins (`report_state <id> <state>`, src/ops.ts): the history replay reads the state starts from these commits only. */
+export const REPORT_MESSAGE = "report_state ";
 /** Commit message of the one-time move of decision cards into their items' plans; like numbering, it is not work on the items. */
 export const CARD_MIGRATION_MESSAGE = "Migrate decision cards into item plans";
 /** Commit message of the one-time deletion of the retired notices; activity skips that commit. */
@@ -642,7 +645,7 @@ export class Store {
     allowRange(commits.length);
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
-      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}) }
+      ? { writes: cache.activity.writes, items: cache.activity.items, ...(cache.activity.pauses ? { pauses: cache.activity.pauses } : {}), ...(cache.activity.sessions ? { sessions: cache.activity.sessions } : {}), ...(cache.activity.agents ? { agents: cache.activity.agents } : {}), ...(cache.activity.states ? { states: cache.activity.states } : {}) }
       : { writes: [], items: {} };
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
@@ -681,6 +684,11 @@ export class Store {
       this.noteActivity(activity, commit.at, touched);
       if (commit.session) { this.noteSessions(activity, commit.at, commit.session, touched); this.noteAgent(activity, commit.at, commit.session, touched); }
       for (const [id, item] of cardItems) this.cardItems.set(id, item);
+      // The runner's reports are the commits whose message is `report_state <id> <state>`: only they are read for the state starts.
+      if (commit.message.startsWith(REPORT_MESSAGE)) for (const id of touched) {
+        const doc = await this.readAt(docPath("item", id), commit.commit), start = startOfReport(doc && typeof doc === "object" ? (doc as Record<string, unknown>).runner : undefined);
+        if (start) this.noteState(activity, id, start);
+      }
     }
     this.lap("replay activity", `${commits.length} commits`);
     await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null, cache ? `${cache.head}..${this.state.head}` : this.state.head);
@@ -730,7 +738,7 @@ export class Store {
     });
     return {
       version: STARTUP_CACHE_VERSION, head: this.state.head,
-      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null },
+      activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null, states: activity.states ?? null },
       cardItems: Object.fromEntries(this.cardItems),
       pause: this.pauseStarted ? { items: Object.fromEntries(items) } : null,
     };
@@ -902,6 +910,12 @@ export class Store {
   private noteAgent(activity: NonNullable<Snapshot["activity"]>, at: string, name: string, touched: Iterable<string>): void {
     const items = [...touched];
     if (items.length) (activity.agents ??= {})[name] = touchAgent(activity.agents?.[name], items, at);
+  }
+
+  /** The item's list of state starts after the runner's report `start` (src/timeline.ts): the list stays the same object when the report only repeats the last start. */
+  private noteState(activity: NonNullable<Snapshot["activity"]>, id: string, start: StateStart): void {
+    const known = activity.states?.[id], list = withStateStart(known, start);
+    if (list !== known) (activity.states ??= {})[id] = list;
   }
 
   private changedItems(changed: ChangedDoc[], next: Snapshot): Set<string> {
@@ -1121,11 +1135,15 @@ export class Store {
     if (changed.some(c => c.kind !== "owner" && c.kind !== "message")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
       // Copy on write: the previous snapshot keeps its own activity.
-      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}) };
+      const activity: NonNullable<Snapshot["activity"]> = { writes: withSorted(previous.writes, event.at), items: { ...previous.items }, ...(previous.pauses ? { pauses: { ...previous.pauses } } : {}), ...(previous.sessions ? { sessions: { ...previous.sessions } } : {}), ...(previous.agents ? { agents: { ...previous.agents } } : {}), ...(previous.states ? { states: { ...previous.states } } : {}) };
       const touched = this.changedItems(changed, next);
       this.noteActivity(activity, event.at, touched);
       if (session) { this.noteSessions(activity, event.at, session, touched); this.noteAgent(activity, event.at, session, touched); }
       this.notePauses(activity, this.state.items, next.items, changed, event.at);
+      for (const change of changed) if (change.kind === "item" && change.after) {
+        const start = startOfReport((change.after as Item).runner);
+        if (start) this.noteState(activity, change.id, start);
+      }
       next.activity = activity;
       const delta = event.activity;
       delta.write = event.at;
@@ -1133,6 +1151,7 @@ export class Store {
       for (const [id, spans] of Object.entries(activity.pauses ?? {})) if (previous.pauses?.[id] !== spans) delta.pauses[id] = spans;
       for (const [id, entry] of Object.entries(activity.sessions ?? {})) if (previous.sessions?.[id] !== entry) delta.sessions[id] = entry;
       for (const [name, list] of Object.entries(activity.agents ?? {})) if (previous.agents?.[name] !== list) (delta.agents ??= {})[name] = list;
+      for (const [id, list] of Object.entries(activity.states ?? {})) if (previous.states?.[id] !== list) (delta.states ??= {})[id] = list;
       for (const change of changed) if (change.kind === "decision") {
         const card = (change.after ?? change.before) as Decision | null;
         if (card) this.cardItems.set(change.id, card.item);

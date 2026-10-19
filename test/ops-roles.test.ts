@@ -405,6 +405,7 @@ for (const retired of ["总管", "PM"]) test(`every write under the retired auth
     dispatchFinish: () => op.dispatchFinish({ author: retired, id: "a", agentId: "agent-0001", result: "一次通过", usage: { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }, cost: 0, reports: 0, kickbacks: 0 }),
     reportState: () => op.reportState({ author: retired, id: "a", state: "running" }),
     reportLive: () => op.reportLive({ author: retired, id: "a", role: "工程师", turn: 1, turnSeconds: 1 }),
+    reportHeartbeat: () => op.reportHeartbeat({ author: retired }),
     setPlan: () => op.setPlan({ author: retired, id: "a", row: { id: "work", text: "Work", state: "doing" } }),
     setTargets: () => op.setTargets({ author: retired, id: "a", target: goalNumbers }),
     updateItem: () => op.updateItem({ author: retired, id: "a", rev: before.items.a!.rev, title: "Renamed" }),
