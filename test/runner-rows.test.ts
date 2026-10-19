@@ -50,8 +50,8 @@ test("every piece of work the runner holds is a row, those a person has to look 
 test("the state column says each state in a word or two", () => {
   const word = (state: RunnerReport["state"], to?: RunnerReport["to"]) => stateWord({ state, ...(to ? { to } : {}) });
   assert.deepEqual(
-    [word("running"), word("ci"), word("ask", "owner"), word("ask", "architect"), word("items"), word("run"), word("ready"), word("exception"), word("done")],
-    ["在跑", "等 CI", "等主人", "等架构师", "等条目", "等 14900K", "等合入", "要人看", "待收尾"],
+    [word("running"), word("ci"), word("ask", "owner"), word("ask", "architect"), word("items"), word("run"), word("wait"), word("ready"), word("exception"), word("done")],
+    ["在跑", "等 CI", "等主人", "等架构师", "等条目", "等 14900K", "等事件", "等合入", "要人看", "待收尾"],
   );
   // A beat adds the turn's number to 「在跑」, and only that state has a beat.
   const rows = rowsOf(snap(job("run", { state: "running" }), job("waits", { state: "ci" })), open(), [beat("run", { turn: 3 }), beat("waits", { turn: 9 })], NOW);
@@ -113,11 +113,17 @@ test("a wait for an event is a row in its words, amber an hour after its wake ti
   );
   const rows = rowsOf(s, open(), [], NOW), by = Object.fromEntries(rows.map(r => [r.item, r]));
   assert.deepEqual(rows.map(r => [r.item, r.overdue]), [["undated-late", true], ["not-woken", true], ["undated", false], ["dated", false]], "overdue first, then the longest in the state first");
-  const until = s.items.dated!.runner!.until!;
-  assert.equal(by.dated!.what, `等：上线后 24 小时的日志（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`);
-  assert.equal(by["undated-late"]!.what, "等：主线下一次合入");
+  // The state column says 「等事件」; the wide column says the event, and the wake time when there is one.
+  assert.deepEqual(rows.map(r => r.label), ["等事件", "等事件", "等事件", "等事件"]);
+  assert.equal(by.dated!.waitFor, "上线后 24 小时的日志（到 10-18 14:00Z）", "NOW is 12:00, the wake time two hours later");
+  assert.equal(by["undated-late"]!.waitFor, "主线下一次合入");
+  assert.equal(runnerLine(by.dated!, NOW).text, "上线后 24 小时的日志（到 10-18 14:00Z）");
+  assert.equal(runnerLine(by["undated-late"]!, NOW).full, "主线下一次合入");
   assert.deepEqual([by.dated!.state, by.dated!.live, by.dated!.architect, by.dated!.turnStartedAt], ["wait", undefined, undefined, undefined], "a wait has no turn running and no architect's turn");
   assert.equal(limitOf(s.items.dated!.runner!), 4 * 60 * 60_000, "from the start of the wait to an hour after the wake time");
+  // The event and the note are cleaned like a note: a path of the runner's machine shrinks, and the note follows the event after a colon.
+  const noted = snap(job("noted", { state: "wait", what: "看 ~/Library/Logs/wf-board.log 的最后几行", until: "2026-10-18T14:00:00Z", note: "第 3 轮", since: ago(5) }));
+  assert.equal(runnerLine(rowsOf(noted, open(), [], NOW)[0]!, NOW).text, "看 wf-board.log 的最后几行（到 10-18 14:00Z）：第 3 轮");
   // A beat for the engineer or the architect is not read for a wait: only a running turn and an ask to the architect have one.
   const withBeats = rowsOf(s, open(), [beat("dated"), beat("dated", { role: "架构师" })], NOW).find(r => r.item === "dated")!;
   assert.deepEqual([withBeats.live, withBeats.architect], [undefined, undefined]);

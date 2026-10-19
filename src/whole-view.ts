@@ -82,6 +82,11 @@ export interface WholeView {
 
 type Input = Pick<Snapshot, "items" | "board"> & { activity?: Snapshot["activity"] };
 
+/** The wake time of a wait as the lists write it, in UTC: 「（到 10-19 23:55Z）」. */
+export function untilText(until: string): string {
+  return `（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`;
+}
+
 /** What a runner report says in a few words. */
 export function reportText(report: RunnerReport): string {
   const what = report.state === "running" ? "跑一轮"
@@ -89,7 +94,7 @@ export function reportText(report: RunnerReport): string {
     : report.state === "ask" ? report.to === "owner" ? `问主人（卡 ${report.cards!.join("、")}）` : "问架构师"
     : report.state === "items" ? `等条目 ${report.items!.join("、")}`
     : report.state === "run" ? "要 14900K"
-    : report.state === "wait" ? `等：${report.what!}${report.until ? `（到 ${report.until.slice(5, 10)} ${report.until.slice(11, 16)}Z）` : ""}`
+    : report.state === "wait" ? `等：${report.what!}${report.until ? untilText(report.until) : ""}`
     : report.state === "ready" ? "合入核对"
     : report.state === "exception" ? "例外，要人看"
     : "做完，待收尾";

@@ -886,7 +886,9 @@ log:
     `until` that has already passed by more than that hour when it is reported is accepted and
     the wait is overdue at once: the runner refuses to start such a wait itself, so this is a
     wake time that went by with the work still waiting, which is what the list is for. The
-    words are 「等：<what>」 with 「（到 MM-DD HH:MMZ）」 after them when there is an `until`.
+    words of the whole view are 「等：<what>」 with 「（到 MM-DD HH:MMZ）」 after them when there is
+    an `until` (`reportText`); the agent list's state column says 「等事件」 and its line of
+    text the same event and time (section 7, Agent list).
     Rejected: the event in the note (a changed event would leave `since` where it was, or
     `wait` would need a rule of its own for the note, and the note would be required for one
     state); no limit without an `until` (a wait for something that never comes would show as
@@ -2854,7 +2856,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   that the jobs the runner can hold at once (16 at the owner's current limits, ten
   of level 1 and six above) are as many lines that line up. The columns: the title, with the session's level as a
   small number before it; the state in a word (`stateWord`: 在跑, 等 CI, 等主人,
-  等架构师, 等条目, 等 14900K, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
+  等架构师, 等条目, 等 14900K, 等事件, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
   在跑); one line of what the work does or waits for; how long it has been in that
   state (for a turn running, how long the turn has run); and the time, turns and cost
   since the work began. The stylesheet cuts the title and the line of text to one
@@ -2866,7 +2868,9 @@ level, and whether that someone is working, waiting or has gone quiet.
   with their keys on the hover (`runnerLine`).
   - *The line of text* is the last action of the turn running when the runner
     beats (the engineer's, or the architect's turn for a work that asks the
-    architect: 「架构师在答：…」), else the report's note, else for a turn running
+    architect: 「架构师在答：…」), else the report's note (after the event of a `wait`
+    with its wake time, `waitFor`, as after the titles of the items and the questions
+    of the cards a report waits for), else for a turn running
     that the runner has not described, 「还没报这一轮的动作」. A beat not
     repeated for 90 seconds reads 「没有动静 N 分钟」 in amber, and the hover keeps
     what it last said. The hover of a turn is its number, how long it has run, how

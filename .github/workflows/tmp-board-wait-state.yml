@@ -1,0 +1,57 @@
+name: tmp-board-wait-state
+# Temporary, for board-wait-state; removed before the branch is ready.
+on:
+  push:
+    branches: [board-wait-state]
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      - run: npm run build:web
+      - run: |
+          node --test --test-timeout=60000 \
+            test/runner-report.test.ts test/runner-rows.test.ts test/whole-view.test.ts \
+            test/dom/runner-block.test.ts test/dom/runner-table.test.ts test/dom/whole.test.ts test/mcp.test.ts test/access.test.ts test/ops-roles.test.ts
+  # The new tests against the main line's code with this branch's tests: each must fail on its own.
+  on-main-code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: git checkout origin/main -- src web scripts
+      - run: npm run build:web
+      - run: |
+          fail=0
+          while IFS='|' read -r file name; do
+            if node --test --test-timeout=60000 --test-name-pattern="$name" "$file"; then
+              echo "::error::passes on the main line's code: $name"
+              fail=1
+            fi
+          done <<'LIST'
+          test/runner-report.test.ts|a wait carries the event it waits for
+          test/runner-report.test.ts|a wait that does not say what it waits for
+          test/runner-report.test.ts|a wait reported over MCP
+          test/whole-view.test.ts|a wait with a wake time lasts until
+          test/whole-view.test.ts|a wait for an event is among the waiting
+          test/runner-rows.test.ts|a wait for an event is a row in its words
+          test/runner-rows.test.ts|the state column says each state in a word or two
+          test/dom/runner-block.test.ts|a wait for an event is drawn in its words
+          LIST
+          exit $fail
