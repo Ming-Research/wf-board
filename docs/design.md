@@ -3213,10 +3213,12 @@ level, and whether that someone is working, waiting or has gone quiet.
     because one window holds both layouts. The table needs 900 px: the cells that
     keep their width (6.5, 5 and 12 rem), the least width of the title (8 rem) and
     of the line (9 rem), the gaps and the padding leave about 723 px of a row
-    spoken for, so the words of what the work does had about 37 px at 761 px
-    (deduced from the stylesheet) and have about 175 px at 901 px; the browser
-    file measures that column at windows from 800 to 1000 px and holds it at 100
-    px at least.
+    spoken for, so the words of what the work does had 53 px in a list 776 px
+    wide and 93 px in one 816 px wide (measured in the browser file on a page
+    with the breakpoint at 760 px), about 37 px at 761 px (deduced from the
+    stylesheet), and have about 175 px at 901 px (deduced); the browser file
+    measures that column at windows from 800 to 1000 px and holds it at 100 px
+    at least.
   - Rejected: a group for each state, which moves a job to another group at each
     report and so makes a job that is watched jump; the earlier small cards kept
     tidy, which at 16 jobs is 32 lines that do not line up; the item's status
