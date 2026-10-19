@@ -279,6 +279,30 @@ test("the architect's timed wake comes every hour with the items changed since t
   assert.deepEqual((next.changed as Array<{ item: string }>).map(e => e.item), ["b"], "only what changed after the last wake");
 });
 
+test("closing the server waits for the architect's timed wake that is running, so nothing reads the board once it answers", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let clock = T0;
+  const wake = new Wake({ now: () => clock });
+  const { store, op } = await board(t);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op, wake }), now: () => clock, checkIntervalMs: 1000, wake });
+  http.listen(0, "127.0.0.1"); await once(http, "listening");
+  // Closed by the test itself; this one only makes sure it is closed when the test fails before.
+  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
+  // The wake reads the history: that read holds until the test lets it go.
+  const read = store.log.bind(store);
+  let reading = false, release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  store.log = async (...args: Parameters<typeof read>) => { reading = true; await gate; return read(...args); };
+  clock = T0 + HOUR; t.mock.timers.tick(1000);
+  await until(() => reading, started => started, "the timed wake to start reading");
+  let closed = false;
+  http.close(() => { closed = true; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(closed, false, "the server is not closed while the wake still reads");
+  release();
+  await until(() => closed, done => done, "the server to answer that it is closed");
+});
+
 test("the architect's timed wake lists at most 20 items and counts the rest, and leaves out an item only the architect wrote", async t => {
   const { store } = await board(t);
   const mark = { at: iso(T0), head: store.snapshot().head };

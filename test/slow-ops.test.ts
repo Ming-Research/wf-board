@@ -204,7 +204,7 @@ test("the slow-op frame is exactly op, ms, limitMs and params, and is not one an
 test("a page request that runs over its limit is told to the architect; one within it is not; the same one again within the hour is only logged", async t => {
   const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 150 } });
   // The ownerOps of a board whose notes write is slow: a deliberately slow operation behind the real entry.
-  const { url, api } = await slowWrites(t, wake, slow, 300);
+  const { url, api } = await slowWrites(t, wake, slow, LONG_WRITE_MS);
   const socket = await agentSocket(t, url, ARCHITECT_SESSION);
   const logs = await logged(async () => {
     assert.equal((await api("/api/snapshot")).status, 200);
@@ -216,7 +216,7 @@ test("a page request that runs over its limit is told to the architect; one with
     assert.equal(frame!.event, "slow-op");
     assert.equal(frame!.op, "POST /api/notes");
     assert.equal(frame!.limitMs, 150);
-    assert.ok((frame!.ms as number) >= 300, `took ${String(frame!.ms)} ms, the operation sleeps 300`);
+    assert.ok((frame!.ms as number) >= LONG_WRITE_MS, `took ${String(frame!.ms)} ms, the operation sleeps ${LONG_WRITE_MS}`);
     assert.match(frame!.params as string, /^bodyBytes=\d+$/);
     assert.doesNotMatch(JSON.stringify(frame), /must not be told/);
     assert.equal((await api("/api/notes", { target: "it:a", kind: "comment", text: "again" })).status, 200);
