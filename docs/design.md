@@ -454,7 +454,7 @@ documents also fill the history caches. The YAML library's result keeps more hea
 and a large part of it is waste. Measured in CI (GitHub-hosted runner, 4 vCPUs of an AMD EPYC 7763,
 16 GB, Node 24.21, yaml 2.9.1) on two synthetic boards: the live shape, 3,992 files and 21.8 MB, long
 texts as multi-line `|-` block scalars, about 66% non-ASCII bytes (sizes and proportions counted from the
-live data, none of its content); and the shape of the first study, 3,235 files and 19.7 MB, every long
+live data, none of its content); and the quoted-scalar shape, 3,235 files and 19.7 MB, every long
 text one line ending in a space, which the library writes and reads as a double-quoted scalar. Each stage
 ran in a child process of its own, with the heap read after two collections; a figure said to be a mean is
 of 15 rounds, each running the base commit, a twin of it (the same commit again, the control) and this tree in an order
@@ -498,10 +498,9 @@ the page):
 | the daemon after five page loads, heap in use (one run) | 83.8 MB | 56.2 MB | 79.6 MB | 53.5 MB |
 | the daemon, resident memory after a collection / peak (one run) | 311.0 / 413.3 MB | 263.2 / 364.9 MB | 755.4 / 857.3 MB | 287.3 / 368.4 MB |
 
-A start without the startup cache replays the history, which keeps 5 to 11 MB more; the study that
-chose the copy measured its "before" on such a start and its "after" with the cache, so its
-62.3 and 66.9 MB against 27.0 MB overstated the saving: start against start it is 28.3 MB [27.2, 29.5] on
-the live shape. The live daemon runs with the cache except on the first start after the cache's format changes.
+A start without the startup cache replays the history, which keeps 5 to 11 MB more (the second row
+of the table); every other row is a start with the cache. The live daemon runs with the cache except on
+the first start after the cache's format changes.
 
 The time of the start step "read documents", which reads, parses, checks and freezes every document
 (mean of 15 pairs; the same start with the cache): live shape, 1,943.5 ms [1,927.4, 1,959.5] before the change, 1,924.3 ms for its
@@ -511,13 +510,13 @@ the twin, x1.024 [1.007, 1.041]), so a slowdown is detected and it is smaller th
 quoted-scalar shape the step is faster, 957.5 ms [945.2, 969.8] against 1,792.2 ms [1,674.7, 1,909.7], 770.3 ms [678.4, 862.2]
 less than the reference (the string nodes made the collector's work heavy; inferred). No floor of noise is on record for this kind of start, and the twin's
 half width, 1.3% on the live shape and 8.1% on the other, is the noise of this run. Another runner took 3.6 s for the step
-on the live shape and showed +42.0 ms [26.9, 57.1] in the same measurement (an earlier run, before the main line's latest merge).
+on the live shape and showed +42.0 ms [26.9, 57.1] in the same measurement.
 
 Flat documents measured 1.2 to 1.5 times the bytes of their files, so the history cache weighs a
 document at 2 bytes of heap for each byte of file. The 64 MB bound stays and lets the cache
 hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
 resident memory is mostly not documents: on the live-shape board the process held 311.0 MB
-after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (the study),
+after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (item `board-heap-study`),
 the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
 has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
 of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 12 ms (heap 56.6 MB in use after a
@@ -527,7 +526,8 @@ full collection, rss 264.7 MB)`); the live check of the heap reads it. The live 
 *Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
 checked again in 95 ms on the live shape, JSON 21.3 MB) would cut the 2.6 s the start spends reading
 documents to about 0.2 s, but it is a second copy of the board and a cache that can differ from the
-working tree, and a start of 3.3 s already meets the 5 s the restart item set; the copy does not
+working tree, and a start of 3.3 s already meets the 5 s from a restart to the first answered request that
+item `fast-restart` set; the copy does not
 exclude it. js-yaml 4.1.0 parsed the live shape in 465 ms against 2,508 ms and gave the same
 documents (0 differences over 3,992), but kept 54.5 MB against 57.7 MB, so the copy is needed
 with it, and the library would be replaced for the reader while the writer stays. Changing only

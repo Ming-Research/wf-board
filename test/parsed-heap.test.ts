@@ -37,25 +37,38 @@ const block = (bytes: number, seed: number): string => lines(bytes, seed).join("
 /** One line ending in a space, which the library writes as a double-quoted scalar. */
 const quoted = (bytes: number, seed: number): string => lines(bytes, seed).filter(Boolean).join(" ") + " ";
 
-test("a parsed scalar keeps at most 8 bytes of heap for each character, in every style of scalar", t => {
+/** The heap that 300 parses of `source` keep for each character of its scalar `k`. A function of its own, so that nothing a former reading kept is still held when this one reads its base. */
+function heapPerChar(source: string): { chars: number; perChar: number } {
+  const chars = (parseDocument(source) as { k: string }).k.length;
+  const base = heap();
+  // A comment line after the source gives each copy a source of its own, as every file of a board has.
+  const kept = Array.from({ length: 300 }, (_, i) => parseDocument(`${source}# ${i}\n`));
+  const used = heap() - base;
+  assert.equal(kept.length, 300);
+  return { chars, perChar: used / (300 * chars) };
+}
+
+// Without the copy (docs/design.md, section 4, Parsed documents) the one-line double-quoted style keeps 41 bytes for each character, which is what
+// this limit catches; the block scalar keeps 4.3 and the plain and single-quoted ones 2.0, within the limit, and the block scalar is caught by the
+// live-shape board below. The scalars are of Chinese text, which a flat string holds in 2 bytes a character, so a reading far under that
+// counted nothing, and the test fails on it.
+test("a parsed scalar keeps between 1.5 and 8 bytes of heap for each character, in each style of scalar", t => {
   const text = quoted(6000, 3).trim(), multi = lines(6000, 3);
-  // The same text in each style the library reads. A comment line after it gives each copy a source of its own, as every file of a board has.
+  // The same text in each style the library reads.
   const styles: Record<string, string> = {
     "double-quoted, one line": `k: "${text} "\n`,
     "plain, one line": `k: ${text}\n`,
     "single-quoted, one line": `k: '${text}'\n`,
     "block literal": `k: |-\n${multi.map(line => (line ? "  " + line : "")).join("\n")}\n`,
   };
+  const outside: string[] = [];
   for (const [name, source] of Object.entries(styles)) {
-    const chars = (parseDocument(source) as { k: string }).k.length;
-    assert.ok(chars >= 2000, `${name}: the scalar read back is the text, ${chars} characters`);
-    const base = heap();
-    const kept = Array.from({ length: 300 }, (_, i) => parseDocument(`${source}# ${i}\n`));
-    const perChar = (heap() - base) / (300 * chars);
-    assert.equal(kept.length, 300);
-    t.diagnostic(`${name}: ${perChar.toFixed(1)} bytes of heap for each character`);
-    assert.ok(perChar <= 8, `${name}: ${perChar.toFixed(1)} bytes of heap for each character`);
+    const { chars, perChar } = heapPerChar(source);
+    const said = `${name}: ${perChar.toFixed(1)} bytes of heap for each of ${chars} characters`;
+    t.diagnostic(said);
+    if (chars < 2000 || perChar < 1.5 || perChar > 8) outside.push(said);
   }
+  assert.deepEqual(outside, [], "every style keeps between 1.5 and 8 bytes of heap for each character, and a scalar of 2000 characters or more");
 });
 
 test("the copy changes nothing a document says: values, shared nodes and their order", () => {
@@ -98,7 +111,7 @@ async function opened(dir: string): Promise<{ kept: number; store: Store }> {
 const shapes: Array<{ name: string; count: number; limit: number; text: (i: number) => { head: string; log: string[] } }> = [
   // The live board's shape: long texts are literal blocks.
   { name: "literal blocks (the live board's shape)", count: 500, limit: 2, text: i => ({ head: block(4200, i), log: Array.from({ length: 12 }, (_, k) => block(240, i * 13 + k)) }) },
-  // The shape of the first study: every long text is one line ending in a space, written and read as a double-quoted scalar.
+  // The quoted-scalar shape: every long text is one line ending in a space, written and read as a double-quoted scalar.
   { name: "single-line quoted texts", count: 300, limit: 3, text: i => ({ head: quoted(7600, i), log: [] }) },
 ];
 for (const shape of shapes) {
