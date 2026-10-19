@@ -329,18 +329,25 @@ adds nothing to any trace. A second line says when the event loop itself was hel
 due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
 `event loop held for 621 ms (a timer due every 100 ms came that late); cpu 612 ms, gc 3 ms, load 1.82`,
 because a git command's time that is the time of a held loop is not git's. The three
-readings say why it was held, each over the stretch between the timer's last two firings
-(the held time and the 100 ms before it): `cpu` is the CPU the process used
-(`process.cpuUsage`, user and system, all its threads), `gc` the time its garbage
-collections took (the `gc` entries of a `PerformanceObserver`) and `load` the machine's load
-average over the last minute (`os.loadavg`). `cpu` about the held time with little `gc` is
+readings say why it was held. `cpu` and `gc` are over the stretch between the timer's last
+two firings (the held time and the 100 ms before it): `cpu` is the CPU the process used
+(`process.cpuUsage`, user and system, all its threads) and `gc` the time its garbage
+collections took (the `gc` entries of a `PerformanceObserver`). `load` is the machine's load
+average over the last minute (`os.loadavg`), read when the line is told. `cpu` about the held time with little `gc` is
 code that did not return; `gc` about the held time is the collector; `cpu` far under the
 held time is a process that was not given the CPU, and `load` tells whether the machine was
 busy. The collector's helper threads count in `cpu`, so a collection can put it over the
-held time. The readings are taken in the check phase of the loop's next turn, not in the
-timer's callback: the entry of a collection that ran in a callback of that phase reaches the
-observer only there (measured on Node 24 with a collection forced inside a `setImmediate`
-callback: the timer's callback after it saw no entry). The two lines make the slow tail of
+held time. `cpu` is read when the timer fires, and `gc` adds the collections that began
+between the two firings (every `gc` entry carries its start time on the clock of
+`performance.now`), so each line has the readings of its own stretch also when the loop is
+held again before the line is told, as in a stretch of seconds in which the lines follow
+each other. The first version read all three after the timer's callback, and on the live
+board two lines 41 ms apart, 2159 and 4725 ms held, read `cpu` 89 and 7 ms: the second
+had only the 41 ms since the first line's reading. The line is told in the check phase of
+the loop's turn, not in the timer's callback, and `load` is read then: the entry of a
+collection that ran in a callback of that phase reaches the observer only there (measured
+on Node 24 with a collection forced inside a `setImmediate` callback: the timer's callback
+after it saw no entry). The two lines make the slow tail of
 the writes readable as one of: waiting in a queue, a slow git command, work in the process,
 or a held loop, which its readings tell further as code, collection or a process without CPU.
 
@@ -2310,7 +2317,53 @@ and the board pushes nothing from it.
   parent's candidates of every level one by one (at most 10).
   The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
   of the live board's shape it stays under 1500 characters and shorter than the todo lists of
-  `brief`. The character counts were not measured again after the limits went.
+  `brief`. That board has little work set aside (one pause, no 何时 section), so a second test fills
+  the rows of both pools (four projects, items with 20-character titles, reasons and 何时 sentences long
+  enough to be cut, ten rows of the part for each pool) and reads the longest the whole answer can be:
+  4837 characters, 3206 of them the part for the work set aside (read on 2026-10-19), which the test holds to 5000. A row of the part
+  is about 150 characters here, so the cap of ten rows for a pool is what bounds the part. It is not lowered
+  because the rows are taken a project at a time and the live board has eight projects: a cap under
+  eight could drop a project from the part. The character counts of the first board were not measured
+  again after the limits went.
+- *Work set aside.* A queue is refilled from this read, and a read that listed only what could
+  be started hid the rest: when the owner changed a principle, six items of one project that
+  had been paused, or had been left in a backlog with a written start condition, became
+  startable, and the answer "no work is left" was given from the candidates alone. After each
+  pool's candidates the answer therefore has a part, "另有", for the work of that pool that
+  `candidates` cannot offer, which the candidates' count (`total`, 候选 N) does not include.
+  `candidates` in `src/candidates.ts` builds it from `asideItems`, one function of the same
+  snapshot, and the text is read at the server's clock (the time of a pause and of a change is
+  turned into "how long").
+  - *Which items.* Open work items that are rated 1–5, held by nobody (an open engineer
+    dispatch holds, as for candidates), and have no open sub-item (a parent is its sub-items'
+    business, as in the whole view). Two kinds. *Paused*: `isPaused` is true, by a pause marker
+    on the item (`carrier` is the item) or on an item above it. *With a condition*: status
+    todo or idle, not `startable` (nobody needs it, as in a backlog that no unpaused root needs, or
+    its next step carries a wait text), and the head has a 何时 section. A startable item with a 何时 section is a
+    candidate, and a blocked one is not listed: the plan names what it waits for.
+  - *What a row says.* A paused row: the item, the carrier when it is not the item itself ("因 X
+    暂停"), who paused (the project of the log entry `暂停：…` written with the pause, found by the
+    time the marker carries), the day, how long, and the reason cut to 40 characters. A row of a
+    condition: the item, the first sentence of its 何时 section (cut to 60 characters) and how
+    long since the item last changed (`lastChange` of the whole view). The 何时 section is
+    the one `splitHead` finds (`src/head-sections.ts`), as `context` finds sections, so there is one
+    definition of a title: a bold title with a colon after it or alone, or a heading, a title inside a fenced
+    block not counting; `whenText` takes its first paragraph (the text after a bold title on the same
+    line included) up to a blank line or a fenced block.
+  - *Grouping.* More than 3 items (of any level) under one pause marker are one row of the
+    carrier and the count, and more than 3 items with a condition under one parent are one row of
+    the parent and the count, each at the place of the first of its items, as the groups of
+    candidates; `under=<item>` lists, besides the candidates directly under the item, at most 10
+    paused items whose pause is on it and at most 10 items with a condition directly under it.
+  - *Size.* At most `ASIDE_ROWS` (10) rows for a pool, taken a project at a time (the first row of
+    every project, then the second of every project) so that a project with a few items is
+    not crowded out by one with hundreds, and the header counts the items by project; the rows
+    not listed are counted. The part is absent, and the answer is as before, when the pool has no
+    such work. Ordered inside a project: paused work first, then work with a condition, the
+    longest-waiting first.
+  - *Not in the count and not chosen.* The part is for reading, like the rows above it: the board
+    does not say that a paused item should be resumed or that a condition holds; the reader (the
+    architect, who also decides the pause) judges.
 
 **The whole view.** `whole_view` answers in one call what the board's open work is doing, so the
 architect no longer assembles it from `overview`, `list` and `candidates`, and the owner's

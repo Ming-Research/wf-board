@@ -8,6 +8,12 @@ Nodes: page/diagrams/data-charts
 
 Summary: Item text could draw flow and structure diagrams but no data chart, and the library the page bundles already draws a bar and line chart (`xychart`) that the page left unusable: its first series color is `#ECECFF`, 1.17:1 on a white page, a Chinese category without quotes is a lexical error, and a bar chart without a y range is cut at the smallest value. The page now gives the library eight series colors for each theme, a clear plate and a height of 360 px, so a chart is written in the same fence as any diagram and drawn in the page's colors; the checks are in the DOM layer (what the page asks) and in the browser layer (what the real library draws). A chart library with a fence of its own, a renderer of our own and images were refused. The grounds, the refused alternatives and the measurements are in the node and in docs/design.md, section 7, Diagrams, Data charts.
 
+## 2026-10-19 List paused work and work with a start condition beside the candidates
+
+Nodes: mcp/candidates
+
+Summary: The candidates read listed only what could be started, so the architect, refilling the queue from it, answered that no work was left while six items of one project, paused or waiting in a backlog with a written start condition, had become startable under the owner's changed principle and nobody saw them. After each pool's candidates the read now lists, outside their count, the rated items nobody holds that cannot be started: paused work with who paused it, when, for how long and why, merged under the pause that holds it when more than three stand under it, and todo or idle work that cannot be started now (mostly backlog work) with the first sentence of its start-condition section and how long since it last changed, merged under its parent when more than three stand there, at most ten rows for a pool taken a project at a time. The refused alternatives (a separate tool, counting such work as candidates) are in the node; the rules are in docs/design.md, section 6, The candidates read.
+
 ## 2026-10-19 Write the CI status from a job that waits, and cache node_modules
 
 Nodes: testing/ci-time-gate, testing/ci-job-setup, testing/ci-shards
