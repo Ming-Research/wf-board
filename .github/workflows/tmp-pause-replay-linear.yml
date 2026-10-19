@@ -1,0 +1,56 @@
+name: tmp-pause-replay-linear
+# Temporary (pause-replay-linear): the type check, and the start-up scan benchmark with a CPU profile of each size. Removed before the branch is ready.
+on:
+  push:
+    branches: [pause-replay-linear]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: smoke
+        run: node scripts/bench-startup.ts --report-only --commits 1500 --steps 2
+      - name: scan with a profile
+        env:
+          NODE_OPTIONS: --cpu-prof --cpu-prof-dir=${{ runner.temp }}/prof
+        run: node scripts/bench-startup.ts --report-only --commits 35000 --steps 3
+      - name: top of the profiles
+        run: |
+          cat > "$RUNNER_TEMP/top.mjs" <<'EOF'
+          import { readFileSync, readdirSync, statSync } from "node:fs";
+          import { join } from "node:path";
+          const dir = process.argv[2];
+          for (const name of readdirSync(dir).filter(n => n.endsWith(".cpuprofile")).sort((a, b) => statSync(join(dir, a)).size - statSync(join(dir, b)).size)) {
+            const profile = JSON.parse(readFileSync(join(dir, name), "utf8"));
+            const byId = new Map(profile.nodes.map(n => [n.id, n]));
+            const self = new Map();
+            profile.samples.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + (profile.timeDeltas[i] ?? 0)));
+            const parent = new Map();
+            for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+            const key = n => `${n.callFrame.functionName || "(anon)"} ${n.callFrame.url.replace(/^.*\/(src|node_modules)\//, "$1/")}:${n.callFrame.lineNumber + 1}`;
+            const selfBy = new Map(), totalBy = new Map();
+            for (const [id, t] of self) {
+              const k = key(byId.get(id));
+              selfBy.set(k, (selfBy.get(k) ?? 0) + t);
+              const seen = new Set();
+              for (let p = id; p !== undefined; p = parent.get(p)) { const kk = key(byId.get(p)); if (seen.has(kk)) continue; seen.add(kk); totalBy.set(kk, (totalBy.get(kk) ?? 0) + t); }
+            }
+            const total = [...self.values()].reduce((a, b) => a + b, 0);
+            console.log(`\n== ${name} (${(total / 1e6).toFixed(1)} s sampled)`);
+            const top = (m, n) => [...m].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, t]) => `${(t / 1e6).toFixed(2).padStart(7)} s  ${k}`).join("\n");
+            console.log("-- self\n" + top(selfBy, 22));
+            console.log("-- total\n" + top(totalBy, 30));
+          }
+          EOF
+          node "$RUNNER_TEMP/top.mjs" "$RUNNER_TEMP/prof"
