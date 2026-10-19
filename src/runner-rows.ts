@@ -5,6 +5,7 @@
 
 import { openDispatchesOf } from "./dispatch.ts";
 import { runnerHolds } from "./agents.ts";
+import type { ListedItem } from "./agents.ts";
 import { LIVE_FRESH_MS } from "./live.ts";
 import type { LiveEntry } from "./live.ts";
 import type { Dispatch, Item, RunnerState } from "./model.ts";
@@ -57,8 +58,8 @@ function turnOf(entry: LiveEntry, now: number): RunnerTurn {
   };
 }
 
-/** An item with its key: the page already holds the board's items so (`ViewItem` in web/app.ts). */
-export type HeldItem = Pick<Item, "runner" | "record" | "dispatches"> & { id: string };
+/** An item with its key, as the page holds the board's items, with what the runner's block reads of it. */
+export type HeldItem = ListedItem & Pick<Item, "runner" | "record">;
 
 /**
  * The rows at `now`: every open, unpaused piece of work the runner holds, the ones needing a look first (overdue), then those with a

@@ -1727,7 +1727,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000)), hours = Math.floor(minutes / 60), rest = minutes % 60;
     return hours ? hours + " 小时" + (rest ? " " + rest + " 分钟" : "") + "前" : minutes ? minutes + " 分钟前" : "不到 1 分钟前";
   }
-  function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now())); }
+  function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now(), state.items)); }
   // What the runner says of the turns running now (src/live.ts): the event stream sends the whole list when it opens and after every beat.
   let liveBeats: LiveEntry[] = [];
   function runnerRowsNow() { return cached("runnerRows", () => runnerRows(state.items, derived, liveBeats, Date.now())); }

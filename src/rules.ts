@@ -135,14 +135,25 @@ export function targetLine(target: ItemTarget): string {
   return `${compact(target.goal)}: ${compact(target.current)} (vs ${compact(target.baseline)}) → ${compact(target.target)}, ${target.date.slice(0, 10)}`;
 }
 
+/** A row that points at a record. A record is no step of its plan: the order skips it and the counts leave it out (docs/design.md, Records). */
+export function isRecordRow(items: Readonly<Record<string, Pick<Item, "record">>>, row: PlanRow): boolean {
+  return "item" in row && !!items[row.item]?.record;
+}
+/** What a row with no `after` at position `at` comes after: the nearest row before it that is not a record row, none for the first. */
+export function followedRows(plan: readonly PlanRow[], at: number, isRecord: (row: PlanRow) => boolean): string[] {
+  for (let i = at - 1; i >= 0; i--) if (!isRecord(plan[i]!)) return [plan[i]!.id];
+  return [];
+}
 /** The plan without a card's row, for a card that does not block. Rows that waited for the row wait for what it waited for. */
-export function withoutCardRow(plan: PlanRow[], key: string): PlanRow[] {
+export function withoutCardRow(plan: PlanRow[], key: string, isRecord: (row: PlanRow) => boolean = () => false): PlanRow[] {
   const i = plan.findIndex(r => "card" in r && r.card === key);
   if (i < 0) return plan;
-  const waited = plan[i]!.after ?? (i > 0 ? [plan[i - 1]!.id] : []);
-  return plan.filter((_, n) => n !== i).map((r, n) => {
+  const waited = plan[i]!.after ?? followedRows(plan, i, isRecord), rest = plan.filter((_, n) => n !== i);
+  // The row with no `after` that followed the card is the first one after it that is not a record row.
+  const next = rest.findIndex((r, n) => n >= i && !isRecord(r));
+  return rest.map((r, n) => {
     if (r.after?.includes(key)) return { ...r, after: [...new Set([...r.after.filter(x => x !== key), ...waited])] };
-    return r.after === undefined && n === i ? { ...r, after: waited } : r;
+    return r.after === undefined && n === next ? { ...r, after: waited } : r;
   });
 }
 
@@ -187,13 +198,66 @@ export const WAITS_TEXT_LABEL = "在等文字";
 /** An open decision card must offer at least this many workable options; the card and its item carry an OPTIONS_LABEL check below it. */
 export const CARD_MIN_OPTIONS = 3;
 export const OPTIONS_LABEL = "选项不足";
+/** The label of the check on an engineer's item whose plan lacks a stage or has the stages out of order. */
+export const STAGE_FORMAT_LABEL = "大步骤格式";
 export const checkLabel = (c: Pick<Check, "label">): string => c.label ?? CHECK_LABEL;
-export interface Check {
-  text: string;
-  /** Short visible tag; absent means CHECK_LABEL. The text is the full explanation (tooltip). */
+/** What the board knows of one kind of check, apart from its text. */
+export interface CheckKind {
+  /** Short visible tag; absent means CHECK_LABEL. */
   label?: string;
+  /** A write that introduces a check of this kind is refused, not only flagged (ops reads this). */
+  refused?: true;
+}
+/**
+ * Every kind of check, each registered once under a fixed id: a short English word chain that is never reused, renamed or
+ * made to mean another check. The id (with what the check points at) is what says that two checks are the same one, on two
+ * boards or at two times; the text is for people and may carry a count that changes while the check stays. A new check is a new
+ * entry here, and `check` below is the only way rules make one.
+ */
+export const CHECK_KINDS = {
+  "dep-item-missing": { refused: true },
+  "dep-card-missing": { refused: true },
+  "dep-item-cancelled": {},
+  "dep-cycle": { refused: true },
+  "owned-by-many": { refused: true },
+  "owned-across-projects": { refused: true },
+  "unowned-but-awaited": { refused: true },
+  "no-acceptance": { refused: true },
+  "plan-provisional": { label: "待重写" },
+  "acceptance-pending": {},
+  "only-acceptance-left": {},
+  "owner-closed": {},
+  "project-unconfigured": {},
+  "card-plan-mismatch": { label: CARD_MISMATCH_LABEL },
+  "card-unplaced": { label: CARD_UNPLACED_LABEL },
+  "card-options-short": { label: OPTIONS_LABEL },
+  "tags-missing": { label: "缺标签" },
+  "difficulty-missing": { label: "缺难度" },
+  "title-too-long": {},
+  "stalled": { label: STALLED_LABEL },
+  "waits-in-text": { label: WAITS_TEXT_LABEL },
+  "pause-conflict": { label: "暂停冲突" },
+  "stage-format": { label: STAGE_FORMAT_LABEL },
+} as const satisfies Record<string, CheckKind>;
+export type CheckId = keyof typeof CHECK_KINDS;
+export const checkKind = (id: CheckId): CheckKind => CHECK_KINDS[id];
+export interface Check {
+  /** The kind of check, registered in CHECK_KINDS. */
+  id: CheckId;
+  /** The full explanation (tooltip). It may carry numbers that change while the check stays; never compare it. */
+  text: string;
+  /** Short visible tag of the kind; absent means CHECK_LABEL. */
+  label?: string;
+  /** What the check points at, when it is about another item or card than the one it sits on. */
   target?: { kind: "item" | "card"; id: string };
 }
+/** The one way to make a check: its label comes from its kind, so the two cannot disagree. */
+function check(id: CheckId, text: string, target?: Check["target"]): Check {
+  const { label } = checkKind(id);
+  return { id, text, ...(label === undefined ? {} : { label }), ...(target ? { target } : {}) };
+}
+/** What makes a check the same check on two boards: its kind and what it points at, whatever its text says. */
+export const checkKey = (c: Pick<Check, "id" | "target">): string => `${c.id}|${c.target ? `${c.target.kind}:${c.target.id}` : ""}`;
 
 export interface Rules {
   item(id: string): Item | undefined;
@@ -321,8 +385,6 @@ export const STAGES = [
 export type StageKind = (typeof STAGES)[number]["kind"];
 /** The stages every engineer plan has: the others depend on a pull request (ci, merge) or on going live (verify). */
 const REQUIRED_STAGES: readonly StageKind[] = ["research", "impl", "accept"];
-/** The label of the check on an engineer's item whose plan lacks a stage or has the stages out of order. */
-export const STAGE_FORMAT_LABEL = "大步骤格式";
 /** A stage id, with the round that going back appends after the first: `impl`, `impl-2`, `impl-3`. */
 const STAGE_ID = /^(research|impl|ci|accept|merge|verify)(?:-([2-9]|[1-9]\d+))?$/;
 /**
@@ -808,17 +870,19 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     const target = item(row.item);
     if (!target) return { state: "waiting", dropped: false, excluded: false, weight: 0 };
-    if (target.record) return { state: "resolved", dropped: false, excluded: row.own, weight: 1 };
+    // A record is no step: resolved so that nothing waits for it, and left out of the counts and the share, owned or shared.
+    if (target.record) return { state: "resolved", dropped: false, excluded: true, weight: null };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
     const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
     // A sub-item counts as its status says, shared or owned: done whole, in progress or idle half; a cancelled one is left out of the share.
     const weight = status === "cancelled" ? null : status === "done" ? 1 : status === "wip" || status === "idle" ? 0.5 : 0;
     return { state, dropped, excluded: dropped, paused: status === "paused", weight };
   }
+  const isRecord = (row: PlanRow): boolean => isRecordRow(s.items, row);
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
-    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>();
-    for (const row of item(id)?.plan ?? []) {
-      const preceding = row.after === undefined ? out.slice(-1) : row.after.map(key => byId.get(key));
+    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>(), plan = item(id)?.plan ?? [];
+    for (const [at, row] of plan.entries()) {
+      const preceding = (row.after ?? followedRows(plan, at, isRecord)).map(key => byId.get(key));
       const { paused, ...derived } = rowState(row, seen);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
@@ -894,16 +958,15 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return closed;
   }
   // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
-  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready.
+  // rows are a list, not an order, so an item a record owns (a backlog item) is always ready. A record row in the owner's
+  // plan is no step: the row after it follows the step before it.
   function ownerRowReady(id: string): boolean {
     const owner = parentOf(id), plan = owner ? item(owner) : undefined;
     if (!owner || !plan || plan.record) return true;
     const resolved = new Map<string, boolean>(), seen = new Set([id]);
-    let previous = true;
-    for (const row of plan.plan) {
-      if ("item" in row && row.item === id) return (row.after === undefined ? [previous] : row.after.map(key => resolved.get(key) ?? false)).every(Boolean);
-      previous = rowResolved(row, seen);
-      resolved.set(row.id, previous);
+    for (const [at, row] of plan.plan.entries()) {
+      if ("item" in row && row.item === id) return (row.after ?? followedRows(plan.plan, at, isRecord)).every(key => resolved.get(key) ?? false);
+      resolved.set(row.id, rowResolved(row, seen));
     }
     return true;
   }
@@ -1126,7 +1189,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     return cached("cardChecks", key, () => {
       const d = index().decisions.get(key);
       if (!d || !cardWaiting(key) || d.options.length >= CARD_MIN_OPTIONS) return [];
-      return [{ text: `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`, label: OPTIONS_LABEL }];
+      return [check("card-options-short", `决策卡只有 ${d.options.length} 个选项，至少要给三个都走得通的做法`)];
     });
   }
   // The card checks shown: none for a card of a cancelled item. Refusals keep them.
@@ -1142,8 +1205,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       const st = statusOf(id), parent = parentOf(id), deps = depsOf(id), rows = planRows(id);
       for (const e of deps) {
         const target = { kind: e.kind, id: e.id };
-        if (e.missing) out.push({ text: (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id });
-        else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push({ text: "依赖的条目已取消", target });
+        if (e.missing) out.push(check(e.kind === "item" ? "dep-item-missing" : "dep-card-missing", (e.kind === "item" ? "依赖的条目不存在：" : "依赖的决策卡不存在：") + e.id, target));
+        else if (e.kind === "item" && !e.own && statusOf(e.id) === "cancelled") out.push(check("dep-item-cancelled", "依赖的条目已取消", target));
       }
       // A card and its row are one fact stored twice: an open blocking card has its row in its item's plan, an open card
       // that does not block has none (the work goes on without it), and each card row names a card of this item. A card
@@ -1151,44 +1214,44 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       const own = cardsOf(id), rowCards = it.plan.flatMap(row => "card" in row ? [row.card] : []);
       const apart = [...own.filter(key => cardBlocking(key) && !rowCards.includes(key)).map(key => `${key} 挡事，却没有计划行`), ...own.filter(key => cardWaiting(key) && !cardBlocking(key) && rowCards.includes(key)).map(key => `${key} 不挡事，却有计划行`),
         ...rowCards.filter(key => s.decisions[key] && s.decisions[key]!.item !== id).map(key => `${key} 属于条目 ${s.decisions[key]!.item}`)];
-      if (apart.length) out.push({ text: `卡和计划对不上：${apart.join("；")}`, label: CARD_MISMATCH_LABEL });
+      if (apart.length) out.push(check("card-plan-mismatch", `卡和计划对不上：${apart.join("；")}`));
       const placed = placedCardsOf(it);
-      for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push({ text: `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, label: CARD_UNPLACED_LABEL, target: { kind: "card", id: key } });
-      if (cycles().has(id)) out.push({ text: "依赖成环" });
-      if (!s.board.projects.some(project => project.name === it.group)) out.push({ text: "项目没有配置：" + it.group });
-      if ((index().owners.get(id)?.length ?? 0) > 1) out.push({ text: "被多个条目拥有" });
-      for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push({ text: "跨项目拥有", target: { kind: "item", id: owner } });
-      if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push({ text: "同项目有条目在等它，却没有条目拥有它" });
-      for (const card of cardsOf(id)) for (const check of cardChecks(card)) out.push({ ...check, target: { kind: "card", id: card } });
-      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push({ text: "没有计划：至少要有一个验收步骤" });
+      for (const key of own) if (cardWaiting(key) && !placed.includes(key)) out.push(check("card-unplaced", `开着的卡没在正文里标位置：在正文里提出这个问题的地方，单独一行写 [[q:${key}]]`, { kind: "card", id: key }));
+      if (cycles().has(id)) out.push(check("dep-cycle", "依赖成环"));
+      if (!s.board.projects.some(project => project.name === it.group)) out.push(check("project-unconfigured", "项目没有配置：" + it.group));
+      if ((index().owners.get(id)?.length ?? 0) > 1) out.push(check("owned-by-many", "被多个条目拥有"));
+      for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push(check("owned-across-projects", "跨项目拥有", { kind: "item", id: owner }));
+      if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push(check("unowned-but-awaited", "同项目有条目在等它，却没有条目拥有它"));
+      for (const card of cardsOf(id)) for (const inner of cardChecks(card)) out.push({ ...inner, target: { kind: "card", id: card } });
+      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push(check("no-acceptance", "没有计划：至少要有一个验收步骤"));
       // Titles of closed items are not revised, so only open items and records are checked.
       const titleLength = [...it.title.replace(/\s/g, "")].length;
-      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push({ text: `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）` });
+      if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push(check("title-too-long", `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）`));
       // Only once the vocabulary offers the item's project a tag: before that nothing could clear the check.
-      if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push({ text: "缺标签：用 set_tags 从标签词表里给它选至少一个标签", label: "缺标签" });
-      if (it.provisional) out.push({ text: "计划待重写", label: "待重写" });
+      if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push(check("tags-missing", "缺标签：用 set_tags 从标签词表里给它选至少一个标签"));
+      if (it.provisional) out.push(check("plan-provisional", "计划待重写"));
       if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
-        if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push({ text: `暂停了，但 ${item(waiter.id)!.title} 在等它`, label: "暂停冲突", target: { kind: "item", id: waiter.id } });
+        if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push(check("pause-conflict", `暂停了，但 ${item(waiter.id)!.title} 在等它`, { kind: "item", id: waiter.id }));
       }
       if (!it.record) {
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
-        if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push({ text: "验收步骤待补" });
-        if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push({ text: "只差验收：其它行都已完成" });
-        if (isOpenWork(id) && parent && ended(parent)) out.push({ text: "拥有它的条目已关闭", target: { kind: "item", id: parent } });
-        if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push({ text: "进行中但 1 小时（活跃时间）没有动静", label: STALLED_LABEL });
+        if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push(check("acceptance-pending", "验收步骤待补"));
+        if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push(check("only-acceptance-left", "只差验收：其它行都已完成"));
+        if (isOpenWork(id) && parent && ended(parent)) out.push(check("owner-closed", "拥有它的条目已关闭", { kind: "item", id: parent }));
+        if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push(check("stalled", "进行中但 1 小时（活跃时间）没有动静"));
         // An engineer's plan has the big steps the engineer rules name, in order: the board reads progress and the current step from them.
         if (isOpenWork(id) && heldByEngineer(it)) {
           const problems = stageProblems(it.plan);
-          if (problems.length) out.push({ text: `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`, label: STAGE_FORMAT_LABEL });
+          if (problems.length) out.push(check("stage-format", `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`));
         }
         // A todo step's waits text is invisible to the derived status, so the item looks startable: one check per item lists the rows by id.
         const waiting = it.plan.flatMap(row => "text" in row && row.state === "todo" && row.waits ? [row.id] : []);
-        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push({ text: `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`, label: WAITS_TEXT_LABEL });
+        if (isOpenWork(id) && !isPaused(id) && !isBacklog(id) && waiting.length) out.push(check("waits-in-text", `在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：${waiting.join("、")}`));
         // Asked for only when the rating is the one thing left before the item can be dispatched (canStart): it is todo or
         // part way with nobody on it, its next own step waits on nothing, and an unpaused root needs it. While another item
         // is the next step (a study, say), the rating waits too, and what no such root needs (backlog work, what hangs under
         // it, paused work) is not asked for.
-        if (it.difficulty === undefined && canStart(id)) out.push({ text: "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工", label: "缺难度" });
+        if (it.difficulty === undefined && canStart(id)) out.push(check("difficulty-missing", "缺难度：用 set_difficulty 评 1–5 级；没评级的条目不算可以开工"));
       }
       return out;
     });
@@ -1240,7 +1303,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     stages: id => { const info = stageInfo(id); return info && { ...info, current: info.current && { ...info.current } }; },
     planRows: id => planRows(id).map(entry => ({ ...entry, row: structuredClone(entry.row) })),
     planGroups: id => planGroups(id).map(group => ({ ...group })),
-    stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.label === STALLED_LABEL)))),
+    stalledBelow: id => cached("stalledBelow", id, () => subtreeCount(id, v => Number(checks(v).some(c => c.id === "stalled")))),
     mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,

@@ -434,26 +434,28 @@ export type Project = z.infer<typeof Project>;
 
 /** The author name of the architect: the project of the agents_config repository, a configured project like any other. */
 export const ARCHITECT = "Architect";
-/** The session name the architect writes from, the conversation the owner talks to; the architect's pushes are for it (docs/design.md, section 9). */
+/**
+ * The session name the architect writes from, the conversation the owner talks to; the architect's pushes are for it (docs/design.md,
+ * section 9). Every session name that starts with it (「架构师轮次」 of the runner's turns, 「架构师·观察」 of an observing architect, and
+ * so on) has the architect's write rights and none of the pushes (`isArchitectName`).
+ */
 export const ARCHITECT_SESSION = "架构师";
-/** The session name of the turns the runner starts to answer an engineer: the architect's write rights and none of the architect's pushes (docs/design.md, section 9). */
-export const ARCHITECT_TURN_SESSION = "架构师轮次";
 /** The session name the runner writes from: the resident program that starts the engineers' turns and reports their state (docs/design.md, sections 5 and 9). It writes as the author of the item's project and has no credential. */
 export const RUNNER_SESSION = "执行程序";
 /** The role name of the architect, as a credential and the access table name it. */
 export const ARCHITECT_ROLE = "架构师";
 /** The architect alone, as an error text or a tool description names it (ops `onlyArchitect`, the journal and tag tools). */
-export const ARCHITECT_WRITER = `${ARCHITECT} with session ${ARCHITECT_SESSION}`;
+export const ARCHITECT_WRITER = `${ARCHITECT} with a session name starting ${ARCHITECT_SESSION}`;
 /** The writer that does the process, in English: the one definition every such text is built from (ops `onlyProcess`, the tool descriptions, the errors that say who may). The architect does it since the PM was retired. */
 export const PROCESS_WRITERS = ARCHITECT_WRITER;
 type Writer = { author: string; session?: string; access?: { role: string } };
 /**
- * Whether a write speaks for the architect: author `Architect` from the session 「架构师」 or 「架构师轮次」 (`isArchitectName`). Only
+ * Whether a write speaks for the architect: author `Architect` from a session whose name starts with 「架构师」 (`isArchitectName`). Only
  * such a write may do what the board reserves for the architect alone (the journal, the tag vocabulary; ops `onlyArchitect`). An
  * engineer who works in the Architect project writes as author `Architect` from another session and is then an ordinary project
  * author. A write over a credential is the architect's when the credential's role is, whatever names it carries (src/credentials.ts);
  * the names of a write without one are not authenticated: that stops misuse, not impersonation. The rights do not carry the pushes:
- * those go by `isArchitectSession` alone.
+ * those go by `isArchitectSession` alone, the exact name 「架构师」.
  */
 export const isArchitect = (who: Writer): boolean =>
   who.access ? who.access.role === ARCHITECT_ROLE : who.author === ARCHITECT && isArchitectName(who.session);
@@ -471,8 +473,8 @@ export const isRunner = (who: Writer): boolean => !who.access && isRunnerSession
 export const mayRunProcess = (who: Writer): boolean => isArchitect(who);
 /** Whether a session name is the architect's conversation, ignoring spaces around it: the one that receives the architect's pushes and whose own writes the architect's timed wake leaves out. */
 export const isArchitectSession = (session: string | undefined): boolean => session?.trim() === ARCHITECT_SESSION;
-/** Whether a session name is one the architect writes from, ignoring spaces around it: the conversation or the runner's turns. The permission rule and the credential file's checks use it; the pushes use `isArchitectSession`. */
-export const isArchitectName = (session: string | undefined): boolean => isArchitectSession(session) || session?.trim() === ARCHITECT_TURN_SESSION;
+/** Whether a session name is one the architect writes from, ignoring spaces around it: the conversation or any name that starts with its name (the runner's turns, an observing or a tidying architect). The permission rule, the credential file's checks and the reservation of the name from dispatches use it; the pushes use `isArchitectSession`. */
+export const isArchitectName = (session: string | undefined): boolean => session?.trim().startsWith(ARCHITECT_SESSION) ?? false;
 /** Whether a session name is the runner's, ignoring spaces around it. */
 export const isRunnerSession = (session: string | undefined): boolean => session?.trim() === RUNNER_SESSION;
 /** The retired authors, the coordinator (总管) and the PM: every write under one is refused (ops `run`); the historical authors stay as written, and their projects stay configured so their items and history are read. */

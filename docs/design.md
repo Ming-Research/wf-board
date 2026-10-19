@@ -219,7 +219,11 @@ line of the same author with the same text; for `journal_entry`, the same text
 at the end of the head; for `set_status`, also only while the item is in the state the
 call asks for, so a cancel after a reopen is a new decision). The answer is that first
 commit, marked `repeated`. The check reads history under the request's budget; when
-the budget is spent the write is made, at worst once too often. The
+the budget is spent the write is made, at worst once too often. It asks git for the
+item's commits of the last minute (`git log --since`), not for its 20 newest: a log
+limited to one file and asked for 20 commits looks through the whole history for them
+when the file has fewer, which took 2 to 3 s on the live board's 27,666 commits, and the
+write queue waited for it (Time limits, Where a write's time went). The
 rule reads the commit's message and `Session:` trailer and the item as the
 commit left it, so it holds across a restart with nothing kept in memory, and
 one function serves the four writes. A caller that names no session is not
@@ -303,6 +307,46 @@ live board, the times in the log show which ordinary operations exceed them; eac
 is then looked at to see whether it is slow, and the number changed or the
 slowness fixed. No write waits for a push to the remote: the push runs beside the
 write queue (Storage).
+
+**Where a write's time went.** The line of an operation says how long it took, which for a
+write that waits in two queues and runs a handful of git commands is not enough to tell
+what was slow. A write call (a tool that changes the board, a page request of the write
+class) carries a `WriteTrace` (`src/write-trace.ts`) in its async context, and the places
+it waits or works end a step in it: the wait in the operations' own queue (`ops queue`,
+`src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
+queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
+behind: `write`, `owner state` or `maintenance`); the code before the first git command
+(`validate`), the writing of the files (`files`), each git command by its name (`git diff`,
+`git add`, `git commit`, `git show`), the update of the board in memory (`publish`), the
+observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
+each is the time since the one before ended, so they add up to the call. When the call took
+500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
+limits), its ordinary log line carries them after a semicolon:
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git diff 8 ms, git add 14 ms, git commit 2400 ms, ...`.
+A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
+The maintenance step, which a commit queues from inside its own call, belongs to no call and
+adds nothing to any trace. A second line says when the event loop itself was held: a timer
+due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
+`event loop held for N ms`, because a git command's time that is the time of a held loop
+is not git's. The two make the slow tail of the writes readable as one of: waiting in a
+queue, a slow git command, work in the process, or a held loop.
+
+The tail they were made for had a cause that the service log of 10-16 to 10-18 and the data
+repository showed before they were deployed. The log of 10-18 holds 90 writes of 5360 over
+2 s, most between 2.1 and 2.6 s, and nearly every group of them began with an `append_log`
+(the others queued behind it, finishing about 100 ms apart, the time of an ordinary write).
+Not the cause, measured in that log: a push (the 3 percent of slow writes that overlapped
+one against 0.3 percent of the others) and a held event loop (40 of the last 60 slow writes
+answered another request meanwhile). The cause is the retry check above: for a session that
+appends to an item written in the last minute it ran `git log --max-count=20 -- items/<id>.yaml`
+inside the operations' queue. On the live repository (27,666 commits, measured with that
+command) it took 2.06 s for an item with 104 commits, most of them old, 2.43 s for one with 19 and
+3.02 s for one with 11, against 0.14 s for an item whose 20 newest commits are recent; the
+slow lines of the service log for the first two items read 2116 and 2584 ms. With `--since` of the last minute it took 20 to 36 ms. A version conflict
+(`versionAt`) read an item's whole path history the same way; it now asks for the
+`current.rev - rev + 1` newest commits, which is as far back as the revision it was written
+against, as the request budget rule below says it reads. Both costs grow with the history,
+which gains thousands of commits a day.
 
 **Why at the entries.** The request handler and `register` are the places every
 operation already passes. A timer inside each tool or route would miss the next
@@ -1115,7 +1159,7 @@ tree, status and blocking are all derived from it.
 #### Rows
 
 An item may also store `paused: { reason, at }`, with a nonblank reason and
-the server's time. Only the architect (`author: Architect`, session `架构师`) sets or clears it through
+the server's time. Only the architect (`author: Architect`, a session name starting `架构师`) sets or clears it through
 `set_pause`, at the owner's request in a comment (the page has no pause or
 resume control); project agents cannot set it through
 item creation or revision. Records cannot carry it, and pausing done or
@@ -1145,11 +1189,14 @@ is one of four kinds:
   item needs to explain goes in its head's 做法 or its log. The former whys
   are kept in each item's log by the conversion (section 10).
 - **After.** `after` lists ids of earlier rows that must be resolved before
-  this row can proceed. Absent means after the previous row (the first row:
-  after nothing); `after: []` means it can start at once. Only earlier rows
-  may be named, so the order relation cannot form a cycle. Acceptance uses
-  these same rules, including the previous-row default. Removing a row that
-  a later row names in `after` is refused, naming the later rows.
+  this row can proceed. Absent means after the previous row that is not a
+  record row (a record row is no step, see Records; the first row, and a row
+  with only record rows before it: after nothing); `after: []` means it can
+  start at once. Only earlier rows may be named, so the order relation cannot
+  form a cycle. Acceptance uses these same rules, including the previous-row
+  default. A row that names a record row in `after` waits for nothing, since a
+  record row is always resolved. Removing a row that a later row names in
+  `after` is refused, naming the later rows.
 - **Acceptance.** A work item's plan has at least one acceptance step; several
   are allowed, for example one per acceptance scenario. A record has none.
   Place each where the check happens, normally before merge or release rows.
@@ -1176,7 +1223,7 @@ Each row is in one derived state, which status and display use:
 | owned item | target done, or cancelled (counts as dropped; the target's cancellation log is the reason) | target in progress | target blocked or paused | target todo or idle |
 | shared item | target done | — | target open (any status) | — |
 | card | card not open (ruled or withdrawn) | — | card open | — |
-| owned record | always resolved and left out of counts: a record is a part kept for reference, not work | | | |
+| record (owned or shared) | always resolved, left out of counts and out of the order: a record is a part kept for reference, not work, and no row waits for it | | | |
 
 A shared row whose target is cancelled is not resolved: someone else dropped
 what this item waits for, and the plan's own project must remove or replace
@@ -1232,8 +1279,9 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    step of its own is done, or an item it owns is done, or an open item it owns
    has begun in this same sense (a dropped step, a cancelled owned item and an
    owned record do not count). What others finished does not count: a shared
-   dependency that is done, a ruled card and a shared record leave the item at
-   `todo`, though the progress count still includes those rows. A parent
+   dependency that is done and a ruled card leave the item at `todo`, though
+   the progress count still includes those rows; a record row, shared or
+   owned, is no step and is not counted. A parent
    therefore leaves `todo` as its parts progress.
 8. `todo` otherwise: nothing is done and nobody is working on the item.
 
@@ -1268,7 +1316,7 @@ same pause reason or resuming open work without its own marker is a no-op.
 Done and cancellation leave the marker inactive on that item, but open
 descendants still inherit it. An authorized resume can clear this inactive
 marker; reopening a cancelled item without that resume retains the owner's
-pause. A write by any author but the architect (`Architect` from session `架构师`) that changes an item from effectively paused
+pause. A write by any author but the architect (`Architect` from a session name starting `架构师`) that changes an item from effectively paused
 to open, not-paused work is refused, naming its pause source and requiring
 the owner or the architect to resume it. This covers moves out of a paused chain
 and ownership changes affecting unwritten descendants. Done and cancellation
@@ -1383,8 +1431,16 @@ A record (`record: true`) may have a plan of steps, owned rows, shared rows
 and card rows, and no acceptance step; it has no status, appears in no status
 queue, is never waiting or blocking for anyone. It may
 own work items (the backlog, the 14900K queue's run items). A record can be
-owned, and an owned record row is always resolved and left out of the owner's
-counts. Setting `record: true` on a work item removes all its acceptance steps,
+owned or shared by a work item's plan, and its row there, owned or shared, is
+no step: it is always resolved, left out of the plan's counts and progress
+share, and left out of the order, so a row with no `after` comes after the
+nearest row before it that is not a record row. Without that, a record row put
+between waiting rows and the acceptance step would count as a finished row the
+acceptance step follows, and an item whose every step waits would read as
+startable. The same skip applies where the plan is rewritten for a card row
+(`write_card` placing a blocking card's row, and removing it when the card stops
+blocking) and where an owned item's turn in its owner's plan is read.
+Setting `record: true` on a work item removes all its acceptance steps,
 logging every step's text; setting `record: false` requires `accept` text for
 the new acceptance step. A real change of mode in either direction appends a
 server-stamped log line saying the item became a record or a work item; a
@@ -1412,32 +1468,43 @@ item in the default tree.
 
 The checks touching plans, replacing the dependency and completion-condition
 checks. A cancelled item, and each card of one, shows none of them; the
-write-time refusals in the last column still apply to it:
+write-time refusals in the last column still apply to it.
 
-| Check | Refused when newly introduced |
-|---|---|
-| 依赖的条目不存在 / 依赖的决策卡不存在 | yes |
-| 依赖成环 | yes |
-| 被多个条目拥有 | yes |
-| 跨项目拥有 | yes |
-| 同项目有条目在等它，却没有条目拥有它 | yes |
-| 没有计划：至少要有一个验收步骤 | yes |
-| 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
-| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
-| 依赖的条目已取消 (shared row to a cancelled item) | no |
-| 拥有它的条目已关闭 | no |
-| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
-| 项目没有配置：<group> (the item's `group` is not a configured project) | no |
-| 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
-| 卡没标位置 (an open card the item's head does not place, below) | no |
-| 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
-| 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
-| 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
-| 无人推进 (stalled, above) | no |
-| 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
-| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
-| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+Every kind of check has a fixed id, registered once in `CHECK_KINDS` (`src/rules.ts`),
+beside its short label and whether a write that introduces it is refused. A check is made
+only through that registry, so its id is never missing and its label never disagrees with
+its kind. An id is a short English word chain that is not reused, renamed or given another
+meaning. What says two checks are the same one, on two boards or at two times, is the id and
+the item or card the check points at (`checkKey`); the text, which may carry a count that
+changes while the check stays, is for people. A check whose kind can occur more than once on
+an item points at each object it is about (the missing dependency, the waiting item, the
+card), which is what tells the occurrences apart. A new kind of check is a new entry in the
+registry, and a test raises every registered kind on one board.
+
+| Id | Check | Refused when newly introduced |
+|---|---|---|
+| `dep-item-missing`, `dep-card-missing` | 依赖的条目不存在 / 依赖的决策卡不存在 (pointing at the missing row's key) | yes |
+| `dep-cycle` | 依赖成环 | yes |
+| `owned-by-many` | 被多个条目拥有 | yes |
+| `owned-across-projects` | 跨项目拥有 | yes |
+| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 | yes |
+| `no-acceptance` | 没有计划：至少要有一个验收步骤 | yes |
+| `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
+| `acceptance-pending` | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
+| `dep-item-cancelled` | 依赖的条目已取消 (shared row to a cancelled item) | no |
+| `owner-closed` | 拥有它的条目已关闭 | no |
+| `only-acceptance-left` | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
+| `project-unconfigured` | 项目没有配置：<group> (the item's `group` is not a configured project) | no |
+| `card-plan-mismatch` | 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
+| `card-unplaced` | 卡没标位置 (an open card the item's head does not place, below) | no |
+| `card-options-short` | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
+| `tags-missing` | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
+| `difficulty-missing` | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
+| `title-too-long` | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
+| `stalled` | 无人推进 (stalled, above) | no |
+| `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
+| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
+| `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1546,8 +1613,9 @@ those rows, 0 when there are none. A row counts unless it is dropped (its
 `excluded` flag) or it is a cancelled sub-item, owned or shared, which is left
 out of the share and the denominator alike. Weights: a done row 1, a row in
 progress ½, a card decided or withdrawn 1 and open 0; a sub-item row weighs by
-its status: done 1, wip or idle ½, anything else 0; a record counts 1. The plan
-ratio shown on the detail column is unchanged: it still counts a shared
+its status: done 1, wip or idle ½, anything else 0; a record row is left out,
+like a dropped step. The plan ratio shown on the detail column is unchanged
+except for that: it leaves out the record row too, and still counts a shared
 cancelled row. The band's gradient runs from `--prog-from` to `--prog-to` across
 the full row width, so a short band shows only the start colour: the colour at
 any point of the band is the colour that point has in the whole row. Items of
@@ -1864,12 +1932,12 @@ session works for, selected from `projects` by matching `repo` to its
 repository's GitHub remote (until the old tools are removed), and a write with
 neither is refused. The
 architect writes as `Architect`, the project of the agents_config repository, from the session
-`架构师` (section 9). Several sessions may share a project and
+`架构师`, or another name that starts with it (section 9). Several sessions may share a project and
 coordinate among themselves; sessions may be renamed freely. Every tool, reads
 included, takes an optional `session` (1–80 characters, trimmed): the calling
 session's own name as the app's session list shows it. A write records it as
 described under the stalled-work rule's activity index; any session's call, the architect's
-included (not `架构师轮次`, below, whose stream is empty), is a sign of life for the session and carries what was pushed to it and not
+included (not another name that starts with `架构师`, such as `架构师轮次`, below, whose stream is empty), is a sign of life for the session and carries what was pushed to it and not
 yet delivered (section 8, The wake streams, Liveness).
 `context` prints
 `last push: <session> · <time to the minute>` for an item with a known last
@@ -1967,8 +2035,8 @@ whose commits do not count.
   the board settings of before the range: the head's settings stand, and the version is
   counted. The flags that settings change brings (a newly approved tag vocabulary, say)
   are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
-  flag on both boards when its short label (else its text without the count of the
-  title-length flag) and the item or card it points at are equal. A new flag's row names
+  flag on both boards when its check id (below, Checks) and the item or card it points at are
+  equal; its text and short label are for people and play no part. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
   not `except` names it; with no writer the row says no session wrote it in the range (the
   flag came from another item's change, or from time). Flags are never left out by
@@ -2199,7 +2267,7 @@ replace the separate steps, children, deps and parent fields of these
 results, and `context` warns when rows of one level are not adjacent.
 
 In this document the architect as a writer means author `Architect` writing from
-the session `架构师` or `架构师轮次` (section 9). It may write any project's items, cards and note replies, and so may
+a session whose name starts with `架构师` (section 9). It may write any project's items, cards and note replies, and so may
 the observer's credential (section 9); every other writer only its own project's. Some operations are reserved for the process, which the architect does, and every other writer
 is refused before any ownership check: `set_status`, `set_pause`, `move_item_project`,
 a changed title in `update_item`, and the page order in `create_project` and
@@ -3251,25 +3319,37 @@ handled it; the PM forwarding the notes, because it would have to judge which ar
 judgment is the architect's. While a PM ran, the architect's calls also answered the PM's stream, which
 hid the PM's silence from the owner; that ended with the PM (The PM is retired, below).
 
-**The architect's turns.** When an engineer stops to ask the architect, the runner starts a turn
-of the architect (`claude -p` with the architect's turn rules) to answer on the engineer's item.
-It writes as author `Architect` from the session `架构师轮次` (`ARCHITECT_TURN_SESSION` in
-`src/model.ts`), not from `架构师`, which belongs to the conversation the owner talks to: a turn
-under that name would be carried the conversation's pushes by its first tool result and mark
-them delivered. The rights and the pushes go by different tests. The rights (section 9) are
-the architect's for either name (`isArchitect`, `isArchitectName`); the pushes go by the
-conversation's name alone (`isArchitectSession`): the stream under `架构师` is carried
-only in a tool result of that session, and the architect's timed wake leaves out only
-what the session `架构师` wrote, so a turn's writes are listed there: the conversation did not
-make them. Decision: one more session name with the architect's rights and none of its pushes.
-Rejected: a role of its own for the turns with a narrower access table, because a turn does
+**The architect's sessions.** The owner often has several architect sessions at once: the
+conversation the owner talks to, one that tidies old projects, one that works as the observer
+(the architect's duty of improving the process), and the turns the runner starts to answer an
+engineer. All write as author `Architect` from a session name that starts with `架构师`
+(`ARCHITECT_SESSION` in `src/model.ts`): the runner's turns use `架构师轮次`, the others a name of
+their own such as `架构师·观察` or `架构师·整理`, which the history and the activity index show
+apart. Only the exact name `架构师` belongs to the conversation the owner talks to, and the pushes
+are its alone: a second session under that name would be carried the conversation's pushes by its
+first tool result and mark them delivered. The rights and the pushes go by different tests. The
+rights (section 9) are the architect's for every such name (`isArchitect`, `isArchitectName`, which
+ignores spaces around the name); the pushes go by the exact name alone (`isArchitectSession`): the
+stream under `架构师` is carried only in a tool result of that session, and the architect's timed
+wake leaves out only what the session `架构师` wrote, so the writes of the other names are listed
+there: the conversation did not make them. Decision: every session name that starts with `架构师`
+has the architect's rights and none of its pushes, because the owner starts a new kind of architect
+session now and then and a name is all it needs. Rejected: one name, `架构师轮次`, for every
+auxiliary architect, because the board then shows the runner's turns and the owner's other
+sessions as one writer, and the name was defined as the runner's; auxiliary sessions without the
+architect's rights, writing as ordinary project authors, because they could not create items in
+other projects, retitle, or write the architect's log, and the architect would relay every such
+write; a narrower role for each kind of auxiliary session, because each new kind needs a table of
+its own and each new board operation a decision in every table, and a session name is not
+authenticated, so a narrower table guards against a wrong write and not against impersonation; a
+role of its own for the turns, with a narrower access table, because a turn does
 the architect's whole work (answering, cards, pauses, new items, ratings, the architect's
-journal) so the narrower table is the architect's or breaks the next time a part is added, and
-a credential guards against a wrong name, not against impersonation; the turns writing as
-`架构师` and the board finding another way to keep the pushes, because it needs a name or a
+journal) so the narrower table is the architect's or breaks the next time a part is added; the turns
+writing as `架构师` and the board finding another way to keep the pushes, because it needs a name or a
 credential to tell the turns apart, which is this decision with an extra layer; the runner
 writing the answers itself, because it would translate every judgment write of the architect
-and need the architect's rights itself.
+and need the architect's rights itself. The names are for the architect alone: a credential of
+another role under one, and a dispatch for one, are refused (section 9).
 
 **The owner's notifications.** A decision card that stops work (open, with
 `blocks`, newly so or with changed `blocks`) tells the owner, and so does the
@@ -3608,7 +3688,7 @@ Every agent mutation except `create_project` requires a configured project
 as author. An unknown author is refused with the configured projects and an
 instruction to call `projects` and use the project whose repo matches the
 caller’s repository. Item mutations require `author === projectOf(target)` or
-the writer is the architect (`author === Architect`, session `架构师` or `架构师轮次`); this applies to items, their cards and owner-note
+the writer is the architect (`author === Architect`, a session name starting `架构师`); this applies to items, their cards and owner-note
 replies or closures. Only the architect creates items in any project; an
 engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
@@ -3626,10 +3706,11 @@ supplied by the callers, and the checks enforce the workflow rather than
 authenticate against a caller impersonating another project. A call that
 carries a credential is checked as described under *Credentials* below.
 
-The architect's identity is author `Architect` writing from the session
-`架构师` or `架构师轮次` (`isArchitect` in `src/model.ts`; the second is the name of the
-turns the runner starts to answer an engineer, section 8, The architect's turns, and has the
-rights without the pushes); `mayRunProcess` is the same test. The author name is needed because
+The architect's identity is author `Architect` writing from a session whose name starts with
+`架构师` (`isArchitect` in `src/model.ts`; `架构师` itself is the conversation the owner talks to,
+and every longer name, such as `架构师轮次` of the turns the runner starts to answer an engineer or
+`架构师·观察` of an observing architect, has the rights without the pushes, section 8, The
+architect's sessions); `mayRunProcess` is the same test. The author name is needed because
 it is also a project: `Architect` is the
 project of the agents_config repository, and an engineer who does an item there writes as
 that project's author, as every project's engineer writes as its project.
@@ -3742,24 +3823,27 @@ the writer from it.
     keeps its credential, while the dispatch has not ended: a resumed background session
     reads its MCP configuration file again (tested 2026-10-16, Claude Code 2.1.300), so the
     start script puts the credential in that file.
-  - A *long-lived credential* belongs to the architect (`架构师`, or `架构师轮次` for the turns the runner
-    starts), the observer (`观察者`) or the
+  - A *long-lived credential* belongs to the architect (`架构师`, or a longer name starting with it, such as
+    `架构师轮次` for the turns the runner starts), the observer (`观察者`) or the
     resource agent (`资源管理`): session name, role, project and, for the resource agent, the
     records it keeps. Their hashes are in a file outside the data directory (`WF_BOARD_CREDENTIALS`; by default
     `wf-board/credentials.json` in the user's configuration directory), because only the service writes the data directory. The service
     only reads the file, again whenever it changes; `scripts/credential.ts` writes it and
     prints a token once, when it issues one. A file that does not parse refuses every credential that is not a dispatch one, and
     the service log says why.
-- **The session names `架构师`, `架构师轮次` and `执行程序`** are the architect's and the runner's alone: without a
-  credential the board takes author `Architect` writing from `架构师` or `架构师轮次` for the architect
+- **The session names that start with `架构师`, and `执行程序`** are the architect's and the runner's alone: without a
+  credential the board takes author `Architect` writing from a session name that starts with `架构师` (`架构师`, `架构师轮次`,
+  `架构师·观察`, and so on) for the architect
   (section 6), and skips the process checks for them. A
-  file entry of another role under any of the names is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
-  under another name or in another project than `Architect`, and so is `dispatch_start` for an agent of any of the three names
+  file entry of another role under any such name is refused, so is any entry under `执行程序` (the runner has no credential), so is an entry of the architect's role
+  under a name that does not start with `架构师` or in another project than `Architect`, and so is `dispatch_start` for an agent whose name starts with `架构师` or is `执行程序`
   (spaces around it are ignored, as everywhere the board compares it). An entry of the role `PM` is refused as a
-  role the file does not know (`LONG_LIVED_ROLES` in `src/model.ts`), and `PM` is an ordinary session name. The conversation's credential
-  and the turns' credential are two entries side by side. With a credential, a
+  role the file does not know (`LONG_LIVED_ROLES` in `src/model.ts`), and `PM` is an ordinary session name. A name that merely contains `架构师`
+  (`x架构师`) is an ordinary session name. The credentials of the conversation, of the turns and of the other architect
+  sessions are separate entries side by side. With a credential, a
   write is the architect's when the credential's role is, whatever names it carries; what
-  the role's session name still decides is the pushes (section 8, The architect's turns).
+  the role's session name still decides is the pushes, which only the exact name `架构师` has (section 8,
+  The architect's sessions).
 - **A request** with no `Authorization` header can read the board; it can write only in the
   old way, naming its author and session, until the old tools are removed. One with an
   invalid header (an unknown token, or a revoked one) is refused on every call, reads

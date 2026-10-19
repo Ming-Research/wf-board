@@ -7,14 +7,25 @@ import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey } from "./rules.ts";
+import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
 import type { LiveRole } from "./live.ts";
+import { currentTrace } from "./write-trace.ts";
 
 export class OpError extends Error {}
+/** What to do instead, for the checks a write may not introduce (`refused` in CHECK_KINDS); the owner checks, which share one fix, are not listed. */
+const REFUSED_FIX: Partial<Record<CheckId, string>> = {
+  "dep-item-missing": "use set_plan to remove or replace the missing row",
+  "dep-card-missing": "use set_plan to remove or replace the missing row",
+  "dep-cycle": "use set_plan or move_item to remove the item-row cycle",
+  "no-acceptance": "use set_plan to add at least one acceptance step where its check happens",
+  "owned-across-projects": "use a shared row instead of ownership",
+};
+const OWNER_FIX = "use move_item to place the item under exactly one same-project owner";
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
 function refuseSummary(head: string | undefined): void {
   const mark = head === undefined ? undefined : summaryMark(head);
@@ -290,7 +301,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     // newest version, the first one below the wanted revision means it is not in the history. Neither case reads on.
     try {
       if (rev <= current.rev) {
-        const versions = await store.log({ kind, id });
+        // Each write raised the revision by one, so the version wanted is the `current.rev - rev + 1`th newest commit of the
+        // document, and git is asked for no more. Asked for all of them, it looks through the whole history for the commits of a
+        // document that has few: 2 to 3 s with 27,666 commits, with every other write waiting (item write-tail-3s).
+        const versions = await store.log({ kind, id, limit: current.rev - rev + 1 });
         allowRange(versions.length);
         for (const commit of versions) {
           const doc = await store.show(kind, id, commit.commit) as Item | Decision | null;
@@ -374,7 +388,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (RETIRED_AUTHORS.includes(a.author)) throw new OpError(`author ${a.author}: this identity is retired; write as ${ARCHITECT} (session ${ARCHITECT_SESSION}), which does the process and keeps the rules`);
   }
   function run(a: Writer, parts: Part | readonly Part[], make: (s: Snapshot, at: string) => Promise<Work> | Work, overwrite = false, anyAuthor = false): Promise<Result> {
+    // Where the call's time goes is told in its log line (src/write-trace.ts): the wait here, then the checks before the commit.
+    const trace = currentTrace();
     const task = (queues.get(store) ?? Promise.resolve()).then(async () => {
+      trace?.lap("ops queue");
       const partList = typeof parts === "string" ? [parts] : parts;
       checkWriter(a, partList);
       for (;;) {
@@ -427,22 +444,18 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
               if (!current.plan?.some(r => "item" in r && r.item === row.item && r.own)) throw new OpError(`plan ${id}: ${row.item} is open; use move_item or cancel it before removing its owned row`);
             }
           }
-          const required = /^(依赖的条目不存在|依赖的决策卡不存在|依赖成环|被多个条目拥有|跨项目拥有|同项目有条目在等它，却没有条目拥有它|没有计划：至少要有一个验收步骤)/;
           for (const id of Object.keys(next.items)) {
             if (!checked.has(id)) continue;
-            const oldChecks = new Set(beforeRules.refusals(id).map(c => JSON.stringify(c)));
+            const oldChecks = new Set(beforeRules.refusals(id).map(checkKey));
             for (const check of afterRules.refusals(id)) {
-              if (required.test(check.text) && !oldChecks.has(JSON.stringify(check))) {
-                const fix = check.text.startsWith("依赖的") ? "use set_plan to remove or replace the missing row"
-                  : check.text.startsWith("依赖成环") ? "use set_plan or move_item to remove the item-row cycle"
-                  : check.text.startsWith("没有计划") ? "use set_plan to add at least one acceptance step where its check happens"
-                  : check.text.startsWith("跨项目拥有") ? "use a shared row instead of ownership"
-                  : "use move_item to place the item under exactly one same-project owner";
-                throw new OpError(`item ${id}: "${check.text}"${check.target ? ` ${check.target.id}` : ""}; ${fix}`);
+              if (checkKind(check.id).refused && !oldChecks.has(checkKey(check))) {
+                const fix = REFUSED_FIX[check.id] ?? OWNER_FIX;
+                throw new OpError(`item ${id}: "${check.text}"${check.target && !check.text.endsWith(check.target.id) ? ` ${check.target.id}` : ""}; ${fix}`);
               }
             }
           }
         }
+        trace?.lap("check");
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
           return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(work.note === undefined ? {} : { note: work.note }) };
@@ -510,15 +523,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     for (const key of was) if (!now.has(key)) throw new OpError(`card ${key}: a card's row cannot be removed; withdraw the card with withdraw_card`);
   }
   /** The plan with the new card's row in it. `before` (default: the first acceptance step) also waits for the card, without
-   * losing what it waited for: a row with no `after` followed the row before it. */
-  function withCardRow(plan: PlanRow[], key: string, before: string | undefined, after: string[] | undefined): PlanRow[] {
+   * losing what it waited for: a row with no `after` followed the row before it that is not a record row. */
+  function withCardRow(plan: PlanRow[], key: string, before: string | undefined, after: string[] | undefined, isRecord: (row: PlanRow) => boolean): PlanRow[] {
     if (plan.some(r => r.id === key)) throw new OpError(`key ${key}: the item's plan already has a row with this id; choose another card key`);
     const stop = before ?? plan.find(r => "accept" in r && r.accept)?.id, i = stop === undefined ? plan.length : plan.findIndex(r => r.id === stop);
     if (i < 0) throw new OpError(`before ${before}: choose a row of the item's plan`);
     const out = plan.slice();
     out.splice(i, 0, { id: key, card: key, ...(after === undefined ? {} : { after }) });
     const waiter = out[i + 1];
-    if (waiter) out[i + 1] = { ...waiter, after: [...waiter.after ?? (i > 0 ? [plan[i - 1]!.id] : []), key] };
+    if (waiter) out[i + 1] = { ...waiter, after: [...waiter.after ?? followedRows(plan, i, isRecord), key] };
     return out;
   }
   function attach(s: Snapshot, puts: Put[], at: string, by: Writer, owner: string, id: string, after?: string[]): void {
@@ -549,7 +562,11 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     // Any write of this window left the item updated in it, so an item last updated before the window has no earlier write to find.
     if (!who || !(Date.parse(at) - Date.parse(it.updated) <= REPEAT_MS)) return undefined;
     try {
-      for (const commit of await store.log({ kind: "item", id, limit: 20 })) {
+      // Only the commits of the last minute can be the first write, so git is asked for those. Asked for the item's 20 newest
+      // commits, it looks through the whole history for the rest when the item has fewer: 2 to 3 s with 27,666 commits, with every
+      // other write waiting (item write-tail-3s). A commit is dated after the `updated` of the item it left, which is within the minute.
+      const since = new Date(Date.parse(at) - REPEAT_MS).toISOString();
+      for (const commit of await store.log({ kind: "item", id, since, limit: 20 })) {
         if (commit.session !== who || commit.message !== message) continue;
         const doc = await store.show("item", id, commit.commit) as Item | null;
         if (!doc) continue;
@@ -952,7 +969,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const ids = [...moved], puts: Put[] = [];
       for (const id of ids) {
         // A stored cross-project owned row would only be carried along; the board's own check names it.
-        const crossed = r.refusals(id).find(check => check.text === "跨项目拥有");
+        const crossed = r.refusals(id).find(check => check.id === "owned-across-projects");
         if (crossed) throw new OpError(`item ${id}: owned by ${crossed.target!.id} of project ${r.groupOf(crossed.target!.id)} but belongs to project ${r.groupOf(id)} (跨项目拥有); fix that with set_plan first`);
         const it = ownedItem(s, id, a);
         try { checkedTags(s, a.project, it.tags, false); }
@@ -971,7 +988,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The board's own check says which items the move leaves with an open waiter in their project and no owner there: the
       // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
-      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.text.startsWith("同项目有条目在等它"));
+      const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.id === "unowned-but-awaited");
       const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
       const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
       const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
@@ -1019,8 +1036,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!blocking && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: only a card with blocks has a row in the plan; the work goes on without a card that does not block");
       if (blocking && was && (a.before !== undefined || a.after !== undefined)) throw new OpError("before: a card's row is placed when it starts to block; a revision keeps it");
       const puts: Put[] = [{ kind: "decision", id: a.key, doc, expectRev: previous?.rev ?? null }];
-      if (blocking && !was) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after), updated: at }));
-      if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
+      const isRecord = (row: PlanRow): boolean => isRecordRow(s.items, row);
+      if (blocking && !was) puts.push(itemPut(a.item, { ...item, plan: withCardRow(item.plan, a.key, a.before, a.after, isRecord), updated: at }));
+      if (!blocking && was) puts.push(itemPut(a.item, { ...item, plan: withoutCardRow(item.plan, a.key, isRecord), updated: at, log: [...item.log, entry(a.author, at, `决策卡「${doc.question.slice(0, 60)}」不再挡事，计划里的这一行去掉`)] }));
       return { id: a.key, kind: "decision", message: `write_card ${a.key}`, puts };
     }, a.rev !== undefined),
     ruleCard: a => run(a, "card.rule", (s, at) => {

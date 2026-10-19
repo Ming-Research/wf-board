@@ -8,6 +8,12 @@ Nodes: deploy
 
 Summary: The deploy job moved the checkout to the main line's head as soon as it saw it, so a merge whose checks went red afterwards (the main line's `nkey time-writing` check on a merge of 10-18) was live within a minute, while the main line's CI takes 2 to 13 minutes. The job now asks GitHub for the checks on the head it fetched, by the commit's id and with the reading the board's look at the main line uses, and deploys only when all of them passed: a head whose checks are running or have not appeared is waited for at the next run, one with a red check is held until a newer commit passes or the check passes on a rerun, and checks that cannot be read hold the deploy and are pushed once. The head alone decides, so a batch of merges is still one deploy and one restart. The grounds and the refused alternatives (deploying at once, the newest green commit among those not yet live, a branch pointer the CI moves) are in the node; the derivation is in docs/design.md, section 4, Deploying.
 
+## 2026-10-18 Give every session name that starts with the architect's the architect's rights
+
+Nodes: responsibility/identities, wake/architect-stream
+
+Summary: The owner runs several architect sessions at once (the conversation, one that tidies old projects, one that works as the observer), but the board gave the architect's write rights to two names only, so an auxiliary session either took the conversation's pushes by writing under its name or wrote as an ordinary project author that cannot create items in other projects, retitle or write the architect's log. The rights now go to every session name that starts with the architect's name (spaces around it ignored), the pushes and the exclusion of the architect's own writes from its timed wake stay with the exact name, and a credential of another role under such a name and a dispatch for one are refused. The grounds and the refused alternatives are in the identities node; the derivation is in docs/design.md, section 8, The architect's sessions, and section 9.
+
 ## 2026-10-18 Keep the browser tests in one small file that runs after a merge
 
 Nodes: testing, testing/browser-file, testing/ci, testing/ci-shards, testing/ci-time-gate, testing/evidence

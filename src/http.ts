@@ -29,6 +29,7 @@ import { architectTimedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import type { CiWatch } from "./ci-watch.ts";
 import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
+import { WriteTrace, withTrace } from "./write-trace.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
 import { pageVersion, stampPage } from "./page-version.ts";
@@ -221,12 +222,14 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   }
   const server = http.createServer((req, res) => {
     // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
-    const ended = slow.start(pageOperation(req.method ?? "", pathnameOf(req.url)));
-    res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"])));
+    const operation = pageOperation(req.method ?? "", pathnameOf(req.url)), ended = slow.start(operation);
+    // A write's log line says where its time went (src/write-trace.ts).
+    const trace = operation.cls === "write" ? new WriteTrace() : undefined;
+    res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"]), trace && (() => trace.finish())));
     // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
     res.on("finish", () => { if (closing) server.closeIdleConnections(); });
     if (closing) { json(res, 503, { error: "The board is shutting down; try again" }, { Connection: "close", "Retry-After": "2" }); return; }
-    void withBudget(new Budget(`${req.method} ${pathnameOf(req.url) ?? "request"}`, limits), () => route(req, res)).catch(error => {
+    void withBudget(new Budget(`${req.method} ${pathnameOf(req.url) ?? "request"}`, limits), () => withTrace(trace, () => route(req, res))).catch(error => {
       // A budget has said why it stopped the request on the warning log already.
       if (!(error instanceof BudgetError)) console.error(error);
       if (res.headersSent) { res.destroy(); return; }
