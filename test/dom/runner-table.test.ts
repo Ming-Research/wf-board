@@ -91,6 +91,7 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   for (const item of items) {
     const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
     assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
+    assert.notEqual(kind, "none", `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
     assert.equal(item.textContent, SEGMENT_TEXT[kind.slice(3) as SegmentKind], `the name beside a swatch is the name of its kind (${kind})`);
     assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
   }
