@@ -36,7 +36,7 @@ const run = promisify(execFile);
 // generation pays the collection, so a press would carry the cost of the presses before it, of other windows (docs/design.md, The
 // n-key lane). Emptied before the key, the young generation holds only what the press itself allocates.
 setFlagsFromString("--expose-gc");
-const collect = runInNewContext("gc") as (options: { type: "minor"; execution: "sync" }) => void;
+const collect = runInNewContext("gc") as (options: { type: "minor" | "major"; execution: "sync" }) => void;
 /** Windows opened in this process, for a source text of each window's own. */
 let opened = 0;
 /** The seed of the press orders of this run: `NKEY_SEED` to repeat a run, else a new one; the lane logs it. */
@@ -358,6 +358,8 @@ export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Pr
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
+  /** The order the windows of the first round opened in. */
+  opening: string[];
   /** Busy times of the measured pairs of all rounds, per window. */
   busy: Record<string, number[]>;
   rounds: number;
@@ -379,6 +381,7 @@ export interface PhaseResult {
 export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
+  let firstOpening: string[] | undefined;
   let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false;
   const alone: Interval[] = [];
   // A run that sets the noise floor makes this many rounds whatever the twin shows, and reads each round's own interval.
@@ -387,8 +390,13 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
     rounds++;
     const scope = new Scope();
     try {
-      const open: Press[] = [];
-      for (const w of windows) open.push(await w.open(scope));
+      // The windows open in a random order, and one full collection after the last leaves the objects of all of them in the same
+      // state, so that no window is the one whose page was built first.
+      const opening = randomOrder(windows.length, orderRnd.next), opened: Press[] = [];
+      for (const k of opening) opened[k] = await windows[k]!.open(scope);
+      const open = opened as Press[];
+      if (process.env.NKEY_TMP_SETTLE_GC !== "0") collect({ type: "major", execution: "sync" });
+      firstOpening ??= opening.map(k => windows[k]!.label);
       const lands = await pairedLandings(open, WARMUP + PAIRS, events);
       first ??= lands;
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
@@ -399,5 +407,5 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
   const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, alone, sound, verdicts, misses };
+  return { first: first!, opening: firstOpening!, busy, rounds, ratios, versus, alone, sound, verdicts, misses };
 }

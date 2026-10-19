@@ -30,7 +30,7 @@ test(`acceptance of the time layer: ${kind} ${phase}`, { timeout: 20 * 60_000 },
     log(`accept ${kind} ${phase} run ${k + 1}: cand/base ${show(ratio)} log ${Math.log(ratio.ratio).toFixed(5)} rounds ${r.rounds} verdict ${r.verdicts.cand} twin ${show(r.ratios.twin!)}`);
     lap(`accept run ${k + 1}`);
     // Every landing of the round with what the page marked, for the analysis of a window that reads slower than its twin.
-    for (const [label, list] of Object.entries(r.first)) list.forEach((l, i) => dump.push({ run: k, label, i, busy: l.busy, draws: l.draws, rules: l.rules, full: l.full, structure: l.structure, stops: l.stops, freshStops: l.freshStops, filters: l.filters, innerHtml: l.innerHtml, created: l.created, scopes: l.scopes, item: l.item }));
+    for (const [label, list] of Object.entries(r.first)) list.forEach((l, i) => dump.push({ run: k, label, i, opened: r.opening.indexOf(label), settle: process.env.NKEY_TMP_SETTLE_GC ?? "1", busy: l.busy, draws: l.draws, rules: l.rules, full: l.full, structure: l.structure, stops: l.stops, freshStops: l.freshStops, filters: l.filters, innerHtml: l.innerHtml, created: l.created, scopes: l.scopes, item: l.item }));
   }
   if (process.env.ACCEPT_OUT) writeFileSync(process.env.ACCEPT_OUT, JSON.stringify(dump));
 });

@@ -8,18 +8,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   accept:
-    name: accept ${{ matrix.kind }} ${{ matrix.phase }} ${{ matrix.job }}
+    name: accept ${{ matrix.kind }} ${{ matrix.phase }} gc${{ matrix.settle }} ${{ matrix.job }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         kind: [copy]
-        phase: [writing]
-        job: [0, 1, 2, 3, 4, 5]
-        include:
-          - { kind: copy, phase: quiet, job: 0 }
-          - { kind: copy, phase: quiet, job: 1 }
-          - { kind: copy, phase: quiet, job: 2 }
+        phase: [writing, quiet]
+        settle: ["1", "0"]
+        job: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -31,11 +28,12 @@ jobs:
       - env:
           ACCEPT_KIND: ${{ matrix.kind }}
           ACCEPT_PHASE: ${{ matrix.phase }}
-          ACCEPT_ROUNDS: ${{ matrix.kind == 'copy' && 5 || 1 }}
+          ACCEPT_ROUNDS: 8
           ACCEPT_OUT: accept.json
+          NKEY_TMP_SETTLE_GC: ${{ matrix.settle }}
         run: node --test --test-concurrency=1 test/nkey/tmp-accept.nkey.ts
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: accept-${{ matrix.kind }}-${{ matrix.phase }}-${{ matrix.job }}
+          name: accept-${{ matrix.kind }}-${{ matrix.phase }}-gc${{ matrix.settle }}-${{ matrix.job }}
           path: accept.json
