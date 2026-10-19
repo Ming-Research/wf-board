@@ -1,59 +1,50 @@
 name: tmp-gate-margin
-# Temporary (ci-gate-margin): what the temp directory and git's fsync cost the DOM tests, on push.
-on: push
+# Temporary (ci-gate-margin): the 20 test shards and the n-key lane with the temp directory in memory, as the full CI runs them
+# otherwise, to read the seconds of each file and each job.
+on:
+  push:
+  workflow_dispatch:
 jobs:
-  conditions:
+  test:
+    name: test shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: the machine
+      - name: tests
+        env:
+          TMPDIR: /dev/shm
         run: |
-          nproc; free -m | head -2; df -h /tmp /dev/shm | cat; mount | grep -E " /dev/shm | /tmp " || true; git --version; node --version
-          git config --global --list | cat
-      - name: one file under three conditions, three rounds
-        run: |
-          set -u
-          f=test/dom/runner-table-spoiled-1.test.ts
-          one() { # label, then env assignments
-            local label=$1; shift
-            local t0=$(date +%s.%N)
-            env "$@" node --test --test-reporter=./scripts/test-times-reporter.ts $f > /tmp/out.txt 2>&1 || { echo "FAILED under $label"; cat /tmp/out.txt | head -40; }
-            local t1=$(date +%s.%N)
-            printf '%-14s %6.1f s wall   %s\n' "$label" "$(echo "$t1 - $t0" | bc)" "$(grep -E '^\| test' /tmp/out.txt | head -1)"
-          }
-          for round in 1 2 3; do
-            echo "-- round $round"
-            one default A=1
-            one tmpfs TMPDIR=/dev/shm
-            one git-nofsync A=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_VALUE_0=none
-            one both TMPDIR=/dev/shm GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_VALUE_0=none
-          done
-      - name: phases of one scenario, default and tmpfs
-        run: |
-          node scripts/tmp-phases.ts | grep -E "seedBoard|startBoard|DomPage.open"
-          echo "-- tmpfs"
-          TMPDIR=/dev/shm node scripts/tmp-phases.ts | grep -E "seedBoard|startBoard|DomPage.open"
-  shard:
+          timeout 60 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+  nkey:
+    name: nkey ${{ matrix.part }} ${{ matrix.tmp }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [counts, witnesses, time-quiet, time-writing]
+        tmp: [disk, memory]
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/node-modules
-      - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: the files of a heavy shard, as a shard runs them, default and tmpfs, twice each
-        run: |
-          set -u
-          files="test/dom/runner-table-spoiled-1.test.ts test/dom/runner-table-spoiled-2.test.ts test/dom/runner-table-spoiled-3.test.ts test/dom/page-filters-after-1.test.ts test/query.test.ts test/deploy.test.ts"
-          for round in 1 2; do
-            for cond in default tmpfs; do
-              if [ $cond = tmpfs ]; then export TMPDIR=/dev/shm; else unset TMPDIR; fi
-              t0=$(date +%s.%N)
-              node --test --test-reporter=./scripts/test-times-reporter.ts $files > /tmp/out-$cond.txt 2>&1 || { echo "FAILED under $cond"; head -60 /tmp/out-$cond.txt; }
-              t1=$(date +%s.%N)
-              printf '%-8s round %s %6.1f s wall\n' $cond $round "$(echo "$t1 - $t0" | bc)"
-              grep -E '^\| test|files, ' /tmp/out-$cond.txt
-            done
-          done
+      - name: Base page
+        run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
+      - if: ${{ matrix.tmp == 'memory' }}
+        run: echo "TMPDIR=/dev/shm" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
