@@ -4669,7 +4669,7 @@ verdict on made-up pairs whose answer is known.
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 16 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
+`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
 last check (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
@@ -4793,7 +4793,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 16 shards (8 until the checks of the browser moved into the suite), each in a job of its own, beside the type check, which is a
+full CI as 20 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -4851,6 +4851,37 @@ files, 25 to 33 seconds each among two others (`page-cards`, `page-tree`, `page-
 the three `rules-reuse` files, `page-numbers`, `page-plan`): more shards do not shorten
 a shard that holds one of them, and a typical 50 seconds needs those files split. The
 costs in the table are the mean of four runs of the 16.
+
+**After the split** (hosted runners, 19 October 2026): the files of 25 seconds and more
+were split: each `rules-reuse` seed into two files that replay the same 100 writes and
+compare half of them each (the replay takes 2.3 seconds of the 26, the comparison 24, and
+the writes depend on each other, so the writes cannot be dealt out but the comparison can,
+and `rules-reuse-share.test.ts` shows that the parts find what one comparison of every
+write finds), and the page files into 11 (the families, the two passes, the project
+filters over two files). A split file alone took 7 to 22 seconds; among two others on one
+runner 12 to 29. The sum of the files' seconds went from 906 to 941 (the earlier measurement and two main-line runs
+before the split) to 1,064 to 1,099 (four full CIs after it), since each page file builds
+its own board and bundle and an "after" pass replays the bursts of the rounds before it.
+With the largest file at about 29 seconds the floor is gone: a shard's step is about the
+sum of its files' seconds divided by three plus a second. The sums of the 16 shards
+differed by up to 25% from run to run for the same costs (51 to 89 seconds: the speed of the
+runner and of the files that share it), so the shard that ends last is about 5 seconds
+over the mean step. Four full CIs of the 16 (the cost table the mean of the runs before)
+ended the last test shard 49, 53, 53 and 56 seconds after the start of the run
+(`tests` 17 to 32, mean 25.5). The same scripts dealt to 20 shards in one run took `tests` 17
+to 27 seconds (mean 22.0), the longest job 42; to 24 shards 12 to 25 (mean 18.7), the longest
+job 41. A job is about 5 seconds of wait for a runner and 10 to 15 of set-up around its
+step. Twenty shards put the last test shard about 47 seconds after the start (42 plus the wait);
+twenty-four ones only one second sooner.
+
+**With 20 shards** (the cost table frozen, five full CIs of one commit, one after the other):
+the last test shard ended 51, 50, 46, 47 and 50 seconds after the start of the run (median
+50), its `tests` step took 14 to 31 seconds (mean 22.1; the longest of each run 31, 26, 27,
+27, 27), and the sum of the file seconds of a shard ranged from 37 to 68 seconds within a
+run (the table has about 54 for each). The total of the run was 58, 52, 52, 53 and 59
+seconds, the last job in each being a part of the n-key lane (`witnesses` or `time-writing`,
+ended 52 to 59 seconds after the start), so the test shards are no longer what ends a run
+last.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and

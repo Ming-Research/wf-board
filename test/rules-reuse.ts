@@ -1,10 +1,11 @@
 // What the tests of the rules' reuse share (test/rules-reuse-*.test.ts): rules that reuse the Rules object of the state before
 // a write (rules' `previous`, docs/design.md section 4, Write cost) must answer exactly what rules derived from nothing answer,
 // for the time they answer for. The oracle is that from-scratch derivation, on a generated board of the live board's size after
-// random writes of the kinds sessions make. The writes are split over files of their own seeds, so the shards of the full CI
-// run them side by side.
+// random writes of the kinds sessions make. The writes are split over files of their own seeds, and the comparisons of a seed over
+// several files (`reuseTests`), so the shards of the full CI run them side by side.
 
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,17 +111,24 @@ function write(rnd: ReturnType<typeof prng>, s: Snapshot, at: string, pools: { n
  * from the previous Rules object a moment later, as the page builds on each change event. Each Rules object is compared
  * with rules derived from nothing for the time it answers for after the next one was built from it: the next build then
  * reuses what the page would leave, part of its answers asked and the rest not. Stops at the first mismatch when
- * `firstMismatch`.
+ * `firstMismatch`. With `share`, the comparison is made for the writes k with k % of === part only: the writes depend on each
+ * other, so every file replays the whole sequence, and the comparison, which is where the seconds go, is shared out. The
+ * replay does not depend on what is compared (the Rules object of a write is compared after the next one was built from it,
+ * and what is asked of an object afterwards cannot reach a later one), so the parts of a seed together compare every write once.
  */
-export function run(m: RulesModule, board: ReturnType<typeof liveSized>, seed: number, writes: number, compare: (r: Rules, s: Snapshot) => string, firstMismatch = false) {
+export function run(m: RulesModule, board: ReturnType<typeof liveSized>, seed: number, writes: number, compare: (r: Rules, s: Snapshot) => string, firstMismatch = false, share?: Share) {
   const rnd = prng(seed);
   let s = board.s, clock = board.start, time = clock, r = m.rules(s, time);
   const fresh = m.rules(s, time), paused = Object.keys(s.items).filter(id => fresh.isPaused(id));
   const waitingOnPaused = Object.keys(s.items).filter(id => fresh.isOpenWork(id) && !fresh.isPaused(id) && fresh.depsOf(id).some(d => d.kind === "item" && !d.own && paused.includes(d.id)));
   const pools = { named: board.named, waitingOnPaused };
   const reasons = new Map<string, number>(), kinds = new Map<string, number>(), mismatches: string[] = [];
-  let pending: { r: Rules; s: Snapshot; time: number; what: string } | undefined;
-  const check = (p: NonNullable<typeof pending>) => { if (compare(m.rules(p.s, p.time), p.s) !== compare(p.r, p.s)) mismatches.push(p.what); };
+  let pending: { r: Rules; s: Snapshot; time: number; what: string; k: number } | undefined, compared = 0;
+  const check = (p: NonNullable<typeof pending>) => {
+    if (share && p.k % share.of !== share.part) return;
+    compared++;
+    if (compare(m.rules(p.s, p.time), p.s) !== compare(p.r, p.s)) mismatches.push(p.what);
+  };
   for (let k = 0; k < writes && !(firstMismatch && mismatches.length); k++) {
     clock += rnd.chance(0.06) ? MINUTE : 300 + rnd.int(5000);
     const at = stamp(clock), w = write(rnd, s, at, pools);
@@ -132,9 +140,35 @@ export function run(m: RulesModule, board: ReturnType<typeof liveSized>, seed: n
     if (reason !== "reused") time = built;
     if (pending) check(pending);
     for (const id of Object.keys(after.items)) if (rnd.chance(0.5)) { next.statusOf(id); next.checks(id); next.stalledBelow(id); }
-    pending = { r: next, s: after, time, what: `write ${k}: ${w.kind} on ${w.id}` };
+    pending = { r: next, s: after, time, what: `write ${k}: ${w.kind} on ${w.id}`, k };
     s = after; r = next;
   }
   if (pending && !(firstMismatch && mismatches.length)) check(pending);
-  return { reasons, kinds, mismatches, stalledAtStart: Object.keys(board.s.items).filter(id => fresh.checks(id).some(c => c.label === m.STALLED_LABEL)).length, waitingOnPaused: waitingOnPaused.length };
+  return { reasons, kinds, mismatches, compared, stalledAtStart: Object.keys(board.s.items).filter(id => fresh.checks(id).some(c => c.label === m.STALLED_LABEL)).length, waitingOnPaused: waitingOnPaused.length };
+}
+
+/** One file's part of a sequence's comparisons: the writes k with k % of === part. */
+export interface Share { part: number; of: number }
+
+/**
+ * One test file's share of the comparison for the writes of `seed` (100 of them, on a board of the live board's size): the
+ * Rules object of each write is compared with rules derived from nothing, and the files of a seed (`of` of them, numbered
+ * from 0) together compare each write once. The files are dealt out to the shards of the full CI, so each takes a part of the
+ * seconds the whole comparison needs.
+ */
+export function reuseTests(seed: number, part: number, of: number) {
+  const writes = 100, mine = Array.from({ length: writes }, (_, k) => k).filter(k => k % of === part).length;
+  test(`reused rules answer what rules derived from nothing answer, after every write on a board of the live board's size (seed ${seed}, part ${part + 1} of ${of}: writes ${part}, ${part + of}, ${part + 2 * of}, ...)`, { timeout: 10 * 60_000 }, () => {
+    const board = liveSized();
+    assert.ok(Object.keys(board.s.items).length >= 1500, "the board has about 1,600 items");
+    const { reasons, kinds, mismatches, compared, stalledAtStart, waitingOnPaused } = run(current, board, seed, writes, answers, false, { part, of });
+    console.log(`rules reuse: ${[...reasons].map(([k, v]) => `${k} ${v}`).join(", ")}; writes ${[...kinds].map(([k, v]) => `${k} ${v}`).join(", ")}; ${stalledAtStart} stalled at the start, ${waitingOnPaused} waiting on paused work; compared ${compared} of ${writes} writes (seed ${seed}, part ${part + 1} of ${of})`);
+    assert.deepEqual(mismatches, [], "every Rules object answers what a derivation from nothing answers");
+    assert.equal(compared, mine, "the part compared its share of the writes");
+    // The premises of the comparison: most writes reused, the rest refused for the reasons the sequence makes, and the
+    // states the guards protect were there.
+    assert.ok((reasons.get("reused") ?? 0) > 50, "most writes reused the previous Rules object");
+    assert.ok((reasons.get("document") ?? 0) > 2 && (reasons.get("minute") ?? 0) > 1, "plan writes and new minutes built from nothing");
+    assert.ok(stalledAtStart >= 30 && waitingOnPaused > 0, "stalled items and items waiting on paused work were there to be changed");
+  });
 }

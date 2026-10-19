@@ -56,7 +56,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-  # The script tests in 16 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
+  # The script tests in 20 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
   # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 60 seconds
   # and a test at 40, so that a slow shard or test is named in the log of a red run; the time gate reads the step `tests`.
   test:
@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
