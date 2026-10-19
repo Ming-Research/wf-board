@@ -1,7 +1,7 @@
 // The arithmetic and the verdict of the n-key lane's time layer (test/nkey/stats.ts), on pairs made up here whose answer is known.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { balancedOrders, compare, judge, tQuantile, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, tQuantile, twinIsSound } from "./stats.ts";
 import type { Interval } from "./stats.ts";
 import { prng } from "../e2e/board-gen.ts";
 
@@ -50,25 +50,28 @@ test("the verdict: the twin must show this run's noise before the page is judged
   assert.ok(!twinIsSound(interval(0.9, 1.1), floor));
 });
 
-/** How often each window comes right after each other one when the rounds repeat in a cycle, the step between rounds included. */
-function followers(orders: number[][]): Map<string, number> {
-  const seq = orders.flat(), count = new Map<string, number>();
-  seq.forEach((x, k) => { const key = `${seq[(k - 1 + seq.length) % seq.length]}>${x}`; count.set(key, (count.get(key) ?? 0) + 1); });
-  return count;
-}
-
-test("in the balanced orders every window presses once a round and follows each other window exactly once per cycle", () => {
-  for (let n = 2; n <= 6; n++) {
-    const orders = balancedOrders(n);
-    assert.equal(orders.length, n - 1, `${n} windows: a cycle of ${n - 1} rounds`);
-    for (const round of orders) assert.deepEqual([...round].sort(), [...Array(n).keys()], `${n} windows: each round is every window once`);
-    const count = followers(orders);
-    assert.equal(count.size, n * (n - 1), `${n} windows: every ordered pair of two windows occurs`);
-    assert.ok([...count.values()].every(c => c === 1), `${n} windows: no pair occurs twice`);
+test("a random order puts every window in every place and after every other window about equally often", () => {
+  const rnd = prng(41), n = 4, rounds = 6000;
+  const place = Array.from({ length: n }, () => Array(n).fill(0)), after = new Map<string, number>();
+  let last: number | undefined;
+  for (let r = 0; r < rounds; r++) {
+    const order = randomOrder(n, rnd.next);
+    assert.deepEqual([...order].sort(), [0, 1, 2, 3], "each round is every window once");
+    order.forEach((w, k) => { place[w]![k]++; if (last !== undefined) after.set(`${last}>${w}`, (after.get(`${last}>${w}`) ?? 0) + 1); last = w; });
   }
-  // The rotation the lane used before is not balanced: with 4 windows the first (the base) follows the last (the slow witness) in
-  // three rounds of four, and the third never.
-  const rotation = [0, 1, 2, 3].map(r => [0, 1, 2, 3].map(k => (k + r) % 4));
-  assert.equal(followers(rotation).get("3>0"), 3);
-  assert.equal(followers(rotation).get("3>2"), undefined);
+  // Each window in each place in a quarter of the rounds, within 4 standard deviations (one is about 34 of 1500).
+  for (const row of place) for (const c of row) assert.ok(Math.abs(c - rounds / n) < 4 * Math.sqrt(rounds * (1 / n) * (1 - 1 / n)), `a place held ${c} times of ${rounds}`);
+  // After another window: each of the 12 ordered pairs, and a window after itself across a round's end, near their expected shares.
+  const steps = rounds * n - 1, others = [...after].filter(([k]) => k[0] !== k[2]).map(([, c]) => c);
+  assert.equal(others.length, n * (n - 1));
+  const mean = others.reduce((a, c) => a + c, 0) / others.length;
+  for (const c of others) assert.ok(Math.abs(c - mean) < 0.1 * mean, `an ordered pair followed ${c} times against ${mean.toFixed(0)} (${steps} steps)`);
+});
+
+test("a fixed rotation is not balanced, which the random order replaces", () => {
+  // With 4 windows the first (the base) follows the last (the slow witness) in three rounds of four, and the third never.
+  const rotation = [0, 1, 2, 3].map(r => [0, 1, 2, 3].map(k => (k + r) % 4)), seq = rotation.flat(), count = new Map<string, number>();
+  seq.forEach((x, k) => { const key = `${seq[(k - 1 + seq.length) % seq.length]}>${x}`; count.set(key, (count.get(key) ?? 0) + 1); });
+  assert.equal(count.get("3>0"), 3);
+  assert.equal(count.get("3>2"), undefined);
 });

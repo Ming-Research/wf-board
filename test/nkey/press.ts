@@ -7,8 +7,7 @@
 //   being timed.
 // - A window's press is counted (draws, rebuilds of the board's rules, counts of the filters, markup written, elements made) and
 //   timed (the seconds the event loop was busy from the key until the page was quiet).
-// - Pages that are compared press in turn, in orders where each follows each other equally often, so landing k of every page is one
-//   pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
+// - Pages that are compared press in turn, in a random order drawn afresh each round, so landing k of every page is one pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
 // - A virtual clock stands in for the page's timers longer than a frame and for the answers a test holds back, so a baseline that
 //   arrives 300 ms late is 300 ms of the clock's time and no real waiting.
 
@@ -29,7 +28,7 @@ import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { rewrite } from "../e2e/seed.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { balancedOrders, compare, judge, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
 const run = promisify(execFile);
@@ -40,6 +39,9 @@ setFlagsFromString("--expose-gc");
 const collect = runInNewContext("gc") as (options: { type: "minor"; execution: "sync" }) => void;
 /** Windows opened in this process, for a source text of each window's own. */
 let opened = 0;
+/** The seed of the press orders of this run: `NKEY_SEED` to repeat a run, else a new one; the lane logs it. */
+export const ORDER_SEED = Number(process.env.NKEY_SEED ?? Math.floor(Math.random() * 2 ** 31));
+const orderRnd = prng(ORDER_SEED);
 type Fetcher = NonNullable<PageOptions["fetch"]>;
 type Loose = Record<string, any>;
 
@@ -302,16 +304,14 @@ export async function landings(win: Press, wanted: number, events?: readonly (st
   return out;
 }
 
-/** Presses n in each window in turn, in the balanced orders of `balancedOrders` (each window follows each other equally often), until
- * every window has landed `wanted` other items on the same presses; landing k of every window is then a pair. Windows walk the same
- * list, so they land together. */
+/** Presses n in each window in turn, in a random order drawn afresh each round (`randomOrder`), until every window has landed `wanted`
+ * other items on the same presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
 export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[]): Promise<Record<string, Landing[]>> {
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
-  const orders = balancedOrders(wins.length);
   for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
     if (events && wins[0]!.presses >= events.length) throw new Error(`the walk made ${wins[0]!.presses} presses and there are only ${events.length} change events for them`);
-    const order = orders[presses % orders.length]!.map(k => wins[k]!);
+    const order = randomOrder(wins.length, orderRnd.next).map(k => wins[k]!);
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
       const r = await win.press(events?.[win.presses]);

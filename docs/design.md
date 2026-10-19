@@ -4645,8 +4645,8 @@ list read. After m the page asks for the unread list and does not fetch the boar
 **Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
 the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that
 commit's `web/` and `src/`; none when `web/` and `src/` are as they are there), with the board quiet and with a write in each press. Windows of the base,
-of the twin of the base (the same page again, the control) and of the page when it differs are open side by side and press n in turn, in orders where each
-window comes right after each other window equally often (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
+of the twin of the base (the same page again, the control) and of the page when it differs are open side by side and press n in turn, in an order drawn at
+random afresh each round, with a seed of each run's own that the log names (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
 holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
 otherwise. One round of 30 pairs estimates the ratio within about 1.2% (the standard deviation of the estimate between rounds, 1.0–1.7% by phase, measured
@@ -4676,15 +4676,18 @@ garbage collector inside it) found three sources, and the lane removes each:
   compiled code and the one that reached a function first paid for both, while a page of other text (the changed page, the witnesses) paid
   all its own. With the minor collection alone a copy of the base in the changed page's place still read +1.5% (±0.5%) quiet; with a last
   line of its own for every window's text it read +0.0% (±0.3%), and the page with 1.5 ms more per draw read +3.0% instead of +3.7%.
-- *The window before.* The order is balanced (`balancedOrders` in `test/nkey/stats.ts`): a cycle of n−1 rounds in which each window comes
-  right after each other one exactly once, the step from round to round included, instead of the rotation, which balanced only the place in
-  the round. Its own effect was within the noise once the first two were removed; it is kept because it costs nothing and holds whatever
-  else a press leaves behind.
+- *The windows before.* The rotation balanced only the place in the round. A cycle of n−1 rounds in which each window comes right after
+  each other one exactly once (tried next) left the base two presses after the slow witness in two rounds of three, and over 30 single
+  rounds per phase on 12 hosted runners the twin then read 0.82% (±0.26%) quiet and 1.13% (±0.21%) writing faster than the base, a copy
+  of the base in the changed page's place 0.44% (±0.25%) and 0.66% (±0.32%): what a press leaves reaches further than the next press.
+  The order of each round is therefore drawn at random (`randomOrder` in `test/nkey/stats.ts`), with a new seed each run (`NKEY_SEED`
+  repeats one): whatever the windows before leave falls on every window alike on average and widens the spread of the pairs, which
+  the interval measures, instead of standing beside it as a bias.
 
-With all three, over 16 rounds writing and 12 quiet, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
+With the first two and the balanced cycle, over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
 (±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
 probe's data are in the artifacts of the runs of the temporary workflow `tmp-probe` on the branch of item nkey-lane-false-red (runs 39189114067, 39189922884,
-39190549744).
+39190549744), those of the balanced cycle with four windows in run 39191754978 of the temporary workflow `tmp-accept`.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that

@@ -12,7 +12,7 @@
 //             rules again but derives them from scratch no time except in a new minute and counts the filters of every item no time.
 //   time    – the seconds the event loop was busy from the key until the page was quiet, as the page of this commit over the page of
 //             the base (the merge base, or the commit before a push to the main line), quiet and with a write in each press: pairs
-//             of presses made one after the other in a balanced order, the twin of the base as the control, the 95% interval of the
+//             of presses made one after the other in a random order, the twin of the base as the control, the 95% interval of the
 //             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval holds 1 within the noise floor;
 //             then an interval wholly above 1 is red, of any size. When it does not count, 30 pairs more are made in fresh windows
 //             (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The absolute 0.2 s is not
@@ -28,7 +28,7 @@ import { performance as perf } from "node:perf_hooks";
 import { startLiveBoard } from "../e2e/live-board.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, writeEvents } from "./press.ts";
+import { ORDER_SEED, Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, writeEvents } from "./press.ts";
 import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
@@ -138,6 +138,7 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
   const base = median(r.busy.base!);
   log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (not within ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
+  log(`press-n time (${name}): press orders drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
   const rows = [`| ${name} | base busy median ${ms(base)} ms | twin ${show(r.ratios.twin!)} | rounds ${r.rounds} | ${r.sound ? "counts" : "does not count"} |`];
   const polluted = (r.misses.base ?? 0) + (r.misses.twin ?? 0);
   for (const [label, verdict] of Object.entries(r.verdicts)) {

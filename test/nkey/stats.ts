@@ -46,25 +46,14 @@ export function show(i: Interval): string {
   return `×${f(i.ratio)} [${f(i.lo)}, ${f(i.hi)}] ±${(i.half * 100).toFixed(1)}% over ${i.n} pairs`;
 }
 
-/** The orders in which `n` windows press, one round each, repeated in a cycle of n−1 rounds: across the cycle (the step from one
- * round to the next and from the last back to the first included) each window comes right after each other window exactly once.
- * A press leaves the process in a state the next press inherits, so a window that always followed the same one would carry its
- * effect; rotating the order alone balances the place in the round and not the window before (docs/design.md, The n-key lane). */
-export function balancedOrders(n: number): number[][] {
-  if (n < 2) return [[...Array(n).keys()]];
-  const ids = [...Array(n).keys()], seq: number[] = [], used = new Set<string>(), total = n * (n - 1);
-  const step = (): boolean => {
-    if (seq.length === total) return seq[total - 1] !== seq[0] && !used.has(`${seq[total - 1]}>${seq[0]}`);
-    const round = seq.slice(seq.length - (seq.length % n));
-    for (const x of ids) {
-      const last = seq[seq.length - 1], key = `${last}>${x}`;
-      if (round.includes(x) || last === x || used.has(key)) continue;
-      seq.push(x); if (last !== undefined) used.add(key);
-      if (step()) return true;
-      seq.pop(); if (last !== undefined) used.delete(key);
-    }
-    return false;
-  };
-  if (!step()) throw new Error(`no balanced order for ${n} windows`);
-  return Array.from({ length: n - 1 }, (_, r) => seq.slice(r * n, r * n + n));
+/** The order in which `n` windows press in one round: a random permutation drawn with `next` (uniform in [0, 1)), a new one each
+ * round. A press leaves the process in a state the next presses inherit, so any fixed order lets a window carry the effect of the
+ * windows before it into the comparison as a bias the interval does not see: the rotation balanced only the place in the round, and a
+ * cycle in which each window follows each other once still left the base two presses after the slow witness in two rounds of three.
+ * Drawn afresh each round with a seed of each run's own, the effect falls on every window alike on average and adds to the spread of
+ * the pairs, which the interval measures (docs/design.md, The n-key lane). */
+export function randomOrder(n: number, next: () => number): number[] {
+  const order = [...Array(n).keys()];
+  for (let k = n - 1; k > 0; k--) { const j = Math.floor(next() * (k + 1)); [order[k], order[j]] = [order[j]!, order[k]!]; }
+  return order;
 }
