@@ -3465,6 +3465,25 @@ test("等你 panel is gone when the last blocking wait is answered", async () =>
   await p.change("e".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
   assert.ok(!p.all().some(e=>e.id === "wait-panel"));
 });
+test("等你 panel is kept through a change that leaves its rows, and drawn again when a row's text or the plain-card line changes", async () => {
+  const s=waitSnapshot(), p=await page(s,[]), panel=()=>p.all().find(e=>e.id === "wait-panel")!;
+  const first=panel();
+  // A log entry on an item changes no row of the panel: the element drawn before stays.
+  s.items.area={...s.items.area!,log:[...s.items.area!.log,{at,text:"more"}],rev:2};
+  await p.change("e".repeat(40),[{kind:"item",id:"area",after:s.items.area}]); await p.flush();
+  assert.equal(panel(),first,"an unrelated change keeps the panel drawn before");
+  // The panel stays non-empty while a card's blocks text changes: the row shows the new text.
+  s.decisions.old={...s.decisions.old!,blocks:"#399 换了个停法"};
+  await p.change("f".repeat(40),[{kind:"decision",id:"old",after:s.decisions.old}]); await p.flush();
+  const rows=panel().children.filter(e=>e.className === "waitrow");
+  assert.equal(rows.length,3);
+  assert.ok(rows.some(e=>e.innerHTML.includes("#399 换了个停法")) && !rows.some(e=>e.innerHTML.includes("#398 合并停着")),"the changed blocks text is drawn");
+  // Ruling the plain card leaves every blocking row and removes the plain-card line.
+  s.decisions.plain={...s.decisions.plain!,status:"ruled",choice:"A"};
+  await p.change("c".repeat(40),[{kind:"decision",id:"plain",after:s.decisions.plain}]); await p.flush();
+  assert.equal(panel().children.filter(e=>e.className === "waitrow").length,3);
+  assert.ok(!panel().children.some(e=>e.className === "waitmore"),"no plain card is left, so no plain-card line");
+});
 test("等你 panel shortens a long card question at 40 characters", async () => {
   const s=snapshot(), q40="问".repeat(40), q41=q40+"题";
   s.decisions.a40={...card(),question:q40,blocks:"停着甲"}; s.decisions.a41={...card(),question:q41,blocks:"停着乙"};

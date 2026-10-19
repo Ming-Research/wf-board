@@ -6,11 +6,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { rules, rebuiltBecause, answersFor, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
+import { rules, rebuiltBecause, answersFor, ActivityIndex, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Item, Snapshot } from "../src/model.ts";
 import { architect, asArchitect, board, author, at } from "./helpers.ts";
@@ -178,8 +180,9 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
       // The shared rules of a published state may be built from those of the state before it, and then answer for the time
       // those answered for, in the same minute (docs/design.md, section 4, Write cost). This sequence's clock runs a day behind
       // the real one the writes' own reads use, so it seldom happens here; the next test counts it.
-      const shared = store.derived.rules(after, at);
-      assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answersFor(shared)!), after), `shared rules after ${change.message}`);
+      const shared = store.derived.rules(after, at), answered = answersFor(shared)!;
+      assert.equal(Math.floor(answered / MINUTE), Math.floor(at / MINUTE), `the shared rules after ${change.message} answer for a time in the minute asked for`);
+      assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answered), after), `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);
       assert.deepEqual(derivedView(rules(page, at, { activity: ActivityIndex.build(page) }), page), expected, `page rules after ${change.message}`);
       const index = store.derived.activity(after), built = ActivityIndex.build(after);
@@ -264,9 +267,11 @@ test("the shared rules of a published state are built from the state before it, 
     // A log entry changes no field a status reads; a step's state does.
     if (round % 4 === 3 && row) { steps++; await op.setPlan({ author: it.group, id, row: { id: row.id, text: row.text, state: row.state === "doing" ? "done" : "doing" } }); }
     else { logs++; await op.appendLog({ author: it.group, id, text: `entry ${round}` }); }
-    const after = events.at(-1)!, shared = store.derived.rules(after, Date.now()), reason = rebuiltBecause(shared) ?? "reused";
+    const read = Date.now(), after = events.at(-1)!, shared = store.derived.rules(after, read), reason = rebuiltBecause(shared) ?? "reused";
     reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
-    assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answersFor(shared)!), after), `shared rules after round ${round}`);
+    const answered = answersFor(shared)!;
+    assert.equal(Math.floor(answered / MINUTE), Math.floor(read / MINUTE), `the shared rules after round ${round} answer for a time in the minute asked for`);
+    assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answered), after), `shared rules after round ${round}`);
   }
   const summary = JSON.stringify(Object.fromEntries(reasons));
   // A minute that turns between a write's read and the next, or the first write's new active time, may rebuild one or two.
@@ -311,6 +316,28 @@ test("the affected walk reaches what an owner's status moves for, though the pau
   assert.deepEqual([rb.statusOf("b-top"), ra.statusOf("b-top")], ["todo", "idle"], "the owner's status moves");
   assert.notEqual(presentationSignature(rb, before.decisions, "b-leaf"), presentationSignature(ra, after.decisions, "b-leaf"), "the leaf paints the status of the item waiting on it");
   assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
+});
+
+test("the shared cache holds the state before the newest one and none older, however many writes follow", async t => {
+  setFlagsFromString("--expose-gc");
+  const collect = runInNewContext("gc") as () => void;
+  const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
+  const cache = new DerivedCache(), id = Object.keys(store.snapshot().items)[0]!;
+  // Each state is a new object, as each published snapshot is; only the newest is held here, the first only weakly (a copy, since
+  // the store holds its own).
+  let state: Snapshot = { ...store.snapshot(), items: { ...store.snapshot().items } };
+  const first = new WeakRef(state);
+  for (let k = 0; k < 6; k++) {
+    const next: Snapshot = { ...state, items: { ...state.items } };
+    cache.follows(next, state, [{ kind: "item", id }]);
+    cache.rules(next, Date.now());
+    state = next;
+  }
+  // A WeakRef keeps its target until the current job ends.
+  await new Promise(resolve => setImmediate(resolve));
+  collect();
+  assert.equal(first.deref(), undefined, "the first state was collected: no step of the cache leads back to it");
+  assert.ok(cache.rules(state, Date.now()), "the newest state is still served");
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {

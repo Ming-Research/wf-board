@@ -1,0 +1,133 @@
+name: tmp-review
+# Temporary (board-cpu-usage): the tests the review's fixes touch, the runs that must fail on the code each new test guards,
+# the write path's CPU in interleaved pairs against the merge base with a twin of the base, and peak memory at two numbers of
+# writes. Removed before the branch is ready.
+on: push
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        files:
+          - test/derived.test.ts test/rules-reuse-guards.test.ts test/rules.test.ts
+          - test/store.test.ts test/ops.test.ts test/query.test.ts test/history.test.ts
+          - test/web.test.ts
+          - test/nkey/counts.nkey.ts
+    name: test ${{ matrix.files }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test ${{ matrix.files }}
+  # Each spoils what one new test guards and must see that test fail.
+  witness:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - { name: cache-chain, file: test/derived.test.ts, pattern: "holds the state before the newest" }
+          - { name: panel-markup, file: test/web.test.ts, pattern: "is kept through a change that leaves its rows" }
+          - { name: panel-plain-cards, file: test/web.test.ts, pattern: "is kept through a change that leaves its rows" }
+    name: witness ${{ matrix.case.name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Spoil
+        run: |
+          case "${{ matrix.case.name }}" in
+            # The cache as it was before the fix: a step per state, each holding the state before it.
+            cache-chain) git show 42ef400:src/rules.ts > src/rules.ts ;;
+            panel-markup) sed -i 's/JSON.stringify(\[plainCards, markups, rows.map/JSON.stringify([plainCards, rows.map/' web/app.ts ;;
+            panel-plain-cards) sed -i 's/JSON.stringify(\[plainCards, markups, rows.map/JSON.stringify([markups, rows.map/' web/app.ts ;;
+          esac
+          git diff --stat
+          test -n "$(git diff --name-only)"
+      - name: The test must fail
+        run: |
+          if node --test --test-name-pattern "${{ matrix.case.pattern }}" ${{ matrix.case.file }}; then echo "the test passed on the spoiled code"; exit 1; fi
+          echo "the test failed on the spoiled code, as it must"
+  pairs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4]
+    name: pairs ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Interleaved rounds of base, twin and candidate
+        run: |
+          base=$(git merge-base HEAD origin/main)
+          echo "base $base"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+          out="$RUNNER_TEMP/pairs.jsonl"
+          for round in $(seq 1 10); do
+            for side in $(printf 'base\ntwin\ncand\n' | shuf); do
+              case $side in cand) src="$PWD/src" ;; *) src="$RUNNER_TEMP/base/src" ;; esac
+              node scripts/bench-writes.ts --label "$side" --src "$src" --writes 200 --unread 4000 | grep '^BENCH ' | sed "s/^BENCH /{\"round\":$round,\"side\":\"$side\",\"r\":/; s/\$/}/" >> "$out"
+            done
+          done
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { compare, reference, show, tQuantile } from "./test/nkey/stats.ts";
+            const rows = readFileSync(process.argv[1], "utf8").trim().split("\n").map(l => JSON.parse(l));
+            const of = side => rows.filter(r => r.side === side).sort((a, b) => a.round - b.round).map(r => r.r.cpuMsPerWrite);
+            const base = of("base"), twin = of("twin"), cand = of("cand");
+            const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length;
+            const sd = xs => Math.sqrt(xs.reduce((a, x) => a + (x - mean(xs)) ** 2, 0) / (xs.length - 1));
+            const ci = xs => { const h = tQuantile(xs.length - 1) * sd(xs) / Math.sqrt(xs.length); return `${mean(xs).toFixed(1)} ms [${(mean(xs) - h).toFixed(1)}, ${(mean(xs) + h).toFixed(1)}]`; };
+            console.log("base CPU ms/write", base.join(" "), "->", ci(base));
+            console.log("twin CPU ms/write", twin.join(" "), "->", ci(twin));
+            console.log("cand CPU ms/write", cand.join(" "), "->", ci(cand));
+            console.log("twin/base", show(compare(twin, base)));
+            console.log("cand/base", show(compare(cand, base)));
+            console.log("cand/ref", show(compare(cand, reference(base, twin))));
+            console.log("peak RSS MB base", rows.filter(r => r.side === "base").map(r => r.r.peakRssMB).join(" "), "cand", rows.filter(r => r.side === "cand").map(r => r.r.peakRssMB).join(" "));
+          ' "$out" | tee -a "$GITHUB_STEP_SUMMARY"
+  memory:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        writes: [300, 1500]
+    name: memory ${{ matrix.writes }} writes
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/bench-writes.ts --label "${{ matrix.writes }} writes" --writes ${{ matrix.writes }} --unread 4000

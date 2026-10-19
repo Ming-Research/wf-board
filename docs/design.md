@@ -668,8 +668,12 @@ derivation design that replaced this:
   after random writes, owner comments and reads. Before, each change event made the
   page fetch the whole list again (347 KB with 1,000 stops) and each new head walked
   the history from the cursor again: with the owner 4,000 commits behind, a `set_tags`
-  write cost the daemon 67 to 76 ms of CPU against 46.5 ms with nothing unread (a
-  hosted runner, `scripts/bench-writes.ts --unread 4000`, board-cpu-usage). With the
+  write cost the daemon 55.5 and 75.7 ms of CPU in two runs against 36.6 and 46.5 ms
+  with nothing unread (hosted runners, `scripts/bench-writes.ts --unread 4000`, without
+  the profiler, board-cpu-usage). The daemon also derived the rules of every published
+  state from nothing: in the profile of the replay with nothing unread, the rules'
+  memoized derivations (`cached` in `src/rules.ts`) took 16.3 ms a write, the profiler's
+  own cost included. With the
   continued list, the shared rules' reuse and the commit below, the same benchmark gives
   31.2 ms with the owner 4,000 commits behind and 23.8 ms with nothing unread (one run
   each on a hosted runner, board-cpu-usage).

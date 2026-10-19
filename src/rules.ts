@@ -753,13 +753,14 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
 export class DerivedCache {
   private latest?: ActivityIndex;
   private readonly byState = new WeakMap<object, { bucket: number; rules: Rules }>();
-  /** For a published state, the state one write made it from and what that write changed (`follows`). */
-  private readonly made = new WeakMap<object, { before: object } & Omit<PreviousRules, "rules">>();
+  /** The newest published state, the state one write made it from and what that write changed (`follows`). Only the newest step
+   * is kept: a step per state, each holding the state before it, would keep every state since the cache began. */
+  private step?: { after: object; before: object } & Omit<PreviousRules, "rules">;
   /** `after` was published by one write on `before` that changed the documents `changed` and moved the activity by `activity`:
    * its Rules object is built from before's when that one is of the same minute (rules' `previous`), as the page builds its own
-   * (docs/design.md, section 4, Write cost). */
+   * (docs/design.md, section 4, Write cost). It replaces the step before, so the cache holds two states at most. */
   follows(after: RulesInput, before: RulesInput, changed: PreviousRules["changed"], activity?: ActivityDelta): void {
-    this.made.set(after, { before, changed, ...(activity ? { activity } : {}) });
+    this.step = { after, before, changed, ...(activity ? { activity } : {}) };
   }
   /** The activity index of `s`, advanced from the newest index this cache made. */
   activity(s: ActivityInput): ActivityIndex {
@@ -769,7 +770,7 @@ export class DerivedCache {
   rules(s: RulesInput, now = Date.now()): Rules {
     const bucket = Math.floor(now / 60_000), hit = this.byState.get(s);
     if (hit?.bucket === bucket) return hit.rules;
-    const step = this.made.get(s), prior = step && this.byState.get(step.before);
+    const step = this.step?.after === s ? this.step : undefined, prior = step && this.byState.get(step.before);
     const previous = step && prior?.bucket === bucket ? { rules: prior.rules, changed: step.changed, ...(step.activity ? { activity: step.activity } : {}) } : undefined;
     const made = rules(s, now, { activity: () => this.activity(s), ...(previous ? { previous } : {}) });
     this.byState.set(s, { bucket, rules: made });
