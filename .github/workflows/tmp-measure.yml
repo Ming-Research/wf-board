@@ -36,6 +36,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test ${{ matrix.files }}
   bench:
     runs-on: ubuntu-latest

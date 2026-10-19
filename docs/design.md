@@ -669,7 +669,10 @@ derivation design that replaced this:
   page fetch the whole list again (347 KB with 1,000 stops) and each new head walked
   the history from the cursor again: with the owner 4,000 commits behind, a `set_tags`
   write cost the daemon 67 to 76 ms of CPU against 46.5 ms with nothing unread (a
-  hosted runner, `scripts/bench-writes.ts --unread 4000`, board-cpu-usage).
+  hosted runner, `scripts/bench-writes.ts --unread 4000`, board-cpu-usage). With the
+  continued list, the shared rules' reuse and the commit below, the same benchmark gives
+  31.2 ms with the owner 4,000 commits behind and 23.8 ms with nothing unread (one run
+  each on a hosted runner, board-cpu-usage).
 - A write starts two git processes: `git add` of its paths and `git commit --only` of
   the same paths, which commits exactly them whatever else is staged, so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
@@ -680,7 +683,7 @@ derivation design that replaced this:
   runner, with the daemon holding about 1.9 GB, the profile of a `set_tags` write gave
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
-  the store's own code around them.
+  the store's own code around them; with the commit's two, the write costs 31.2 ms.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
@@ -691,7 +694,10 @@ as the open page does, and `--profile` prints where the CPU went.
 `scripts/bench-page.ts` measures the page's side: the real page in jsdom on a board of
 the live board's weight (`test/e2e/live-board.ts`), given the change events of real
 `set_tags` and log writes with the server's answers recorded beforehand, so the time
-is the page's own; it prints the busy time from each event until the page is quiet.
+is the page's own; it prints the busy time from each event until the page is quiet. With the
+spliced unread list and the top bar drawn again only when its inputs change, the 90th percentile
+of that time is 41.4 ms for a `set_tags` event and 27.8 ms for a log event (one run on a hosted
+runner, board-cpu-usage).
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in

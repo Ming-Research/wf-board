@@ -393,7 +393,7 @@ test("preexisting staged files cannot enter a board transaction", async t => {
   const { commit } = await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
   assert.equal(await git(dir, "rev-parse", "HEAD"), commit);
   assert.equal(store.snapshot().head, commit);
-  assert.equal(await git(dir, "show", "--name-only", "--format=", commit), "items/a.yaml", "the commit holds the write's path alone");
+  assert.equal(await git(dir, "show", "--name-only", "--format=", commit), "items/a.yaml\nnumbers.yaml", "the commit holds the write's paths alone");
   assert.equal(await git(dir, "diff", "--cached", "--name-only"), "unrelated.txt", "what was staged by hand stays staged");
   const [stamp] = (await git(dir, "show", "-s", "--format=%aI", commit)).split("\n");
   assert.deepEqual(ats, [new Date(stamp!).toISOString()], "the write's time is its commit's author time");
