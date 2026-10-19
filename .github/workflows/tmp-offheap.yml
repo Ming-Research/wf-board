@@ -1,6 +1,6 @@
 name: tmp-offheap
-# Temporary (item board-offheap): the memory study of the daemon, on a macOS and a Linux hosted runner. Removed before the
-# pull request is ready. The variants and sizes are in study-config.json, so a change of them is a push.
+# Temporary (item board-offheap): the memory study of the daemon, on a macOS hosted runner. Removed before the pull request is
+# ready. The variants and sizes are in study-config.json, so a change of them is a push.
 on:
   push:
     branches: [board-offheap]
@@ -9,16 +9,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
-        variant: [default-a, default-b, osize, semi4, semi2, saver, balancer]
-    name: study ${{ matrix.os }} ${{ matrix.variant }}
-    runs-on: ${{ matrix.os }}
+        variant: [default, osize, semi4, g30, g50, semi4-g30, semi4-g50, semi4-g100, semi4-g50-decommit, semi4-old512]
+        rep: [1, 2]
+    name: study ${{ matrix.variant }} ${{ matrix.rep }}
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - name: Study
         run: |
-          sw_vers 2>/dev/null || uname -a
           node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --only "${{ matrix.variant }}" --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
           grep -v '^STUDY ' study-output.txt >> "$GITHUB_STEP_SUMMARY"
