@@ -4607,7 +4607,7 @@ test sets that time on the virtual clock: the rows around the target answer afte
 whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
 reported by the first and the second. While sessions write, each write builds the rules again, derives them from scratch no time except in a new minute
 (the mark `board:rules-full` names the reason), counts every item's filters no time, makes the page's structure again no time except in a new minute
-(`board:structure`) and lists the stops that wait on the owner and the unread stops no time (`board:stops`, `board:fresh-stops`); a quiet press
+(`board:structure`) and lists the stops that wait on the owner and the unread stops no time except once after such a minute (`board:stops`, `board:fresh-stops`); a quiet press
 makes the structure and both lists no time either. The writes of the lane only add log entries, which neither the rules' structure nor the unread
 list read. After m the page asks for the unread list and does not fetch the board.
 

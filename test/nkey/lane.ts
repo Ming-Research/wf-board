@@ -97,7 +97,8 @@ export function checkCounts(label: string, list: Landing[], drawsToo = true): st
   return v;
 }
 /** Violations of the counts while sessions write: each write builds the rules again, from what the rules before it derived except in a
- * new minute, and counts again only the filters of the items it reaches. */
+ * new minute, and counts again only the filters of the items it reaches; it keeps the page's structure and lists the stops again
+ * only after a new minute has made the structure again. */
 export function checkWritingCounts(label: string, list: Landing[]): string[] {
   const v: string[] = [];
   for (const l of list) {
@@ -106,8 +107,10 @@ export function checkWritingCounts(label: string, list: Landing[]): string[] {
     if (l.filters !== 0) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page counted every item's filters ${l.filters} times, not 0`);
     const remade = l.structure.filter(reason => reason !== "minute");
     if (remade.length) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page made its structure again ${remade.length} times (${remade.join(", ")}), not 0`);
-    if (l.stops !== 0) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the stops that wait on the owner again ${l.stops} times, not 0`);
-    if (l.freshStops !== 0) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the unread stops again ${l.freshStops} times, not 0`);
+    // A new minute makes the structure again, and the first read of each list after it lists it once.
+    const allowed = l.structure.length - remade.length;
+    if (l.stops > allowed) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the stops that wait on the owner again ${l.stops} times, not ${allowed} (the structure was made again for: ${l.structure.join(", ") || "nothing"})`);
+    if (l.freshStops > allowed) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the unread stops again ${l.freshStops} times, not ${allowed} (the structure was made again for: ${l.structure.join(", ") || "nothing"})`);
   }
   return v;
 }
