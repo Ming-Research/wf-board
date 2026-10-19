@@ -1,0 +1,30 @@
+name: tmp-derived-flake
+# Temporary (ci-gate-margin): how often the collection test in test/derived.test.ts fails under the shard layouts before and after the
+# new cost table, and alone. Delete before the last full CI.
+on:
+  push:
+    branches-ignore: [main]
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layout: [new, old, alone]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: run
+        run: |
+          case "${{ matrix.layout }}" in
+            new) files=$(node scripts/test-shard.ts 20 20) ;;
+            old) files="test/dom/page-numbers.test.ts test/rules-reuse-share.test.ts test/derived.test.ts test/ci-watch.test.ts test/messages.test.ts" ;;
+            alone) files="test/derived.test.ts" ;;
+          esac
+          for k in 1 2 3; do
+            timeout 120 node --test --test-timeout=40000 --test-reporter=spec $files > out-$k.txt 2>&1 || true
+            echo "RESULT ${{ matrix.layout }} rep ${{ matrix.rep }} round $k: $(grep -E '^(✔|✖) the shared cache holds' out-$k.txt | cut -c1-1 | head -1) $(grep -o '[0-9]* of 51 Rules objects[^"]*' out-$k.txt | head -1) $(grep -o '[0-9]* of 51 states[^"]*' out-$k.txt | head -1)"
+          done
