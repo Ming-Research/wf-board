@@ -1,0 +1,20 @@
+name: tmp-quick
+# Temporary (item ci-status-under-1min): the type check and the test files this change touches. Delete before the last full CI.
+on:
+  push:
+    branches: [ci-status-under-1min]
+    paths: [.github/workflows/tmp-quick.yml]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: node --test test/ci-workflow.test.ts test/ci-time-gate.test.ts test/test-shard.test.ts

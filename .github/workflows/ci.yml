@@ -113,8 +113,11 @@ jobs:
   # the commit. A push to the main line writes nothing; its checks are listed on the commit. The script also reads how long the run
   # took and puts the time of each job into the run's summary (docs/design.md, section 11, The time gate).
   # This job has no timeout of its own: a job that GitHub cancels for its timeout runs no step after it, so the status would stay
-  # pending. The jobs it waits for have 10 minutes each, a stuck one ends as cancelled and the script writes a failure that names it;
-  # the step of the script has 15, and a step that times out fails, so the step after it writes the failure (test/ci-workflow.test.ts).
+  # pending. Each of its steps has one instead (5 minutes, the script's 15): a step that times out fails, and the step after it writes
+  # the failure. The jobs it waits for have 10 minutes each, counted from when they start to run, not from the queue: a job that hangs
+  # is cancelled and the script writes a failure that names it, unless the job started so late that the script's step ends first, and
+  # then the failure is written without its name. test/ci-workflow.test.ts holds that the timeouts are there and that a job's is
+  # shorter than the script's, not the numbers.
   result:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
@@ -123,10 +126,12 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+        timeout-minutes: 5
         with:
           sparse-checkout: scripts/ci-time-gate.ts
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v5
+        timeout-minutes: 5
         with:
           node-version: 24
       # enforce: a total over 60 seconds from the start of the run to the status fails the status, the step and with them the run
@@ -138,8 +143,9 @@ jobs:
           TIME_GATE: enforce
         run: node scripts/ci-time-gate.ts
       # The script writes the status whatever it finds, a failure of its own included; this step is for a script that could not
-      # run at all or did not end in its 15 minutes, so that the status does not stay pending for a run that is over.
+      # run at all, did not end in its 15 minutes or came after a set-up step that timed out, so that the status does not stay pending for a run that is over.
       - if: ${{ failure() && steps.result.outputs.written != 'true' }}
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

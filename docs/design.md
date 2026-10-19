@@ -5174,19 +5174,25 @@ wrote a final status, and the replacing run wrote one.
 
 **Timeouts.** The job `result` has no timeout of its own, because a job that
 GitHub cancels for its timeout runs no step after it, so the status would stay
-pending (the first version had 10 minutes on the job). The jobs it waits for have
-10 minutes each and the step that runs the script 15; a step that times out
-fails, and the step after it writes the failure (`test/ci-workflow.test.ts` holds
-the numbers and that the job has none). A stuck job ends cancelled at its 10
-minutes, the script finds it, waits the 10 seconds, finds itself still running
-and writes a failure that names the job. Both paths were run once on the branch
-with the job copied as it is
-(10-19, hosted runners). With one minute on the step and a job that slept past it
-(run 39210292883) the step timed out after 72 seconds, the step after it wrote the
-failure "the result job ended without a status" and the job ended red. With one
-minute on the job that slept (run 39210292895) that job ended cancelled after 74
-seconds, the script found it, waited the 10 seconds and wrote "stuck not green" 11
-seconds after the job ended, and the step after it was skipped.
+pending. Each of its steps has one (5 minutes, the script's 15): a step that times
+out fails, and the step after it, which runs when a step failed and the script
+wrote no status, writes the failure. The jobs it waits for have 10 minutes each,
+counted from when they start to run and not from the queue. A job that hangs is
+cancelled at its 10 minutes; the script finds it, waits the 10 seconds, finds
+itself still running and writes a failure that names the job. A job that started
+so late that the script's step has ended first (more than about 5 minutes) is not
+named: the step after the script's writes the failure "the result job ended
+without a status". `test/ci-workflow.test.ts` holds that the job has no timeout,
+that each of its steps has one, that each job it waits for has one shorter than
+the script's, and that the step that writes the failure is there and runs only
+when the script wrote nothing; it does not hold the numbers. Both paths were run
+once on the branch with the job copied as it was then (10-19, hosted runners).
+With one minute on the script's step and a job that slept past it (run
+39210292883) the step timed out after 72 seconds, the step after it wrote the
+failure and the job ended red. With one minute on the job that slept (run
+39210292895) that job ended cancelled after 74 seconds, the script found it,
+waited the 10 seconds and wrote "stuck not green" 11 seconds after the job ended,
+and the step after it was skipped.
 
 **From the call to the status** (hosted runners, 10-19, seconds from `gh workflow
 run` to the status `full-ci`, read from the Actions API; every run listed here was
