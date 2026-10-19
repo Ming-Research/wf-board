@@ -1598,7 +1598,9 @@ commit already says it, and every old item would need a backfill), a comparison 
 `updated` (any write moves it, so a log line after the ruling would hide a head that
 follows no ruling), copying the design document of the pull request into the item (a
 private repository to read from the page, a long English text for implementers, and it does
-not keep the 做法 current), and the check on design cards only.
+not keep the 做法 current), the check on design cards only, and leaving paused items out
+(a run of the check over the live board's data on 2026-10-19, 1,941 items and 838 cards,
+flagged 3 items, none of them paused, so the special case would save no prompt).
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.

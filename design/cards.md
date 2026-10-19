@@ -27,3 +27,4 @@ Rejected:
 - A stored time of the head's last revision: rejected because the log entry written in the same commit as the head already says it, so a field would duplicate it and every old item would need a backfill.
 - A comparison with the item's `updated`: rejected because any write moves it (a log line, a plan row, a rating), so one such write after the ruling would hide a head that follows no ruling.
 - Narrowing the check to design cards: rejected because a ruling of any card can settle how the work is done, and the cost of a one-line ruling is a one-line rewrite of the head.
+- Leaving paused items out of the check: rejected because a paused item's head is read as well and keeps the other checks of form, and a run of the check over the live board's data found no paused item it would flag, so the special case would save no prompt.
