@@ -28,7 +28,7 @@ import { performance as perf } from "node:perf_hooks";
 import { startLiveBoard } from "../e2e/live-board.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { ORDER_SEED, Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, writeEvents } from "./press.ts";
+import { ORDER_SEED, Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, timePhase, writeEvents } from "./press.ts";
 import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
@@ -128,13 +128,14 @@ export function describeCounts(list: Landing[]): string {
   return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)}, structure made again ${list.reduce((a, l) => a + l.structure.filter(reason => reason !== "minute").length, 0)}, stop lists ${list.reduce((a, l) => a + l.stops + l.freshStops, 0)} over ${list.length} landings`;
 }
 
-/** What a red verdict adds: the 95% interval is wholly above 1 for a page the same as its base in about one run of 40 per phase, so a
- * run of the lane again tells the two apart (docs/design.md, The n-key lane). */
-const RERUN = "A page the same as its base is red here in about 2.5% of runs of a phase; run the n-key lane again: a page about 5% slower is red again in about 98% of runs, a false red in about 2.5%.";
-/** What a time phase says: the numbers go to the log and the run's summary either way; violations are red verdicts and witnesses that
- * were not reported, and an undecided run is a warning. */
-export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): string[] {
-  const v: string[] = [];
+/** What a confirmed red says. A page the same as its base is red in one run of a phase in about 2.5% of runs (the 95% interval), and
+ * the residual bias measured for the lane's arrangement (docs/design.md, The n-key lane, What a press inherits) raises that a little, so
+ * a first red is run again in fresh windows and the page is red only when both runs are. */
+const CONFIRMED = "A page the same as its base is red in both runs of a phase in well under 1% of runs; a page about 5% slower in about 96%.";
+/** What a time phase says: the numbers go to the log and the run's summary either way; violations are witnesses that were not reported
+ * and reads the tape had no answer for, `red` the pages judged slower than their base, and an undecided run is a warning. */
+export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): { violations: string[]; red: string[] } {
+  const v: string[] = [], red: string[] = [];
   const base = median(r.busy.base!);
   log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (not within ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
@@ -150,13 +151,29 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
     if (witness) {
       if (verdict === "ok") v.push(`press-n time (${name}): the time layer did not report a page whose draw takes 15 ms more (${show(r.ratios.slow!)})`);
       else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds, so the witness of 15 ms more per draw could not be judged");
-    } else if (verdict === "red") v.push(`press-n time (${name}): the page is slower than its base: ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}. ${RERUN}`);
+    } else if (verdict === "red") red.push(`${against} ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}`);
     else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base did not show this run's noise within ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
     else if (polluted > 0) warn(`n-key time layer (${name})`, `the base page asked for ${polluted} reads the tape has no answer for, so its time carries the server's work`);
   }
   if (!changed) log(`press-n time (${name}): the page is the same as its base, so only the twin and the witness were measured`);
   summary(rows.join("\n"));
-  return v;
+  return { violations: v, red };
+}
+
+/** The time layer of one phase: its windows press in rounds until the twin shows the run's noise (`timePhase`), and a page judged
+ * slower than its base is measured again in fresh windows; it is red only when the second run judges it slower too. Both runs' numbers
+ * are in the log. `result` is the first run, whose landings the counts are held on. */
+export async function timeLayer(name: string, windows: readonly PhaseWindow[], floor: number, changed: boolean, events?: readonly (string | undefined)[]): Promise<{ result: PhaseResult; violations: string[] }> {
+  const result = await timePhase(windows, floor, events);
+  const first = judgePhase(name, result, floor, changed);
+  if (!first.red.length) return { result, violations: first.violations };
+  log(`press-n time (${name}): slower than the base on the first run (${first.red.join("; ")}); the phase runs again in fresh windows to confirm`);
+  lap(`time phase, first run (${result.rounds} rounds)`);
+  const again = judgePhase(`${name}, again`, await timePhase(windows, floor, events), floor, changed);
+  const violations = [...first.violations, ...again.violations];
+  if (again.red.length) violations.push(`press-n time (${name}): the page is slower than its base in both runs: ${first.red.join("; ")}; again ${again.red.join("; ")}. ${CONFIRMED}`);
+  else warn(`n-key time layer (${name})`, `slower than the base on the first run (${first.red.join("; ")}) and not on the second, so taken as the noise of one run`);
+  return { result, violations };
 }
 
 

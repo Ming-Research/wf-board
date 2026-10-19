@@ -15,7 +15,7 @@ jobs:
       matrix:
         kind: [copy]
         phase: [writing, quiet]
-        job: [0, 1, 2, 3, 4, 5]
+        job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
         include:
           - { kind: slow25, phase: quiet, job: 0 }
           - { kind: slow25, phase: quiet, job: 1 }
@@ -38,11 +38,4 @@ jobs:
       - env:
           ACCEPT_KIND: ${{ matrix.kind }}
           ACCEPT_PHASE: ${{ matrix.phase }}
-          ACCEPT_ROUNDS: ${{ matrix.kind == 'copy' && 6 || 1 }}
-          ACCEPT_OUT: accept.json
         run: node --test --test-concurrency=1 test/nkey/tmp-accept.nkey.ts
-      - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: accept-${{ matrix.kind }}-${{ matrix.phase }}-${{ matrix.job }}
-          path: accept.json

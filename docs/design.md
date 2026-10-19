@@ -4651,8 +4651,11 @@ its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/sta
 holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
 otherwise. One round of 30 pairs estimates the ratio within about 1.2% (the standard deviation of the estimate between rounds, 1.0–1.7% by phase, measured
 with the probe of What a press inherits), so a page the same as its base is red in about 2.5% of the runs of a phase (5% of a full CI with a changed page), a
-page 5% slower in about 98% and one 2% slower in about 35%; a red verdict says so and that a second run of the lane tells a false red from a slower page.
-These are the properties of the 95% interval and are not traded for a threshold. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+page 5% slower in about 98% and one 2% slower in about 35%. These are the properties of the 95% interval and are not traded for a threshold. A residual
+bias the lane's arrangement still has (What a press inherits, the last point) raises the first number, so a page judged slower than its base is measured
+again in fresh windows (`timeLayer` in `test/nkey/lane.ts`) and is red only when the second run judges it slower too; both runs' numbers are in the log, and
+a first red the second run does not repeat is a warning. A page the same as its base is then red in well under 1% of the runs of a phase, one 5% slower
+in about 96%, and the phase takes one run more only when the first is red. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
 against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
@@ -4689,12 +4692,16 @@ garbage collector inside it) found three sources, and the lane removes each:
   opened first read 0.98% above the mean of the three same pages while writing; one full collection once the windows are open, outside
   the time (about a quarter of a second a round), brought that to 0.27%, within the noise of the estimate (about 0.3%). Each round now
   opens its windows in a random order and then collects fully, so no window is always the one whose page was built first.
+- *What is left.* Measured with all of the above, over 32 single rounds per phase (run 39192981801 of `tmp-accept`), a copy of the base in
+  the changed page's place read ×0.9979 [0.9898, 1.0060] writing and ×1.0073 [1.0011, 1.0135] quiet, the twin ×0.9972 and ×1.0054: in the
+  quiet phase the base read about 0.6% faster than the other two, a bias whose source was not found. It is known and not removed; the
+  confirmation of a red (Time, above) keeps it from turning a page the same as its base red.
 
 With the first two and the balanced cycle (before the last two were found), over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
 (±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
 probe's data are in the artifacts of the runs of the temporary workflow `tmp-probe` on the branch of item nkey-lane-false-red (runs 39189114067, 39189922884,
 39190549744), those of the balanced cycle with four windows and of the random orders in runs 39191754978, 39192249677, 39192671312 and 39192981801 of the
-temporary workflow `tmp-accept`.
+temporary workflow `tmp-accept`, which also holds the acceptance runs of the confirmation.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
