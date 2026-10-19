@@ -134,6 +134,9 @@ matches what the artifact board offered.
   synthetic board of the live board's size with a long history); the same workflow
   runs it on this tree, where a failed check fails the run, and on the base commit,
   as a report only.
+- `scripts/bench-noise.ts`: the noise measurement for the 14900K (pairs of one pinned job
+  against its own twin in rounds, the noise floor as the widest interval half width; `--work`
+  is the job), run by the `noise-14900k` workflow.
 - `design/`: the design tree, one Markdown file per node and the change log
   `design/log.md`; `design/skill` is the Design-skill submodule that checks it.
   `Makefile` holds the two targets that run the check. Section "Design tree".

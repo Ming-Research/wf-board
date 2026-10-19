@@ -2,6 +2,7 @@
   "test/access.test.ts": 5.0,
   "test/agents.test.ts": 1.7,
   "test/backup-push.test.ts": 3.4,
+  "test/bench-noise.test.ts": 4.0,
   "test/board-gen.test.ts": 5.1,
   "test/browser-limits.test.ts": 0.2,
   "test/budget.test.ts": 4.1,
