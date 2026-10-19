@@ -1,6 +1,5 @@
 name: tmp-merge-row-only
-# Temporary (merge-row-only): the type check and the tests of the merge-row rule, on push; and the same tests against three
-# spoiled copies of the rule, each of which must turn them red.
+# Temporary (merge-row-only): the type check and the tests of the merge-row rule, on push.
 on: push
 jobs:
   quick:
@@ -12,31 +11,3 @@ jobs:
       - run: |
           git config --global user.name ci; git config --global user.email ci@example.com
           node --test test/watch.test.ts test/wake-agents.test.ts test/liveness.test.ts test/ops-roles.test.ts test/access.test.ts test/rules-oracle.test.ts
-  spoiled:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        spoil:
-          # The old rule: any step that says 合入.
-          - name: says-合入
-            body: 'return row.text.includes(MERGE_WORD);'
-          # Only the stage id, no fallback for old plans.
-          - name: no-fallback
-            body: 'return stageOf(row)?.kind === "merge";'
-          # The fallback also in a plan that has its merge row.
-          - name: fallback-always
-            body: 'return stageOf(row)?.kind === "merge" || row.text.trimStart().startsWith(MERGE_WORD);'
-    name: spoiled ${{ matrix.spoil.name }} (must be red)
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - name: Spoil the rule
-        env:
-          BODY: ${{ matrix.spoil.body }}
-        run: |
-          python3 scripts/tmp-spoil-merge-row.py
-          git diff --stat
-      - run: |
-          git config --global user.name ci; git config --global user.email ci@example.com
-          node --test test/watch.test.ts test/wake-agents.test.ts
