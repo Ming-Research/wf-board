@@ -29,17 +29,29 @@ export interface PauseEvent {
  */
 export interface PauseSignature { readonly key: string; readonly paused: boolean }
 
-const FIELD_LINE = /(?:group|record|item|own)["']?[ \t]*:[^\n]*|paused["']?[ \t]*:[^\n]*(?:\n[ \t]+[^\n]*)*/g;
+const FIELD_LINE = /(?:group|record|paused|item|own)["']?[ \t]*:[^\n]*/g;
+/** The lines under a key: the ones indented, up to the next at the left margin. */
+const LINES_UNDER = /(?:\n[ \t]+[^\n]*)*/y;
 const WORD_CHARACTER = /[A-Za-z0-9_]/;
 
 /** The signature of an item file's text. The text may be read in any single-byte encoding: only equality of lines matters. */
 export function pauseSignature(text: string): PauseSignature {
   let key = "", paused = false;
-  for (const match of text.matchAll(FIELD_LINE)) {
+  FIELD_LINE.lastIndex = 0;
+  for (let match = FIELD_LINE.exec(text); match !== null; match = FIELD_LINE.exec(text)) {
     const at = match.index;
     if (at > 0 && WORD_CHARACTER.test(text[at - 1]!)) continue;
-    key += `${match[0]}\n`;
-    if (match[0].startsWith("paused:") && (at === 0 || text[at - 1] === "\n")) paused = true;
+    let line = match[0];
+    const lineStart = at === 0 || text[at - 1] === "\n";
+    if (line.startsWith("paused") && (lineStart || ((text[at - 1] === '"' || text[at - 1] === "'") && (at === 1 || text[at - 2] === "\n")))) {
+      // The pause of an item is a field of its own: its time and reason stand on the lines under it, and belong to it.
+      LINES_UNDER.lastIndex = FIELD_LINE.lastIndex;
+      const under = LINES_UNDER.exec(text)![0];
+      line += under;
+      FIELD_LINE.lastIndex += under.length;
+    }
+    key += `${line}\n`;
+    if (line.startsWith("paused:") && lineStart) paused = true;
   }
   return { key, paused };
 }

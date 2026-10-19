@@ -162,6 +162,17 @@ test("the signature of an item file changes with each field the pause spans read
   assert.equal(pauseSignature(paused.replace("head: text", "head: other text")).key, pauseSignature(paused).key, "a head edit of a paused item");
   // `subgroup:` is not `group:`.
   assert.equal(pauseSignature("title: A\nsubgroup: P\nxrecord: true\n").key, "");
+  // A line of text that ends in `paused:` is not a pause, and the lines after it still count, whether or not the word before it joins it
+  // to a letter (`unpaused:`) or the line is indented.
+  const owning = (before: string, item: string) => `title: A\ngroup: P\nplan:\n  - id: w\n    text: "${before}"\n  - id: c\n    item: ${item}\n    own: true\nupdated: x\n`;
+  for (const before of ["Wait until unpaused: then rerun", "Wait until paused: then rerun", "A note about subpaused: here"]) {
+    assert.notEqual(pauseSignature(owning(before, "c")).key, pauseSignature(owning(before, "d")).key, `${before}: the owned row after it is in the signature`);
+    assert.equal(pauseSignature(owning(before, "c")).paused, false);
+  }
+  // The lines under a pause at the margin belong to it, also when its key is quoted, and stop at the next key at the margin.
+  const quoted = "group: P\n\"paused\":\n  reason: R\n  at: 2026-10-11T04:00:00Z\nplan:\n  - item: c\n    own: true\n";
+  assert.notEqual(pauseSignature(quoted).key, pauseSignature(quoted.replace("reason: R", "reason: S")).key);
+  assert.notEqual(pauseSignature(quoted).key, pauseSignature(quoted.replace("item: c", "item: d")).key);
 });
 
 test("a file has a pause when a `paused:` line stands at the left margin, however the pause is written", () => {
