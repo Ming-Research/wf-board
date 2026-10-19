@@ -1,6 +1,6 @@
 name: tmp-derived-flake
-# Temporary (ci-gate-margin): how often the collection test in test/derived.test.ts fails under the shard layouts before and after the
-# new cost table, and alone. Delete before the last full CI.
+# Temporary (ci-gate-margin): many attempts of the collection test of the derived cache, with the indices that stay reachable.
+# Delete before the last full CI.
 on:
   push:
     branches-ignore: [main]
@@ -10,8 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        layout: [new, old, alone]
-        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        load: [loaded, alone]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -19,12 +19,10 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: run
         run: |
-          case "${{ matrix.layout }}" in
-            new) files=$(node scripts/test-shard.ts 20 20) ;;
-            old) files="test/dom/page-numbers.test.ts test/rules-reuse-share.test.ts test/derived.test.ts test/ci-watch.test.ts test/messages.test.ts" ;;
-            alone) files="test/derived.test.ts" ;;
+          case "${{ matrix.load }}" in
+            loaded) files="test/tmp-derived-diag.test.ts test/dom/page-plan-after.test.ts test/dom/page-chips.test.ts test/backup-push.test.ts test/session.test.ts test/threads.test.ts" ;;
+            alone) files="test/tmp-derived-diag.test.ts" ;;
           esac
-          for k in 1 2 3; do
-            timeout 120 node --test --test-timeout=40000 --test-reporter=spec $files > out-$k.txt 2>&1 || true
-            echo "RESULT ${{ matrix.layout }} rep ${{ matrix.rep }} round $k: $(grep -E '^(✔|✖) the shared cache holds' out-$k.txt | cut -c1-1 | head -1) $(grep -o '[0-9]* of 51 Rules objects[^"]*' out-$k.txt | head -1) $(grep -o '[0-9]* of 51 states[^"]*' out-$k.txt | head -1)"
-          done
+          timeout 150 node --test --test-timeout=100000 --test-reporter=spec $files > out.txt 2>&1 || true
+          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE ${{ matrix.load }} ${{ matrix.rep }} /' || true
+          echo "DIAGEND ${{ matrix.load }} ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt) fails=$(grep -ac 'DIAG attempt.*FAIL' out.txt)"
