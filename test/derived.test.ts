@@ -326,17 +326,19 @@ test("the shared cache holds the state before the newest one and none older, how
   // Each state is a new object, as each published snapshot is; only the newest is held here, the first only weakly (a copy, since
   // the store holds its own).
   let state: Snapshot = { ...store.snapshot(), items: { ...store.snapshot().items } };
-  const first = new WeakRef(state);
+  // The first state has Rules of its own, and each later one is built from the one before: the path a chain would take.
+  const at = Date.now(), first = new WeakRef(state), firstRules = new WeakRef(cache.rules(state, at));
   for (let k = 0; k < 6; k++) {
     const next: Snapshot = { ...state, items: { ...state.items } };
     cache.follows(next, state, [{ kind: "item", id }]);
-    cache.rules(next, Date.now());
+    assert.equal(rebuiltBecause(cache.rules(next, at)), null, `state ${k + 1} reused the rules before it`);
     state = next;
   }
   // A WeakRef keeps its target until the current job ends.
   await new Promise(resolve => setImmediate(resolve));
   collect();
-  assert.equal(first.deref(), undefined, "the first state was collected: no step of the cache leads back to it");
+  assert.equal(firstRules.deref(), undefined, "the first state's Rules object was collected: no later one holds it");
+  assert.equal(first.deref(), undefined, "the first state was collected: neither the cache's step nor a later Rules object leads back to it");
   assert.ok(cache.rules(state, Date.now()), "the newest state is still served");
 });
 

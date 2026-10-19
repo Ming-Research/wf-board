@@ -139,6 +139,9 @@ matches what the artifact board offered.
   server answers so the time is the page's own); the same workflow runs it on this tree, as a
   step that never fails the run. `scripts/profile-summary.ts` prints where the CPU went for
   both write and page benchmarks' `--profile`.
+- `scripts/bench-pairs.ts`: the write path's CPU in interleaved rounds of a base commit, its twin
+  and this tree, with the intervals of the ratios; the same workflow runs it on four runners, as a
+  step that never fails the run, beside the peak memory at 300 and 1,500 writes.
 - `scripts/bench-noise.ts`: the noise measurement for the 14900K (pairs of one pinned job
   against its own twin in rounds, the noise floor as the widest interval half width; `--work`
   is the job), run by the `noise-14900k` workflow.
