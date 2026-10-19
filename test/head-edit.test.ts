@@ -184,3 +184,18 @@ test("a long run of white space in a new section or an old one is cut off in lin
   assert.equal(edited, `**问题**：丁${run}戊\n\n**做法**：丙\n`);
   assert.ok(performance.now() - start < 2000, `${performance.now() - start} ms`);
 });
+
+test("a # heading's title is found as the pattern it replaced found it, and a long run of white space in it costs linear time", () => {
+  // The pattern `splitHead` used for these lines, kept here as the oracle; it is quadratic on a long run of white space.
+  const before = /^#{1,6}\s+(.+?)\s*$/;
+  const lines = ["# 甲", "## 甲 乙 ", "###### 甲", "####### 甲", "#", "# ", "#  ", "#\t\t", "# \r", "#  \r", "# \r ", "# a\rb", "# a\r", "# a\u2028", "# a\u2028b", "#甲", "##\t甲\t", "#　甲　", "# 甲  乙", "#   ", "# \u2028\u2028", "#  \u2028x"];
+  for (const line of lines) {
+    // After a line of text, a line that is a title starts a section of its own, whatever its title says, and one that is none does not.
+    const expected = before.exec(line)?.[1]?.trim();
+    const sections = splitHead(`前言\n${line}`);
+    assert.deepEqual(sections.length === 2 ? sections[1]!.title : undefined, expected, JSON.stringify(line));
+  }
+  const run = " ".repeat(300_000), start = performance.now();
+  assert.deepEqual(splitHead(`前言\n## 甲${run}乙\n`).map(s => s.title), ["", `甲${run}乙`]);
+  assert.ok(performance.now() - start < 2000, `${performance.now() - start} ms`);
+});

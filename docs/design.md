@@ -2569,7 +2569,7 @@ not find those sections and the page would draw them as code, and a new section 
 reads only it) would pass a check on the text alone; the check reads the fences of the head before and of the result at the end of
 every edit (`fencedBefore`) and refuses the first edit where they differ (`sections[0].text: it opens a fenced block … that it does
 not close`). The ends of the new text are cut with `trimEnd`, since a regular expression for trailing white space is quadratic on a
-long run of it (measured: four times as long for twice the run) and the write queue is one. The `rev` rule is that of a whole head: the write stands on a `rev` that is behind when the head did not change since, and is
+long run of it (measured: four times as long for twice the run) and the write queue is one. The pattern that read the title of a `#` heading was quadratic on such a run too, and `splitHead` runs it on the new text and `context` runs it on every head; it is now a function with the same results (checked against the old pattern on lines with a carriage return or line separator inside, which a dot does not match) that takes linear time. The `rev` rule is that of a whole head: the write stands on a `rev` that is behind when the head did not change since, and is
 refused with the changes when it did, even if the text it replaces is still there once; a revision of each section, with which two writers
 could change two sections at once, belongs to storing a head by section, which this does not decide. The answer to the write has, after its
 first line and `note`, the changes in head order: for each, its place (`replace[2] in 做法 · line 12`, `sections[0] "做法" · line 12–15`, the line
