@@ -132,7 +132,7 @@ export function describeCounts(list: Landing[]): string {
 /** What a confirmed red says. A page the same as its base is slower than the reference in one run of a phase in about 2.5% of runs (the
  * 95% interval), and the residual bias measured between identical windows (docs/design.md, The n-key lane, What a press inherits) raises
  * that, so a first red is run again in fresh windows, where the bias is drawn afresh: the page is red only when both runs are. */
-const CONFIRMED = "A page the same as its base is red in both runs of a phase in well under 1% of runs; a page about 5% slower in about 96%.";
+const CONFIRMED = "A page the same as its base is red in both runs of a phase in about 1% of runs or fewer; a page 5% slower in about 88-94%.";
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are witnesses that were not reported
  * and reads the tape had no answer for, `red` the pages judged slower than their base, and an undecided run is a warning. */
 export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): { violations: string[]; red: string[] } {
