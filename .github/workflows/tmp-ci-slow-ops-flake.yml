@@ -15,6 +15,7 @@ jobs:
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run check
+      - run: npm run build:web
       # The file as changed passes, three times over.
       - run: |
           for i in 1 2 3; do node --test test/slow-ops.test.ts || exit 1; done
