@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, author, server, appendCommits } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -119,7 +120,7 @@ test("a request that asks for too much fails alone: its caller gets the error, a
   const store = await Store.open(dir), small: BudgetLimits = { ...REQUEST_LIMITS, bytes: 1, bytesPerCommit: 0 };
   const http = createHttpServer({ store, ops: ops(store), ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), createMcp: () => createMcpServer({ store, ops: ops(store), budget: small }), budget: small });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
+  cleanup(t, () => new Promise<void>(resolve => http.close(() => resolve())));
   const url = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
   const get = async (path: string) => { const response = await fetch(url + path); return { status: response.status, data: await response.json() as Record<string, unknown> }; };
   // A page request that reads history: refused, with what to do.

@@ -9,6 +9,7 @@ import { request } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { agentSocket, board, author, later, server, asArchitect } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { AgentStream, Wake, WAKE_KINDS, CONTROL_FRAMES, agentFileName } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
@@ -217,7 +218,7 @@ test("an agent's socket that connects after undelivered pushes were dropped gets
 async function restart(t: Parameters<typeof board>[0], store: Awaited<ReturnType<typeof board>>["store"], op: Awaited<ReturnType<typeof board>>["op"], extra: { now?: () => number; checkIntervalMs?: number; wake?: Wake; architectTimedWakeMs?: number }) {
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op, wake: extra.wake }), ...extra });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
+  cleanup(t, () => new Promise<void>(resolve => http.close(() => resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   return { url: `http://127.0.0.1:${address.port}` };
 }
@@ -287,7 +288,7 @@ test("closing the server waits for the architect's timed wake that is running, s
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op, wake }), now: () => clock, checkIntervalMs: 1000, wake });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   // Closed by the test itself; this one only makes sure it is closed when the test fails before.
-  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
+  cleanup(t, () => new Promise<void>(resolve => http.close(() => resolve())));
   // The wake reads the history: that read holds until the test lets it go.
   const read = store.log.bind(store);
   let reading = false, release = () => {};

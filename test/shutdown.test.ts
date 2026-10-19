@@ -13,6 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { board } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { Store } from "../src/store.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -31,7 +32,7 @@ async function listening(t: Scope, extra: { shutdownGraceMs?: number; createMcp?
   const { store, op } = await board(t);
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: extra.createMcp ?? (() => createMcpServer({ store, ops: op })), shutdownGraceMs: extra.shutdownGraceMs });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(async () => { http.closeAllConnections(); if (http.listening) await new Promise<void>(resolve => http.close(() => resolve())); });
+  cleanup(t, async () => { http.closeAllConnections(); if (http.listening) await new Promise<void>(resolve => http.close(() => resolve())); });
   const address = http.address(); assert.ok(address && typeof address !== "string");
   return { http, store, port: address.port, url: `http://127.0.0.1:${address.port}` };
 }

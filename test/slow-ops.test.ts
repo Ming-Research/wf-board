@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { board, author, agentSocket } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
@@ -224,7 +225,8 @@ test("a page request that runs over its limit is told to the architect; one with
     assert.equal(socket.events().length, 1, "told once; the second is only logged");
   });
   assert.ok(logs.info.some(line => /^GET \/api\/snapshot 200 \d+ ms$/.test(line)), logs.info.join("\n"));
-  assert.ok(logs.info.some(line => /^POST \/api\/notes 200 \d+ ms$/.test(line)));
+  // A request of STEPS_FROM_MS or more says where its time went after the "; ".
+  assert.ok(logs.info.some(line => /^POST \/api\/notes 200 \d+ ms; \S/.test(line)), logs.info.join("\n"));
   assert.equal(logs.warn.length, 2);
   assert.match(logs.warn[1]!, /the architect was told 0 min ago/);
 });
@@ -316,7 +318,7 @@ async function slowWrites(t: Parameters<typeof board>[0], wake: Wake, slow: Slow
   const slowed = { ...real, createNote: async (...a: Parameters<typeof real.createNote>) => { await sleep(delay); return real.createNote(...a); } } as typeof real;
   const http = createHttpServer({ store, ops: op, ownerOps: slowed, webDir: join(import.meta.dirname, "../web"), wake, slow, createMcp: () => createMcpServer({ store, ops: op, wake, slow }) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  cleanup(t, () => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   async function api(path: string, data?: unknown) {

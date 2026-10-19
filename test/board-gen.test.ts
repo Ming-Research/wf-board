@@ -70,4 +70,7 @@ test("seeding: a maintenance step ends before the next git add starts", async t 
   assert.ok(adds.length > 0, "git add ran: " + adds.length);
   const overlaps = adds.filter(a => maintenance.some(m => a >= m.from && a < m.to));
   assert.equal(overlaps.length, 0, "no git add starts during a maintenance step");
+  // The commit of the owner's reading state above may have queued one more step. It does nothing now, or ends here, before the directory goes.
+  store.stopMaintenance();
+  await store.flushOwner("test");
 });

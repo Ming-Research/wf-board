@@ -23,4 +23,18 @@ jobs:
       - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test --test-timeout=40000 test/slow-ops.test.ts test/wake.test.ts test/teardown.test.ts
+      - run: |
+          node --test --test-timeout=40000 \
+            test/slow-ops.test.ts test/wake.test.ts test/teardown.test.ts test/http.test.ts test/budget.test.ts test/shutdown.test.ts \
+            test/write-trace.test.ts test/board-gen.test.ts test/wake-agents.test.ts test/liveness.test.ts test/retire-pm.test.ts \
+            test/deploy.test.ts test/dom/page-filters-fresh.test.ts
+  nkey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test --test-concurrency=1 test/nkey/counts.nkey.ts
