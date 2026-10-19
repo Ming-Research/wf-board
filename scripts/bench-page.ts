@@ -111,11 +111,12 @@ try {
     setTags: { busyMs: stats(busy.set_tags), wallMs: stats(wall.set_tags) },
     log: { busyMs: stats(busy.log), wallMs: stats(wall.log) },
     eventBytes: { set_tags: Math.round(recorded.filter(w => w.kind === "set_tags").reduce((n, w) => n + w.event.length, 0) / (WARMUP + WRITES)), log: Math.round(recorded.filter(w => w.kind === "log").reduce((n, w) => n + w.event.length, 0) / (WARMUP + WRITES)) },
-    unreadBytes: recorded.at(-1)!.answers.get("/api/unread")?.body.length ?? recorded.findLast(w => w.answers.has("/api/unread"))?.answers.get("/api/unread")?.body.length,
+    // The page asks with the version it holds (`/api/unread?since=`), so the last answer is what changed, not the whole list.
+    unreadBytes: recorded.flatMap(w => [...w.answers].filter(([path]) => path.startsWith("/api/unread")).map(([, answer]) => answer.body.length)).at(-1),
   };
   console.log(`  set_tags event: busy ms ${JSON.stringify(result.setTags.busyMs)}, wall ms ${JSON.stringify(result.setTags.wallMs)}`);
   console.log(`  log event:      busy ms ${JSON.stringify(result.log.busyMs)}, wall ms ${JSON.stringify(result.log.wallMs)}`);
-  console.log(`  reads with no recorded answer: ${misses}; unread list ${result.unreadBytes} bytes at the end`);
+  console.log(`  reads with no recorded answer: ${misses}; last unread answer ${result.unreadBytes} bytes`);
   console.log(`BENCH-PAGE ${JSON.stringify(result)}`);
 } finally {
   for (const fn of cleanups.reverse()) await fn();

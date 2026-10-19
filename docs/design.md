@@ -726,8 +726,10 @@ the live board's weight (`test/e2e/live-board.ts`), given the change events of r
 `set_tags` and log writes with the server's answers recorded beforehand, so the time
 is the page's own; it prints the busy time from each event until the page is quiet. With the
 spliced unread list and the top bar drawn again only when its inputs change, the 90th percentile
-of that time is 41.4 ms for a `set_tags` event and 27.8 ms for a log event (one run on a hosted
-runner, board-cpu-usage).
+of that time over 100 events of each kind, in three runs on each of four hosted runners, is 29.2
+to 47.8 ms for a `set_tags` event and 17.6 to 30.4 ms for a log event; the runners differ more than
+the runs on one (at most 4.2 ms apart), two of them giving 29.2 to 33.7 ms and two 41.3 to 47.8 for
+`set_tags` (board-cpu-usage). Before, one run gave 53.1 and 32.0 ms.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
