@@ -119,13 +119,17 @@ test("a slow git commit is the step that is slow, and the commands around it are
 test("a write that waits in the store's queue says how long, how many were ahead and what it was behind; the one ahead does not", async t => {
   const { store, dir } = await board(t);
   await slowCommits(dir, 0.5);
-  const first = new WriteTrace(), second = new WriteTrace();
+  // The first write's clock moves 2 ms at every reading, so its store queue step is never under a millisecond and left out of the
+  // line (a loaded runner may take 1 ms to start a write with nobody ahead): the check below always sees the step.
+  let now = 0;
+  const first = new WriteTrace(() => (now += 2)), second = new WriteTrace();
   await Promise.all([
     withTrace(first, () => store.commit({ author, message: "First", puts: [put(1)] })),
     withTrace(second, () => store.commit({ author, message: "Second", puts: [put(2)] })),
   ]);
   const a = first.finish(), b = second.finish();
-  assert.doesNotMatch(a, /store queue/, a);
+  assert.notEqual(stepMs(a, "store queue"), undefined, a);
+  assert.doesNotMatch(a, /ahead|behind/, a);
   const wait = /store queue (\d+) ms \(1 ahead, behind write\)/.exec(b);
   assert.ok(wait, b);
   assert.ok(Number(wait[1]) >= 450, `the second waited out the first's commit: ${b}`);
