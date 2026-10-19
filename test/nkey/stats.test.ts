@@ -1,7 +1,7 @@
 // The arithmetic and the verdict of the n-key lane's time layer (test/nkey/stats.ts), on pairs made up here whose answer is known.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, judge, randomOrder, reference, tQuantile, twinIsSound } from "./stats.ts";
+import { compare, floorAt, intervalWidth, judge, keepPairing, randomOrder, reference, roundFits, tQuantile, twinIsSound } from "./stats.ts";
 import type { Interval } from "./stats.ts";
 import { prng } from "../e2e/board-gen.ts";
 
@@ -89,4 +89,52 @@ test("a fixed rotation is not balanced, which the random order replaces", () => 
   seq.forEach((x, k) => { const key = `${seq[(k - 1 + seq.length) % seq.length]}>${x}`; count.set(key, (count.get(key) ?? 0) + 1); });
   assert.equal(count.get("3>0"), 3);
   assert.equal(count.get("3>2"), undefined);
+});
+
+/** `n` (even) pairs whose log ratios alternate ±`d`: the interval of their ratio is centred on 1 and its width follows `d` alone. */
+const alternating = (n: number, d: number) => Array.from({ length: n }, (_, k) => 80 * Math.exp(k % 2 ? d : -d));
+
+test("a floor measured over 30 pairs is widened for fewer pairs by what the interval widens, and kept for more", () => {
+  assert.equal(intervalWidth(30, 30), 1);
+  // t(19)/√20 against t(29)/√30 = (2.093 / 4.472) / (2.045 / 5.477) = 1.2535.
+  assert.ok(Math.abs(intervalWidth(20, 30) - 1.2535) < 0.001, `20 pairs: ×${intervalWidth(20, 30)}`);
+  assert.ok(intervalWidth(60, 30) < 1, "more pairs narrow it");
+  assert.equal(floorAt(0.076, 30, 30), 0.076);
+  assert.equal(floorAt(0.076, 60, 30), 0.076, "pooled rounds keep the floor of one round");
+  // The floor is a fraction (0.076 is ±7.6%), widened in the logs: log(1.076) × 1.2535 = 0.0918, and exp(0.0918) − 1 = 0.0962.
+  assert.ok(Math.abs(floorAt(0.076, 20, 30) - 0.0962) < 0.0005, `20 pairs: ±${floorAt(0.076, 20, 30)}`);
+});
+
+test("a round cut short asks for the same noise per pair: the widened floor takes a twin of the floor's spread and refuses a noisier one", () => {
+  const floor = 0.076;
+  // The spread at which the interval over 30 pairs is exactly the floor: half width = t(29) · sd / √30, in logs; sd of ±d alternating is d√(n/(n−1)).
+  const d30 = Math.log1p(floor) * Math.sqrt(30) / tQuantile(29) / Math.sqrt(30 / 29);
+  const at = (n: number, factor: number) => compare(alternating(n, d30 * factor), Array(n).fill(80));
+  assert.ok(twinIsSound(at(30, 0.99), floor) && !twinIsSound(at(30, 1.03), floor), "the floor is the edge over 30 pairs");
+  for (const n of [16, 20, 24]) {
+    const narrow = at(n, 0.97), wide = at(n, 1.05);
+    assert.ok(!twinIsSound(narrow, floor), `over ${n} pairs the same spread is wider than the floor of 30 (±${(narrow.half * 100).toFixed(1)}%)`);
+    assert.ok(twinIsSound(narrow, floorAt(floor, n, 30)), `and counts against the widened floor (±${(floorAt(floor, n, 30) * 100).toFixed(1)}%)`);
+    assert.ok(!twinIsSound(wide, floorAt(floor, n, 30)), `a spread 5% above the floor's is refused over ${n} pairs`);
+  }
+});
+
+test("the time budget: a round pairs until the pairs wanted, or until the budget is used up if the least a verdict needs is made", () => {
+  // landed, wanted, least, now, until (landings; milliseconds)
+  assert.ok(keepPairing(5, 32, 18, 10_000, 34_000), "within the budget, short of the pairs wanted");
+  assert.ok(!keepPairing(32, 32, 18, 10_000, 34_000), "the pairs wanted are made");
+  assert.ok(!keepPairing(25, 32, 18, 34_000, 34_000), "the budget is used up and more than the least is made");
+  assert.ok(!keepPairing(18, 32, 18, 40_000, 34_000), "the least itself is enough");
+  assert.ok(keepPairing(17, 32, 18, 40_000, 34_000), "the budget is used up but the least is not made: go on");
+  assert.ok(roundFits(20_000, 13_000, 34_000) && roundFits(21_000, 13_000, 34_000), "a round of 13 s begun at 21 s ends at the budget");
+  assert.ok(!roundFits(21_001, 13_000, 34_000), "a round of 13 s begun at 21.001 s ends after it");
+});
+
+test("a witness of 10 pairs is read as slower than the reference: the page 15 ms slower reads about ×1.5 and a spread of 10% does not hide it", () => {
+  // 80 ms and 124 ms are the base and the witness in a writing press of the sample; noise of ±10% in each.
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const slow = compare(series(10, 124, 0.1, seed), series(10, 80, 0.1, seed + 100));
+    assert.ok(slow.lo > 1.3, `seed ${seed}: ×${slow.ratio} [${slow.lo}, ${slow.hi}] over ${slow.n} pairs`);
+    assert.equal(judge(interval(0.97, 1.03), slow, 0.076), "red");
+  }
 });

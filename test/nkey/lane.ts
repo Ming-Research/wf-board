@@ -16,7 +16,8 @@
 //             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval is no wider than the noise
 //             floor; then a page whose interval against the reference (per pair the geometric mean of base and twin) lies wholly
 //             above 1 is slower, of any size, and red when a second run in fresh windows finds it slower too. When the run does not count, 30 pairs more are
-//             made in fresh windows (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The
+//             made in fresh windows (twice at most, and only while a round fits in the time budget); still not counting, the layer says
+//             "undecided" in a warning, and passes. The witness is pressed for its first 10 pairs only. The
 //             absolute 0.2 s is not held here: jsdom's time is not Chrome's.
 // Each layer also runs on the page with what it protects taken out, where it must report: the three changes one at a time, a page
 // whose draw takes 15 ms more, and for the wait itself the page without it and the page without its 100 ms limit.
@@ -29,7 +30,7 @@ import { performance as perf } from "node:perf_hooks";
 import { startLiveBoard } from "../e2e/live-board.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { ORDER_SEED, Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, timePhase, writeEvents } from "./press.ts";
+import { ORDER_SEED, Press, Scope, TIME_BUDGET_MS, Tape, WITNESS_PAIRS, currentPage, landings, pageAt, sameSourceAs, samePage, timePhase, writeEvents } from "./press.ts";
 import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
@@ -136,10 +137,11 @@ export function describeCounts(list: Landing[]): string {
 const CONFIRMED = "A page the same as its base is red in both runs of a phase in about 1% of runs or fewer; a page 5% slower in about 88-94%.";
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are witnesses that were not reported
  * and reads the tape had no answer for, `red` the pages judged slower than their base, and an undecided run is a warning. */
-export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): { violations: string[]; red: string[] } {
+export function judgePhase(name: string, r: PhaseResult, changed: boolean): { violations: string[]; red: string[] } {
   const v: string[] = [], red: string[] = [];
   const base = median(r.busy.base!);
-  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (wider than ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
+  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (wider than ±${(r.floor * 100).toFixed(1)}%: the run does not count)`}`);
+  log(`press-n time (${name}): pairs per round ${r.perRound.join("/")}${r.budget.cut ? `, a round cut at the time budget of ${TIME_BUDGET_MS / 1000} s (the floor widened to ±${(r.floor * 100).toFixed(1)}%)` : ""}${r.budget.skipped ? `, a further round did not fit in the time budget of ${TIME_BUDGET_MS / 1000} s` : ""}, ${(perf.now() / 1000).toFixed(1)} s into the process`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
   log(`press-n time (${name}): orders of opening and pressing drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
   const rows = [`| ${name} | base busy median ${ms(base)} ms | twin ${show(r.ratios.twin!)} | rounds ${r.rounds} | ${r.sound ? "counts" : "does not count"} |`];
@@ -152,9 +154,9 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
     if ((r.misses[label] ?? 0) > 0) v.push(`press-n time (${name}): the ${label} window asked for ${r.misses[label]} reads the tape has no answer for; the real server answered them in this process`);
     if (witness) {
       if (verdict === "ok") v.push(`press-n time (${name}): the time layer did not report a page whose draw takes 15 ms more (${show(r.ratios.slow!)})`);
-      else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds, so the witness of 15 ms more per draw could not be judged");
+      else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds" + (r.budget.skipped ? " (the time budget allowed no more)" : "") + ", so the witness of 15 ms more per draw could not be judged");
     } else if (verdict === "red") red.push(`${against} ${show(r.ratios[label]!)}, twin/base ${show(r.ratios.twin!)}`);
-    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base was wider than ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
+    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base was wider than ±${(r.floor * 100).toFixed(1)}% in ${r.rounds} rounds${r.budget.skipped ? " (the time budget allowed no more)" : ""} (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
     else if (polluted > 0) warn(`n-key time layer (${name})`, `the base page asked for ${polluted} reads the tape has no answer for, so its time carries the server's work`);
   }
   if (!changed) log(`press-n time (${name}): the page is the same as its base, so only the twin and the witness were measured`);
@@ -166,12 +168,13 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
  * slower than its base and its twin is measured again in fresh windows; it is red only when the second run judges it slower too. Both runs' numbers
  * are in the log. `result` is the first run, whose landings the counts are held on. */
 export async function timeLayer(name: string, windows: readonly PhaseWindow[], floor: number, changed: boolean, events?: readonly (string | undefined)[]): Promise<{ result: PhaseResult; violations: string[] }> {
-  const result = await timePhase(windows, floor, events);
-  const first = judgePhase(name, result, floor, changed);
+  const result = await timePhase(windows, floor, events, TIME_BUDGET_MS);
+  const first = judgePhase(name, result, changed);
   if (!first.red.length) return { result, violations: first.violations };
   log(`press-n time (${name}): slower than the base on the first run (${first.red.join("; ")}); the phase runs again in fresh windows to confirm`);
   lap(`time phase, first run (${result.rounds} rounds)`);
-  const again = judgePhase(`${name}, again`, await timePhase(windows, floor, events), floor, changed);
+  // The confirmation has no time budget: it runs only when the first run is red, which fails the job, and a confirmation cut short would raise the rate of false reds.
+  const again = judgePhase(`${name}, again`, await timePhase(windows, floor, events), changed);
   const violations = [...first.violations, ...again.violations];
   if (again.red.length) violations.push(`press-n time (${name}): the page is slower than its base in both runs: ${first.red.join("; ")}; again ${again.red.join("; ")}. ${CONFIRMED}`);
   else warn(`n-key time layer (${name})`, `slower than the base on the first run (${first.red.join("; ")}) and not on the second, so taken as the noise of one run`);
@@ -256,7 +259,8 @@ export async function startLane(t: { after(fn: () => unknown): void }, want: { l
       ...(changed ? [{ label: "cand", open: (s: Hooks) => open(s, { label: "cand" }) }] : []),
       // The witness is the current page with 15 ms more per draw, judged against the current page it was made from: a page much faster
       // than its base stays faster than the reference with 15 ms more, and must still be told slower than itself.
-      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }), ...(changed ? { against: "cand" } : {}) },
+      // It is pressed for its first pairs only: the slowed page reads about 1.5 times the reference, which a few pairs show.
+      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }), pairs: WITNESS_PAIRS, ...(changed ? { against: "cand" } : {}) },
     ],
     walk: async (how, wanted, withEvents = false) => {
       const scope = new Scope();

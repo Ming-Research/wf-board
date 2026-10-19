@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Bound the n-key time parts by a time budget
+
+Nodes: testing/press-n
+
+Summary: The time part of the n-key lane that presses while sessions write took 45 to 67 seconds as a job and ended last in 36 of 57 full CI runs read (10-19), where the time gate judges a minute. The cause was less the noise-driven extra rounds the lane makes (1 of 58 runs) than the runner: set-up and tear-down 6–19 seconds, the lane's start 10.6–22.3 seconds and a round 9.4–19.2 seconds, up to a factor of 1.7 apart between runners. The lane now bounds its pairs by time: a time budget of 34 seconds on the test process's clock cuts a round that has made 16 pairs and keeps a further round from beginning unless one as long as the last fits, widening the noise floor for the fewer pairs so that the twin still has to show the same noise per pair, and the witness (the page with 15 ms more per draw) is pressed for 10 pairs of the first round instead of every round. The page and the twin still make 30 pairs a round, the confirmation of a red is not limited by the budget, and the verdict reads as before. Four alternatives are recorded as refused. The derivation and the numbers are in docs/design.md, section 11, The n-key lane, The time budget.
+
 ## 2026-10-19 Continue the unread list and the daemon's rules from the state before
 
 Nodes: storage, storage/write-path, storage/write-path/rules-reuse, storage/write-path/page-rules-reuse

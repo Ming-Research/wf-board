@@ -5302,7 +5302,7 @@ a fixed 5 ms (quiet) or 6 ms (writing) more per press, 5.8–10.6% of the base's
 ×1.061–1.111). The copies' estimates spread with a standard deviation of 1.5% quiet and 1.3% writing between runs, against a median half width of 2.0%
 and 2.9%; with these (deduced, assuming a normal spread) a page the same as its base is slower in one run in about 9% (quiet) and 1% (writing) of runs
 and red in both in about 0.9% and under 0.1%, a page 5% slower is red in about 94% and 88%, and one 2% slower in about 24% and 6%. These are the
-properties of the 95% interval and are not traded for a threshold. When the twin's interval is wider than the floor, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+properties of the 95% interval and are not traded for a threshold. When the twin's interval is wider than the floor, 30 pairs more are made in fresh windows (replaying the same tape), twice at most and only while a round fits in the time budget (The time budget, below); still not, the layer says
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
 against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
@@ -5351,9 +5351,41 @@ probe's data are in the artifacts of the runs of the temporary workflow `tmp-pro
 39190549744), those of the balanced cycle with four windows and of the random orders in runs 39191754978, 39192249677, 39192671312 and 39192981801 of the
 temporary workflow `tmp-accept`, which also holds the acceptance runs of the confirmation.
 
+**The time budget.** The two time parts decide whether a pull request's checks end within the minute the time gate judges (The time gate): the time part
+that presses while sessions write ended last in 36 of the 57 full CI runs read (10-19, hosted runners; a 58th, in which another job took 342 seconds, is left
+out), a median 3 seconds, a 90th percentile 10 and at most 26 seconds after the next job. Its job took a median 45 seconds (30–55, 67 for the one run that
+made a second round), and 57 of the 58 runs made one round. The time was the runner's and the lane's own, not the rounds the twin asks for:
+
+| seconds | shortest | median | 90th percentile | longest |
+|---|---|---|---|---|
+| set-up and tear-down of the job (outside the test step) | 6 | 11 | 14 | 19 |
+| the lane's start (board, first walk, 32 change events) | 10.6 | 18.4 | 19.6 | 22.3 |
+| one round (4 windows when the page differs from its base, 3 when not) | 9.4 | 14.3 | 17.8 | 19.2 |
+| the job, 57 runs of one round | 30 | 45 | 52 | 55 |
+
+A round is 32 pairs of presses, about 340 ms a pair in a 12 second sample (base 80 ms, twin 80, changed page 56, witness 124), so the witness, a page with
+15 ms more per draw that the layer must report, is the dearest window, 36% of a pair. The quiet part has the same structure and ended at a median 40
+seconds (26–48). What the lane does:
+- *The witness is pressed for 10 pairs, in the first round only* (`PhaseWindow.pairs`, `WITNESS_PAIRS`; the 2 pairs of warm-up come first). The slowed page reads
+  about ×1.5 of the reference (×1.547 [1.504, 1.592] over 30 pairs in one run); the log ratios of a pair spread by about 0.078, which puts the interval over
+  10 pairs near ±5.6% (deduced from the spread, not measured apart), far from 1. The page, the twin and the control press 30 pairs a round as before, so the
+  judgment of a page is unchanged. About a quarter of a round's presses are saved (deduced from the sample above).
+- *A time budget of 34 seconds on the test process's clock* (`TIME_BUDGET_MS`, `performance.now()`, the clock of the `lap` lines). A round stops pairing once
+  the budget has passed and it has made 16 pairs (`MIN_PAIRS`, `keepPairing` in `test/nkey/stats.ts`); a further round begins only if one as long as the
+  last would end by the budget (`roundFits`). A round cut short has a twin over fewer pairs, whose interval is wider by t(n−1)/√n against t(29)/√30 for the
+  same spread, so the floor is widened by that factor in the logs of the ratio (`floorAt`: 20 pairs ×1.25, 16 pairs ×1.37) and the twin still has to
+  show the noise per pair the floor was measured at; more pairs than 30 keep the floor (pooled rounds were read against it before). The budget ends the
+  test step at most about 2 seconds after it (the report, closing the windows, the process): 36 seconds. The job is that and the set-up (median 11 s,
+  90th percentile 14 s). A run that ends with the twin still wider than the floor says "undecided" as after the third round, and passes.
+- *Not limited*: the second run that confirms a red (it runs only when the job is going to fail, and a confirmation cut short would raise the rate of false
+  reds), and the runs of `NKEY_FLOOR` that set the floor.
+On the 57 runs, with the first round's end moved up by a quarter of its length (deduced), the first round ends at a median 29 seconds, 90th percentile 33
+and at most 35, against 32, 38 and 39 now, so the budget cuts 3 runs of 57 by fewer than a tenth of their pairs and keeps the second round only where it
+fits (a runner whose first round ends by about 21 seconds). The lane logs the pairs of each round, whether the budget cut or kept a round, and the time into the process.
+
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
-waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (the current page with that edit,
+waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase, for its first 10 pairs (the current page with that edit,
 judged against the current page when it differs from the base, else against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page). Against
 the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
 15 ms more per draw ×1.005 (board-cpu-usage).
