@@ -889,6 +889,26 @@ test("pause replay by the signatures gives what parsing every changed file gives
   assert.deepEqual(scanned, live, "a restart gives what the live writes gave");
 });
 
+test("pause replay skips an item file whose blob git does not have, says so, and goes on", async t => {
+  const { dir, store } = await setup(t);
+  const pausedAt = "2026-10-11T04:00:00.125Z", resumedAt = "2026-10-11T04:10:00.250Z";
+  await store.commit({ author: "Fixture", message: "Work", puts: [put("root", item())] });
+  let root = store.snapshot().items.root!;
+  await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
+  root = store.snapshot().items.root!;
+  const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
+  const resume = await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
+  const lost = await git(dir, "rev-parse", `${resume.commit}:items/root.yaml`);
+  const internals = store as unknown as { blobTexts(ids: Iterable<string>): Promise<Map<string, Buffer>> };
+  const original = internals.blobTexts.bind(store), warnings: string[] = [];
+  t.mock.method(console, "warn", (...parts: unknown[]) => { warnings.push(parts.join(" ")); });
+  t.mock.method(internals, "blobTexts", async (ids: Iterable<string>) => { const texts = await original(ids); texts.delete(lost); return texts; });
+  assert.deepEqual(await scanPauses(dir, store), { root: [{ start: pausedAt }] }, "the resume is the one commit that could not be read, so the pause stays open");
+  const skipped = warnings.filter(warning => warning.startsWith("Skipping unreadable pause history item"));
+  assert.equal(skipped.length, 1);
+  assert.match(skipped[0]!, new RegExp(`item ${resume.commit}:items/root\\.yaml`));
+});
+
 test("pause replay tracks historical ownership targets even when a row ID is reused", async t => {
   const { store } = await setup(t);
   const pausedAt = "2026-10-11T10:00:00.125Z", movedAt = "2026-10-11T10:10:00.250Z";
