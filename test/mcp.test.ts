@@ -50,6 +50,35 @@ test("project MCP after parameters reorder existing and newly created projects w
   }
 });
 
+test("delete_project is a tool of the architect that deletes an empty project and names what a full one holds", async t => {
+  const { store, op } = await board(t), server = createMcpServer({ store, ops: op });
+  const client = new Client({ name: "Project delete test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  t.after(async () => { await client.close(); await server.close(); });
+  const tools = (await client.listTools()).tools, tool = tools.find(tool => tool.name === "delete_project")!;
+  assert.match(tool.description!, rx`only ${ARCHITECT_WRITER} may`);
+  assert.ok(tool.inputSchema.properties!.name && !tool.inputSchema.properties!.after, "it takes the project's name and nothing to place it");
+  assert.ok(tools.find(tool => tool.name === "delete_term")!.inputSchema.properties!.project, "delete_term names another project's glossary");
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const result = await client.callTool({ name, arguments: args });
+    return { error: result.isError === true, text: (result.content as Array<{ text: string }>).map(c => c.text).join("\n") };
+  };
+  const refused: Array<[Record<string, unknown>, RegExp]> = [
+    [{ author: "Firn", name: "总管" }, rx`author: only ${ARCHITECT_WRITER} may delete a project`],
+    [{ author: "总管", name: "总管" }, retired],
+    [{ ...asArchitect, name: "Firn" }, /^project Firn: not empty, it still holds 1 item \(other\)/],
+  ];
+  for (const [args, message] of refused) {
+    const before = store.snapshot(), result = await call("delete_project", args);
+    assert.equal(result.error, true); assert.match(result.text, message);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  const deleted = await call("delete_project", { ...asArchitect, name: "总管" });
+  assert.equal(deleted.error, false); assert.match(deleted.text, /^delete_project 总管/);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Whitefoot", "Firn", "Architect", "PM"]);
+  assert.equal((await call("projects", {})).text.includes("总管"), false);
+});
+
 test("project MCP onboarding, close and coordinator reads use the configured contracts", async t => {
   const {store,op}=await board(t), server=createMcpServer({store,ops:op,now:()=>"2026-10-12T00:00:00Z"});
   const client=new Client({name:"Project test",version:"1"}), [st,ct]=InMemoryTransport.createLinkedPair();

@@ -1,0 +1,26 @@
+name: tmp-board-delete-empty-project
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The type check, the page bundle and the test files that touch projects, tool lists, the access table and the glossary.
+# The design tree is checked by the design workflow on every push.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-board-delete-empty-project-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    name: check and test files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The test files
+        run: node --test test/ops.test.ts test/access.test.ts test/mcp.test.ts test/ops-roles.test.ts test/retire-pm.test.ts test/lean.test.ts test/credentials.test.ts test/tags.test.ts test/move-project.test.ts

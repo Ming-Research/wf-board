@@ -12,7 +12,7 @@ const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) 
 // What the design (docs/design.md, section 9) reserves for the architect, written out here and not read from the table.
 const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 // What only the architect may do beyond that (no role has the merge row: the GitHub watch marks it).
-const ARCHITECT_ONLY: Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
+const ARCHITECT_ONLY: Part[] = ["project.create", "project.delete", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 
 test("each role has the parts the design gives it", () => {
@@ -39,6 +39,7 @@ test("the writes the code reserves are the parts the table withholds from the ob
     ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
     ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
     ["item.title", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
+    ["project.delete", rx`only ${ARCHITECT_WRITER} may delete a project`, () => op.deleteProject({ ...legacy, name: "Firn" })],
     ["item.runner", rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
   ];
   for (const [part, message, call] of reserved) {
@@ -52,6 +53,8 @@ test("the writes the code reserves are the parts the table withholds from the ob
 const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unknown> }>> = {
   createProject: [{ parts: ["project.create"], args: { name: "N" } }],
   updateProject: [{ parts: ["project.update"], args: { name: "Whitefoot", repo: "o/r" } }],
+  // Firn holds an item, so the call that passes the table is refused for what the project holds, and deletes nothing.
+  deleteProject: [{ parts: ["project.delete"], args: { name: "Firn" } }],
   closeNote: [{ parts: ["note.close"], args: { id: "note-1", log: "l" } }],
   createItem: [{ parts: ["item.create"], args: { key: "n", title: "N", accept: "ok", group: "Whitefoot" } }],
   appendLog: [{ parts: ["item.log"], args: { id: "a", text: "t" } }],

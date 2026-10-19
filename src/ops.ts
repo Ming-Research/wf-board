@@ -6,7 +6,7 @@ import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, Dispatc
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
-import type { Put } from "./store.ts";
+import type { Put, Del } from "./store.ts";
 import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey } from "./rules.ts";
 import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
@@ -36,6 +36,8 @@ export interface Result { commit: string; id: string; rev?: number; summary: str
 export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
+  /** Removes an empty project and the configuration that belongs to it alone; the architect only. */
+  deleteProject(a: { author: string; session?: string; access?: Access; name: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
   createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; access?: Access; id: string; text: string }): Promise<Result>;
@@ -81,7 +83,8 @@ export interface Ops {
   withdrawCard(a: { author: string; session?: string; access?: Access; key: string; log: string }): Promise<Result>;
   replyNote(a: { author: string; session?: string; access?: Access; id: string; reply: string; replace?: boolean }): Promise<Result>;
   setTerm(a: { author: string; session?: string; access?: Access; term: string; definition: string }): Promise<Result>;
-  deleteTerm(a: { author: string; session?: string; access?: Access; term: string }): Promise<Result>;
+  /** `project`: another project's glossary, which only the architect may name (a retired project's terms are removed this way). */
+  deleteTerm(a: { author: string; session?: string; access?: Access; term: string; project?: string }): Promise<Result>;
   sendMessage(a: { author: string; session?: string; access?: Access; to: string; text: string; item?: string }): Promise<Result>;
 }
 /** `sessions`: the sessions of the long-lived credentials, which a message may go to besides the architect and the sessions
@@ -187,7 +190,7 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
-interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
+interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; /** Documents the write removes; only glossaries today (`deleteProject`). */ deletes?: Del[]; board?: Board }
 /** Required checks depend on plan structure and open status, not logs or display
  * metadata. Follow status changes backwards through both graphs, then include
  * the targets whose ownership requirement can change when a waiter opens.
@@ -242,6 +245,20 @@ function requireProject(s: Snapshot, name: string) {
   const project = s.board.projects.find(p => p.name === name);
   if (!project) throw new OpError(`project ${name}: choose a configured project with projects`);
   return project;
+}
+/**
+ * What a project still holds, one phrase for each kind that is not empty, for the refusal to delete it: its items, the cards and
+ * notes on them (they move with the items) and its glossary's terms. Each phrase counts and names the first five.
+ */
+function projectContents(s: Snapshot, name: string): string[] {
+  const inProject = (item: string) => Object.hasOwn(s.items, item) && s.items[item]!.group === name;
+  const phrase = (one: string, many: string, ids: string[]) => ids.length ? [`${ids.length} ${ids.length === 1 ? one : many} (${ids.sort().slice(0, 5).join(", ")}${ids.length > 5 ? ", …" : ""})`] : [];
+  return [
+    ...phrase("item", "items", Object.keys(s.items).filter(inProject)),
+    ...phrase("card", "cards", Object.entries(s.decisions).filter(([, card]) => inProject(card.item)).map(([key]) => key)),
+    ...phrase("note", "notes", Object.entries(s.notes).filter(([, note]) => inProject(note.target.startsWith("it:") ? note.target.slice(3) : s.decisions[note.target.slice(2)]?.item ?? "")).map(([id]) => id)),
+    ...phrase("term", "terms", (s.glossaries[name]?.terms ?? []).map(t => t.term)),
+  ];
 }
 function projectOrder(projects: Board["projects"], a: Writer & { name: string; after?: string }): Board["projects"] {
   if (a.after === undefined) return projects;
@@ -413,6 +430,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
             else if (put.kind === "glossary") next.glossaries[put.id] = parse(Glossary, put.doc);
             else if (put.kind === "note") next.notes[put.id] = parse(Note, put.doc);
           }
+          for (const del of work.deletes ?? []) delete next.glossaries[del.id];
           const beforeRules = rulesOf(s);
           // Rules of a prospective state are built once per state: again only after a step below changes `next`.
           const candidate = () => store.derived.candidate(s, next);
@@ -457,7 +475,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         }
         trace?.lap("check");
         try {
-          const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
+          const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, ...(work.deletes ? { deletes: work.deletes } : {}), board: work.board });
           return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(work.note === undefined ? {} : { note: work.note }) };
         } catch (error) {
           if (error instanceof ConflictError) {
@@ -601,6 +619,20 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const changed = { ...rest, ...(a.repo === undefined ? {} : { repo: a.repo }), ...(mainline === undefined ? {} : { mainline }) };
       const projects = s.board.projects.map(p => p.name === a.name ? changed : p);
       return { id: a.name, kind: "board", board: parse(Board, { ...s.board, projects: projectOrder(projects, a) }), puts: [], message: `update_project ${a.name}` };
+    }),
+    deleteProject: a => run(a, "project.delete", s => {
+      onlyArchitect(a, "delete a project");
+      requireProject(s, a.name);
+      if (a.name === ARCHITECT) throw new OpError(`project ${a.name}: the architect writes as this project, so it stays configured`);
+      const left = projectContents(s, a.name);
+      if (left.length) throw new OpError(`project ${a.name}: not empty, it still holds ${left.join("; ")}; move its items with move_item_project (their cards and notes go with them) and remove its terms with delete_term (project ${a.name}), then delete it`);
+      // A tag limited to this project alone would have no project left (an absent list means every project), so the vocabulary decides about it first.
+      const tags = boardTags(s.board), alone = tags.filter(t => t.projects?.length === 1 && t.projects[0] === a.name).map(t => t.name);
+      if (alone.length) throw new OpError(`project ${a.name}: tags ${alone.join(", ")} apply to it alone; give them another project list with set_tag, or remove them with remove_tag, and then delete the project`);
+      // Its glossary file, which holds no term now, goes with it; the authors named in the history stay as written.
+      const glossary = s.glossaries[a.name], limited = (t: Tag): Tag => t.projects?.includes(a.name) ? { ...t, projects: t.projects.filter(p => p !== a.name) } : t;
+      const board = parse(Board, { ...s.board, projects: s.board.projects.filter(p => p.name !== a.name), ...(s.board.tags ? { tags: tags.map(limited) } : {}) });
+      return { id: a.name, kind: "board", board, puts: [], ...(glossary ? { deletes: [{ kind: "glossary" as const, id: a.name, expectRev: glossary.rev }] } : {}), message: `delete_project ${a.name}` };
     }),
     closeNote: a => run(a, "note.close", async (s, at) => {
       const { note, item } = ownedNote(s, a.id, a);
@@ -1082,9 +1114,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       return { id: a.author, kind: "glossary", message: `set_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: parse(Glossary, { ...glossary, terms }), expectRev: s.glossaries[a.author]?.rev ?? null }] };
     }),
     deleteTerm: a => run(a, "term", s => {
-      const glossary = ownGlossary(s, a.author);
-      if (!glossary.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${a.author}'s glossary; call glossary to see its terms`);
-      return { id: a.author, kind: "glossary", message: `delete_term ${a.term}`, puts: [{ kind: "glossary", id: a.author, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };
+      // Another project's glossary is the architect's to clean: a retired project cannot write its own.
+      const name = a.project ?? a.author;
+      if (name !== a.author) { onlyArchitect(a, "remove a term from another project's glossary"); requireProject(s, name); }
+      const glossary = name === a.author ? ownGlossary(s, a.author) : s.glossaries[name];
+      if (!glossary?.terms.some(t => t.term === a.term)) throw new OpError(`term ${a.term}: not in ${name}'s glossary; call glossary to see its terms`);
+      return { id: name, kind: "glossary", message: `delete_term ${a.term}${name === a.author ? "" : ` (${name})`}`, puts: [{ kind: "glossary", id: name, doc: { ...glossary, terms: glossary.terms.filter(t => t.term !== a.term) }, expectRev: glossary.rev }] };
     }),
     sendMessage: async a => {
       let sent = "";

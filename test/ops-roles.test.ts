@@ -396,6 +396,7 @@ for (const retired of ["总管", "PM"]) test(`every write under the retired auth
   const calls: Record<keyof Ops, () => Promise<unknown>> = {
     createProject: () => op.createProject({ author: retired, name: "New" }),
     updateProject: () => op.updateProject({ author: retired, name: "Whitefoot", repo: "Org/Changed" }),
+    deleteProject: () => op.deleteProject({ author: retired, name: retired }),
     closeNote: () => op.closeNote({ author: retired, id: "note-1", log: "Handled" }),
     createItem: () => op.createItem({ author: retired, key: "x", group: retired, title: "X", accept: "Pass" }),
     appendLog: () => op.appendLog({ author: retired, id: "a", text: "Log" }),

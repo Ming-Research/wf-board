@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Let the architect delete an empty project
+
+Nodes: responsibility/project-deletion, responsibility/identities
+
+Summary: The board could create and change a project but not delete one, and the retired authors' projects were kept configured so that their items and history could be read. The items of the coordinator project were moved into a record of the architect's project with their keys, numbers, logs and cards unchanged, so that reason was gone while the empty project still showed in the page, the briefs and every list. The architect now deletes a project with one tool, only when it holds no item, no card or note on its items and no glossary term, and the refusal names what is left; the project's configuration and its empty glossary go with it, a tag limited to that project alone is refused until the vocabulary is changed, and the commits and log lines that name the project as author stay as written. The architect may also remove a term from another project's glossary, since a retired project cannot clear its own. The retired authors are still refused. The grounds and the refused alternatives (deleting the contents with the project, a retired mark, a project deleting itself) are in the nodes; the derivation is in docs/design.md, section 9, Deleting a project.
+
 ## 2026-10-19 Let the runner report a wait for an event
 
 Nodes: items

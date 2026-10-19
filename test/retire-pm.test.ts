@@ -203,7 +203,7 @@ test("the PM's role is no long-lived credential: a file that holds one is refuse
 test("the author PM is refused before a write reads anything, and the project PM stays readable", async t => {
   const { store, op } = await board(t);
   const before = store.snapshot();
-  assert.ok(before.board.projects.some(p => p.name === "PM"), "the project stays configured so its history is read");
+  assert.ok(before.board.projects.some(p => p.name === "PM"), "the project stays configured until the architect deletes it");
   await assert.rejects(op.appendLog({ author: "PM", session: "PM", id: "a", text: "x" }), /author PM: this identity is retired/);
   await assert.rejects(op.createItem({ author: "PM", session: "PM", key: "x", group: "PM", title: "X", accept: "Pass" }), /author PM: this identity is retired/);
   assert.deepEqual(store.snapshot(), before);

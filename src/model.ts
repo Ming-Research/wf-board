@@ -482,7 +482,7 @@ export const isArchitectSession = (session: string | undefined): boolean => sess
 export const isArchitectName = (session: string | undefined): boolean => session?.trim().startsWith(ARCHITECT_SESSION) ?? false;
 /** Whether a session name is the runner's, ignoring spaces around it. */
 export const isRunnerSession = (session: string | undefined): boolean => session?.trim() === RUNNER_SESSION;
-/** The retired authors, the coordinator (总管) and the PM: every write under one is refused (ops `run`); the historical authors stay as written, and their projects stay configured so their items and history are read. */
+/** The retired authors, the coordinator (总管) and the PM: every write under one is refused (ops `run`); the historical authors stay as written, and their projects stay configured until the architect deletes them once empty (ops `deleteProject`). */
 export const RETIRED_AUTHORS: readonly string[] = ["总管", "PM"];
 
 /**
@@ -497,7 +497,7 @@ export type Role = (typeof ROLES)[number];
 export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, "观察者", "资源管理"] as const;
 /** One part for each kind of write; a write names the parts it changes. */
 export const PARTS = [
-  "project.create", "project.update", "tag-vocab", "journal",
+  "project.create", "project.update", "project.delete", "tag-vocab", "journal",
   "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.order",
   "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row", "item.runner",
   "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
@@ -507,8 +507,8 @@ export type Part = (typeof PARTS)[number];
 export type Scope = "board" | "subtree" | "below" | "own";
 /** What the board reserves for the architect (ops `onlyProcess`), starting a dispatch and the runner's report on an item: the process. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
 const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
-/** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating a project. No role has the merge row. */
-const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
+/** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating and deleting a project. No role has the merge row. */
+const ARCHITECT_ONLY: readonly Part[] = ["project.create", "project.delete", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];
 const partsAt = (scope: Scope, parts: readonly Part[]): Partial<Record<Part, Scope>> => Object.fromEntries(parts.map(p => [p, scope])) as Partial<Record<Part, Scope>>;
 export const ACCESS: Readonly<Record<Role, Readonly<Partial<Record<Part, Scope>>>>> = {

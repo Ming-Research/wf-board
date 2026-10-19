@@ -2343,8 +2343,9 @@ a changed title in `update_item`, and the page order in `create_project` and
 `update_project`. `create_item`, `set_difficulty` and `set_difficulty_many` are
 the process's too, except that an engineer's credential makes the items of its own
 subtree and rates the ones below its root (section 9). Some are the architect's
-alone: `journal_entry`, the tag vocabulary tools, creating a project over a
-credential, and other projects' repositories in `update_project`.
+alone: `journal_entry`, the tag vocabulary tools, creating and deleting a project over a
+credential, and other projects' repositories in `update_project`; `delete_project`
+and the `project` argument of `delete_term` are the architect's whatever the credential.
 Turning a cancelled item into a record in `update_item` is reserved for the
 process too, but its refusal comes after the ownership and revision checks,
 because it depends on the item's state. Work another project needs is not filed
@@ -2382,9 +2383,10 @@ authors `总管` and `PM` is refused by every tool.
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is the architect, who runs the process and replaces any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |
 | `create_project(name, repo?)` | Configures a project; accepts any author string | Unique project name; `after` only by the architect |
 | `update_project(name, repo?, mainline?, after?)` | Sets or changes a project’s repository, its main line branch (`null` clears it) or its place in the page order | Repository and main line: author is that project or the architect; the main line has no whitespace; order: only the architect |
+| `delete_project(name)` | Deletes an empty project: removes it from the board's project list (and so from the page, the briefs and every list that reads it), its name from the project lists of the tags that name it, and its glossary file, which holds no term. The log lines and commits that name it as author stay as written | Only the architect (`project.delete`, which no other role has), checked before anything else; the project is configured and is not `Architect`, the project the architect writes as; refused, naming the count and the first five keys of each kind, while it holds an item, a card or a note on them (all go with the item by `move_item_project`) or a glossary term; refused, naming the tags, while a tag is limited to this project alone (an empty list would mean every project: change the tag with `set_tag` or `remove_tag` first); one commit |
 | `close_note(id, log)` | Closes a note and records handling in its item's log | Author is the note target’s project; not draft |
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
-| `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
+| `delete_term(term, project?)` | Removes a term from the author's own glossary, or, with `project`, from another configured project's, which is how a retired project's terms are cleared before `delete_project` | The term is in it; `project` other than the author's only by the architect |
 | `send_message(to, text, item?)` | Sends a message from the caller's session (section 8, Messages) | A session name; `to` the architect's session, a session with an open dispatch, or a long-lived credential's session, else refused naming those that work; `text` one line of at most 150 characters, refused, never cut, when longer; `item` exists |
 
 ## 7. The page
@@ -3751,8 +3753,8 @@ session holds the item that delivered the commit. What is not made any more, wit
 The PM's stream at `/wake`, its file `state/wake.jsonl`, the receipts and the alert 「PM 1 小时没响应」 are
 gone; the daemon deletes the file at start, and the upgrade at `/wake` is answered 404. The architect's stream
 and its alert (The architect's stream) are as before, and a call to a tool is no receipt for any stream. The
-author `PM` is refused like `总管` (section 9); the project `PM` stays configured so that its items and history are
-read; the role `PM` is out of the roles, the long-lived roles and the access table; the session name `PM` is an
+author `PM` is refused like `总管` (section 9); the project `PM` stays configured only until the architect deletes
+it once empty (section 9, Deleting a project); the role `PM` is out of the roles, the long-lived roles and the access table; the session name `PM` is an
 ordinary name; and `mayRunProcess` is the architect's alone. No long-lived credential of the role `PM` had been issued: when this was done the
 credential file's default path did not exist on the machine and the daemon's configuration names no other.
 
@@ -3811,7 +3813,8 @@ the writer is the architect (`author === Architect`, a session name starting `�
 replies or closures. Only the architect creates items in any project; an
 engineer's credential creates them inside its own subtree (below).
 `set_term` and `delete_term` change only the author's own glossary,
-`Architect`'s included. Moving work requires the source and destination to
+`Architect`'s included; the architect's `delete_term` may name another project's
+glossary with `project`, since a retired project cannot write its own. Moving work requires the source and destination to
 belong to one project, which the author must own unless it is the architect
 (`move_item_project` leaves its source project, so only the architect may use
 it, section 6), and revising a card’s owning item checks both owners the same
@@ -3841,12 +3844,42 @@ show that the architect made the change, not the item's project. The
 operations reserved for the process are listed with the tools (section 6); the
 check is `onlyProcess` in `src/ops.ts` and what only the architect does is
 `onlyArchitect`; project order uses the same judgement as the process in
-`src/rules.ts`. The coordinator project `总管` and the project `PM` stay configured, so
-their items, glossary and history remain readable, but `run` in `src/ops.ts`,
+`src/rules.ts`. The coordinator project `总管` and the project `PM` stay configured while they hold
+anything to read (items, the cards and notes on them, glossary terms), and the architect deletes them once
+they are empty (Deleting a project, below). `run` in `src/ops.ts`,
 the one path every agent write takes, refuses any write under either author
 (`RETIRED_AUTHORS` in `src/model.ts`) with a message naming `Architect` (session `架构师`), which does the
-process and keeps the rules. The session name `PM` is an ordinary name now. Store migrations commit under `总管`
+process and keeps the rules, whether or not their projects are still configured. The session name `PM` is an ordinary name now. Store migrations commit under `总管`
 directly and do not pass through it; the historical authors stay as written (section 8, The PM is retired).
+
+**Deleting a project.** `delete_project(name)` takes an empty project off the board, and only the
+architect may (the part `project.delete`, which the observer and the other roles lack). The project
+`总管` was the case: its 259 items (81 cards, 4 records) had been moved into a record of the
+`Architect` project with their keys, numbers, logs and cards unchanged, so the reason the code gave for
+keeping it configured (reading its items and history) was gone, while the page, the briefs and the lists
+still showed it and an agent could still create work in it. Empty means no item, no card or note on an
+item of the project, and no glossary term: the call is refused with the count and the first five keys of
+each kind that is left, and the way out (`move_item_project` takes an item's cards and notes along;
+`delete_term` with `project` clears the terms), so that nothing on the board is removed with the project.
+The terms needed their own way out because a retired project cannot write its own glossary: `总管` still
+had three terms when this was written, and `set_term` and `delete_term` otherwise change the author's
+own glossary only. Removed with the project: its entry in `board.projects` (the repository, the main
+line and the place in the page order are fields of that entry), its name in the project lists of the
+tags that name it, and its glossary file once it holds no term. A tag limited to this project alone
+cannot lose its name, because a tag with no list applies to every project, so the call is refused,
+naming the tags, until the vocabulary is changed with `set_tag` or `remove_tag` (which need the
+owner's approval, so a project deletion does not change the vocabulary by itself). The project
+`Architect` cannot be deleted: its name is the author the architect writes as, and the check that a
+write names a configured project would refuse every later write. Commits and log lines that name the
+project as author stay as they are: the history is not rewritten, and reading it needs no configured
+project (the old boards the history readers rebuild carry their own project lists). A long-lived
+credential that names the project is left in its file outside the data directory; its writes are
+refused once the project is gone, and `scripts/credential.ts` revokes it. Rejected: deleting the
+project together with its items, cards, notes and terms (the board's first priority is that nothing on
+it is lost); a `retired` mark on the project that hides it from the lists (every reader of the
+project list would filter, the entry would stay in `board.yaml`, and the owner's request was to take it
+off the board); and letting a project delete itself (its agent could remove the configuration its own
+work and credentials depend on).
 
 **The runner.** The runner is the resident program that starts the engineers' turns and
 reports their state on the items (item `runner-mvp`). It has no credential. It calls the board

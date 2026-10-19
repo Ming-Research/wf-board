@@ -5,10 +5,11 @@ import { rules, CARD_MISMATCH_LABEL } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ARCHITECT_WRITER, PROCESS_WRITERS } from "../src/model.ts";
-import { board, at, later, author, architect, asArchitect, retired, rx, conf, opt, goalNumbers } from "./helpers.ts";
+import { board, at, later, author, architect, asArchitect, retired, retiredPM, rx, conf, opt, goalNumbers } from "./helpers.ts";
 
 test("creation, revision, dependency, status, movement and card checks name a fix and leave the board unchanged", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
@@ -960,3 +961,126 @@ test("cancelling an item withdraws its open cards in the same commit; reopening 
   assert.equal(store.snapshot().decisions["cancel-card-manual"]!.status, "withdrawn", "a card withdrawn by hand stays withdrawn");
 });
 
+
+test("delete_project removes an empty project in one commit and keeps the history that names its author", async t => {
+  const { store, op, dir } = await board(t);
+  // A write committed under the retired coordinator, as the store's migrations were: the author stays in the history after the project goes.
+  await op.createItem({ ...asArchitect, key: "legacy", title: "Legacy", record: true, group: "Architect" });
+  const legacy = store.snapshot().items.legacy!;
+  await store.commit({ author: "总管", message: "Legacy write", puts: [{ kind: "item", id: "legacy", expectRev: legacy.rev, doc: { ...legacy, log: [...legacy.log, { at, by: "总管", text: "写过的日志" }] } }] });
+  const before = store.snapshot();
+  const result = await op.deleteProject({ ...asArchitect, name: "总管" });
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Whitefoot", "Firn", "Architect", "PM"]);
+  assert.deepEqual([store.snapshot().items, store.snapshot().decisions, store.snapshot().notes], [before.items, before.decisions, before.notes], "nothing but the board changed");
+  const [head] = await store.log({ limit: 1 });
+  assert.equal(head!.commit, result.commit); assert.equal(head!.author, architect); assert.equal(head!.message, "delete_project 总管"); assert.deepEqual(head!.files, ["board.yaml"]);
+  // The history and the log lines that name the retired author are read as before, also after a restart.
+  assert.ok((await store.log({ limit: 10 })).some(c => c.author === "总管"));
+  assert.equal(store.snapshot().items.legacy!.log.at(-1)!.by, "总管");
+  const reopened = await Store.open(dir);
+  assert.deepEqual(reopened.snapshot(), store.snapshot());
+  assert.equal(reopened.snapshot().items.legacy!.log.at(-1)!.by, "总管");
+  // The retired author is refused as before, and the project is no longer configured.
+  await assert.rejects(op.appendLog({ author: "总管", id: "legacy", text: "x" }), retired);
+  await assert.rejects(op.updateProject({ ...asArchitect, name: "总管", repo: "Org/X" }), /project 总管: choose a configured project/);
+  await assert.rejects(op.deleteProject({ ...asArchitect, name: "总管" }), /project 总管: choose a configured project/);
+  // The PM project, empty too, goes the same way.
+  await op.deleteProject({ ...asArchitect, name: "PM" });
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Whitefoot", "Firn", "Architect"]);
+});
+
+test("delete_project removes the project's empty glossary with it, and a term is cleared first by delete_term naming the project", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createProject({ author: "Mine", name: "Mine" });
+  await op.setTerm({ author: "Mine", term: "词一", definition: "d" });
+  await op.setTerm({ author: "Mine", term: "词二", definition: "d" });
+  const refusal = /^project Mine: not empty, it still holds 2 terms \(词一, 词二\); move its items with move_item_project \(their cards and notes go with them\) and remove its terms with delete_term \(project Mine\), then delete it$/;
+  await assert.rejects(op.deleteProject({ ...asArchitect, name: "Mine" }), refusal);
+  // Only the architect names another project's glossary, and the term must be in it.
+  await assert.rejects(op.deleteTerm({ author: "Firn", session: "someone", project: "Mine", term: "词一" }), rx`author: only ${ARCHITECT_WRITER} may remove a term from another project's glossary`);
+  await assert.rejects(op.deleteTerm({ author: "Architect", session: "engineer", project: "Mine", term: "词一" }), rx`only ${ARCHITECT_WRITER} may remove a term`);
+  await assert.rejects(op.deleteTerm({ ...asArchitect, project: "Mine", term: "没有" }), /term 没有: not in Mine's glossary/);
+  await assert.rejects(op.deleteTerm({ ...asArchitect, project: "Missing", term: "词一" }), /project Missing: choose a configured project/);
+  await assert.rejects(op.deleteTerm({ ...asArchitect, project: "Firn", term: "词一" }), /term 词一: not in Firn's glossary/);
+  assert.deepEqual(store.snapshot().glossaries.Mine!.terms.map(t => t.term), ["词一", "词二"]);
+  const cleared = await op.deleteTerm({ ...asArchitect, project: "Mine", term: "词一" });
+  assert.equal(cleared.summary, "delete_term 词一 (Mine)");
+  await op.deleteTerm({ ...asArchitect, project: "Mine", term: "词二" });
+  assert.deepEqual(store.snapshot().glossaries.Mine, { terms: [], rev: 4 });
+  assert.equal(existsSync(join(dir, "glossaries/Mine.yaml")), true);
+  const result = await op.deleteProject({ ...asArchitect, name: "Mine" });
+  assert.equal(Object.hasOwn(store.snapshot().glossaries, "Mine"), false);
+  assert.equal(existsSync(join(dir, "glossaries/Mine.yaml")), false);
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Whitefoot", "Firn", "总管", "Architect", "PM"]);
+  const [head] = await store.log({ limit: 1 });
+  assert.equal(head!.commit, result.commit); assert.deepEqual([...head!.files].sort(), ["board.yaml", "glossaries/Mine.yaml"]);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+  // The architect clears its own glossary the same way as any project does.
+  await op.setTerm({ ...asArchitect, term: "自己的词", definition: "d" });
+  await op.deleteTerm({ ...asArchitect, project: "Architect", term: "自己的词" });
+  assert.deepEqual(store.snapshot().glossaries.Architect!.terms, []);
+});
+
+test("delete_project refuses a project that still holds items, cards, notes or terms, names them, and changes nothing", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createProject({ author: "Mine", name: "Mine" });
+  await op.setTerm({ author: "Mine", term: "词", definition: "d" });
+  await op.createProject({ author: "Many", name: "Many" });
+  for (let i = 1; i <= 6; i++) await op.createItem({ ...asArchitect, key: `m${i}`, title: `M${i}`, record: true, group: "Many" });
+  const cases: Array<[string, RegExp]> = [
+    // Items, the cards on them and the notes on the items and on the cards (note-2 is on the card choice of item b) are all counted.
+    ["Whitefoot", /^project Whitefoot: not empty, it still holds 3 items \(a, area, b\); 2 cards \(choice, ruled\); 2 notes \(note-1, note-2\); move its items with move_item_project/],
+    ["Firn", /^project Firn: not empty, it still holds 1 item \(other\); move its items/],
+    ["Mine", /^project Mine: not empty, it still holds 1 term \(词\); move its items/],
+    // Only the first five are named.
+    ["Many", /^project Many: not empty, it still holds 6 items \(m1, m2, m3, m4, m5, …\); move its items/],
+  ];
+  for (const [name, message] of cases) {
+    const before = store.snapshot();
+    await assert.rejects(op.deleteProject({ ...asArchitect, name }), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  }
+});
+
+test("delete_project is the architect's alone, refuses the architect's own project and an unknown one, and a retired author stays refused", async t => {
+  const { store, op, dir } = await board(t);
+  const before = store.snapshot();
+  const only = rx`author: only ${ARCHITECT_WRITER} may delete a project`;
+  const cases: Array<[Parameters<typeof op.deleteProject>[0], RegExp]> = [
+    [{ author: "总管", name: "总管" }, retired],
+    [{ author: "PM", name: "PM" }, retiredPM],
+    // The project itself, another project, and an engineer of the Architect project writing from a session that is not the architect's.
+    [{ author: "Firn", session: "s", name: "总管" }, only],
+    [{ author: "Whitefoot", name: "PM" }, only],
+    [{ author: "Architect", session: "engineer", name: "总管" }, only],
+    [{ author: "Architect", name: "总管" }, only],
+    [{ author: "Architect", session: "观察者", access: { role: "观察者", project: "Architect", roots: [] }, name: "总管" }, /^project\.delete: a 观察者 credential may not write this part/],
+    [{ author: "Whitefoot", session: "eng", access: { role: "工程师", project: "Whitefoot", roots: ["a"] }, name: "总管" }, /^project\.delete: a 工程师 credential may not write this part/],
+    [{ ...asArchitect, name: "Architect" }, /^project Architect: the architect writes as this project, so it stays configured$/],
+    [{ ...asArchitect, name: "Missing" }, /^project Missing: choose a configured project with projects$/],
+  ];
+  for (const [call, message] of cases) {
+    await assert.rejects(op.deleteProject(call), e => { assert.ok(e instanceof OpError); assert.match(e.message, message); return true; });
+    assert.deepEqual(store.snapshot(), before);
+  }
+  assert.deepEqual((await Store.open(dir)).snapshot(), before);
+  // The architect's credential deletes too, whatever author and session the call carries.
+  await op.deleteProject({ author: "Whitefoot", session: "s", access: { role: "架构师", project: "Architect", roots: [] }, name: "总管" });
+  assert.deepEqual(store.snapshot().board.projects.map(p => p.name), ["Whitefoot", "Firn", "Architect", "PM"]);
+});
+
+test("delete_project takes the project out of tag project lists and refuses while a tag is limited to it alone", async t => {
+  const { store, op, dir } = await board(t);
+  await op.createProject({ author: "Mine", name: "Mine" });
+  await op.setTag({ ...asArchitect, name: "共用", meaning: "m", projects: ["Whitefoot", "Mine"] });
+  await op.setTag({ ...asArchitect, name: "唯一", meaning: "m", projects: ["Mine"] });
+  await op.setTag({ ...asArchitect, name: "全部", meaning: "m" });
+  const before = store.snapshot();
+  await assert.rejects(op.deleteProject({ ...asArchitect, name: "Mine" }), /^project Mine: tags 唯一 apply to it alone; give them another project list with set_tag, or remove them with remove_tag, and then delete the project$/);
+  assert.deepEqual(store.snapshot(), before);
+  await op.removeTag({ ...asArchitect, name: "唯一" });
+  await op.deleteProject({ ...asArchitect, name: "Mine" });
+  assert.deepEqual(store.snapshot().board.tags, [{ name: "共用", meaning: "m", projects: ["Whitefoot"] }, { name: "全部", meaning: "m" }]);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});
