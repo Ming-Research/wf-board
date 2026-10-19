@@ -319,8 +319,9 @@ test("read compaction excludes a git commit whose snapshot is not published yet"
   const resume = new Promise<void>(resolve => { release = resolve; });
   const committed = new Promise<void>(resolve => { paused = resolve; });
   t.mock.method(internals, "git", async (args: string[], author?: string) => {
-    if (args.includes("--format=%H%x00%aI")) { paused(); await resume; }
-    return git(args, author);
+    const output = await git(args, author);
+    if (args.includes("commit")) { paused(); await resume; }
+    return output;
   });
   let historyReads = 0, pending: ReturnType<typeof op.setPlan> | undefined, gitHead: string | undefined;
   t.mock.method(store, "log", async (options: Parameters<typeof store.log>[0] = {}) => {

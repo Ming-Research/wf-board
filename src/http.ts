@@ -18,7 +18,7 @@ import { OpError } from "./ops.ts";
 import type { Ops } from "./ops.ts";
 import { NotFoundError } from "./owner-ops.ts";
 import type { OwnerOps } from "./owner-ops.ts";
-import { unreadSteps, stepDiff } from "./history.ts";
+import { unreadSteps, unreadSince, stepDiff } from "./history.ts";
 import { optionName } from "./query.ts";
 import { Wake } from "./wake.ts";
 import type { AgentStream } from "./wake.ts";
@@ -181,7 +181,8 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version)) + liveEvent(live.all())); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
       }
-      if (path === "/api/unread") { const { head, owner: { cursor, readMarks } } = store.snapshot(); json(res, 200, { cursor, steps: await unreadSteps(store, cursor, readMarks, head) }); return; }
+      // With `since`, the version of the list the page holds, only what changed after it (docs/design.md, section 7, The page).
+      if (path === "/api/unread") { const { head, owner: { cursor, readMarks } } = store.snapshot(); json(res, 200, { cursor, ...await unreadSince(store, cursor, readMarks ?? {}, head, url.searchParams.get("since") ?? undefined) }); return; }
       if (path === "/api/step") {
         const { head, owner: { cursor, readMarks } } = store.snapshot();
         const step = (await unreadSteps(store, cursor, readMarks, head)).find(s => s.id === url.searchParams.get("id"));

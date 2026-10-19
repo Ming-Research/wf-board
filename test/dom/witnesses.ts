@@ -188,7 +188,7 @@ const WITNESSES: Witness[] = [
   },
   {
     bug: "a filter button counted one item too many",
-    reverts: [app("a status filter counts one too many", 'if (n || on) row.appendChild(btn(on, label + " " + n, title + "（可多选）", () => toggleStatusFilter(g, key)));', 'if (n || on) row.appendChild(btn(on, label + " " + (n + 1), title + "（可多选）", () => toggleStatusFilter(g, key)));')], family: "filter-count",
+    reverts: [app("a status filter counts one too many", 'if (n || on) out.push({ on, text: label + " " + n, title: title + "（可多选）", fn: () => toggleStatusFilter(g, key) });', 'if (n || on) out.push({ on, text: label + " " + (n + 1), title: title + "（可多选）", fn: () => toggleStatusFilter(g, key) });')], family: "filter-count",
     run: async (bp, b) => { const o = await oracle(b.store); return checkFilters(bp, o, [o.s.board.projects[0]!.name]); },
   },
   {

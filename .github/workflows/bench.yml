@@ -1,6 +1,8 @@
 name: bench
 # Benchmarks, run by hand: scripts/bench-writes.ts (the write path) and scripts/bench-changes.ts (the history queries), on this
-# branch and on the commit it started from.
+# branch and on the commit it started from, scripts/bench-page.ts (the page's work per change event) on this branch three times
+# on each of four runners, scripts/bench-pairs.ts (the write path in interleaved pairs against the base) on four runners, and
+# the peak memory at two numbers of writes.
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +29,7 @@ jobs:
           BENCH_BASE: ${{ inputs.base }}
         run: |
           node scripts/bench-writes.ts --label "this tree"
+          node scripts/bench-writes.ts --label "this tree, 4000 unread" --unread 4000
           base=$(git merge-base HEAD "$BENCH_BASE")
           git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
@@ -47,3 +50,68 @@ jobs:
           [ -d "$RUNNER_TEMP/bench-base" ] || git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           [ -e "$RUNNER_TEMP/bench-base/node_modules" ] || ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
           node scripts/bench-changes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src" --report-only
+  # The write path's CPU in interleaved rounds of the base, its twin and this tree (scripts/bench-pairs.ts), on four runners at
+  # once: each runner's own ratio and interval, since single runs on different runners differ more than the change measured.
+  pairs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4]
+    name: pairs ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Interleaved pairs against the base (non-gating)
+        continue-on-error: true
+        env:
+          BENCH_BASE: ${{ inputs.base }}
+        run: |
+          base=$(git merge-base HEAD "$BENCH_BASE")
+          echo "base $base"
+          git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
+          node scripts/bench-pairs.ts --base-src "$RUNNER_TEMP/bench-base/src" | tee -a "$GITHUB_STEP_SUMMARY"
+  # The daemon's peak memory after a few writes and after many: memory that grows with the writes shows as the difference.
+  memory:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        writes: [300, 1500]
+    name: memory ${{ matrix.writes }} writes
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Peak memory (non-gating)
+        continue-on-error: true
+        run: node scripts/bench-writes.ts --label "${{ matrix.writes }} writes" --writes ${{ matrix.writes }} --unread 4000 | tee -a "$GITHUB_STEP_SUMMARY"
+  # The page's busy time per set_tags and log event (scripts/bench-page.ts), three runs on each of four runners: the line it is
+  # held to is the same for every run, so the spread of the runs, and the worst of them, are what a result is read from.
+  page:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4]
+    name: page ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Page benchmark (non-gating)
+        continue-on-error: true
+        run: for run in 1 2 3; do node scripts/bench-page.ts | tee -a "$GITHUB_STEP_SUMMARY"; done
