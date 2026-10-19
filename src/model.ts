@@ -78,17 +78,24 @@ export type PlanRow = z.infer<typeof PlanRow>;
 
 /** Both input and stored plans use target keys for reference-row ids. */
 export function planRowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
-function validPlan(rows: readonly PlanRowInput[]): boolean {
+/** The first problem in a plan, named by its row number and id; undefined when the plan is valid. */
+function planProblem(rows: readonly PlanRowInput[]): string | undefined {
   const earlier = new Set<string>();
-  for (const row of rows) {
-    const id = planRowId(row);
-    if (earlier.has(id) || row.after?.some(target => !earlier.has(target))) return false;
+  for (const [index, row] of rows.entries()) {
+    const id = planRowId(row), at = `row ${index + 1} "${id}"`;
+    if (earlier.has(id)) return `${at}: Plan ids must be unique; an earlier row already has "${id}"`;
+    const missing = row.after?.find(target => !earlier.has(target));
+    if (missing !== undefined) return `${at}: after must name earlier rows, but "${missing}" is not one`;
     earlier.add(id);
   }
-  return true;
+  return undefined;
 }
-export const PlanInput = z.array(PlanRowInput).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
-export const ItemPlan = z.array(PlanRow).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
+function validPlan(rows: readonly PlanRowInput[], ctx: z.RefinementCtx): void {
+  const problem = planProblem(rows);
+  if (problem !== undefined) ctx.addIssue({ code: "custom", message: problem });
+}
+export const PlanInput = z.array(PlanRowInput).superRefine(validPlan);
+export const ItemPlan = z.array(PlanRow).superRefine(validPlan);
 
 /** One goal's latest numbers; measurement dates belong to the server. */
 export const ItemTargetInput = z.object({
