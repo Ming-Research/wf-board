@@ -778,6 +778,134 @@ test("pause replay tolerates historical schema changes and logs unreadable item 
   assert.match(warnings[0]!, /Skipping unreadable pause history item .*:items\/unreadable\.yaml/);
 });
 
+/** Scan the whole history again (the startup cache removed) and give the pause spans it derives. */
+async function scanPauses(dir: string, store: Store) {
+  await rm(join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-startup-cache.json")), { force: true });
+  await (store as unknown as { loadActivity(): Promise<void> }).loadActivity();
+  return structuredClone(store.snapshot().activity!.pauses ?? {});
+}
+
+test("pause replay reads an item only in the commits whose diff names a pause field, however many commits lie between", async t => {
+  const pausedAt = "2026-10-11T04:00:00.125Z", resumedAt = "2026-10-11T04:10:00.250Z";
+  const counts: number[] = [];
+  for (const ordinary of [3, 30]) {
+    const { dir, store } = await setup(t);
+    await store.commit({ author: "Fixture", message: "Ownership", puts: [put("root", { ...item(), plan: [{ id: "child", item: "child", own: true }, ...item().plan] }), put("child", item())] });
+    let root = store.snapshot().items.root!;
+    await store.commit({ author: "总管", message: "Pause", puts: [put("root", { ...root, paused: { reason: "Deferred", at: pausedAt }, updated: pausedAt }, root.rev)] });
+    for (let i = 0; i < ordinary; i++) {
+      const child = store.snapshot().items.child!;
+      await store.commit({ author: "eng", message: "append_log child", puts: [put("child", { ...child, log: [...child.log, { at, text: `Entry ${i}` }], updated: at }, child.rev)] });
+    }
+    root = store.snapshot().items.root!;
+    const resumed = structuredClone(root); delete resumed.paused; resumed.updated = resumedAt;
+    await store.commit({ author: "总管", message: "Resume", puts: [put("root", resumed, root.rev)] });
+    const internals = store as unknown as { readAt(path: string, commit: string): Promise<unknown | null> };
+    const original = internals.readAt.bind(store), reads: string[] = [];
+    t.mock.method(internals, "readAt", async (path: string, commit: string) => { reads.push(path); return original(path, commit); });
+    assert.deepEqual(await scanPauses(dir, store), { root: [{ start: pausedAt, end: resumedAt }], child: [{ start: pausedAt, end: resumedAt }] });
+    counts.push(reads.length);
+  }
+  assert.deepEqual(counts, [3, 3], "the two items at the first pause and the owner at its resume, whether 3 or 30 other writes lie between");
+});
+
+test("the pickaxe of the pause replay finds a change of each field it reads, in each way an item file may write it", async t => {
+  const { dir, store } = await setup(t);
+  const internals = store as unknown as { pauseCommits(range: string): Promise<Set<string>> };
+  await mkdir(join(dir, "items"), { recursive: true });
+  const write = async (body: string) => {
+    await writeFile(join(dir, "items/x.yaml"), body);
+    await git(dir, "add", "-A");
+    await git(dir, "-c", "user.name=t", "-c", "user.email=t@wf-board.invalid", "commit", "-q", "-m", "raw");
+    return git(dir, "rev-parse", "HEAD");
+  };
+  const base = "title: A\ngroup: P\nhead: text\nlog:\n  - at: 2026-10-11T01:00:00Z\n    text: entry\nplan:\n  - id: accept\n    text: Accepted\n    state: todo\n    accept: true\nupdated: 2026-10-11T01:00:00Z\nrev: 1\n";
+  const first = await write(base);
+  const changes: Record<string, string> = {
+    group: base.replace("group: P", "group: Q"),
+    "quoted group": base.replace("group: P", "\"group\": P"),
+    record: base.replace("group: P\n", "group: P\nrecord: true\n"),
+    pause: base.replace("group: P\n", "group: P\npaused:\n  reason: Deferred\n  at: 2026-10-11T04:00:00.125Z\n"),
+    "owned row": base.replace("plan:\n", "plan:\n  - id: c\n    item: c\n    own: true\n"),
+    "owned row in flow style": base.replace("plan:\n", "plan:\n  - {id: c, item: c, own: true}\n"),
+    "quoted row keys": base.replace("plan:\n", "plan:\n  - \"id\": c\n    'item': c\n    \"own\": true\n"),
+  };
+  const ordinary: Record<string, string> = {
+    "a log entry": base.replace("    text: entry\nplan:", "    text: entry\n  - at: 2026-10-11T02:00:00Z\n    text: Progress on the item\nplan:"),
+    "a head edit": base.replace("head: text", "head: other text"),
+    "a step done": base.replace("state: todo", "state: done"),
+  };
+  const found: Record<string, [string, string]> = {}, quiet: Record<string, string> = {};
+  for (const [name, body] of Object.entries(changes)) { const made = await write(body); found[name] = [made, await write(base)]; }
+  for (const [name, body] of Object.entries(ordinary)) { quiet[name] = await write(body); await write(base); }
+  const touching = await internals.pauseCommits(`${first}..HEAD`);
+  for (const [name, [made, removed]] of Object.entries(found)) {
+    assert.ok(touching.has(made), `${name}: the commit that writes it is found`);
+    assert.ok(touching.has(removed), `${name}: the commit that removes it is found`);
+  }
+  for (const [name, commit] of Object.entries(quiet)) assert.ok(!touching.has(commit), `${name}: a commit that names no such field is left out`);
+});
+
+test("pause replay by the pickaxe gives what reading every commit gives, and what the live writes gave", async t => {
+  const { dir, store } = await setup(t);
+  let seed = 11;
+  const random = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
+  interface Model { group: string; record: boolean; paused?: string; owned: string[]; entries: number }
+  const model = new Map<string, Model>();
+  const stamp = (k: number) => new Date(Date.UTC(2026, 9, 12, 3, 0, 0) + k * 60_000).toISOString();
+  const ownerOf = (id: string) => [...model].find(([, m]) => m.owned.includes(id))?.[0];
+  const doc = (id: string, k: number) => {
+    const m = model.get(id)!, rows = m.owned.map(child => ({ id: child, item: child, own: true as const }));
+    return { title: id, group: m.group, ...(m.record ? { record: true } : {}), ...(m.paused ? { paused: { reason: "Deferred", at: m.paused } } : {}),
+      log: Array.from({ length: m.entries }, (_, i) => ({ at, text: `Entry ${i}` })), plan: m.record ? rows : [...rows, ...item().plan], updated: stamp(k) };
+  };
+  for (let k = 0; k < 90; k++) {
+    const ids = [...model.keys()], touched = new Set<string>(), deleted: string[] = [];
+    const kind = ids.length < 5 ? "create" : ["create", "create", "move", "move", "pause", "pause", "resume", "delete", "group", "record", "edit", "edit", "edit"][random(13)]!;
+    const pausedIds = ids.filter(id => model.get(id)!.paused);
+    const target = kind === "resume" ? pausedIds[random(pausedIds.length)] ?? "" : ids.length ? ids[random(ids.length)]! : "";
+    if (kind === "create") {
+      const id = `n${k}`, parent = ids.length && random(5) ? ids[random(ids.length)]! : undefined;
+      model.set(id, { group: parent && random(6) ? model.get(parent)!.group : ["P", "Q"][random(2)]!, record: random(8) === 0, owned: [], entries: 0 });
+      touched.add(id);
+      if (parent) { model.get(parent)!.owned.push(id); touched.add(parent); }
+    } else if (kind === "move") {
+      const to = ids[random(ids.length)]!, from = ownerOf(target);
+      let ring = false;
+      for (let up: string | undefined = to; up !== undefined; up = ownerOf(up)) if (up === target) ring = true;
+      if (ring || from === to) continue;
+      if (from) { model.get(from)!.owned = model.get(from)!.owned.filter(id => id !== target); touched.add(from); }
+      model.get(to)!.owned.push(target); touched.add(to);
+    } else if (kind === "pause") {
+      if (model.get(target)!.record || model.get(target)!.paused) continue;
+      model.get(target)!.paused = stamp(k); touched.add(target);
+    } else if (kind === "resume") {
+      if (!model.get(target)!.paused) continue;
+      delete model.get(target)!.paused; touched.add(target);
+    } else if (kind === "delete") {
+      const from = ownerOf(target);
+      if (from) { model.get(from)!.owned = model.get(from)!.owned.filter(id => id !== target); touched.add(from); }
+      model.delete(target); deleted.push(target);
+    } else if (kind === "group") { model.get(target)!.group = ["P", "Q", "R"][random(3)]!; touched.add(target); }
+    else if (kind === "record") {
+      const m = model.get(target)!;
+      m.record = !m.record; delete m.paused; touched.add(target);
+    } else { model.get(target)!.entries++; touched.add(target); }
+    await store.commit({ author: "Fixture", message: `${kind} ${target}`,
+      puts: [...touched].filter(id => model.has(id)).map(id => put(id, doc(id, k), store.snapshot().items[id]?.rev ?? null)),
+      deletes: deleted.map(id => ({ kind: "item" as const, id, expectRev: store.snapshot().items[id]!.rev })) });
+  }
+  const live = structuredClone(store.snapshot().activity!.pauses ?? {});
+  assert.ok(Object.keys(live).length > 3, "the history pauses some items");
+  assert.ok(Object.values(live).some(spans => spans.length > 1 || spans[0]?.end !== undefined), "and resumes some");
+  const scanned = await scanPauses(dir, store);
+  const internals = store as unknown as { pauseCommits(range: string): Promise<Set<string>> };
+  t.mock.method(internals, "pauseCommits", async () => new Set((await git(dir, "rev-list", "HEAD")).split("\n")));
+  const everyCommit = await scanPauses(dir, store);
+  assert.deepEqual(scanned, everyCommit, "the commits the pickaxe leaves out change no pause");
+  assert.deepEqual(scanned, live, "a restart gives what the live writes gave");
+});
+
 test("pause replay tracks historical ownership targets even when a row ID is reused", async t => {
   const { store } = await setup(t);
   const pausedAt = "2026-10-11T10:00:00.125Z", movedAt = "2026-10-11T10:10:00.250Z";

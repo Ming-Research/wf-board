@@ -1,5 +1,5 @@
 // Start-up scan benchmark for the board daemon: what a start with no usable startup cache (the first start after the cache's
-// format changes, or after its file is lost) costs in each step, at several sizes of the same history. It is the performance
+// format changes, or after its file is lost) costs in each step, at several sizes of a history. It is the performance
 // check of the board item that made the replay of pause intervals grow with the commits instead of with the commits times the
 // size of the board (the 10-19 scan of the live board took 69.4 s, 57.3 s of them in the replay of pauses, and a deploy rolls
 // back when the daemon is not healthy after 90 s), and the `bench` workflow runs it by hand on this tree and on a base commit.
@@ -52,7 +52,7 @@ interface Step { message: string; session?: string; puts: Array<[string, string]
 
 /** The history as a list of steps (a commit each): the seed first, then the writes. */
 function* history(total: number): Generator<Step & { at: number }> {
-  const rnd = random(20261019), start = Date.now() - total * MINUTE;
+  const rnd = random(20261019), start = Date.parse("2026-09-01T00:00:00Z");
   const finalItems = Math.max(20, Math.round(total * ITEMS_PER_COMMIT));
   const items = new Map<string, SyntheticItem>(), parent = new Map<string, string>();
   const ids: string[] = [];
@@ -118,26 +118,24 @@ function* history(total: number): Generator<Step & { at: number }> {
   }
 }
 
-async function writeRepository(dir: string, sizes: number[]): Promise<void> {
+async function writeRepository(dir: string, total: number): Promise<void> {
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
   const child = spawn("git", ["fast-import", "--quiet"], { cwd: dir, stdio: ["pipe", "inherit", "inherit"] });
   const done = new Promise<void>((ok, fail) => child.on("exit", code => code === 0 ? ok() : fail(new Error(`git fast-import exited ${code}`))));
   const out = (text: string) => new Promise<void>(ok => { if (child.stdin.write(text)) ok(); else child.stdin.once("drain", () => ok()); });
   const blob = (text: string) => `data ${Buffer.byteLength(text)}\n${text}\n`;
-  let mark = 0, last: number | undefined, count = 0;
-  for (const step of history(sizes.at(-1)!)) {
+  let mark = 0, last: number | undefined;
+  for (const step of history(total)) {
     const seconds = Math.floor(step.at / 1000);
     let text = `commit refs/heads/main\nmark :${++mark}\nauthor Whitefoot <bench@wf-board.invalid> ${seconds} +0000\ncommitter wf-board <wf-board@wf-board.invalid> ${seconds} +0000\n${blob(step.message + (step.session ? `\n\nSession: ${step.session}` : ""))}`;
     if (last) text += `from :${last}\n`;
     for (const [file, body] of step.puts) text += `M 100644 inline ${file}\n${blob(body)}`;
     await out(text);
-    last = mark; count++;
-    if (sizes.includes(count) && count !== sizes.at(-1)) await out(`reset refs/heads/size-${count}\nfrom :${mark}\n\n`);
+    last = mark;
   }
   child.stdin.end();
   await done;
   execFileSync("git", ["reset", "-q", "--hard", "main"], { cwd: dir });
-  for (const size of sizes.slice(0, -1)) execFileSync("git", ["worktree", "add", "-q", join(dir, "..", `size-${size}`), `size-${size}`], { cwd: dir });
 }
 
 /** One size in a process of its own: open the store with no startup cache and report the steps and a digest of the index. */
@@ -164,15 +162,14 @@ console.log(`machine: ${cpus().length} CPUs (${cpus()[0]?.model}), ${Math.round(
 const root = await mkdtemp(join(tmpdir(), "wf-board-bench-startup-"));
 const results: Array<Record<string, any>> = [];
 try {
-  const main = join(root, "main");
-  execFileSync("mkdir", ["-p", main]);
-  let t0 = Date.now();
-  await writeRepository(main, sizes);
-  console.log(`bench-startup ${args.label}: sizes ${sizes.join(", ")} commits; built in ${Date.now() - t0} ms`);
   for (const size of sizes) {
+    const dir = join(root, `size-${size}`);
+    execFileSync("mkdir", ["-p", dir]);
+    let t0 = Date.now();
+    await writeRepository(dir, size);
+    console.log(`bench-startup ${args.label}: ${size} commits built in ${Date.now() - t0} ms`);
     await new Promise<void>(ok => {
       t0 = Date.now();
-      const dir = size === sizes.at(-1) ? main : join(root, `size-${size}`);
       const child = spawn(process.execPath, [`--max-old-space-size=${HEAP_MB}`, fileURLToPath(import.meta.url), "--case", String(size), "--dir", dir, "--src", resolve(args.src!), "--label", args.label!], { stdio: ["ignore", "pipe", "inherit"] });
       const timeout = setTimeout(() => child.kill("SIGKILL"), 15 * 60_000);
       let output = "";
@@ -186,6 +183,7 @@ try {
         ok();
       });
     });
+    await rm(dir, { recursive: true, force: true });
   }
 } finally {
   await rm(root, { recursive: true, force: true });

@@ -17,11 +17,13 @@ import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
 import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing } from "./migrate-priority.ts";
 import type { ClearedPriority } from "./migrate-priority.ts";
-import { rules, DerivedCache, withSorted } from "./rules.ts";
+import { DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import { startOfReport, withStateStart } from "./timeline.ts";
+import { PauseGraph, sameShape } from "./pauses.ts";
+import type { PauseShape } from "./pauses.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
 import { netGit, netGitReason } from "./net-git.ts";
@@ -131,6 +133,21 @@ function pauseProjection(raw: unknown, id: string, fallbackAt: string): Item | n
   if (paused) it.paused = paused;
   return it;
 }
+
+/** What the pause graph keeps of a projected item. */
+function pauseShape(it: Item | null): PauseShape | null {
+  return it ? { group: it.group, record: it.record === true, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.flatMap(row => "item" in row && row.own ? [row.item] : []) } : null;
+}
+
+/** One item a commit changes, as the pause replay sees it: its shape before and after, and when the commit changed it. */
+interface PauseChange { id: string; before: PauseShape | null; after: PauseShape | null; updated: string }
+
+/**
+ * A line of an item file that names a field the pause replay reads: its project (`group`), its record mark, its pause, and an
+ * owned plan row (`item`, `own`). The extended expression of git's pickaxe (-G); the key may be quoted, and may follow `- `,
+ * `{` or `, ` of a row written in flow style. A line of free text that happens to look like one only costs a read.
+ */
+const PAUSE_FIELD_LINE = `(^|[^[:alnum:]_])["']?(group|record|paused|item|own)["']?[[:space:]]*:`;
 
 /** A historical document as read: parsed, with the size of its file for the cache to weigh. */
 interface ReadDocument { doc: unknown | null; size: number }
@@ -763,15 +780,17 @@ export class Store {
   }
 
   /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot. Read each later
-   * changed item once; never convert whole historical boards or inspect old item bodies when no pause existed.
-   * `prior` is the item projections the cache holds as of its commit (null: no pause had been set by then), so the
-   * replay continues from them; `range` is the commits `commits` are, for finding the first pause among them. */
+   * changed item once, and only in the commits whose diff names a field the replay reads; never convert whole historical
+   * boards or inspect old item bodies when no pause existed. `prior` is the item projections the cache holds as of its
+   * commit (null: no pause had been set by then), so the replay continues from them; `range` is the commits `commits`
+   * are, for finding the first pause among them. */
   private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null, range: string): Promise<void> {
     this.pauseStarted = prior !== null;
-    let items: Snapshot["items"], replay: CommitInfo[];
+    let graph: PauseGraph, replay: CommitInfo[], after: string;
     if (prior) {
-      items = Object.fromEntries(Object.entries(prior).map(([id, it]) => [id, { title: id, log: [], links: [], rev: 1, ...it } as Item]));
+      graph = PauseGraph.from(Object.entries(prior).map(([id, it]): [string, PauseShape] => [id, { group: it.group, record: it.record, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.map(row => row.item) }]));
       replay = commits;
+      after = range;
     } else {
       if (!commits.length) return;
       const firstCommit = await this.firstPauseCommit(commits, range);
@@ -779,40 +798,32 @@ export class Store {
       if (first < 0) return;
       this.pauseStarted = true;
       const initial = commits[first]!;
-      items = {};
+      const shapes: Array<[string, PauseShape]> = [];
       const paths = (await this.gitRead(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
       for (const path of paths) {
         const match = /^items\/(.+)\.yaml$/.exec(path);
-        if (match) {
-          const it = await this.pauseItem(path, initial.commit, match[1]!, initial.at);
-          if (it) items[match[1]!] = it;
-        }
+        if (!match) continue;
+        const shape = pauseShape(await this.pauseItem(path, initial.commit, match[1]!, initial.at) ?? null);
+        if (shape) shapes.push([match[1]!, shape]);
       }
-      const source = rules({ ...this.state, items });
-      for (const id of Object.keys(items)) {
-        const owner = source.pausedBy(id);
-        if (owner) {
-          activity.pauses ??= {};
-          activity.pauses[id] = [{ start: items[owner]!.paused!.at }];
-        }
-      }
+      graph = PauseGraph.from(shapes);
+      for (const [id, source] of graph.sources()) (activity.pauses ??= {})[id] = [{ start: graph.shape(source)!.paused!.at }];
       replay = commits.slice(first + 1);
+      after = `${initial.commit}..${commits.at(-1)!.commit}`;
     }
+    if (!replay.length) return;
+    const touching = await this.pauseCommits(after);
     for (const commit of replay) {
-      const next = { ...items }, changes: ChangedDoc[] = [];
+      if (!touching.has(commit.commit)) continue;
+      const changes: PauseChange[] = [];
       for (const path of commit.files) {
         const match = /^items\/(.+)\.yaml$/.exec(path);
         if (!match) continue;
-        const id = match[1]!, after = await this.pauseItem(path, commit.commit, id, commit.at);
-        if (after === undefined) continue; // An unreadable revision supplies no new evidence.
-        changes.push({ kind: "item", id, before: Object.hasOwn(items, id) ? items[id]! : null, after });
-        if (after) next[id] = after; else delete next[id];
+        const id = match[1]!, projected = await this.pauseItem(path, commit.commit, id, commit.at);
+        if (projected === undefined) continue; // An unreadable revision supplies no new evidence.
+        changes.push({ id, before: graph.shape(id), after: pauseShape(projected), updated: projected?.updated ?? commit.at });
       }
-      if (!changes.length) continue;
-      this.notePauses(activity, items, next, changes, commit.at);
-      for (const change of changes) {
-        if (change.after) items[change.id] = change.after as Item; else delete items[change.id];
-      }
+      this.applyPauses(activity, graph, changes);
     }
   }
 
@@ -820,6 +831,13 @@ export class Store {
   private async firstPauseCommit(commits: CommitInfo[], range: string): Promise<string | null> {
     const matches = new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
     return commits.find(commit => matches.has(commit.commit))?.commit ?? null;
+  }
+
+  /** The commits of `range` whose diff adds or removes a line of an item that names a field the pause replay reads: a
+   * pickaxe, so that git compares the files and the replay reads only the items of these commits. The others change no
+   * project, record mark, pause or owned row, and so no pause span. */
+  private async pauseCommits(range: string): Promise<Set<string>> {
+    return new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", PAUSE_FIELD_LINE, range, "--", "items"])).trim().split(/\s+/));
   }
 
   /** Historical schemas are not today's write schema. Extract only the fields
@@ -837,43 +855,41 @@ export class Store {
     }
   }
 
-  /** Only ownership, identity or a pause marker can alter inherited pause.
-   * Logs and ordinary plan progress avoid a whole-board inheritance walk. */
+  /** Live writes: only ownership, identity or a pause marker can alter inherited pause, so a write that changes none of
+   * them, or that finds no pause before or after, costs a comparison of the changed items. Otherwise the shapes of the
+   * board before the write are built once and the same change the replay makes is applied to them. */
   private notePauses(activity: NonNullable<Snapshot["activity"]>, before: Record<string, unknown>, after: Record<string, unknown>, changed: ChangedDoc[], fallbackAt: string): void {
-    const shape = (it: Item | null) => {
-      return it ? { group: it.group, record: it.record, paused: it.paused, owned: it.plan.flatMap(row => "item" in row && row.own ? [row.item] : []) } : null;
-    };
-    const relevant = changed.filter(change => change.kind === "item").map(change => ({
-      before: pauseProjection(change.before, change.id, fallbackAt), after: pauseProjection(change.after, change.id, fallbackAt),
-    })).filter(change => !isDeepStrictEqual(shape(change.before), shape(change.after)));
-    if (!relevant.length) return;
+    const changes = changed.filter(change => change.kind === "item").map((change): PauseChange => {
+      const was = pauseProjection(change.before, change.id, fallbackAt), now = pauseProjection(change.after, change.id, fallbackAt);
+      return { id: change.id, before: pauseShape(was), after: pauseShape(now), updated: now?.updated ?? fallbackAt };
+    });
+    if (changes.every(change => sameShape(change.before, change.after))) return;
     const hasPause = (items: Record<string, unknown>) => Object.values(items).some(value => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return false;
       const fields = value as Record<string, unknown>;
       return fields.record !== true && !!pauseMetadata(fields.paused);
     });
     if (!hasPause(before) && !hasPause(after)) return;
-    const project = (items: Record<string, unknown>): Snapshot["items"] => Object.fromEntries(Object.entries(items).flatMap(([id, value]): Array<[string, Item]> => {
-      const it = pauseProjection(value, id, fallbackAt);
-      return it ? [[id, it]] : [];
-    }));
-    const oldItems = project(before), newItems = project(after);
-    // A move starts inheritance at the move, not at the destination's older
-    // pause. Document times retain sub-second precision that git dates lack.
-    const dates = relevant.map(change => change.after?.updated ?? fallbackAt);
-    const at = dates.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, dates[0] ?? fallbackAt);
-    const oldRules = rules({ ...this.state, items: oldItems }), newRules = rules({ ...this.state, items: newItems });
-    for (const id of new Set([...Object.keys(oldItems), ...Object.keys(newItems)])) {
-      const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
-      if (!!oldSource === !!newSource) continue;
+    const shapes = Object.entries(before).flatMap(([id, value]): Array<[string, PauseShape]> => {
+      const shape = pauseShape(pauseProjection(value, id, fallbackAt));
+      return shape ? [[id, shape]] : [];
+    });
+    this.applyPauses(activity, PauseGraph.from(shapes), changes);
+  }
+
+  /** Change the graph by the items of a commit whose shape differs, and open or close the pause spans of the items that
+   * began or stopped being paused. A move starts inheritance at the move, not at the destination's older pause; document
+   * times retain sub-second precision that git dates lack, so the time is the latest `updated` of the changed items. */
+  private applyPauses(activity: NonNullable<Snapshot["activity"]>, graph: PauseGraph, changes: PauseChange[]): void {
+    const relevant = changes.filter(change => !sameShape(change.before, change.after));
+    if (!relevant.length) return;
+    const at = relevant.map(change => change.updated).reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest);
+    for (const event of graph.apply(new Map(relevant.map(change => [change.id, change.after])))) {
       activity.pauses ??= {};
       // Copy on write: the previous snapshot shares the earlier spans.
-      const spans = activity.pauses[id] = Object.hasOwn(activity.pauses, id) ? [...activity.pauses[id]!] : [];
-      if (newSource) {
-        const pause = newItems[newSource]!.paused!;
-        const newlyPaused = !oldItems[newSource]?.paused;
-        spans.push({ start: newlyPaused ? pause.at : at });
-      } else {
+      const spans = activity.pauses[event.id] = Object.hasOwn(activity.pauses, event.id) ? [...activity.pauses[event.id]!] : [];
+      if (event.paused) spans.push({ start: event.since ?? at });
+      else {
         const current = spans.at(-1);
         if (current && current.end === undefined) spans[spans.length - 1] = { ...current, end: at };
       }

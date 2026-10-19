@@ -5,7 +5,7 @@ import type { Snapshot } from "./model.ts";
 /** The format of the startup cache (docs/design.md, the activity index). Change it whenever the cache holds
  * something else or the replay derives it differently: a cache of another version is refused, and the next start
  * scans the whole history once and writes a new one. */
-export const STARTUP_CACHE_VERSION = 3;
+export const STARTUP_CACHE_VERSION = 4;
 
 type Activity = NonNullable<Snapshot["activity"]>;
 
