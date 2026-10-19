@@ -1,137 +1,158 @@
 {
  "args": [
-  "--phases",
-  "2",
-  "--per-phase",
-  "1500",
-  "--idle",
-  "10"
+  "--series",
+  "15"
  ],
  "variants": [
   {
-   "name": "only-unread",
+   "name": "default-a",
    "flags": [],
    "env": {},
    "mix": {
-    "unread": 1
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
    },
-   "perPhase": 1500,
-   "phases": 1,
-   "idle": 5
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
   },
   {
-   "name": "only-step",
+   "name": "default-b",
    "flags": [],
    "env": {},
    "mix": {
-    "step": 1
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
    },
-   "perPhase": 1500,
-   "phases": 1,
-   "idle": 5
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
   },
   {
-   "name": "only-snapshot",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "snapshot": 1
-   },
-   "perPhase": 150,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-context",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "context": 1
-   },
-   "perPhase": 1500,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-list",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "list": 1
-   },
-   "perPhase": 600,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-notes",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "notes": 1
-   },
-   "perPhase": 600,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-messages",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "messages": 1
-   },
-   "perPhase": 600,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-changes",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "changes": 1
-   },
-   "perPhase": 600,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "only-append_log",
-   "flags": [],
-   "env": {},
-   "mix": {
-    "append_log": 1
-   },
-   "perPhase": 150,
-   "phases": 1,
-   "idle": 5
-  },
-  {
-   "name": "live-mix",
-   "flags": [],
-   "env": {}
-  },
-  {
-   "name": "live-mix-semi8",
-   "flags": [
-    "--max-semi-space-size=8"
-   ],
-   "env": {}
-  },
-  {
-   "name": "live-mix-semi4",
-   "flags": [
-    "--max-semi-space-size=4"
-   ],
-   "env": {}
-  },
-  {
-   "name": "live-mix-osize",
+   "name": "osize",
    "flags": [
     "--optimize-for-size"
    ],
-   "env": {}
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
+  },
+  {
+   "name": "semi4",
+   "flags": [
+    "--max-semi-space-size=4"
+   ],
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
+  },
+  {
+   "name": "semi2",
+   "flags": [
+    "--max-semi-space-size=2"
+   ],
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
+  },
+  {
+   "name": "saver",
+   "flags": [
+    "--memory-saver-mode"
+   ],
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
+  },
+  {
+   "name": "balancer",
+   "flags": [
+    "--memory-balancer"
+   ],
+   "env": {},
+   "mix": {
+    "unread": 45,
+    "step": 31,
+    "snapshot": 3,
+    "context": 7,
+    "list": 3,
+    "notes": 3,
+    "messages": 3,
+    "changes": 1,
+    "append_log": 4
+   },
+   "rate": 18,
+   "perPhase": 4320,
+   "phases": 3,
+   "idle": 30
   }
  ]
 }

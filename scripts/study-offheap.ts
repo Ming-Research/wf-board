@@ -24,13 +24,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   variants: { type: "string", default: '[{"name":"default","flags":[],"env":{}}]' },
   phases: { type: "string", default: "4" }, "per-phase": { type: "string", default: "5000" }, conc: { type: "string", default: "8" },
-  idle: { type: "string", default: "30" }, scale: { type: "string", default: "1" }, "start-wait": { type: "string", default: "3" },
+  idle: { type: "string", default: "30" }, only: { type: "string" }, series: { type: "string", default: "15" }, scale: { type: "string", default: "1" }, "start-wait": { type: "string", default: "3" },
 } });
 const PHASES = Number(args.phases), PER_PHASE = Number(args["per-phase"]), CONC = Number(args.conc), IDLE = Number(args.idle), SCALE = Number(args.scale), START_WAIT = Number(args["start-wait"]);
 /** A variant: V8 flags and environment for the daemon, and optionally the weights of the kinds of request (default: the live mix), the
  * requests per phase and a rate in requests a second (0: as fast as the daemon answers). */
 interface Variant { name: string; flags: string[]; env: Record<string, string>; mix?: Record<string, number>; perPhase?: number; rate?: number; phases?: number; idle?: number }
-const VARIANTS = JSON.parse(args.variants!) as Variant[];
+const VARIANTS = (JSON.parse(args.variants!) as Variant[]).filter(v => args.only === undefined || v.name === args.only);
+const SERIES_S = Number(args.series);
 const LIVE_MIX: Record<string, number> = { unread: 40, step: 22, snapshot: 4, context: 12, list: 4, notes: 3, messages: 3, changes: 3, append_log: 9 };
 const SHAPE = { items: Math.round(1942 * SCALE), decisions: Math.round(839 * SCALE), notes: Math.round(1210 * SCALE) };
 const mb = (bytes: number) => +(bytes / 1048576).toFixed(1);
@@ -91,12 +92,15 @@ function writeBoard(dir: string, files: Map<string, string>): void {
 // ---- the samples ----------------------------------------------------------------------------------------------------
 
 /** Read in the daemon through SIGUSR2; the command file says whether to collect first. */
-const PRELOAD = `import v8 from "node:v8"; import vm from "node:vm"; import { writeFileSync, readFileSync } from "node:fs";
+const PRELOAD = `import v8 from "node:v8"; import vm from "node:vm"; import { writeFileSync, readFileSync } from "node:fs"; import { PerformanceObserver } from "node:perf_hooks";
 v8.setFlagsFromString("--expose-gc"); const gc = vm.runInNewContext("gc");
+const gcs = { minor: [0, 0], major: [0, 0], incremental: [0, 0], other: [0, 0] };
+new PerformanceObserver(list => { for (const e of list.getEntries()) { const k = e.detail?.kind ?? e.kind; const name = k === 1 ? "minor" : k === 4 ? "major" : k === 8 ? "incremental" : "other"; gcs[name][0]++; gcs[name][1] += e.duration; } }).observe({ entryTypes: ["gc"] });
 process.on("SIGUSR2", () => {
   const cmd = readFileSync(process.env.STUDY_CMD, "utf8").trim();
   if (cmd === "gc") { gc(); gc(); }
-  writeFileSync(process.env.STUDY_STATS, JSON.stringify({ cmd, heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(), mem: process.memoryUsage(), handles: process.getActiveResourcesInfo().length }));
+  const cpu = process.cpuUsage();
+  writeFileSync(process.env.STUDY_STATS, JSON.stringify({ cmd, heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(), mem: process.memoryUsage(), cpuMs: (cpu.user + cpu.system) / 1000, gcs }));
 });`;
 
 const SIZE = /^([\d.]+)([KMG]?)$/;
@@ -146,7 +150,7 @@ function proc(pid: number): Record<string, number> {
   return out;
 }
 
-interface Sample { phase: string; ps: number; os: Record<string, number>; v8: Record<string, number>; spaces: Record<string, { size: number; used: number; physical: number }>; }
+interface Sample { phase: string; cpuMs: number; gcs: Record<string, [number, number]>; ps: number; os: Record<string, number>; v8: Record<string, number>; spaces: Record<string, { size: number; used: number; physical: number }>; }
 
 async function startDaemon(dir: string, variant: { flags: string[]; env: Record<string, string> }, token: string, credentials: string) {
   const port = 17400 + Math.floor(Math.random() * 500), stats = join(tmpdir(), `study-offheap-stats-${process.pid}.json`), cmd = join(tmpdir(), `study-offheap-cmd-${process.pid}.txt`);
@@ -169,13 +173,13 @@ async function startDaemon(dir: string, variant: { flags: string[]; env: Record<
     child.kill("SIGUSR2");
     for (let i = 0; i < 300 && !existsSync(stats); i++) await sleep(100);
     await sleep(200);
-    const j = JSON.parse(readFileSync(stats, "utf8")) as { heap: Record<string, number>; spaces: Array<{ space_name: string; space_size: number; space_used_size: number; physical_space_size: number }>; mem: Record<string, number> };
+    const j = JSON.parse(readFileSync(stats, "utf8")) as { heap: Record<string, number>; spaces: Array<{ space_name: string; space_size: number; space_used_size: number; physical_space_size: number }>; mem: Record<string, number>; cpuMs: number; gcs: Record<string, [number, number]> };
     const os = process.platform === "darwin" ? vmmap(child.pid!) : proc(child.pid!);
     const ps = Number(execFileSync("ps", ["-o", "rss=", "-p", String(child.pid)], { encoding: "utf8" }).trim()) / 1024;
     const v8 = { rss: mb(j.mem.rss!), heapTotal: mb(j.mem.heapTotal!), heapUsed: mb(j.mem.heapUsed!), external: mb(j.mem.external!), arrayBuffers: mb(j.mem.arrayBuffers!),
       physical: mb(j.heap.total_physical_size!), malloced: mb(j.heap.malloced_memory!), peakMalloced: mb(j.heap.peak_malloced_memory!), globalHandles: mb(j.heap.total_global_handles_size!), limit: mb(j.heap.heap_size_limit!) };
     const spaces = Object.fromEntries(j.spaces.map(s => [s.space_name, { size: mb(s.space_size), used: mb(s.space_used_size), physical: mb(s.physical_space_size) }]));
-    return { phase, ps: +ps.toFixed(1), os, v8, spaces };
+    return { phase, cpuMs: Math.round(j.cpuMs), gcs: j.gcs, ps: +ps.toFixed(1), os, v8, spaces };
   };
   return { child, port, sample, log: () => log, startup: () => startup };
 }
@@ -187,7 +191,7 @@ function prng(seed: number) { let s = seed >>> 0; return () => { s = (s * 166452
 
 /** The kinds of request in the weights of `mix` (the live board's counted in its service log by default): page reads of the unread
  * list and its steps, snapshots, the tools agents call, and a few writes. The page's read cursor never moves, so the writes add unread commits. */
-async function load(port: number, token: string, ids: string[], count: number, seed: number, mix: Record<string, number>, rate: number): Promise<{ writes: number; ms: number; failed: Record<string, string> }> {
+async function load(port: number, token: string, ids: string[], count: number, seed: number, mix: Record<string, number>, rate: number): Promise<{ writes: number; ms: number; failed: Record<string, string>; latency: Record<string, number[]> }> {
   const rnd = prng(seed), base = `http://127.0.0.1:${port}`;
   const client = new Client({ name: "study", version: "1" }); client.onerror = () => {};
   await client.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
@@ -200,22 +204,29 @@ async function load(port: number, token: string, ids: string[], count: number, s
   const get = async (kind: string, path: string) => { const r = await fetch(base + path); if (!r.ok) { fail(kind, `${r.status} ${(await r.text()).slice(0, 100)}`); return undefined; } return await r.json() as unknown; };
   const call = async (kind: string, name: string, a: Record<string, unknown>) => { const res = await client.callTool({ name, arguments: a }).catch(error => ({ isError: true, content: [{ text: String(error) }] })); if (res.isError) fail(kind, JSON.stringify(res.content).slice(0, 200)); };
   const started = performance.now();
+  const times: Record<string, number[]> = {};
   const one = async () => {
+    const t0 = performance.now();
+    const kind = await oneRequest();
+    (times[kind] ??= []).push(performance.now() - t0);
+  };
+  const oneRequest = async (): Promise<string> => {
     let r = rnd() * total, kind = kinds[0]!;
     for (const k of kinds) { if (r < mix[k]!) { kind = k; break; } r -= mix[k]!; }
     if (kind === "step" && steps.length === 0) kind = "unread";
     switch (kind) {
-      case "unread": { const j = await get(kind, "/api/unread") as { steps?: typeof steps } | undefined; if (j?.steps) steps = j.steps; return; }
-      case "step": { const s = pick(steps), d = s.docs[0]; if (d) await get(kind, `/api/step?id=${encodeURIComponent(s.id)}&kind=${d.kind}&doc=${encodeURIComponent(d.id)}`); return; }
-      case "snapshot": await get(kind, "/api/snapshot"); return;
-      case "context": return call(kind, "context", { id: pick(ids) });
-      case "list": return call(kind, "list", {});
-      case "notes": return call(kind, "notes", {});
-      case "messages": return call(kind, "messages", {});
-      case "changes": return call(kind, "changes", {});
-      case "append_log": writes++; return call(kind, "append_log", { id: pick(ids), text: `study write ${writes}: ${"进展 ".repeat(20)}` });
+      case "unread": { const j = await get(kind, "/api/unread") as { steps?: typeof steps } | undefined; if (j?.steps) steps = j.steps; break; }
+      case "step": { const s = pick(steps), d = s.docs[0]; if (d) await get(kind, `/api/step?id=${encodeURIComponent(s.id)}&kind=${d.kind}&doc=${encodeURIComponent(d.id)}`); break; }
+      case "snapshot": await get(kind, "/api/snapshot"); break;
+      case "context": await call(kind, "context", { id: pick(ids) }); break;
+      case "list": await call(kind, "list", {}); break;
+      case "notes": await call(kind, "notes", {}); break;
+      case "messages": await call(kind, "messages", {}); break;
+      case "changes": await call(kind, "changes", { since: "2026-10-01T00:00:00Z" }); break;
+      case "append_log": writes++; await call(kind, "append_log", { id: pick(ids), text: `study write ${writes}: ${"进展 ".repeat(20)}` }); break;
       default: throw new Error(`unknown kind ${kind}`);
     }
+    return kind;
   };
   const worker = async () => {
     while (next < count) {
@@ -228,7 +239,7 @@ async function load(port: number, token: string, ids: string[], count: number, s
   await get("unread", "/api/unread").then(j => { const s = (j as { steps?: typeof steps } | undefined)?.steps; if (s) steps = s; });
   await Promise.all(Array.from({ length: CONC }, worker));
   await client.close().catch(() => {});
-  return { writes, ms: Math.round(performance.now() - started), failed };
+  return { writes, ms: Math.round(performance.now() - started), failed, latency: times };
 }
 
 // ---- driver ---------------------------------------------------------------------------------------------------------
@@ -244,12 +255,12 @@ const { files, ids } = blockBoard(SHAPE);
 writeBoard(board, files);
 console.log(`platform ${process.platform} ${process.arch}, node ${process.version}, board: ${SHAPE.items} items, ${SHAPE.decisions} cards, ${SHAPE.notes} notes, ${files.size} files, built in ${Math.round(performance.now() - built)} ms`);
 
-const results: Array<{ variant: string; flags: string[]; env: Record<string, string>; startupLine: string; samples: Sample[]; loads: unknown[] }> = [];
+const results: Array<{ variant: string; flags: string[]; env: Record<string, string>; startupLine: string; samples: Sample[]; loads: Array<Awaited<ReturnType<typeof load>>>; series: Sample[] }> = [];
 try {
   for (const variant of VARIANTS) {
     const dir = join(root, `board-${variant.name}`);
     cpSync(board, dir, { recursive: true });
-    const samples: Sample[] = [], loads: unknown[] = [];
+    const samples: Sample[] = [], loads: Array<Awaited<ReturnType<typeof load>>> = [], series: Sample[] = [];
     let daemon;
     try { daemon = await startDaemon(dir, variant, TOKEN, credentials); }
     catch (error) { console.log(`STUDY ${JSON.stringify({ variant: variant.name, failed: String(error).slice(0, 800) })}`); continue; }
@@ -257,7 +268,16 @@ try {
       await sleep(START_WAIT * 1000);
       samples.push(await daemon.sample("start"));
       for (let p = 1; p <= (variant.phases ?? PHASES); p++) {
+        // While the requests are served, a sample every SERIES_S seconds.
+        let running = true;
+        const sampler = (async () => {
+          while (running) {
+            for (let waited = 0; running && waited < SERIES_S; waited++) await sleep(1000);
+            if (running) series.push(await daemon.sample("series"));
+          }
+        })();
         loads.push(await load(daemon.port, TOKEN, ids, variant.perPhase ?? PER_PHASE, 1000 + p, variant.mix ?? LIVE_MIX, variant.rate ?? 0));
+        running = false; await sampler;
         samples.push(await daemon.sample(`load ${p}`));
       }
       await sleep((variant.idle ?? IDLE) * 1000);
@@ -267,7 +287,7 @@ try {
       samples.push(await daemon.sample("gc + 10s"));
     } finally { daemon.child.kill("SIGTERM"); await sleep(500); }
     const startupLine = daemon.startup();
-    results.push({ variant: variant.name, flags: variant.flags, env: variant.env, startupLine, samples, loads });
+    results.push({ variant: variant.name, flags: variant.flags, env: variant.env, startupLine, samples, loads, series });
     console.log(`STUDY ${JSON.stringify(results.at(-1))}`);
   }
 } finally { rmSync(root, { recursive: true, force: true }); }
@@ -276,7 +296,18 @@ try {
 const darwin = process.platform === "darwin";
 for (const r of results) {
   console.log(`\n### ${r.variant} (${r.flags.join(" ") || "no flags"}${Object.keys(r.env).length ? "; " + JSON.stringify(r.env) : ""}) on ${process.platform}`);
-  console.log(`startup line: ${r.startupLine.replace(/^\S+\s/, "")}; loads: ${JSON.stringify(r.loads)}`);
+  console.log(`startup line: ${r.startupLine.replace(/^\S+\s/, "")}; loads: ${JSON.stringify(r.loads.map(l => ({ writes: l.writes, ms: l.ms, failed: l.failed })))}`);
+  // What the owner sees: the footprint (macOS) or the anonymous resident set (Linux), over the series taken while the load ran.
+  const metric = (x: Sample) => darwin ? x.os.footprintMB! : x.os.RssAnon!;
+  const values = r.series.map(metric).sort((a, b) => a - b);
+  const q = (xs: number[], f: number) => xs.length ? xs[Math.min(xs.length - 1, Math.floor(f * xs.length))]! : NaN;
+  const first = r.samples[0]!, last = r.samples.find(x => x.phase.startsWith("load"))!, endLoad = [...r.samples].reverse().find(x => x.phase.startsWith("load"))!;
+  const requests = r.loads.reduce((n, l) => n + Object.values(l.latency).reduce((m, xs) => m + xs.length, 0), 0);
+  const all = r.loads.flatMap(l => Object.values(l.latency).flat()).sort((a, b) => a - b);
+  const gcTotal = (x: Sample, kind: string) => x.gcs[kind] ?? [0, 0];
+  const gcMs = Object.keys(endLoad.gcs).reduce((n, k) => n + gcTotal(endLoad, k)[1] - gcTotal(first, k)[1], 0);
+  console.log(`series of ${values.length} samples (${darwin ? "footprint" : "RssAnon"} MB): mean ${(values.reduce((n, v) => n + v, 0) / (values.length || 1)).toFixed(0)}, p50 ${q(values, 0.5)}, p95 ${q(values, 0.95)}, max ${values.at(-1)}; start ${metric(first)}; after the load ${metric(endLoad)}; idle ${metric(r.samples.find(x => x.phase.startsWith("idle"))!)}; ${last.phase}`);
+  console.log(`cost: ${requests} requests, cpu ${((endLoad.cpuMs - first.cpuMs) / 1000).toFixed(1)} s (${((endLoad.cpuMs - first.cpuMs) / (requests || 1)).toFixed(2)} ms a request), gc ${gcMs.toFixed(0)} ms (minor ${gcTotal(endLoad, "minor")[0] - gcTotal(first, "minor")[0]}, major ${gcTotal(endLoad, "major")[0] - gcTotal(first, "major")[0]}, incremental ${gcTotal(endLoad, "incremental")[0] - gcTotal(first, "incremental")[0]}); latency ms p50 ${q(all, 0.5).toFixed(1)}, p95 ${q(all, 0.95).toFixed(1)}, p99 ${q(all, 0.99).toFixed(1)}, max ${all.at(-1)?.toFixed(0)}`);
   const cols = darwin
     ? ["phase", "ps rss", "footprint", "V8 pages res", "malloc empty res", "malloc res", "page table", "footprint peak", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"]
     : ["phase", "ps rss", "RssAnon", "RssFile", "HWM", "heapTotal", "heapUsed", "new", "old", "lo", "code", "external", "arrayBuf", "malloced"];

@@ -10,7 +10,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
-    name: study ${{ matrix.os }}
+        variant: [default-a, default-b, osize, semi4, semi2, saver, balancer]
+    name: study ${{ matrix.os }} ${{ matrix.variant }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -19,6 +20,5 @@ jobs:
       - name: Study
         run: |
           sw_vers 2>/dev/null || uname -a
-          node --version
-          node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
+          node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --only "${{ matrix.variant }}" --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
           grep -v '^STUDY ' study-output.txt >> "$GITHUB_STEP_SUMMARY"
