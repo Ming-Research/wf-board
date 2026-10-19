@@ -40,6 +40,31 @@ export function twinIsSound(twin: Interval, floor: number): boolean {
   return twin.half <= floor;
 }
 
+/** How much wider the 95% interval over `n` pairs is than one over `full` pairs of the same spread: t(n−1)/√n against t(full−1)/√full. */
+export function intervalWidth(n: number, full: number): number {
+  const w = (k: number) => tQuantile(k - 1) / Math.sqrt(k);
+  return w(n) / w(full);
+}
+
+/** The noise floor for a twin over `n` pairs, the floor having been measured over `full` pairs: widened by what fewer pairs widen the
+ * interval, so that a round cut short by the time budget still asks for the same noise per pair. Not narrowed for more pairs: pooled
+ * rounds keep the floor measured for one (docs/design.md, The n-key lane). The floor is a half width as a fraction (0.076 is ±7.6%),
+ * so it is widened in the logs of the ratio, where the interval is symmetric. */
+export function floorAt(floor: number, n: number, full: number): number {
+  return Math.expm1(Math.log1p(floor) * Math.max(1, intervalWidth(n, full)));
+}
+
+/** Whether a round goes on pairing: it has fewer pairs than wanted, and either the time budget is not used up (`now` before `until`) or
+ * it has not yet made the `least` pairs a verdict can be read from. Counts are of landings. */
+export function keepPairing(landed: number, wanted: number, least: number, now: number, until: number): boolean {
+  return landed < wanted && (now < until || landed < least);
+}
+
+/** Whether another round, taking as long as the last one did, ends within the time budget (`now` and `until` on the same clock). */
+export function roundFits(now: number, lastRound: number, until: number): boolean {
+  return now + lastRound <= until;
+}
+
 export type Verdict = "ok" | "red" | "undecided";
 /** The verdict on a page compared with the reference (`reference`), read with the twin of the base compared with the base:
  * - undecided: the twin's interval is wider than the floor, so the run's noise is not the noise the floor was set from and it says nothing;

@@ -29,7 +29,7 @@ import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { rewrite } from "../e2e/seed.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { compare, judge, randomOrder, reference, twinIsSound } from "./stats.ts";
+import { compare, floorAt, judge, keepPairing, randomOrder, reference, roundFits, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
 const run = promisify(execFile);
@@ -309,20 +309,26 @@ export async function landings(win: Press, wanted: number, events?: readonly (st
 }
 
 /** Presses n in each window in turn, in a random order drawn afresh each round (`randomOrder`), until every window has landed `wanted`
- * other items on the same presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
-export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[]): Promise<Record<string, Landing[]>> {
+ * other items on the same presses; landing k of every window is then a pair. Windows walk the same list, so they land together.
+ * A window named in `limits` stops at that many landings while the others go on (a witness needs few pairs to show its effect); its
+ * landings are the first of the others'. With `budget`, pairing stops once `until` on the clock of `perf.now()` has passed and `least`
+ * landings are made (`keepPairing`): a pair is whole or not made, so every window still has the same landings. */
+export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[], limits: Readonly<Record<string, number>> = {}, budget?: { until: number; least: number }): Promise<Record<string, Landing[]>> {
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
-  for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
+  const base = wins[0]!.label;
+  for (let presses = 0; out[base]!.length < wanted && presses < 8 * wanted; presses++) {
+    if (budget && !keepPairing(out[base]!.length, wanted, budget.least, perf.now(), budget.until)) break;
     if (events && wins[0]!.presses >= events.length) throw new Error(`the walk made ${wins[0]!.presses} presses and there are only ${events.length} change events for them`);
-    const order = randomOrder(wins.length, orderRnd.next).map(k => wins[k]!);
+    const active = wins.filter(w => out[w.label]!.length < (limits[w.label] ?? wanted));
+    const order = randomOrder(active.length, orderRnd.next).map(k => active[k]!);
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
       const r = await win.press(events?.[win.presses]);
       got.push([win.label, r.item !== null && r.item !== was[win.label] ? { item: r.item, busy: r.busy, press: win.presses - 1, ...r.counted } : null]);
       was[win.label] = r.item;
     }
-    // A pair counts only if every window moved to another item.
+    // A pair counts only if every window pressed moved to another item.
     if (got.every(([, l]) => l)) for (const [label, l] of got) out[label]!.push(l!);
   }
   return out;
@@ -356,10 +362,24 @@ export function samePage(a: { script: string; html: string }, b: { script: strin
 
 /** Pairs measured per round, the pairs thrown away at the start of a round while the page warms up, and the rounds at most. */
 export const PAIRS = 30, WARMUP = 2, ROUNDS = 3;
+/** The pairs a witness presses (`PhaseWindow.pairs`): a page 15 ms slower reads about 1.5 times the reference, and 10 pairs put the
+ * interval's half width near 6%, far from 1. */
+export const WITNESS_PAIRS = 10;
+/** The time budget of a time phase, on the clock of `perf.now()` (milliseconds since the test process started, which the lane's `lap`
+ * lines count too), and the pairs a round cut short by it still has to make for a verdict to be read. A round is cut at the budget and
+ * a further round is begun only if it fits (docs/design.md, The n-key lane, The time budget): the test step of the CI job is then at
+ * most the budget and the rest of the process (about 2 seconds) long. `NKEY_BUDGET_S` in the environment sets the budget in seconds,
+ * for a run that shows the cut. */
+export const MIN_PAIRS = 16;
+export const TIME_BUDGET_MS = Number(process.env.NKEY_BUDGET_S ?? 34) * 1000;
 
 /** `against`: the label of the window this one is judged against, for a page made from that one (the slow witness of a changed page);
  * without it, the reference. */
-export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press>; against?: string }
+export interface PhaseWindow {
+  label: string; open: (scope: Hooks) => Promise<Press>; against?: string;
+  /** The measured pairs this window presses, in the first round only; the others press `PAIRS` in every round. */
+  pairs?: number;
+}
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
@@ -373,42 +393,62 @@ export interface PhaseResult {
   against: Record<string, string>;
   /** The twin's interval over each round's pairs alone. */
   alone: Interval[];
-  /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict against the reference. */
+  /** `floor`: the noise floor the twin was read against, that of `timePhase` widened for a round cut short (`floorAt`). `sound`: the twin's
+   * interval is no wider than it; per window other than base and twin the verdict against the reference. */
+  floor: number;
   sound: boolean;
+  /** Whether the time budget cut a round short or kept a round from being made while the twin was still wider than the floor. */
+  budget: { cut: boolean; skipped: boolean };
+  /** The pairs measured in each round, for the log. */
+  perRound: number[];
   verdicts: Record<string, Verdict>;
   misses: Record<string, number>;
 }
 
 /** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval is no
  * wider than `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
- * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against the two. */
-export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
+ * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against the two.
+ * `until`, a time on the clock of `perf.now()`, is the time budget: a round is cut when it passes with `MIN_PAIRS` pairs made, and a
+ * further round is begun only if one as long as the last fits before it. A window with `pairs` is pressed in the first round only. */
+export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[], until?: number): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
-  let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false;
-  const alone: Interval[] = [];
-  // A run that sets the noise floor makes this many rounds whatever the twin shows, and reads each round's own interval.
+  let first: Record<string, Landing[]> | undefined, rounds = 0, ratios: Record<string, Interval> = {}, sound = false, lastRound = 0;
+  const alone: Interval[] = [], perRound: number[] = [], budget = { cut: false, skipped: false };
+  const baseLabel = windows[0]!.label;
+  // A run that sets the noise floor makes this many rounds whatever the twin shows, and reads each round's own interval; it has no budget.
   const forced = Number(process.env.NKEY_FLOOR ?? 0);
+  const limit = forced ? undefined : until;
+  // The twin is read against the floor of one round of `PAIRS` pairs, widened when a round was cut short.
+  const effective = () => floorAt(floor, busy.twin!.length, PAIRS);
   while (rounds < (forced || ROUNDS) && (forced > 0 || !sound)) {
+    if (rounds > 0 && limit !== undefined && !roundFits(perf.now(), lastRound, limit)) { budget.skipped = true; break; }
     rounds++;
-    const scope = new Scope();
+    const began = perf.now(), scope = new Scope();
     try {
+      // The windows of a witness are pressed in the first round only.
+      const here = rounds === 1 ? windows : windows.filter(w => !w.pairs);
+      const limits = rounds === 1 ? Object.fromEntries(windows.filter(w => w.pairs).map(w => [w.label, WARMUP + w.pairs!])) : {};
       // The windows open in a random order, and one full collection after the last leaves the objects of all of them in the same
       // state, so that no window is the one whose page was built first.
-      const opening = randomOrder(windows.length, orderRnd.next), opened: Press[] = [];
-      for (const k of opening) opened[k] = await windows[k]!.open(scope);
+      const opening = randomOrder(here.length, orderRnd.next), opened: Press[] = [];
+      for (const k of opening) opened[k] = await here[k]!.open(scope);
       const open = opened as Press[];
       collect({ type: "major", execution: "sync" });
-      const lands = await pairedLandings(open, WARMUP + PAIRS, events);
+      const lands = await pairedLandings(open, WARMUP + PAIRS, events, limits, limit === undefined ? undefined : { until: limit, least: WARMUP + MIN_PAIRS });
       first ??= lands;
+      if (lands[baseLabel]!.length < WARMUP + PAIRS) budget.cut = true;
+      perRound.push(lands[baseLabel]!.length - WARMUP);
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
-      alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[windows[0]!.label]!.slice(WARMUP).map(l => l.busy)));
+      alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[baseLabel]!.slice(WARMUP).map(l => l.busy)));
     } finally { await scope.close(); }
-    const ref = reference(busy[windows[0]!.label]!, busy.twin!);
-    ratios = { twin: compare(busy.twin!, busy[windows[0]!.label]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, w.against ? busy[w.against]! : ref)])) };
-    sound = twinIsSound(ratios.twin!, floor);
+    lastRound = perf.now() - began;
+    const ref = reference(busy[baseLabel]!, busy.twin!);
+    // A window with fewer pairs than the others (a witness) is read against the same first pairs of what it is judged against.
+    ratios = { twin: compare(busy.twin!, busy[baseLabel]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, (w.against ? busy[w.against]! : ref).slice(0, busy[w.label]!.length))])) };
+    sound = twinIsSound(ratios.twin!, effective());
   }
-  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
+  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, effective())]));
   const against = Object.fromEntries(windows.slice(2).map(w => [w.label, w.against ?? "ref"]));
-  return { first: first!, busy, rounds, ratios, against, alone, sound, verdicts, misses };
+  return { first: first!, busy, rounds, ratios, against, alone, floor: effective(), sound, budget, perRound, verdicts, misses };
 }
