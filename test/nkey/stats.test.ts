@@ -1,7 +1,7 @@
 // The arithmetic and the verdict of the n-key lane's time layer (test/nkey/stats.ts), on pairs made up here whose answer is known.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, judge, tQuantile, twinIsSound } from "./stats.ts";
+import { balancedOrders, compare, judge, tQuantile, twinIsSound } from "./stats.ts";
 import type { Interval } from "./stats.ts";
 import { prng } from "../e2e/board-gen.ts";
 
@@ -48,4 +48,27 @@ test("the verdict: the twin must show this run's noise before the page is judged
   assert.equal(judge(interval(1.01, 1.08), interval(1.3, 1.5), floor), "undecided", "the twin's interval misses 1");
   assert.equal(judge(interval(0.9, 1.1), interval(1.3, 1.5), floor), "undecided", "the twin's interval is ±10%, over the floor");
   assert.ok(!twinIsSound(interval(0.9, 1.1), floor));
+});
+
+/** How often each window comes right after each other one when the rounds repeat in a cycle, the step between rounds included. */
+function followers(orders: number[][]): Map<string, number> {
+  const seq = orders.flat(), count = new Map<string, number>();
+  seq.forEach((x, k) => { const key = `${seq[(k - 1 + seq.length) % seq.length]}>${x}`; count.set(key, (count.get(key) ?? 0) + 1); });
+  return count;
+}
+
+test("in the balanced orders every window presses once a round and follows each other window exactly once per cycle", () => {
+  for (let n = 2; n <= 6; n++) {
+    const orders = balancedOrders(n);
+    assert.equal(orders.length, n - 1, `${n} windows: a cycle of ${n - 1} rounds`);
+    for (const round of orders) assert.deepEqual([...round].sort(), [...Array(n).keys()], `${n} windows: each round is every window once`);
+    const count = followers(orders);
+    assert.equal(count.size, n * (n - 1), `${n} windows: every ordered pair of two windows occurs`);
+    assert.ok([...count.values()].every(c => c === 1), `${n} windows: no pair occurs twice`);
+  }
+  // The rotation the lane used before is not balanced: with 4 windows the first (the base) follows the last (the slow witness) in
+  // three rounds of four, and the third never.
+  const rotation = [0, 1, 2, 3].map(r => [0, 1, 2, 3].map(k => (k + r) % 4));
+  assert.equal(followers(rotation).get("3>0"), 3);
+  assert.equal(followers(rotation).get("3>2"), undefined);
 });

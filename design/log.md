@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Remove what a press of n inherits from the presses of other windows
+
+Nodes: testing/press-n
+
+Summary: The time layer of the n-key lane read a page the same as its base as slower: over 60 runs the twin of the base was 0.77% slower in the writing phase (standard error 0.20%), and a changed page was red in 4 of 26 runs. A probe on hosted runners found the cause in what the windows of one process share: the young generation of the heap, whose collection is paid by whichever press fills it, and the code V8 compiles once for equal source texts, paid by the window that reaches a function first; the rotating order put the base right after the slow witness in three presses of four. Each press now starts after a minor collection, each window evaluates a source text of its own, and the order is balanced so that each window follows each other equally often; identical windows then agree within their noise (twin +0.37% ±0.27% writing, −0.26% ±0.50% quiet). The refused alternatives (a full collection, the busy time less the pauses, a single-threaded V8, the rotation alone) are in the node; the data are in docs/design.md, section 11, The n-key lane.
+
 ## 2026-10-18 Deal the script tests out to twenty shards
 
 Nodes: testing/ci-shards

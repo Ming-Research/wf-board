@@ -12,7 +12,7 @@
 //             rules again but derives them from scratch no time except in a new minute and counts the filters of every item no time.
 //   time    – the seconds the event loop was busy from the key until the page was quiet, as the page of this commit over the page of
 //             the base (the merge base, or the commit before a push to the main line), quiet and with a write in each press: pairs
-//             of presses made one after the other in a rotating order, the twin of the base as the control, the 95% interval of the
+//             of presses made one after the other in a balanced order, the twin of the base as the control, the 95% interval of the
 //             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval holds 1 within the noise floor;
 //             then an interval wholly above 1 is red, of any size. When it does not count, 30 pairs more are made in fresh windows
 //             (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The absolute 0.2 s is not

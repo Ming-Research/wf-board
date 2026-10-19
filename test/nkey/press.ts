@@ -7,11 +7,14 @@
 //   being timed.
 // - A window's press is counted (draws, rebuilds of the board's rules, counts of the filters, markup written, elements made) and
 //   timed (the seconds the event loop was busy from the key until the page was quiet).
-// - Pages that are compared press in turn, in a rotating order, so landing k of every page is one pair.
+// - Pages that are compared press in turn, in orders where each follows each other equally often, so landing k of every page is one
+//   pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
 // - A virtual clock stands in for the page's timers longer than a frame and for the answers a test holds back, so a baseline that
 //   arrives 300 ms late is 300 ms of the clock's time and no real waiting.
 
 import { performance as perf } from "node:perf_hooks";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -26,10 +29,17 @@ import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { rewrite } from "../e2e/seed.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { compare, judge, twinIsSound } from "./stats.ts";
+import { balancedOrders, compare, judge, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
 const run = promisify(execFile);
+// The minor collection made before each press. All windows live in one process and share its heap: whichever press fills the young
+// generation pays the collection, so a press would carry the cost of the presses before it, of other windows (docs/design.md, The
+// n-key lane). Emptied before the key, the young generation holds only what the press itself allocates.
+setFlagsFromString("--expose-gc");
+const collect = runInNewContext("gc") as (options: { type: "minor"; execution: "sync" }) => void;
+/** Windows opened in this process, for a source text of each window's own. */
+let opened = 0;
 type Fetcher = NonNullable<PageOptions["fetch"]>;
 type Loose = Record<string, any>;
 
@@ -228,7 +238,9 @@ export class Press {
         const every = win.setInterval.bind(win);
         win.setInterval = (fn: unknown, delay: number, ...rest: unknown[]) => delay >= 30_000 ? 0 : every(fn, delay, ...rest);
       },
-      ...(how.page ? { page: how.page } : { reverts: how.reverts ?? [] }),
+      // Each window evaluates a source text of its own. Two windows with the same text share the code V8 compiled for it, and the
+      // one that reaches a function first pays its compilation for both, while a page of other text pays all its own.
+      page: ownSource(how.page ?? { script: await pageScript(how.reverts ?? []), html: await pageHtml(how.reverts ?? []) }),
       ...(how.clock ? { clock: how.clock } : {}),
     };
     const page = await DomPage.open(scope, board, options);
@@ -261,6 +273,7 @@ export class Press {
     this.presses++;
     const live = this.counts;
     Object.assign(live, noCounts());
+    collect({ type: "minor", execution: "sync" });
     const before = perf.eventLoopUtilization();
     this.page.key("n");
     if (event !== undefined) this.page.deliver("change", event);
@@ -268,6 +281,11 @@ export class Press {
     const busy = perf.eventLoopUtilization(before).active;
     return { busy, item: this.selected(), counted: { ...live, full: [...live.full], scopes: [...live.scopes] } };
   }
+}
+
+/** The page with a last line that no other window's text has. */
+function ownSource(page: { script: string; html: string }): { script: string; html: string } {
+  return { script: `${page.script}\n// window ${++opened}\n`, html: page.html };
 }
 
 /** Presses n in `win` until it has landed on `wanted` other items (a press inside the item shown does not count). `events` gives press
@@ -284,14 +302,16 @@ export async function landings(win: Press, wanted: number, events?: readonly (st
   return out;
 }
 
-/** Presses n in each window in turn, the order rotating press by press, until every window has landed `wanted` other items on the same
- * presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
+/** Presses n in each window in turn, in the balanced orders of `balancedOrders` (each window follows each other equally often), until
+ * every window has landed `wanted` other items on the same presses; landing k of every window is then a pair. Windows walk the same
+ * list, so they land together. */
 export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[]): Promise<Record<string, Landing[]>> {
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
+  const orders = balancedOrders(wins.length);
   for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
     if (events && wins[0]!.presses >= events.length) throw new Error(`the walk made ${wins[0]!.presses} presses and there are only ${events.length} change events for them`);
-    const rot = presses % wins.length, order = [...wins.slice(rot), ...wins.slice(0, rot)];
+    const order = orders[presses % orders.length]!.map(k => wins[k]!);
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
       const r = await win.press(events?.[win.presses]);
