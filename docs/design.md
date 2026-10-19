@@ -596,7 +596,8 @@ A change of the service file reaches the running service only when the service i
 writes the file; `launchctl bootout` and `bootstrap` load it): the deploy job's restart (`launchctl kickstart -k`) starts the
 process with the arguments launchd already holds. The `startup memory` line therefore names the options node was started
 with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), and `test/memory-flags.test.ts` holds that
-node accepts the file's flags and that with them the young generation stays within 8 MB where without them it grows past that.
+node accepts the file's flags and that with them the young generation stays within 12 MB (two halves of 4 MB read 8 MB on every run)
+where without them it grows past that (128 MB).
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
