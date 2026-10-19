@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { rules } from "../../src/rules.ts";
 import { wholeView } from "../../src/whole-view.ts";
 import { startBoard } from "../e2e/board-server.ts";
+import { SEGMENT_TEXT } from "../../src/timeline.ts";
+import type { SegmentKind } from "../../src/timeline.ts";
 import type { Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { DomPage } from "./page.ts";
@@ -89,6 +91,7 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   for (const item of items) {
     const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
     assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
+    assert.equal(item.textContent, SEGMENT_TEXT[kind.slice(3) as SegmentKind], `the name beside a swatch is the name of its kind (${kind})`);
     assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
   }
   // The kinds of a segment are told apart by colour in both themes: a probe of each kind, styled as a segment is, has a background of its own.
@@ -175,6 +178,14 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "the legend listed every kind, not those the rows draw",
     reverts: [app("the legend lists all kinds", "SEGMENT_KINDS.filter(kind => seen.has(kind)).forEach", "SEGMENT_KINDS.forEach")], reason: /the legend lists the kinds the rows draw/,
+  },
+  {
+    bug: "a swatch was named as another kind",
+    reverts: [app("the swatch is the colour of the next kind", 'item.appendChild(el("i", "tl-swatch tl-" + kind));', 'item.appendChild(el("i", "tl-swatch tl-" + (kind === "work" ? "ci" : kind)));')], reason: /the name beside a swatch is the name of its kind/,
+  },
+  {
+    bug: "two kinds of a segment had the same colour in the dark theme",
+    reverts: [html("dark merge has the colour of ci", "    --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #ef6fb4;", "    --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #3fb8c8;")], reason: /the kinds are told apart by colour, not/,
   },
   {
     bug: "two kinds of a segment had the same colour",
