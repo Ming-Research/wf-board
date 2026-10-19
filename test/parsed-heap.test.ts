@@ -122,4 +122,7 @@ test("only the store parses YAML: no other source file imports the library's par
   }
   // store.ts holds parseDocument, the one function through which every document is read (a CLI imports that, not the library).
   assert.deepEqual(importers, ["store.ts"]);
+  // And store.ts itself calls the library's parse once, there: a bare `parse(` (not Date.parse, JSON.parse or a schema's parse).
+  const calls = [...readFileSync(join(dir, "store.ts"), "utf8").matchAll(/(?<![\w.$])parse\(/g)];
+  assert.equal(calls.length, 1, "store.ts calls the library's parse once, in parseDocument");
 });

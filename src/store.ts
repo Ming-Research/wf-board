@@ -934,7 +934,7 @@ export class Store {
 
   /** The YAML of an item file of `commit`, as the core schema reads it. */
   private parsePauseDocument(text: Buffer, _path: string, _commit: string): unknown {
-    return parse(text.toString("utf8"), { version: "1.2", schema: "core" });
+    return parseDocument(text.toString("utf8"));
   }
 
   /** Live writes: only ownership, identity or a pause marker can alter inherited pause, so a write that changes none of
