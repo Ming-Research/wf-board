@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Judge the CI time gate without the wait for a runner
+
+Nodes: testing/ci-time-gate
+
+Summary: The time gate counted the seconds a job waited for a runner into the run's total, so a run in which one job started 45 seconds late was red with every other job done at 51 seconds (83 seconds, run 39211762302). Of the 52 runs started by hand with the current script (10-19), 8 ended over 60 seconds by the total, 5 of them only for the wait. The waits were read from the Actions API for 7,301 jobs of 143 runs of the organization: the organization's jobs running at once reached 60, the limit of its plan, in 9 runs, and single jobs were given a runner late in 5 of the other 134. The judged time now leaves out each job's wait beyond the quickest job's (the job that reads counting by its start) and adds the delay from the last end to the status; the total and the part of it that was waiting are written in the status description and the summary, a job that is slow itself still counts in full, and the 5 runs come to 46 to 55 seconds while the 3 whose jobs ran slow stay at 61 to 71. A push to the main line runs the same job in a mode that records the summary, writes no status and cannot fail the run, so that the main line keeps the table of waits of every merge. The grounds, the numbers and the refused alternatives (the total as before, the wait only written beside it, the longest job's own time with no wait counted, a run started again, fewer jobs in a run, the job on runs started by hand alone) are in the node; the measurements are in docs/design.md, section 11, The time gate. The node's reason for refusing limits on each job's own time alone no longer says that a lane can slow down by waiting for a runner, which the rule now leaves out, and says that the target is the minute of the whole run instead.
+
 ## 2026-10-19 Change a head in parts
 
 Nodes: mcp
