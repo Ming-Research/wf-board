@@ -7,7 +7,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
-import { Item, Dispatch, DISPATCH_RESULTS, DISPATCH_SIGNALS } from "../src/model.ts";
+import { Item, Dispatch, DISPATCH_OUTCOMES, DISPATCH_RESULTS, DISPATCH_SIGNALS, PARKED_RESULT } from "../src/model.ts";
 import { hashToken } from "../src/credentials.ts";
 import { board, author, asArchitect, retiredPM } from "./helpers.ts";
 
@@ -208,6 +208,8 @@ test("dispatch records and their log lines are never news to the owner, while a 
 
 // ---- the tallies: every figure must equal the rows added up independently ----
 
+/** How many minutes every generated dispatch that ended ran: the board has no other duration to compare. */
+const RAN_MIN = 5;
 interface Plain { item: string; level: number; role: "工程师" | "审查"; ended: boolean; result: (typeof DISPATCH_RESULTS)[number]; counts: number; signals: string[]; milli: number; startedMin: number }
 
 // A fixed generator so a failure replays; the sequence is irrelevant to the properties checked.
@@ -229,25 +231,27 @@ async function manyDispatches(t: Parameters<typeof board>[0], count = 60) {
     await op.dispatchStart({ author: owners[item]!, id: item, role, level, model: "M", agent: `s${i}`, agentId: `g${i}`, startedAt: started });
     const ended = rnd() < 0.75, milli = Math.floor(rnd() * 20000), counts = Math.floor(rnd() * 5);
     const signals = DISPATCH_SIGNALS.filter(() => rnd() < 0.3), result = pick(DISPATCH_RESULTS);
-    if (ended) await op.dispatchFinish({ author: owners[item]!, id: item, agentId: `g${i}`, result, usage, cost: milli / 1000, ...(role === "工程师" ? { reports: counts + 1, kickbacks: counts } : { rounds: counts }), signals: signals.map(kind => ({ kind })), endedAt: new Date(Date.parse(started) + 5 * 60000).toISOString() });
+    if (ended) await op.dispatchFinish({ author: owners[item]!, id: item, agentId: `g${i}`, result, usage, cost: milli / 1000, ...(role === "工程师" ? { reports: counts + 1, kickbacks: counts } : { rounds: counts }), signals: signals.map(kind => ({ kind })), endedAt: new Date(Date.parse(started) + RAN_MIN * 60000).toISOString() });
     plain.push({ item, level, role, ended, result, counts, signals: ended ? signals : [], milli: ended ? milli : 0, startedMin });
   }
   return { ...fixture, plain, tagsOf: (item: string) => store.snapshot().items[item]!.tags ?? [] };
 }
 
-// What a group's figures must be, added up by plain loops over the generated records.
+// What a group's figures must be, added up by plain loops over the generated records. A dispatch put down to wait is in the count and
+// the cost and in no figure read from the results.
 function expected(rows: Plain[]) {
-  const ended = rows.filter(r => r.ended), count = (r: (typeof DISPATCH_RESULTS)[number]) => ended.filter(e => e.result === r).length;
-  const eng = ended.filter(e => e.role === "工程师"), rev = ended.filter(e => e.role === "审查");
-  return { n: rows.length, open: rows.length - ended.length, results: DISPATCH_RESULTS.map(count), rework: count("返工后通过") + count("换人"), ended: ended.length, kick: eng.reduce((n, e) => n + e.counts, 0), engN: eng.length, rnd: rev.reduce((n, e) => n + e.counts, 0), revN: rev.length, milli: ended.reduce((n, e) => n + e.milli, 0) };
+  const ended = rows.filter(r => r.ended), parked = ended.filter(e => e.result === PARKED_RESULT), settled = ended.filter(e => e.result !== PARKED_RESULT);
+  const count = (r: (typeof DISPATCH_OUTCOMES)[number]) => settled.filter(e => e.result === r).length;
+  const eng = settled.filter(e => e.role === "工程师"), rev = settled.filter(e => e.role === "审查");
+  return { n: rows.length, open: rows.length - ended.length, results: DISPATCH_OUTCOMES.map(count), parked: parked.length, parkedMin: parked.length * RAN_MIN, rework: count("返工后通过") + count("换人"), ended: settled.length, kick: eng.reduce((n, e) => n + e.counts, 0), engN: eng.length, rnd: rev.reduce((n, e) => n + e.counts, 0), revN: rev.length, milli: ended.reduce((n, e) => n + e.milli, 0) };
 }
-const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 返工比例 (.+?) · 平均打回 (\S+) · 平均轮数 (\S+) · 花费 \$(\d+\.\d{3})$/;
+const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 放下等待 (\d+)（共 (\d+) 分钟，不算上面四种结果） · 返工比例 (.+?) · 平均打回 (\S+) · 平均轮数 (\S+) · 花费 \$(\d+\.\d{3})$/;
 function parsed(report: string, label: string) {
   const line = report.split("\n").find(l => l.startsWith(`${label}：派活`));
   assert.ok(line, `a line for ${label}`);
   const m = LINE.exec(line)!;
   assert.ok(m, `the line for ${label} has the expected shape: ${line}`);
-  return { n: Number(m[2]), open: Number(m[3]), results: [4, 5, 6, 7].map(i => Number(m[i])), ratio: m[8]!, kick: m[9]!, rounds: m[10]!, milli: Math.round(Number(m[11]) * 1000) };
+  return { n: Number(m[2]), open: Number(m[3]), results: [4, 5, 6, 7].map(i => Number(m[i])), parked: Number(m[8]), parkedMin: Number(m[9]), ratio: m[10]!, kick: m[11]!, rounds: m[12]!, milli: Math.round(Number(m[13]) * 1000) };
 }
 const section = (report: string, title: string) => {
   const lines = report.split("\n"), from = lines.findIndex(l => l.startsWith(title)), to = lines.findIndex((l, i) => i > from && l === "");
@@ -268,11 +272,12 @@ describe("the tallies", () => {
 
     const check = (label: string, group: Plain[], shown: string) => {
       const want = expected(group), got = parsed(shown, label);
-      assert.deepEqual({ n: got.n, open: got.open, results: got.results, milli: got.milli }, { n: want.n, open: want.open, results: want.results, milli: want.milli }, label);
+      assert.deepEqual({ n: got.n, open: got.open, results: got.results, parked: got.parked, parkedMin: got.parkedMin, milli: got.milli }, { n: want.n, open: want.open, results: want.results, parked: want.parked, parkedMin: want.parkedMin, milli: want.milli }, label);
       assert.equal(got.ratio, want.ended ? `${Math.round(want.rework / want.ended * 100)}%（${want.rework}/${want.ended}）` : "-", `${label} rework share`);
       assert.equal(got.kick, want.engN ? (want.kick / want.engN).toFixed(2) : "-", `${label} mean kickbacks`);
       assert.equal(got.rounds, want.revN ? (want.rnd / want.revN).toFixed(2) : "-", `${label} mean rounds`);
     };
+    assert.ok(plain.some(r => r.ended && r.result === PARKED_RESULT) && plain.some(r => r.ended && r.result !== PARKED_RESULT), "the generated board has dispatches put down to wait and dispatches that came to a result");
     check("合计", plain, report);
     for (const level of [1, 2, 3, 4, 5]) check(`${level} 级`, plain.filter(r => r.level === level), section(report, "按等级"));
     for (const role of ["工程师", "审查"]) check(role, plain.filter(r => r.role === role), section(report, "按角色"));
@@ -289,7 +294,7 @@ describe("the tallies", () => {
     const { store, plain, tagsOf } = fx;
     const s = summarize(dispatchRows(store.snapshot()));
     const sum = (tallies: Tally[], pick: (t: Tally) => number) => tallies.reduce((n, x) => n + pick(x), 0);
-    const picks: Array<(x: Tally) => number> = [x => x.n, x => x.open, x => x.costMilli, x => x.results["放弃"], x => x.rework.count, x => x.rework.ended];
+    const picks: Array<(x: Tally) => number> = [x => x.n, x => x.open, x => x.costMilli, x => x.results["放弃"], x => x.parked.count, x => x.parked.ms, x => x.rework.count, x => x.rework.ended];
     for (const pick of picks) {
       assert.equal(sum(s.byLevel, pick), pick(s.total));
       assert.equal(sum(s.byRole, pick), pick(s.total));
@@ -324,6 +329,32 @@ describe("the tallies", () => {
     const starts = dispatchRows(s).map(r => r.dispatch.started);
     assert.deepEqual(starts, starts.slice().sort(), "oldest start first");
   });
+});
+
+test("a session put down while its work waits is listed apart: in the count, the minutes and the cost, in no result", async t => {
+  const { store, op } = await clocked(t);
+  // One engineer session put down after 40 minutes, then the one that finished the work after a rework.
+  await op.dispatchStart({ ...start, agentId: "w1", agent: "w1", startedAt: "2026-10-16T08:00Z" });
+  await op.dispatchFinish({ ...finish, agentId: "w1", result: PARKED_RESULT, cost: 0.5, reports: 2, kickbacks: 3, endedAt: "2026-10-16T08:40Z", signals: [] });
+  const [parked] = store.snapshot().items.a!.dispatches!;
+  assert.equal(parked!.finish!.result, "放下等待");
+  assert.match(store.snapshot().items.a!.log.at(-1)!.text, /^收：会话 w1（工程师），放下等待，报告 2 次，打回 3 次，2026-10-16T08:00Z–2026-10-16T08:40Z，/);
+  await op.dispatchStart({ ...start, agentId: "w2", agent: "w2", startedAt: "2026-10-16T09:00Z" });
+  await op.dispatchFinish({ ...finish, agentId: "w2", result: "返工后通过", cost: 0.25, reports: 1, kickbacks: 1, endedAt: "2026-10-16T09:30Z", signals: [] });
+  const report = dispatchReport(dispatchRows(store.snapshot()));
+  // Two dispatches and $0.750 are counted; the one result is the second session's, so the rework share is 1 of 1 and the means are its own,
+  // not the parked session's 2 reports and 3 kickbacks.
+  assert.match(report, /^合计：派活 2（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 1（共 40 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.750/);
+  const t1 = summarize(dispatchRows(store.snapshot())).total;
+  assert.deepEqual({ n: t1.n, parked: t1.parked, ended: t1.rework.ended, kick: t1.kickbacks }, { n: 2, parked: { count: 1, ms: 40 * 60_000 }, ended: 1, kick: { sum: 1, n: 1 } });
+  // Only parked sessions: no result, so no share and no mean, and a review may be put down too.
+  const only = summarize(dispatchRows(store.snapshot(), { id: "a" }).slice(0, 1)).total;
+  assert.deepEqual({ n: only.n, ended: only.rework.ended, kick: only.kickbacks.n, cost: only.costMilli }, { n: 1, ended: 0, kick: 0, cost: 500 });
+  assert.match(dispatchReport(dispatchRows(store.snapshot()).slice(0, 1)), /放下等待 1（共 40 分钟，不算上面四种结果） · 返工比例 - · 平均打回 - · 平均轮数 - · 花费 \$0\.500/);
+  await op.dispatchStart({ author, id: "b", role: "审查", level: 1, model: "Haiku", agent: "r1", agentId: "r1", startedAt: "2026-10-16T09:00Z" });
+  await op.dispatchFinish({ author, id: "b", agentId: "r1", result: PARKED_RESULT, usage, cost: 0.1, rounds: 1, endedAt: "2026-10-16T09:10Z" });
+  assert.equal(store.snapshot().items.b!.dispatches![0]!.finish!.result, "放下等待");
+  assert.deepEqual(DISPATCH_RESULTS, [...DISPATCH_OUTCOMES, "放下等待"], "the five results, the parked one last");
 });
 
 test("an empty selection says so instead of printing zero tables", () => {
@@ -361,7 +392,7 @@ test("the three tools round-trip over MCP, with the refusal text reaching the ca
   const ended = await call("dispatch_finish", finish);
   assert.equal(ended.isError, undefined, text(ended));
   const report = text(await call("dispatches", { rows: true }));
-  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.365/);
+  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 0（共 0 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.365/);
   assert.match(report, /2026-10-16T09:02Z–2026-10-16T09:50Z · a · 会话 a-worker（号 agent-0001） · 工程师 · 2 级 Sonnet xhigh · 报告 3 次，打回 1 次 · 返工后通过/);
   assert.match(text(await call("dispatches", { filters: { id: "b" } })), /No dispatches\./);
   const unknown = await call("dispatches", { filters: { id: "nope" } });

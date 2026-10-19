@@ -144,7 +144,12 @@ export const difficultyText = (difficulty: Difficulty): string => `难度 ${diff
  * accepted for them.
  */
 export const DISPATCH_ROLES = ["工程师", "审查"] as const;
-export const DISPATCH_RESULTS = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+/** What a dispatch that ended the work (or gave it up) came to: the four outcomes the tallies count and the rework share is read from. */
+export const DISPATCH_OUTCOMES = ["一次通过", "返工后通过", "换人", "放弃"] as const;
+/** The result of a session the runner put down because its work waits for something long: the work goes on in a later session, so
+ * this is no outcome of the work and the tallies list it apart (docs/design.md section 5, Dispatch records). */
+export const PARKED_RESULT = "放下等待";
+export const DISPATCH_RESULTS = [...DISPATCH_OUTCOMES, PARKED_RESULT] as const;
 export const DISPATCH_SIGNALS = ["验收没过", "架构师打回", "做法被否", "长时间没进展", "换模型"] as const;
 const Count = z.number().int().nonnegative();
 /** US dollars with at most three decimals, so any sum of costs is exact in thousandths (see `milliDollars`). */

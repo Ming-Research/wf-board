@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Watch the runner by a heartbeat
+
+Nodes: daemon/runner-heartbeat, wake/routing, items
+
+Summary: The board did not know when the runner, the one resident program that starts every engineer's turn, had stopped: its reports on the items stay as they were and only the beats of the turns running go quiet, which the agent list shows turn by turn, so every item could stop with nothing pushed. The runner now calls `report_heartbeat` at every round of its loop; the board keeps the time of the last call by its own clock in memory and in a local file (at most one write a minute), and tells the architect once with the new push `runner-stopped` when the later of that time and the daemon's start is more than 10 minutes old, after a first heartbeat has been kept; the file also keeps that the silence was told, so a restart does not tell it again, and the next heartbeat ends the silence. The 10 minutes are a provisional figure, as the runner's loop was not measured. The push has its own decision in `wake/routing`, with the architect as its one recipient. The same change adds a fifth dispatch result for work put down to wait, which the owner ruled is not giving it up, and `items` records that decision with the three refused ways of recording it. The refused alternatives for the heartbeat (the beats of `report_live`, memory only, a commit for each heartbeat, reading the runner's process) are in the node; the shape is in docs/design.md, section 8, The runner's heartbeat.
+
 ## 2026-10-19 Draw data charts with the library's own chart type
 
 Nodes: page/diagrams/data-charts
