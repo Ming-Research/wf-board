@@ -69,13 +69,12 @@ jobs:
               dispatch_to_run: created - Number(before),
               queue: Math.min(...jobs.map((j) => t(j.started_at))) - created,
               checks_end: lastEnd - created,
-              result_wait: result ? t(result.started_at) - lastEnd : "-",
               status_after_last: final ? t(final.created_at) - lastEnd : "-",
               total_from_dispatch: final ? t(final.created_at) - Number(before) : "-",
               last_job: last.name,
               not_green: failed.join(","),
             });
-            if (result) detail.push(`run ${id} result steps: ` + result.steps.map((s) => `${s.name.slice(0, 30)} ${t(s.started_at) - lastEnd}..${t(s.completed_at) - lastEnd}`).join(" | "));
+            if (result) detail.push(`run ${id} result job: started ${t(result.started_at) - created} s after the run was created, steps: ` + result.steps.map((s) => `${s.name.slice(0, 30)} ${t(s.started_at) - created}..${t(s.completed_at) - created}`).join(" | "));
           }
           const header = Object.keys(rows[0]);
           const md = [`| ${header.join(" | ")} |`, `|${header.map(() => "---").join("|")}|`, ...rows.map((r) => `| ${header.map((h) => r[h]).join(" | ")} |`)].join("\n");
