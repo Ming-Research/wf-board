@@ -1,0 +1,33 @@
+name: tmp-page-outliers
+# Temporary (board-cpu-usage): where the page's change events over 50 ms come from. On each of four runners, three
+# interleaved runs of the merge base's page and this tree's page, with each event's place, longest stretch and garbage collections.
+on: push
+jobs:
+  outliers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4]
+    name: page outliers ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Interleaved runs, base and this tree
+        run: |
+          base=$(git merge-base HEAD origin/main)
+          echo "base $base"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+          cp scripts/tmp-page-outliers.ts scripts/profile-summary.ts "$RUNNER_TEMP/base/scripts/"
+          sed -i 's/^class EventTap/export class EventTap/' "$RUNNER_TEMP/base/test/nkey/press.ts"
+          for round in 1 2 3; do
+            echo "== round $round base"; (cd "$RUNNER_TEMP/base" && node --expose-gc scripts/tmp-page-outliers.ts | grep -E '^(EVENT|SUMMARY|  set_tags|  log)')
+            echo "== round $round tree"; node --expose-gc scripts/tmp-page-outliers.ts | grep -E '^(EVENT|SUMMARY|  set_tags|  log)'
+          done
