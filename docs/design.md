@@ -5088,7 +5088,13 @@ fails, and the step after it writes the failure (`test/ci-workflow.test.ts` hold
 the numbers and that the job has none). A stuck job ends cancelled at its 10
 minutes, the script finds it, waits the 10 seconds, finds itself still running
 and writes a failure that names the job. Both paths were run once on the branch
-with the job copied as it is: TIMEOUT_RESULTS.
+with the job copied as it is
+(10-19, hosted runners). With one minute on the step and a job that slept past it
+(run 39210292883) the step timed out after 72 seconds, the step after it wrote the
+failure "the result job ended without a status" and the job ended red. With one
+minute on the job that slept (run 39210292895) that job ended cancelled after 74
+seconds, the script found it, waited the 10 seconds and wrote "stuck not green" 11
+seconds after the job ended, and the step after it was skipped.
 
 **From the call to the status** (hosted runners, 10-19, seconds from `gh workflow
 run` to the status `full-ci`, read from the Actions API; every run listed here was
@@ -5139,7 +5145,9 @@ the cache of `node_modules` with the hash of `package.json` and `package-lock.js
 in its key (a restored directory would hide that `npm ci` refuses a disagreement
 between the two), `npm ci` on a miss, with `restore` and `save` of the cache as two steps so that a job that found the cache has no step after its tests for it. A cache is read from the branch that made it
 and from the main line; a change of the packages makes one miss on its branch, as
-slow as before. The Node that the runner has already is 22, and the project runs on
+slow as before. Both paths of the action were run once on the branch (run 39210292901): with the caches of
+the key deleted from the branch first, the job found none, `npm ci` added 259 packages in 8 seconds, the cache
+was saved (65 MB, 2.2 seconds) and a second job restored it. The Node that the runner has already is 22, and the project runs on
 24, so the step `setup-node` stays (0 to 1 second without a cache). A history
 without the file contents (`filter: blob:none`) for the n-key parts was not
 measurably faster (one run of 3 jobs each: checkout 1 to 3 seconds against 2 to 4),

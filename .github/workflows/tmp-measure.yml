@@ -1,0 +1,130 @@
+name: tmp-measure
+# Temporary (item ci-status-under-1min): starts the full CI on this branch five times, one after the other, and tells for each run
+# how long the queue, the checks and the writing of the status `full-ci` took; then starts runs that are cancelled (one replaced by
+# a newer run of the branch, one cancelled by hand) and checks that they write no final status. Delete before the last full CI, which fails
+# while this file exists (the job no-tmp-workflow of every run here is red for that reason alone).
+on:
+  push:
+    branches-ignore: [main]
+    paths: ['.github/workflows/tmp-measure.yml', '.github/workflows/ci.yml', '.github/actions/**', 'scripts/ci-time-gate.ts']
+concurrency:
+  group: tmp-measure-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: write
+  statuses: read
+jobs:
+  chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUNS: '5'
+    steps:
+      - name: Run the full CI one after the other
+        run: |
+          set -eu
+          ids=""
+          for i in $(seq 1 "$RUNS"); do
+            before=$(date -u +%s)
+            gh workflow run ci.yml --ref "$GITHUB_REF_NAME"
+            id=""
+            for _ in $(seq 1 30); do
+              id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=$GITHUB_REF_NAME&event=workflow_dispatch&per_page=5" \
+                --jq "[.workflow_runs[] | select((.created_at | fromdateiso8601) >= $before - 2)] | sort_by(.created_at) | last | .id // empty")
+              [ -n "$id" ] && break
+              sleep 1
+            done
+            [ -n "$id" ] || { echo "no run found for dispatch $i"; exit 1; }
+            echo "dispatch $i at $before: run $id"
+            ids="$ids $id:$before"
+            while [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id" --jq .status)" != completed ]; do sleep 3; done
+          done
+          echo "RUN_IDS=$ids" >> "$GITHUB_ENV"
+      - name: Tell the segments
+        run: |
+          node --input-type=module - <<'EOF'
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync } from "node:fs";
+          const repo = process.env.GITHUB_REPOSITORY;
+          const gh = (path) => JSON.parse(execFileSync("gh", ["api", path, "--paginate", "--slurp"], { encoding: "utf8", maxBuffer: 1 << 26 }));
+          const t = (s) => Date.parse(s) / 1000;
+          const rows = [];
+          const detail = [];
+          for (const entry of process.env.RUN_IDS.trim().split(/\s+/)) {
+            const [id, before] = entry.split(":");
+            const run = JSON.parse(execFileSync("gh", ["api", `repos/${repo}/actions/runs/${id}`], { encoding: "utf8" }));
+            const jobs = gh(`repos/${repo}/actions/runs/${id}/jobs?per_page=100&filter=latest`).flatMap((p) => p.jobs);
+            const created = t(run.created_at);
+            const checks = jobs.filter((j) => !["result", "start"].includes(j.name));
+            const last = checks.reduce((a, b) => (t(b.completed_at) > t(a.completed_at) ? b : a));
+            const result = jobs.find((j) => j.name === "result");
+            const statuses = gh(`repos/${repo}/commits/${run.head_sha}/statuses?per_page=100`).flat();
+            const final = statuses.find((s) => s.context === "full-ci" && s.target_url?.endsWith(`/runs/${id}`) && s.state !== "pending");
+            const lastEnd = t(last.completed_at);
+            const failed = jobs.filter((j) => !["success", "skipped"].includes(j.conclusion)).map((j) => j.name);
+            rows.push({
+              run: id,
+              dispatch_to_run: created - Number(before),
+              queue: Math.min(...jobs.map((j) => t(j.started_at))) - created,
+              checks_end: lastEnd - created,
+              status_after_last: final ? t(final.created_at) - lastEnd : "-",
+              total_from_dispatch: final ? t(final.created_at) - Number(before) : "-",
+              last_job: last.name,
+              not_green: failed.join(","),
+            });
+            if (result) detail.push(`run ${id} result job: started ${t(result.started_at) - created} s after the run was created, steps: ` + result.steps.map((s) => `${s.name.slice(0, 30)} ${t(s.started_at) - created}..${t(s.completed_at) - created}`).join(" | "));
+          }
+          const header = Object.keys(rows[0]);
+          const md = [`| ${header.join(" | ")} |`, `|${header.map(() => "---").join("|")}|`, ...rows.map((r) => `| ${header.map((h) => r[h]).join(" | ")} |`)].join("\n");
+          console.log(md);
+          console.log(detail.join("\n"));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n\n${detail.join("\n\n")}\n`);
+          EOF
+      - name: A cancelled run writes no status
+        run: |
+          set -eu
+          dispatch() {
+            before=$(date -u +%s)
+            gh workflow run ci.yml --ref "$GITHUB_REF_NAME" >&2
+            id=""
+            for _ in $(seq 1 30); do
+              id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=$GITHUB_REF_NAME&event=workflow_dispatch&per_page=5" \
+                --jq "[.workflow_runs[] | select((.created_at | fromdateiso8601) >= $before - 2)] | sort_by(.created_at) | last | .id // empty")
+              [ -n "$id" ] && break
+              sleep 1
+            done
+            [ -n "$id" ] || { echo "no run found" >&2; exit 1; }
+            echo "$id"
+          }
+          wait_done() { while [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" --jq .status)" != completed ]; do sleep 3; done; }
+          # The final statuses a run wrote: not pending, and linking to the run.
+          finals() {
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" --jq .head_sha)
+            gh api "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" \
+              --jq "[.[] | select(.context == \"full-ci\" and .state != \"pending\" and (.target_url | endswith(\"/runs/$1\")))] | length"
+          }
+          fail=0
+          # Case 1: run A is replaced by run B of the same branch (the concurrency group cancels A while its jobs run).
+          a=$(dispatch); echo "run A: $a"
+          sleep 14
+          b=$(dispatch); echo "run B, which replaces A: $b"
+          wait_done "$b"; wait_done "$a"; sleep 15
+          echo "A: $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$a" --jq .conclusion), final statuses written: $(finals "$a")"
+          echo "B: $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$b" --jq .conclusion), final statuses written: $(finals "$b")"
+          [ "$(finals "$a")" = 0 ] || fail=1
+          [ "$(finals "$b")" = 1 ] || fail=1
+          # Case 2: run C is cancelled by hand while its jobs run.
+          c=$(dispatch); echo "run C: $c"
+          sleep 14
+          gh run cancel "$c"
+          wait_done "$c"; sleep 15
+          echo "C: $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$c" --jq .conclusion), final statuses written: $(finals "$c")"
+          [ "$(finals "$c")" = 0 ] || fail=1
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$c" --jq .head_sha)
+          echo "statuses full-ci of the commit, newest first:"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[] | select(.context == "full-ci") | "\(.created_at) \(.state) \(.target_url | split("/") | last) \(.description)"' | head -12
+          echo "cancel checks failed: $fail"
+          exit $fail
