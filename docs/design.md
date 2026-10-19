@@ -703,8 +703,9 @@ derivation design that replaced this:
   with the owner 4,000 commits behind, the heap left after a full collection grows 22 KB a write over 300 writes
   and 5.7 KB over 1,500 (peak RSS 529 and 726 MB): from these two, about 6 MB once, the kept walk of the unread
   list, and under 2 KB a write after it, the unread list itself growing by a stop a write; in the pairs below this
-  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
-  (at most 3 of 51; each of the two chains keeps all 51). A prospective state inside a
+  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what chains of 50 and of 200 writes leave reachable
+  after full collections (at most 5 of 51 and of 201: the cache's two and up to three more seen on hosted runners, a few and
+  not in proportion to the chain; a chain that keeps every state keeps all of them). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
