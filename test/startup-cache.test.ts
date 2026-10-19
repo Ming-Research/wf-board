@@ -13,6 +13,7 @@ import { Store } from "../src/store.ts";
 import type { CommitInfo } from "../src/store.ts";
 import type { StartupStep } from "../src/log.ts";
 import { StartupCache } from "../src/startup-cache.ts";
+import { cleanup } from "./cleanup.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -22,7 +23,7 @@ const put = (id: string, doc: unknown, expectRev: number | null = null) => ({ ki
 async function git(dir: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: dir })).stdout.trim(); }
 async function setup(t: { after(fn: () => Promise<void>): void }, opts: { cacheDelayMs?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-cache-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  cleanup(t, () => rm(dir, { recursive: true, force: true }));
   return { dir, store: await Store.open(dir, { init: true, board: { title: "Board" }, ...opts }) };
 }
 const cacheFile = async (dir: string) => join(dir, await git(dir, "rev-parse", "--git-path", "wf-board-startup-cache.json"));
@@ -441,7 +442,8 @@ async function daemon(t: { after(fn: () => Promise<void>): void }, dir: string) 
     child.on("exit", code => reject(new Error(`the daemon exited with ${code}:\n${lines.join("\n")}`)));
   });
   const stop = async () => { if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await once(child, "exit"); } };
-  t.after(stop);
+  // Registered after the directory it runs on, so it is stopped before that goes (test/cleanup.ts).
+  cleanup(t, stop);
   return { port, lines, listening, stop };
 }
 
@@ -464,15 +466,22 @@ test("start-up time does not grow with the history: the same documents under ten
   const small = await bulkBoard(t, items, short), large = await bulkBoard(t, items, long);
   const time = async (dir: string) => { const from = performance.now(); await Store.open(dir); return performance.now() - from; };
   const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
-  // The control: with no cache the start scans the history, so the same measurement must tell the two boards apart.
-  for (const dir of [small, large]) await rm(await cacheFile(dir), { force: true });
-  const scanSmall = await time(small), scanLarge = await time(large);
-  assert.ok(scanLarge / scanSmall > 2, `a scan of ten times the history takes more than twice as long (${scanLarge.toFixed(0)} ms against ${scanSmall.toFixed(0)} ms)`);
+  // The control: with no cache the start scans the history, so the same measurement must tell the two boards apart. One pair
+  // measured once is not enough: the first scan of the process is slowed by the code not yet compiled, and a busy moment of the
+  // machine falls on one board, which once made the ratio 1.87 where it is 2.4 to 3.4. So three pairs, the order turned each
+  // time, and the medians.
+  const scansSmall: number[] = [], scansLarge: number[] = [];
+  const scan = async (dir: string, into: number[]) => { await rm(await cacheFile(dir), { force: true }); into.push(await time(dir)); };
+  for (let round = 0; round < 3; round++) {
+    if (round % 2 === 0) { await scan(small, scansSmall); await scan(large, scansLarge); } else { await scan(large, scansLarge); await scan(small, scansSmall); }
+  }
+  const scanSmall = median(scansSmall), scanLarge = median(scansLarge);
+  assert.ok(scanLarge / scanSmall > 2, `a scan of ten times the history takes more than twice as long (medians ${scanLarge.toFixed(0)} ms against ${scanSmall.toFixed(0)} ms; all ${scansLarge.map(x => x.toFixed(0))} and ${scansSmall.map(x => x.toFixed(0))})`);
   // The scans wrote the caches. Interleave the starts so that a slow moment of the machine falls on both boards.
   const withSmall: number[] = [], withLarge: number[] = [];
   for (let round = 0; round < rounds; round++) { withSmall.push(await time(small)); withLarge.push(await time(large)); }
   const ratio = median(withLarge) / median(withSmall);
-  t.diagnostic(`${items} items; ${short} and ${long} commits; scan ${scanSmall.toFixed(0)} ms and ${scanLarge.toFixed(0)} ms (ratio ${(scanLarge / scanSmall).toFixed(2)}); with the cache, median of ${rounds} starts ${median(withSmall).toFixed(0)} ms and ${median(withLarge).toFixed(0)} ms (ratio ${ratio.toFixed(2)}); all ${withSmall.map(x => x.toFixed(0))} and ${withLarge.map(x => x.toFixed(0))}`);
+  t.diagnostic(`${items} items; ${short} and ${long} commits; median scan ${scanSmall.toFixed(0)} ms and ${scanLarge.toFixed(0)} ms (ratio ${(scanLarge / scanSmall).toFixed(2)}); with the cache, median of ${rounds} starts ${median(withSmall).toFixed(0)} ms and ${median(withLarge).toFixed(0)} ms (ratio ${ratio.toFixed(2)}); all ${withSmall.map(x => x.toFixed(0))} and ${withLarge.map(x => x.toFixed(0))}`);
   assert.ok(ratio <= 2, `with the cache, ten times the commits start in ${ratio.toFixed(2)} times the time`);
   // The same through the daemon: the time it logs from the start of the process to listening.
   const daemonSmall: number[] = [], daemonLarge: number[] = [];

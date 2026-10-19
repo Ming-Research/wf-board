@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { Store } from "../src/store.ts";
 import { netGit, netGitReason } from "../src/net-git.ts";
 import { fakeSsh } from "./fake-ssh.ts";
+import { cleanup } from "./cleanup.ts";
 
 // The board's push to its remote (docs/design.md, Storage). The remote is a bare repository on this machine reached through a fake
 // ssh (test/fake-ssh.ts), which can delay a connection or never answer it: what the real network does that a local path cannot.
@@ -29,7 +30,7 @@ const within = <T>(promise: Promise<T>, ms: number, what: string) => Promise.rac
  * store runs git with the process's environment. */
 async function fixture(t: After) {
   const base = await mkdtemp(join(tmpdir(), "wf-board-push-"));
-  t.after(() => rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  cleanup(t, () => rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const ssh = await fakeSsh(t);
   const remote = join(base, "remote.git");
   await git(base, "init", "-q", "--bare", "-b", "main", remote);
@@ -188,7 +189,8 @@ test("the daemon's writes go on while its push waits on a silent connection, and
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-  t.after(() => { if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL"); });
+  // The daemon goes before the board's directory: it would go on writing to a directory being removed.
+  cleanup(t, async () => { if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGKILL"); await exited; } });
   await f.ssh.opened(1, 20_000);
   // The push is in flight: a write through the daemon is made at once.
   const started = performance.now();

@@ -6,56 +6,37 @@ on:
 permissions:
   contents: read
 jobs:
-  # Every test file of a shard alone, one after another, with its wall and CPU time and a CPU profile of each of its node processes.
-  prof:
-    name: prof ${{ matrix.shard }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: nproc; node -e 'console.log(require("os").availableParallelism())'
-      - run: |
-          mkdir -p sums
-          for f in $(node scripts/test-shard.ts ${{ matrix.shard }} 20); do
-            slug=$(echo "$f" | tr '/.' '__')
-            mkdir -p "prof/$slug"
-            NODE_OPTIONS="--cpu-prof --cpu-prof-dir=$PWD/prof/$slug" /usr/bin/time -f "%e %U %S" -o t.txt \
-              node --test --test-concurrency=1 --test-reporter=dot "$f" > /dev/null 2>&1 || echo "FAILED $f"
-            read w u s < t.txt
-            node scripts/tmp-prof.ts "prof/$slug" "sums/$slug.json" "$f" "$w" "$u" "$s"
-            echo "$f wall $w user $u sys $s"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prof-${{ matrix.shard }}
-          path: sums
-  # The test step of the full CI with four files at a time instead of the default.
-  conc:
-    name: conc${{ matrix.conc }} shard ${{ matrix.shard }}
+  spawn:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        conc: [4]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: node scripts/tmp-spawn.ts
+      # Does `git commit --only` take a changed and a deleted tracked file without `git add`, and refuse an untracked one?
+      - run: |
+          git config --global user.name ci && git config --global user.email ci@example.invalid
+          d=$(mktemp -d) && cd "$d" && git init -q && echo a > a && echo b > b && git add a b && git commit -qm one
+          echo a2 > a && rm b && git commit -q --only -m two -- a b && git show --stat --format=%s HEAD | cat
+          git status --short | cat; echo "status above (empty: clean)"
+          echo c > c; git commit -q --only -m three -- c && echo "untracked committed" || echo "untracked refused"
+  # The same test files with and without Node's compile cache, in alternating rounds, by the CPU of the whole run.
+  compile-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: tests
-        run: |
-          timeout 120 node --test --test-timeout=60000 --test-concurrency=${{ matrix.conc }} \
-            --test-reporter=dot --test-reporter-destination=stdout \
-            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
-            $(node scripts/test-shard.ts ${{ matrix.shard }} 20)
-      - if: ${{ !cancelled() }}
-        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+      - run: |
+          files="test/dom/page-tree.test.ts test/dom/witnesses-1.test.ts test/ops.test.ts test/mcp.test.ts test/http.test.ts test/look.test.ts test/candidates.test.ts test/rules.test.ts"
+          rm -rf /tmp/ncc
+          for round in 1 2 3; do
+            for mode in off on; do
+              if [ $mode = on ]; then export NODE_COMPILE_CACHE=/tmp/ncc; else unset NODE_COMPILE_CACHE; fi
+              /usr/bin/time -f "%e %U %S" -o t.txt node --test --test-reporter=dot $files > /dev/null
+              read w u s < t.txt; echo "round $round cache $mode: wall $w cpu $(echo "$u + $s" | bc)"
+            done
+          done
+          du -sh /tmp/ncc

@@ -14,13 +14,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Store } from "../src/store.ts";
 import { hashToken } from "../src/credentials.ts";
+import { cleanup } from "./cleanup.ts";
 
 const TOKEN = "wfb_a-token-for-the-test";
 const text = (r: Awaited<ReturnType<Client["callTool"]>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
 
 test("a client keeps working across a replacement of the daemon process, and a retry of its last write is not written twice", async t => {
   const data = await mkdtemp(join(tmpdir(), "wf-board-stateless-")), config = await mkdtemp(join(tmpdir(), "wf-board-credentials-")), credentials = join(config, "credentials.json");
-  t.after(() => Promise.all([data, config].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
+  cleanup(t, () => Promise.all([data, config].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
   // A board with one item, and the architect's credential in a file beside it.
   const seed = await Store.open(data, { init: true, board: { title: "Stateless test", projects: [{ name: "Test" }, { name: "Architect" }] } });
   const item = { title: "条目", group: "Test", difficulty: 2, plan: [{ id: "accept", accept: true, text: "通过", state: "todo" }], updated: "2026-10-11T01:02:03Z" };
@@ -32,7 +33,8 @@ test("a client keeps working across a replacement of the daemon process, and a r
   const url = `http://127.0.0.1:${port}`;
 
   const running: ChildProcess[] = [];
-  t.after(() => { for (const child of running) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  // The daemons go before the board's directory, each waited for: one still running would write to a directory being removed.
+  cleanup(t, () => Promise.all(running.filter(child => child.exitCode === null && child.signalCode === null).map(child => { const exited = once(child, "exit"); child.kill("SIGKILL"); return exited; })));
   async function start(): Promise<ChildProcess> {
     const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "600000", WF_BOARD_CREDENTIALS: credentials }, stdio: ["ignore", "pipe", "pipe"] });
     running.push(daemon);
