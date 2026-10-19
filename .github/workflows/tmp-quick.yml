@@ -1,0 +1,92 @@
+name: tmp-quick
+# Temporary (item board-look): the loop-watch test that took the CPU a busy loop is given for granted, run quiet, with the
+# process given a fifth of a core, and against meters spoiled. Delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  quiet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: node --test test/loop-watch.test.ts
+  # The test of main, with the process on one core that four other processes compute on: it must fail on the CPU line.
+  starved-old:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: |
+          git fetch --depth=1 origin main
+          git show FETCH_HEAD:test/loop-watch.test.ts > test/loop-watch-old.test.ts
+          grep -q "reading(busy, \"cpu\") >= reading(busy" test/loop-watch-old.test.ts
+      - run: |
+          pids=""
+          for i in 1 2 3 4; do taskset -c 0 sh -c 'while :; do :; done' & pids="$pids $!"; done
+          code=0
+          taskset -c 0 node --test --test-name-pattern="computes tells the CPU" test/loop-watch-old.test.ts > out.txt 2>&1 || code=$?
+          kill $pids
+          cat out.txt
+          if [ "$code" -eq 0 ]; then echo "the old test passed on a starved process"; exit 1; fi
+          grep -q "event loop held for .* cpu " out.txt
+  # The test of this branch on the same starved process: it must pass.
+  starved-new:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: |
+          pids=""
+          for i in 1 2 3 4; do taskset -c 0 sh -c 'while :; do :; done' & pids="$pids $!"; done
+          code=0
+          taskset -c 0 node --test --test-name-pattern="computes tells the CPU" test/loop-watch.test.ts > out.txt 2>&1 || code=$?
+          kill $pids
+          cat out.txt
+          [ "$code" -eq 0 ]
+          grep -q "the loop used" test/loop-watch.test.ts
+  # The new test with the meter telling no CPU at all: it must fail on the CPU line.
+  spoiled-zero:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: |
+          sed -i 's|return (user + system) / 1000; }|return 0 * (user + system); }|' src/loop-watch.ts
+          ! git diff --quiet src/loop-watch.ts
+      - run: |
+          code=0
+          node --test --test-name-pattern="computes tells the CPU" test/loop-watch.test.ts > out.txt 2>&1 || code=$?
+          cat out.txt
+          if [ "$code" -eq 0 ]; then echo "the test passed with a meter that tells no CPU"; exit 1; fi
+          grep -q "the loop used" out.txt
+  # The new test with the line telling the process's total CPU, not the stretch's: it must fail on the CPU line.
+  spoiled-total:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: |
+          sed -i 's|cpu = cpuNow - this.cpu;|cpu = cpuNow;|' src/loop-watch.ts
+          ! git diff --quiet src/loop-watch.ts
+      - run: |
+          code=0
+          node --test test/loop-watch.test.ts > out.txt 2>&1 || code=$?
+          cat out.txt
+          if [ "$code" -eq 0 ]; then echo "the file passed with a line that tells the total CPU"; exit 1; fi
+          grep -q "✖ a loop held by code that computes tells the CPU it used" out.txt
