@@ -5392,8 +5392,10 @@ seconds a round per millisecond of the base press):
 - *The round, old lane against new, run side by side* (run 39248986167 of `tmp-nkey-time-margin`, 3 jobs each): 0.201 against 0.159 (changed page, 4 windows,
   writing), 0.151 against 0.119 (same page, writing), 0.157 against 0.133 (same page, quiet), medians: 21%, 21% and 15% shorter. The test step is not shorter
   by that much because the set-up of the lane (11 to 17 s) and the runner's speed move it more: 25 s against 25 s (same page, writing, medians of 3).
-- *The witness over 10 pairs* in all 36 time jobs of the runs 39248986167, 39249580114 and 39250210058 was read as slower than the reference, ×1.28 to ×2.11, its
-  interval's half width 1.9% to 7.5% (20.9% once, on a runner whose base press took 31 ms), the lower bound of the interval 1.20 at the least.
+- *The witness over 10 pairs* was read as slower than the reference in every one of its 36 readings (31 jobs of the runs 39248986167, 39249580114 and 39249583390,
+  the last the 15 ms page below, 8 of the readings those of confirmation runs): ×1.26 to ×2.11, the interval's half width 1.9% to 7.5% (20.9% once, on a runner
+  whose base press took 31 ms), the lower bound of the interval 1.20 at the least. The 4 readings of run 39250210058 read ×1.36 to ×1.53 and were "undecided"
+  only because their floor was set to 0.1%.
 - *A round cut at the budget* (run 39249580114, `NKEY_BUDGET_S` of 20 and 1): 16 to 17 pairs, the floor widened from 7.6% to 11.0% (writing) and from 6.9% to
   10.0% (quiet), as the arithmetic says (×1.37 for 16 pairs); the cut twins read ±2.2% to ±4.2%, the changed page ×0.999 to ×1.034 (ok), the witness red.
 - *A round the budget keeps from beginning* (run 39250210058, a floor of 0.1% that no twin meets): at the budget of 34 s a first round that ended at 31.0 s was
