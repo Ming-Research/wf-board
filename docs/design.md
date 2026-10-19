@@ -4805,6 +4805,15 @@ job 41. A job is about 5 seconds of wait for a runner and 10 to 15 of set-up aro
 step. Twenty shards put the last test shard about 47 seconds after the start (42 plus the wait);
 twenty-four ones only one second sooner.
 
+**With 20 shards** (the cost table frozen, five full CIs of one commit, one after the other):
+the last test shard ended 51, 50, 46, 47 and 50 seconds after the start of the run (median
+50), its `tests` step took 14 to 31 seconds (mean 22.1; the longest of each run 31, 26, 27,
+27, 27), and the sum of the file seconds of a shard ranged from 37 to 68 seconds within a
+run (the table has about 54 for each). The total of the run was 58, 52, 52, 53 and 59
+seconds, the last job in each being a part of the n-key lane (`witnesses` or `time-writing`,
+ended 52 to 59 seconds after the start), so the test shards are no longer what ends a run
+last.
+
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
 nothing would run it, which the table with a default cost cannot do.
