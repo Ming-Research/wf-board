@@ -86,6 +86,7 @@
   "test/store.test.ts": 11.8,
   "test/tags.test.ts": 3.3,
   "test/test-shard.test.ts": 0.2,
+  "test/threads.test.ts": 0.2,
   "test/update.test.ts": 0.2,
   "test/wake-agents.test.ts": 5.1,
   "test/wake.test.ts": 5.7,

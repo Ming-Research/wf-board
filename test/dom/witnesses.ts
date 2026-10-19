@@ -12,7 +12,7 @@ import { startBoard, openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { DomPage } from "./page.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrap, checkFilters, checkSearch, checkComments, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrap, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
 
 const app = (edit: string, find: string, replace: string): Revert => ({ file: "web/app.ts", edit, find, replace });
 // `fresh`: the witness writes to the board, so it gets a board of its own and the others see none of its writes.
@@ -197,6 +197,18 @@ const WITNESSES: Witness[] = [
       app("saving a comment unfolds its list", 'drafts[key] = ""; editing = null; editingAnchor = null;\n          notesOpen[key] = true; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {}\n', 'drafts[key] = ""; editing = null; editingAnchor = null;\n')], family: "comment-hidden",
     storage: b => ({ ...openAll(b), "board-notes": { ["it:" + b.gen.witness.commentItem]: false, ["q:" + b.gen.witness.commentCard]: false } }),
     run: async (bp, b) => checkComments(bp, await oracle(b.store)),
+  },
+  {
+    bug: "a comment that follows another was listed at the time it was written, away from the comment it follows",
+    reverts: [app("comments are listed by time only", "const listing = threadOrder(mine), anchored =", "const listing = mine.map(note => ({ note, depth: 0 })), anchored =")], family: "comment-thread",
+    fresh: true, storage: b => ({ ...openAll(b), "board-notes": { ["it:" + b.gen.witness.commentItem]: true } }),
+    run: async bp => checkThreads(bp),
+  },
+  {
+    bug: "a comment listed under the comment it follows still said what it follows",
+    reverts: [app("a threaded comment names its anchor", "if (n.anchor && !threaded) box.appendChild", "if (n.anchor) box.appendChild")], family: "comment-thread",
+    fresh: true, storage: b => ({ ...openAll(b), "board-notes": { ["it:" + b.gen.witness.commentItem]: true } }),
+    run: async bp => checkThreads(bp),
   },
   {
     bug: "an empty pause row sat under every unpaused item's title (fixed in 756e5ea)",
