@@ -10,7 +10,7 @@ import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
+import { rules, rebuiltBecause, answersFor, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Item, Snapshot } from "../src/model.ts";
 import { architect, asArchitect, board, author, at } from "./helpers.ts";
@@ -84,7 +84,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   const initial = store.snapshot();
   // The page's copy of the activity, kept only from event deltas.
   let page = store.snapshot(), pageActivity = page.activity, pageHead = page.head;
-  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0, sectionMoves = 0;
+  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0, sectionMoves = 0, reused = 0;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const itemsOf = (s: Snapshot, group?: string) => Object.keys(s.items).filter(id => !group || s.items[id]!.group === group);
   let made = 0;
@@ -175,7 +175,11 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     // The last two are after the six-hour window of a session started in the sequence has passed.
     for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE, synthetic + 7 * 60 * MINUTE, Date.now() + 8 * 60 * MINUTE]) {
       const expected = derivedView(rules(after, at), after);
-      assert.deepEqual(derivedView(store.derived.rules(after, at), after), expected, `shared rules after ${change.message}`);
+      // The shared rules of a published state are built from those of the state before it when that write allows it, and then
+      // answer for the time those answered for, in the same minute (docs/design.md, section 4, Write cost).
+      const shared = store.derived.rules(after, at);
+      if (rebuiltBecause(shared) === null) reused++;
+      assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answersFor(shared)!), after), `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);
       assert.deepEqual(derivedView(rules(page, at, { activity: ActivityIndex.build(page) }), page), expected, `page rules after ${change.message}`);
       const index = store.derived.activity(after), built = ActivityIndex.build(after);
@@ -243,6 +247,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
   assert.ok(projectMoves > 2, `the random sequence moved items to another project (${projectMoves})`);
   assert.ok(compared > 60, `enough writes compared (${compared})`);
+  assert.ok(reused > 20, `the shared rules of many published states were built from the state before (${reused})`);
   assert.ok(sectionMoves > 2, `the random sequence moved top-level items between a project's own roots and the roots other projects depend on (${sectionMoves})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });

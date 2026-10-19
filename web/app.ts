@@ -35,6 +35,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
+  // The server's version of the list serverSteps holds: the next request asks only for what changed after it.
+  let unreadVersion: string | undefined;
   const pendingReads = new Map<string, { covered: Set<string>; saving: boolean }>();
   function pendingReadCovers(doc: string, step: Step) {
     const overlay = pendingReads.get(doc);
@@ -1962,7 +1964,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   try { wholeOpen = localStorage.getItem("board-whole") === "open"; } catch (e) {}
   const wholeAll = new Set<Bucket>();
   let wholeSignature = "";
-  function wholeViewNow() { return cached("wholeView", () => wholeView(snapshot, derived, Date.now())); }
+  // Made again when the board changes or a minute passes, not when only the view does (the unread list, a fold).
+  function wholeViewNow() { return dataCached("wholeView", () => wholeView(snapshot, derived, Date.now())); }
   function wholeItem(id: string, title: string, project: string) {
     const button = el("button", "whole-title", inline(title));
     button.type = "button"; button.title = plain(title) + "（" + project + "）";
@@ -2072,23 +2075,32 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     host.appendChild(panel);
   }
   // The blocking waits (cards with blocks, and asks), the longest waiting first.
+  // The panel last drawn and what it was drawn from: the header is drawn again on every change, the panel only when its rows change.
+  let waitBox: HTMLElement | null = null, waitSignature = "";
   function waitPanel() {
     const rows = stops().filter(blockingStop).map(st => {
       const card = st.id.startsWith("q-") ? snapshot.decisions[st.id.slice(2)] : undefined, it = st.item ? snapshot.items[st.item] : undefined;
       const since = card ? card.at ?? card.updated : it?.updated ?? "";
       return { st, card, it, since, text: card ? card.blocks || "" : it?.ask?.text || "", project: st.item ? groupOf(index().byId.get(st.item)!) : "", summary: card ? plain(firstLine(card.question)) : plain(it?.title) };
     }).sort((a, b) => a.since.localeCompare(b.since) || a.st.id.localeCompare(b.st.id));
-    if (!rows.length) return null;
-    const box = el("div", "waitpanel"); box.id = "wait-panel";
-    rows.forEach(r => {
+    if (!rows.length) { waitBox = null; waitSignature = ""; return null; }
+    const plainCards = stops().filter(st => !blockingStop(st)).length;
+    const markups = rows.map(r => {
       const short = r.summary.length > 40 ? r.summary.slice(0, 40) + "…" : r.summary;
-      const b = el("button", "waitrow", '<span class="waitdot"></span><span class="where">' + esc(r.project || "其他") + '</span><span class="t">' + inline(r.text) + '</span><span class="where">' + esc(short) + "</span>");
+      return '<span class="waitdot"></span><span class="where">' + esc(r.project || "其他") + '</span><span class="t">' + inline(r.text) + '</span><span class="where">' + esc(short) + "</span>";
+    });
+    // The rows' markup (references in the text read the titles they name) and where each row jumps to.
+    const signature = JSON.stringify([plainCards, markups, rows.map(r => [r.card ? "card" : "item", r.st.id, r.st.item ?? null])]);
+    if (waitBox && signature === waitSignature) return waitBox;
+    const box = el("div", "waitpanel"); box.id = "wait-panel";
+    rows.forEach((r, i) => {
+      const b = el("button", "waitrow", markups[i]!);
       b.type = "button";
       b.addEventListener("click", () => { if (r.card) jumpTo("card", r.st.id.slice(2)); else if (r.st.item) jumpTo("item", r.st.item); });
       box.appendChild(b);
     });
-    const plainCards = stops().filter(st => !blockingStop(st)).length;
     if (plainCards) box.appendChild(el("div", "waitmore", "另有 " + plainCards + " 张决策卡不挡工作"));
+    waitBox = box; waitSignature = signature;
     return box;
   }
   function planSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
@@ -2994,11 +3006,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const operation=(async () => {
       for (;;) {
         const revision=eventGeneration;
-        const result = await api<{cursor?: string; steps: Step[]}>("/api/unread",undefined,"GET",signal);
+        const since=unreadVersion;
+        const result = await api<{cursor?: string; version?: string; keep?: number; steps: Step[]}>("/api/unread"+(since ? "?since="+encodeURIComponent(since) : ""),undefined,"GET",signal);
         if (generation !== unreadGeneration || !active()) return false;
         if (revision !== eventGeneration) continue;
         const previous=steps, before=unreadContributions(previous), failed=new Set(failedDiffs);
-        serverSteps = result.steps;
+        // With keep, the server sent only the stops after the first keep of the list it named, which is the one held here.
+        serverSteps = result.keep === undefined ? result.steps : serverSteps.slice(0,result.keep).concat(result.steps);
+        unreadVersion = result.version;
         for (const [doc, overlay] of pendingReads) {
           if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
         }

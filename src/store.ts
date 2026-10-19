@@ -1070,6 +1070,8 @@ export class Store {
       const [head, timestamp] = (await this.git(["show", "-s", "--format=%H%x00%aI", "HEAD"])).trimEnd().split("\0");
       if (!head || !/^[0-9a-f]{40}$/.test(head) || !timestamp) throw new Error("Invalid git commit metadata");
       next.head = head;
+      // git just named it as a commit: a read of history up to it needs no rev-parse.
+      this.resolved.set(head, head);
       // Owner writes arriving during git work stay out of the staged snapshot.
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
@@ -1126,7 +1128,9 @@ export class Store {
     frozen(event);
     trace?.lap("publish");
     if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
+    const before = this.state;
     this.state = next;
+    this.derived.follows(next, before, changed, event.activity);
     this.scheduleCacheWrite();
     this.pending += 1;
     void this.queueMaintenance();

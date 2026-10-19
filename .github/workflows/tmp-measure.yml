@@ -1,6 +1,6 @@
 name: tmp-measure
-# Temporary (board-cpu-usage): the write path's CPU on a board of the live board's size, without and with an owner who has
-# not read for 4,000 commits, the page's work per change event, and a profile of each. Removed before the branch is ready.
+# Temporary (board-cpu-usage): the tests this branch touches, and the write path's CPU and the page's work per change event on
+# boards of the live board's size, with a profile of each. Removed before the branch is ready.
 on: push
 jobs:
   check:
@@ -13,6 +13,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run build:web
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        files:
+          - test/history.test.ts test/http.test.ts test/budget.test.ts test/board-gen.test.ts test/convert-plans.test.ts test/difficulty.test.ts test/dispatch.test.ts
+          - test/derived.test.ts test/rules-reuse-guards.test.ts
+          - test/web.test.ts
+          - test/dom/page-unread.test.ts test/dom/whole.test.ts test/dom/runner-block.test.ts test/dom/page-filters-fresh.test.ts
+          - test/dom/witnesses-1.test.ts test/dom/witnesses-2.test.ts test/dom/witnesses-3.test.ts
+          - test/dom/witnesses-4.test.ts test/dom/witnesses-5.test.ts test/dom/agents.test.ts
+          - test/nkey/counts.nkey.ts
+    name: test ${{ matrix.files }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node --test ${{ matrix.files }}
   bench:
     runs-on: ubuntu-latest
     strategy:
@@ -20,7 +43,6 @@ jobs:
       matrix:
         run:
           - { name: plain, args: "" }
-          - { name: plain-profile, args: "--profile" }
           - { name: unread, args: "--unread 4000" }
           - { name: unread-profile, args: "--unread 4000 --profile" }
     name: bench ${{ matrix.run.name }}

@@ -103,7 +103,10 @@ export class Tape {
     return {
       misses: () => misses,
       fetch: async (url, init, page) => {
-        const hit = (init?.method ?? "GET") === "GET" ? this.answers.get("GET " + url.pathname + url.search) : undefined;
+        // The page asks for the unread list with the version it holds; a version the tape never met is answered with the whole list,
+        // as the server answers a version it no longer keeps.
+        const hit = (init?.method ?? "GET") !== "GET" ? undefined : this.answers.get("GET " + url.pathname + url.search)
+          ?? (url.pathname === "/api/unread" ? this.answers.get("GET /api/unread") : undefined);
         if (!hit) { if ((init?.method ?? "GET") === "GET") misses++; return fetch(url, init); }
         const held = wait?.(url);
         if (held) await page.hold(held);

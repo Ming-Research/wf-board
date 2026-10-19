@@ -4909,3 +4909,14 @@ test("a row in progress or idle draws its band, and a row not started draws none
   assert.ok(rowOf(p, "idle").querySelector(".progress-band"), "an idle row draws its band");
   assert.equal(rowOf(p, "fresh").querySelector(".progress-band"), null, "a todo row draws no band");
 });
+
+test("the page asks for the unread list with the version it holds and keeps the stops the server says did not change", async () => {
+  const s=snapshot(), first=unread("item","child","1".repeat(40)), second=unread("item","area","2".repeat(40));
+  // The server names the version of each list; asked with it, it sends only the stops after the ones that stay.
+  const response=(path:string)=>path === "/api/unread" ? reply({version:"v1",steps:first}) : path === "/api/unread?since=v1" ? reply({version:"v2",keep:first.length,steps:second}) : undefined;
+  const p=await page(s,first,null,undefined,{response}); await p.flush();
+  await p.change("c".repeat(40),[{kind:"item",id:"area",after:{...s.items.area!,title:"Parent again",rev:2}}]); await p.flush();
+  assert.ok(p.calls.some(c=>c.path === "/api/unread?since=v1"),"the second request names the version held");
+  // Both stops count: the kept one from the first list and the one sent after it.
+  assert.match(markup(p.roots.get("summary")!),/新 2/);
+});
