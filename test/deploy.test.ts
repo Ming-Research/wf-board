@@ -19,6 +19,7 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { agentSocket, asArchitect, author, server } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { fakeSsh } from "./fake-ssh.ts";
 
 const BRANCH = "main";
@@ -836,13 +837,13 @@ test("the daemon reads nothing of the checkout at runtime but the page files, so
 
 test("the page files are read from disk on each request, so a rebuilt page needs no restart", async t => {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-web-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  cleanup(t, () => rm(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "dist"));
   const store = await Store.open(join(dir, "data"), { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot" }] } });
   const op = ops(store);
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: dir, createMcp: () => createMcpServer({ store, ops: op }) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  cleanup(t, () => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const url = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
   for (const [route, file] of [["/", "index.html"], ["/app.js", "dist/app.js"], ["/mermaid.js", "dist/mermaid.js"]] as const) {
     for (const version of ["one", "two"]) {

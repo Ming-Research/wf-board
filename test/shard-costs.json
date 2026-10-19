@@ -110,6 +110,7 @@
   "test/stateless.test.ts": 13.0,
   "test/store.test.ts": 12.3,
   "test/tags.test.ts": 3.6,
+  "test/teardown.test.ts": 0.6,
   "test/test-shard.test.ts": 0.2,
   "test/threads.test.ts": 0.2,
   "test/timeline.test.ts": 3.0,

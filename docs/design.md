@@ -244,7 +244,11 @@ The daemon uses well under that:
    clients start to reconnect and are refused. MCP has no stream.
 3. A request already running, a tool call included, may finish. The connection
    it ran on closes with its response. After two seconds (`SHUTDOWN_GRACE_MS`)
-   every connection that is left is closed.
+   every connection that is left is closed. The architect's timed wake, when one
+   is being made, reads the history without a request: the server answers that
+   it is closed after that read, or after the same two seconds, so that what the
+   caller does next (the commit of the reading state; in a test, removing the
+   data directory) does not meet a read still running.
 4. A push that is running is ended (below). The owner's reading state is committed locally, and the process exits.
 
 A push takes 4.1 to 6.6 seconds (Storage), more than the five seconds launchd allows, so
@@ -3911,8 +3915,8 @@ it is done, but the work it waits for is often only the item's merge: an enginee
 about to rebase on it, goes on at the merge, while the item stays open until its later steps (the deploy, the live
 check) are done, and `item-done` is not pushed before. So a merge row turning done (Watching GitHub, Merge rows;
 marked by the look at GitHub or by a session by hand) is pushed as `dep-merged`, once for the change that did it
-(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a row open before and done
-after, with the pull requests that counted for it before; a dropped row, a row naming no counted pull request
+(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a merge row (Watching GitHub, Merge rows) open before and done
+after, with the pull requests that counted for it before; a dropped row, a row that is no merge row, a row naming no counted pull request
 and an item written new push nothing), to each open, unpaused item with a *shared* row on the item (`dependents`
 without `own`), one push for each. A session holding the waiter gets it; when nobody does it goes to the
 architect, who starts or hands on the work nobody holds, and an item that is
@@ -4304,13 +4308,26 @@ request that no item names is found by the architect's patrol. Both were pushed 
 holds the time of the last look only; an older file also holds the repositories looked at and the
 pull requests of the first look, which the pushes about pull requests used and nothing reads now.
 
-**Merge rows.** A merge row is a step of an open item that is not done, not
-dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
-a pull request, in the forms above, which the item's own 改动 section names as
-well (`mergeRowPulls` in `src/query.ts`). Those are the pull requests that count
-for the row. A line that waits for another pull request to merge names it too,
-and that one is not the item's own, so it does not count and a line naming only
-such pull requests is no merge row. When GitHub reports every pull request that
+**Merge rows.** A merge row is the plan's stage row `merge` or a round of it
+(`merge-2` and up; `stageOf` in `src/rules.ts`), or, in a plan with no such row,
+a step whose text starts with 合入 but not 合入后 (`isMergeRow`); an acceptance
+step is never one. The board reads the id, not the word anywhere in the text,
+because steps that only mention a merge say 合入 and name its pull request too:
+the online check ("线上验证：合入后……", or one that starts with 合入后) and a step
+that waits for another pull request. Read as merge rows, they were marked and
+pushed before the merge they stood for (10-19: an online check whose first half
+was done and whose second half was open was marked done when the pull request it
+names merged, and a plan rewrite that marked such a step done pushed `dep-merged`
+for a pull request that was still open). The start of the text is the fallback
+for plans written before the stage ids: the item-writing rule says a merge row
+holds only 合入 and the pull request that delivers the item, so the start is
+enough, and a row that waits (等 … 合入后合入 …) is none.
+An open merge row (`isOpenMergeStep`), not done and not dropped, counts the pull
+requests it names, in the forms above, which the item's own 改动 section names
+as well (`mergeRowPulls` in `src/query.ts`). A line that waits for another pull
+request to merge names it too, and that one is not the item's own, so it does
+not count and a line naming only such pull requests is no merge row. When GitHub
+reports every pull request that
 counts for the row merged (`mergeRowDone`), the board marks the row done and
 appends a log entry naming them and their merge times, in one commit, as the
 item's project and session 看板. That write (`markMerged`, an operation without

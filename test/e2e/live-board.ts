@@ -14,6 +14,7 @@ import { generateBoard, prng } from "./board-gen.ts";
 import { seedBoard } from "./seed.ts";
 import { serveBoard, ROOT } from "./board-server.ts";
 import type { BoardServer } from "./board-server.ts";
+import { cleanup } from "../cleanup.ts";
 
 /** The generator's scale: 12 times its default of about 160 items per project set. */
 const SCALE = 12;
@@ -61,7 +62,7 @@ export async function startLiveBoard(t: { after(fn: () => unknown): void }): Pro
   const began = performance.now(), steps: string[] = [];
   const lap = (what: string) => steps.push(`${what} ${((performance.now() - began) / 1000).toFixed(1)} s`);
   const dir = await mkdtemp(join(tmpdir(), "wf-board-live-"));
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  cleanup(t, () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(1, SCALE);
   for (const batch of gen.batches) for (const put of batch.puts) if (put.kind === "item") {
     const doc = put.doc as { head?: string };
