@@ -385,7 +385,10 @@ document hung on: one rebuild took 2.7 to 3.1 s and kept about 510 MB of heap, a
 them stayed until the request ended, and a range with 10 deleted notes ran the heap
 into its 4 GB limit and killed the process, with every session's connection and the
 owner's page (measured in CI on a synthetic board of the live one's size, 18,000
-commits; `scripts/bench-changes.ts`). Three rules follow.
+commits; `scripts/bench-changes.ts`). That board's long texts were single-line quoted
+scalars, which the library parses into the heap-heaviest strings; on a board shaped like
+the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed flat
+(Parsed documents, below). Three rules follow.
 
 1. *Reads follow the range.* The commits of a query are listed from the range
    alone (`store.log({since, at})`), and a time given to `diff` is resolved by git going
@@ -434,8 +437,8 @@ commits; `scripts/bench-changes.ts`). Three rules follow.
    rare and the failure is only a retry.
 
 The history caches are bounded by the heap they are estimated to hold: parsed
-documents 64 MB (16 bytes of heap per byte of file, as the whole-board figures
-measured) and 4096 entries, diffs 16 MB, and one whole old board.
+documents 64 MB (2 bytes of heap per byte of file, as the flat whole-board figures
+measured, Parsed documents below) and 4096 entries, diffs 16 MB, and one whole old board.
 
 *Rejected.* Running history queries in a worker thread with a memory limit works (a
 256 MB limit stopped a runaway allocation in 3.4 to 6.4 s and left the main thread
@@ -445,6 +448,92 @@ no reader stays on the main thread, which is the same test as for budgets. A chi
 process costs more than a thread and isolates more than is needed. A budget costs
 a few counters and stops what actually grew: reading history. A runaway allocation that
 reads no history is not stopped by it.
+
+**Parsed documents.** The daemon keeps every document of the board parsed in memory, and parsed
+documents also fill the history caches. The YAML library's result keeps more heap than the data,
+and a large part of it is waste. Measured in CI (GitHub-hosted runner, 4 vCPUs of an AMD EPYC 7763,
+16 GB, Node 24.21, yaml 2.9.1) on two synthetic boards: the live shape, 3,992 files and 21.8 MB, long
+texts as multi-line `|-` block scalars, about 66% non-ASCII bytes (sizes and proportions counted from the
+live data, none of its content); and the quoted-scalar shape, 3,235 files and 19.7 MB, every long
+text one line ending in a space, which the library writes and reads as a double-quoted scalar. Each stage
+ran in a child process of its own, with the heap read after two collections; a figure said to be a mean is
+of 15 rounds, each running the base commit, a twin of it (the same commit again, the control) and this tree in an order
+drawn afresh every round, with the 95% interval of the mean.
+
+Where the heap stays after a parse, by subtracting stages (strings rebuilt flat; strings replaced
+by empty ones; the files read as strings; one run each):
+
+| | live shape | quoted-scalar shape |
+|---|---|---|
+| skeleton of objects and arrays | 5.0 MB | 2.0 MB |
+| string data, flat | about 24.6 MB | about 25.7 MB |
+| source texts pinned by sliced strings | about 28.1 MB | about 26.3 MB |
+| string nodes left by joining character by character | 0 | about 447.9 MB |
+| kept after the parse | 57.7 MB | 501.9 MB |
+
+The library's strings are mostly slices of the source text, and V8 keeps the whole source (two
+bytes a character for Chinese) while one slice lives; a double-quoted scalar on one line is built
+by `res += ch` for each character (read in the library's source), which V8 keeps as a node of about
+32 bytes until something reads the string. A document nobody reads as a string, which is every
+document in the history caches and in a rebuilt board, keeps both. Per character, 300 copies each
+with a source of its own: a one-line double-quoted scalar 41.4 bytes, a block scalar 4.3, a plain
+or single-quoted one 2.0 (the source pinned by slices); a double-quoted scalar flattened, 2.5. Objects and the schema check
+are not the cause: the check builds objects and shares the strings, and dropping the history
+cache released 1.2 MB.
+
+`parseDocument` (`src/store.ts`) parses and then runs `structuredClone`, which writes each string out
+flat. Run alone on the whole live-shape board it takes 83 ms against a parse of about 2.5 s (123 ms on the quoted-scalar board);
+rebuilding each string in place took 129 to 545 ms and a JSON round trip 102 to 151 ms. It is
+the one entry for every parse: the start, the history caches, the pause replay's reads of old items, the one-time conversion's reader and the
+conversion command. The copy is safe for every value the core schema yields (strings, numbers,
+booleans, null, arrays and plain objects; read from the code), and a test compares a copy with
+the parse. Heap the real code kept (`Store.open`, `comparisonSnapshot`, and the real daemon `src/main.ts` after five loads of
+the page):
+
+| | live shape, before | live shape, with the copy | quoted-scalar shape, before | quoted-scalar shape, with the copy |
+|---|---|---|---|---|
+| `Store.open` (mean of 15 pairs, start with the startup cache) | 56.6 MB [56.6, 56.6] | 28.3 MB [27.1, 29.4] | 503.3 MB [503.3, 503.3] | 28.9 MB [28.2, 29.6] |
+| `Store.open`, first start without the cache (one run) | | 33.2 MB | | 39.7 MB |
+| whole old board rebuilt (one run) | 55.9 MB | 29.7 MB | 501.8 MB | 29.0 MB |
+| the daemon after five page loads, heap in use (one run) | 83.8 MB | 56.2 MB | 79.6 MB | 53.5 MB |
+| the daemon, resident memory after a collection / peak (one run) | 311.0 / 413.3 MB | 263.2 / 364.9 MB | 755.4 / 857.3 MB | 287.3 / 368.4 MB |
+
+A start without the startup cache replays the history, which keeps 5 to 11 MB more (the second row
+of the table); every other row is a start with the cache. The live daemon runs with the cache except on
+the first start after the cache's format changes.
+
+The time of the start step "read documents", which reads, parses, checks and freezes every document
+(mean of 15 pairs; the same start with the cache): live shape, 1,943.5 ms [1,927.4, 1,959.5] before the change, 1,924.3 ms for its
+twin and 1,980.2 ms [1,948.8, 2,011.6] with the copy; the twin is 19.2 ms [-44.7, 6.3] from the base (x0.990, 1.3% half width, the
+noise of this run) and this tree is 46.5 ms [12.6, 80.3] above the reference (the geometric mean of the base and
+the twin, x1.024 [1.007, 1.041]), so a slowdown is detected and it is smaller than the copy's own time, as the collector has less to do (inferred, not separated). On the
+quoted-scalar shape the step is faster, 957.5 ms [945.2, 969.8] against 1,792.2 ms [1,674.7, 1,909.7], 770.3 ms [678.4, 862.2]
+less than the reference (the string nodes made the collector's work heavy; inferred). No floor of noise is on record for this kind of start, and the twin's
+half width, 1.3% on the live shape and 8.1% on the other, is the noise of this run. Another runner took 3.6 s for the step
+on the live shape and showed +42.0 ms [26.9, 57.1] in the same measurement.
+
+Flat documents measured 1.2 to 1.5 times the bytes of their files, so the history cache weighs a
+document at 2 bytes of heap for each byte of file. The 64 MB bound stays and lets the cache
+hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
+resident memory is mostly not documents: on the live-shape board the process held 311.0 MB
+after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (item `board-heap-study`),
+the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
+has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
+of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 12 ms (heap 56.6 MB in use after a
+full collection, rss 264.7 MB)`); the live check of the heap reads it. The live board's heap also holds what its
+33,000 commits of history add to the startup cache's contents, which the synthetic boards (one commit) do not.
+
+*Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
+checked again in 95 ms on the live shape, JSON 21.3 MB) would cut the 2.6 s the start spends reading
+documents to about 0.2 s, but it is a second copy of the board and a cache that can differ from the
+working tree, and a start of 3.3 s already meets the 5 s from a restart to the first answered request that
+item `fast-restart` set; the copy does not
+exclude it. js-yaml 4.1.0 parsed the live shape in 465 ms against 2,508 ms and gave the same
+documents (0 differences over 3,992), but kept 54.5 MB against 57.7 MB, so the copy is needed
+with it, and the library would be replaced for the reader while the writer stays. Changing only
+the weight of the cache releases nothing. A cache of source bytes as Buffers (0.7 MB of heap, 48.7 MB
+outside it) parses again on each hit (2,286 ms for the whole board) and does not reach the store's
+own documents.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
@@ -614,8 +703,9 @@ derivation design that replaced this:
   with the owner 4,000 commits behind, the heap left after a full collection grows 22 KB a write over 300 writes
   and 5.7 KB over 1,500 (peak RSS 529 and 726 MB): from these two, about 6 MB once, the kept walk of the unread
   list, and under 2 KB a write after it, the unread list itself growing by a stop a write; in the pairs below this
-  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
-  (at most 3 of 51; each of the two chains keeps all 51). A prospective state inside a
+  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what chains of 50 and of 200 writes leave reachable
+  after full collections (at most 5 of 51 and of 201: the cache's two and up to three more seen on hosted runners, a few and
+  not in proportion to the chain; a chain that keeps every state keeps all of them). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
@@ -3826,8 +3916,8 @@ it is done, but the work it waits for is often only the item's merge: an enginee
 about to rebase on it, goes on at the merge, while the item stays open until its later steps (the deploy, the live
 check) are done, and `item-done` is not pushed before. So a merge row turning done (Watching GitHub, Merge rows;
 marked by the look at GitHub or by a session by hand) is pushed as `dep-merged`, once for the change that did it
-(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a row open before and done
-after, with the pull requests that counted for it before; a dropped row, a row naming no counted pull request
+(`newlyMerged` in `src/merges.ts`, read from the item before and after the write: a merge row (Watching GitHub, Merge rows) open before and done
+after, with the pull requests that counted for it before; a dropped row, a row that is no merge row, a row naming no counted pull request
 and an item written new push nothing), to each open, unpaused item with a *shared* row on the item (`dependents`
 without `own`), one push for each. A session holding the waiter gets it; when nobody does it goes to the
 architect, who starts or hands on the work nobody holds, and an item that is
@@ -4219,13 +4309,26 @@ request that no item names is found by the architect's patrol. Both were pushed 
 holds the time of the last look only; an older file also holds the repositories looked at and the
 pull requests of the first look, which the pushes about pull requests used and nothing reads now.
 
-**Merge rows.** A merge row is a step of an open item that is not done, not
-dropped, not an acceptance step and says 合入 (`isOpenMergeStep`), and that names
-a pull request, in the forms above, which the item's own 改动 section names as
-well (`mergeRowPulls` in `src/query.ts`). Those are the pull requests that count
-for the row. A line that waits for another pull request to merge names it too,
-and that one is not the item's own, so it does not count and a line naming only
-such pull requests is no merge row. When GitHub reports every pull request that
+**Merge rows.** A merge row is the plan's stage row `merge` or a round of it
+(`merge-2` and up; `stageOf` in `src/rules.ts`), or, in a plan with no such row,
+a step whose text starts with 合入 but not 合入后 (`isMergeRow`); an acceptance
+step is never one. The board reads the id, not the word anywhere in the text,
+because steps that only mention a merge say 合入 and name its pull request too:
+the online check ("线上验证：合入后……", or one that starts with 合入后) and a step
+that waits for another pull request. Read as merge rows, they were marked and
+pushed before the merge they stood for (10-19: an online check whose first half
+was done and whose second half was open was marked done when the pull request it
+names merged, and a plan rewrite that marked such a step done pushed `dep-merged`
+for a pull request that was still open). The start of the text is the fallback
+for plans written before the stage ids: the item-writing rule says a merge row
+holds only 合入 and the pull request that delivers the item, so the start is
+enough, and a row that waits (等 … 合入后合入 …) is none.
+An open merge row (`isOpenMergeStep`), not done and not dropped, counts the pull
+requests it names, in the forms above, which the item's own 改动 section names
+as well (`mergeRowPulls` in `src/query.ts`). A line that waits for another pull
+request to merge names it too, and that one is not the item's own, so it does
+not count and a line naming only such pull requests is no merge row. When GitHub
+reports every pull request that
 counts for the row merged (`mergeRowDone`), the board marks the row done and
 appends a log entry naming them and their merge times, in one commit, as the
 item's project and session 看板. That write (`markMerged`, an operation without
@@ -5666,6 +5769,32 @@ run (the table has about 54 for each). The total of the run was 58, 52, 52, 53 a
 seconds, the last job in each being a part of the n-key lane (`witnesses` or `time-writing`,
 ended 52 to 59 seconds after the start), so the test shards are no longer what ends a run
 last.
+
+**With the table brought up to date** (hosted runners, 19 October 2026): the cost table had
+gone stale. `runner-table.test.ts` was recorded at 15.6 seconds and took 24 to 36 (it ran
+one scenario of about 1.2 seconds 17 times, once on the current page and 16 times on a page with
+one thing spoiled), and 14 other files differed from their measured seconds by 5 or more, so
+the shards' file seconds ranged from 31 to 75 against an ideal 55 and the slowest shard's
+`tests` step was 29 to 35 seconds in six runs before the change (35, 35, 34, 32, 31, 29). The file became a module with the scenario
+(`test/dom/runner-table.ts`) and four test files, as the agent list scenarios are, and the table
+was rewritten from the mean of seven runs of the test shards (three full CIs before the split and four runs after it, so the four new files have four
+samples each; the shard counts differ, but in each a file runs three at a time). In the four runs of 20 shards read first (runs 39251491131, 39252111546, 39251144264 and
+39254317071, 80 shard samples) a shard's
+step is about 0.32 times the sum of its files' seconds plus 5.5 (residual standard deviation
+2.7 seconds), and in only 8 of the 80 samples was a file of the shard longer than the step, so
+the sum decides a shard, not its largest file. With the new table the sums of the 20 shards come
+out level: one run took `tests` 13 to 29 seconds (mean 23.4, against 22.6 to 23.6 before) and
+its last shard ended 44 seconds after the start of the run; 24 shards took 14 to 27 (mean 20.7,
+last end 44) and 28 shards 9 to 27 (mean 17.8, last end 40), one run each, where the model
+predicts the means 23.4, 20.4 and 18.3. The count stays 20: in six runs before the change the n-key jobs took 25 to 44
+seconds and the last of them ended 42 to 51 seconds after the start of the run (the last test shard 45 to 61), so more
+shards would not shorten the run much, and every four shards add four jobs to a run against the 60 concurrent jobs of the
+organization's plan. Two settings that looked cheap gave nothing on whole shards: a temp directory in memory (`TMPDIR=/dev/shm`, mean
+`tests` 22.8 seconds against 23.2) and git without fsync (no difference on one file). Counters put in the shared set-up of the DOM tests
+for one run of the 20 shards (run 39255686754, removed again) found 34 of the 35 DOM files (the one missing takes 2.5 seconds); the 35 take 554 of the 1,086 seconds of file time of that run (51%); seeding a board is 7.5% of all file seconds
+(79 boards), opening a page 13.7% (189 pages, bundling the page included, 1.5%), so the page checks themselves are about 30% and the other test
+files 49%. Copying a seeded board would save about 6% at most; opening a page has no such cheap cut. Bringing the slowest of 100 samples to 20
+seconds needs the mean near 13, the sum per shard near 23 seconds, which is a cut of the total by about 55%, or a faster runner.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
