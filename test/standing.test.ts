@@ -142,11 +142,12 @@ test("a standing item's row for another standing item makes the target neither a
     // The same shape with an ordinary target, the control: that row really waits.
     waiter2: standing({ plan: [shared("plain")] }), plain: { paused },
   });
-  const r = rules(s), kinds = (id: string) => [...r.checks(id), ...r.refusals(id)].map(c => c.id);
-  assert.deepEqual(kinds("target"), [], "no check, and no refusal for the write that builds the row");
+  const r = rules(s), kinds = (id: string) => r.checks(id).map(c => c.id);
+  assert.deepEqual(kinds("target"), []);
+  assert.deepEqual(r.refusals("target"), [], "so the write that builds the row is not refused");
   assert.deepEqual(kinds("waiter"), []);
   assert.deepEqual(kinds("plain").sort(), ["pause-conflict", "unowned-but-awaited"], "the control raises both, so the checks are alive");
-  assert.equal(r.checks("target").length, 0);
+  assert.deepEqual(r.refusals("plain").map(c => c.id), ["unowned-but-awaited"]);
 });
 
 test("an unpaused standing item passes the need to the items it owns while it is never startable itself, and a pause takes the need away", () => {
