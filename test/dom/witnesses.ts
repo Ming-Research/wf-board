@@ -12,7 +12,7 @@ import { startBoard, openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { DomPage } from "./page.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrap, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrapCard, checkWrapCursor, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
 
 const app = (edit: string, find: string, replace: string): Revert => ({ file: "web/app.ts", edit, find, replace });
 // `fresh`: the witness writes to the board, so it gets a board of its own and the others see none of its writes.
@@ -265,13 +265,13 @@ const WITNESSES: Witness[] = [
     bug: "the right arrow chose the card nearest the top of the screen instead of the next one in the list (owner, 2026-10-14)",
     // The old step body, back where the new one stands.
     reverts: [app("the arrows step by the list's rows", ARROW_NEW, ARROW_OLD)], family: "wrap-card",
-    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+    run: async (bp, b) => checkWrapCard(bp, await oracle(b.store)),
   },
   {
     bug: "n and its reverse went on from the row last clicked or landed on, not from the row the j and k cursor stood on (owner, 2026-10-14)",
     // The start of n is the selected item alone, which j and k leave as it was.
     reverts: [app("n starts from the selected item, not the cursor", HOME_NEW, HOME_OLD)], family: "wrap-cursor",
-    run: async (bp, b) => checkWrap(bp, await oracle(b.store)),
+    run: async (bp, b) => checkWrapCursor(bp, await oracle(b.store)),
   },
   {
     bug: "an open card's old background started folded although the reader decides from it (owner, 2026-10-16)",

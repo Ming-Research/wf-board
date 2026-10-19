@@ -550,63 +550,71 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
   return v;
 }
 
-/** n and the right arrow wrap around the list as it stands. With the bottom row of the left tree selected, n lands on the first row of
- * the tree holding unread content (or on the bottom row itself when that holds some), and a lap of n visits every such row once, in tree
- * order; the right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
- * nearest the top of the screen. With the cursor moved to an end of the list by j or k instead of a click, n and N start from the cursor.
- * The rows are read once n has walked over every item holding unread content, so a page kept open through writes is judged on the
- * same rows as a freshly loaded one. Families: wrap-n, wrap-card, wrap-cursor. */
-export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
-  // A write can leave an item holding unread content that the tree has not drawn (a closed item, which a freshly loaded page draws
-  // when it holds some); n draws it when it lands there. So n walks over every such item first, and the rows are read after.
-  // The page should draw them without n (live-tree-fresh-ended); when that is fixed, this walk goes and the rows are read at once.
+/** The rows of the left tree once n has walked over every item holding unread content that the tree has not drawn. A write can leave
+ * such an item (a closed one, which a freshly loaded page draws when it holds some, live-tree-fresh-ended); n draws it when it lands there.
+ * So a page kept open through writes is judged on the same rows as a freshly loaded one. When that item is fixed, the walk goes. */
+async function wrapRows(bp: DomPage, o: Oracle): Promise<string[]> {
   await bp.settle();
   bp.blur();
-  const reached = new Set<string>();
-  for (let k = 0; k < 4 * o.docs.size + 4 && [...o.fresh].some(id => !reached.has(id)); k++) {
-    bp.key("n"); await bp.settle();
-    const sel = bp.selected();
-    if (sel) reached.add(sel);
-  }
-  const v: string[] = [], rows = bp.treeRows();
+  const undrawn = () => { const rows = new Set(bp.treeRows()); return [...o.fresh].some(id => !rows.has(id)); };
+  for (let k = 0; k < 4 * o.docs.size + 4 && undrawn(); k++) { bp.key("n"); await bp.settle(); }
+  return bp.treeRows();
+}
+
+/** With the bottom row of the left tree selected, n lands on the first row of the tree holding unread content (or on the bottom row
+ * itself when that holds some), and a lap of n visits every such row once, in tree order. Family: wrap-n. */
+export async function checkWrapN(bp: DomPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], rows = await wrapRows(bp, o);
   if (!rows.length) return v;
   const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
-  if (freshRows.length) {
-    const expected = o.fresh.has(last) ? last : freshRows[0]!;
-    for (let lap = 0; lap < 2; lap++) {
-      await bp.select(last); bp.blur(); bp.key("n"); await bp.settle();
-      const sel = bp.selected();
-      if (sel !== expected) v.push(`wrap-n: n from the bottom row ${last} landed on ${sel}, expected ${expected}`);
-    }
-    // A lap of n from the bottom: every row holding unread content once, in tree order, starting with the first.
-    await bp.select(last); bp.blur();
-    const seen: string[] = [];
-    for (let k = 0; k < 6 * o.docs.size + 6 && seen.length < freshRows.length; k++) {
-      bp.key("n"); await bp.settle();
-      const sel = bp.selected();
-      if (sel && seen.at(-1) !== sel) seen.push(sel);
-    }
-    const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
-    if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
+  if (!freshRows.length) return v;
+  const expected = o.fresh.has(last) ? last : freshRows[0]!;
+  for (let lap = 0; lap < 2; lap++) {
+    await bp.select(last); bp.blur(); bp.key("n"); await bp.settle();
+    const sel = bp.selected();
+    if (sel !== expected) v.push(`wrap-n: n from the bottom row ${last} landed on ${sel}, expected ${expected}`);
   }
-  // j and k move the cursor over the rows without selecting them, so the row clicked or landed on last is not the cursor's. n goes
-  // from the cursor's row all the same: from the bottom row wrapping to the first row holding unread content, and N from the top row
-  // wrapping to the last such row. Family: wrap-cursor.
-  if (freshRows.length > 1) {
-    const middle = freshRows[Math.floor(freshRows.length / 2)]!, cursor = () => bp.$("#areas .item.cur")?.id.slice(3) ?? null;
-    const carry = async (to: string, key: "j" | "k") => {
-      for (let k = 0; k < 2 * rows.length + 2 && cursor() !== to; k++) { bp.key(key); await bp.settle(); }
-      return cursor() === to;
-    };
-    // The middle row is clicked and n lands on it; j or k then carries the cursor away from it to an end of the list.
-    for (const [from, key, end, expected] of [["n", "j", last, o.fresh.has(last) ? last : freshRows[0]!], ["N", "k", rows[0]!, freshRows.at(-1)!]] as const) {
-      await bp.select(middle); bp.blur(); bp.key("n"); await bp.settle();
-      if (!await carry(end, key)) { v.push(`wrap-cursor: ${key} did not carry the cursor from ${middle} to ${end}, it stands on ${cursor()}`); continue; }
-      bp.key(from); await bp.settle();
-      const sel = bp.selected();
-      if (sel !== expected) v.push(`wrap-cursor: ${from} with the cursor moved by ${key} to ${end} landed on ${sel}, expected ${expected}`);
-    }
+  // A lap of n from the bottom: every row holding unread content once, in tree order, starting with the first.
+  await bp.select(last); bp.blur();
+  const seen: string[] = [];
+  for (let k = 0; k < 6 * o.docs.size + 6 && seen.length < freshRows.length; k++) {
+    bp.key("n"); await bp.settle();
+    const sel = bp.selected();
+    if (sel && seen.at(-1) !== sel) seen.push(sel);
   }
+  const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
+  if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
+  return v;
+}
+
+/** j and k move the cursor over the rows without selecting them, so the row clicked or landed on last is not the cursor's. n goes from
+ * the cursor's row all the same: from the bottom row wrapping to the first row holding unread content, and N from the top row wrapping
+ * to the last such row. Family: wrap-cursor. */
+export async function checkWrapCursor(bp: DomPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], rows = await wrapRows(bp, o);
+  if (!rows.length) return v;
+  const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
+  if (freshRows.length < 2) return v;
+  const middle = freshRows[Math.floor(freshRows.length / 2)]!, cursor = () => bp.$("#areas .item.cur")?.id.slice(3) ?? null;
+  const carry = async (to: string, key: "j" | "k") => {
+    for (let k = 0; k < 2 * rows.length + 2 && cursor() !== to; k++) { bp.key(key); await bp.settle(); }
+    return cursor() === to;
+  };
+  // The middle row is clicked and n lands on it; j or k then carries the cursor away from it to an end of the list.
+  for (const [from, key, end, expected] of [["n", "j", last, o.fresh.has(last) ? last : freshRows[0]!], ["N", "k", rows[0]!, freshRows.at(-1)!]] as const) {
+    await bp.select(middle); bp.blur(); bp.key("n"); await bp.settle();
+    if (!await carry(end, key)) { v.push(`wrap-cursor: ${key} did not carry the cursor from ${middle} to ${end}, it stands on ${cursor()}`); continue; }
+    bp.key(from); await bp.settle();
+    const sel = bp.selected();
+    if (sel !== expected) v.push(`wrap-cursor: ${from} with the cursor moved by ${key} to ${end} landed on ${sel}, expected ${expected}`);
+  }
+  return v;
+}
+
+/** The right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
+ * nearest the top of the screen. Family: wrap-card. */
+export async function checkWrapCard(bp: DomPage, o: Oracle): Promise<string[]> {
+  const v: string[] = [], rows = bp.treeRows();
   // Select the last row holding a waiting card (and no ask): the right arrow must go to its own card.
   const waiting = (id: string) => o.r.cardsOf(id).filter(k => o.r.cardWaiting(k)).length > 0;
   const target = rows.filter(id => o.s.items[id] && waiting(id) && !o.r.askPending(id)).at(-1);
@@ -617,6 +625,12 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
     if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
   }
   return v;
+}
+
+/** n and the arrows wrap around the list as it stands: from its bottom row and from the cursor j and k move. Families: wrap-n,
+ * wrap-cursor, wrap-card. */
+export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
+  return [...await checkWrapN(bp, o), ...await checkWrapCursor(bp, o), ...await checkWrapCard(bp, o)];
 }
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));

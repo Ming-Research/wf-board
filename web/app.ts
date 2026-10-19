@@ -821,10 +821,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const row = boardPlace().get(home) ?? -1;
     return row < 0 ? null : row;
   }
+  // A stop the list places (its item has a row); the stops it does not place come last and take no part in the wrap from a row.
+  const placed = (st: FreshStop) => st.at[0]! < Number.MAX_SAFE_INTEGER;
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
     const row = selectionRow();
-    if (row !== null) { const k = all.findIndex(st => st.at[0]! >= row && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh(k < 0 ? 0 : k); return; }
+    if (row !== null) { const k = all.findIndex(st => placed(st) && st.at[0]! >= row); goFresh(k < 0 ? 0 : k); return; }
     const at = shownPlace();
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
@@ -839,7 +841,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
     const row = selectionRow();
-    if (row !== null) { let k = -1; all.forEach((st, i) => { if (st.at[0]! < row) k = i; }); goFresh(k < 0 ? all.length - 1 : k); return; }
+    if (row !== null) { let k = -1, bottom = -1; all.forEach((st, i) => { if (placed(st)) bottom = i; if (st.at[0]! < row) k = i; }); goFresh(k >= 0 ? k : bottom >= 0 ? bottom : all.length - 1); return; }
     const at = shownPlace();
     if (at >= 0) { goFresh(at - 1); return; }
     const before = shownAt ? freshIndex().before(shownAt) : -1;

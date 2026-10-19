@@ -2600,10 +2600,12 @@ Where `n` and `N` start: from the item the selection belongs to, which is the ro
 j/k cursor stands on (j and k move it without selecting, so the detail stays) or, with
 no cursor, the selected item. When that item is not the one the last stop belongs to,
 `n` goes to the first stop at or below its row in the list as shown, `N` to the last stop
-above it, and both wrap around at the ends of the list; otherwise they go on from the
-stop last shown. The right and left arrows start from the same row (owner, 2026-10-14).
-Taking the start from the selected item alone, which j and k leave as it was, sent `n`
-from a cursor on the bottom row to wherever the last click or landing had been.
+above it, and both wrap around at the ends of the list, to the first and to the last stop
+the list places (a stop whose item has no row in the list never takes part in the wrap);
+otherwise they go on from the stop last shown. The right and left arrows start from the
+same row (owner, 2026-10-14). Taking the start from the selected item alone, which j and
+k leave as it was, sent `n` from a cursor on the bottom row to wherever the last click or
+landing had been.
 
 `m` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.

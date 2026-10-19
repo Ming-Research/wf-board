@@ -902,6 +902,28 @@ test("after the owner selects another item in the tree, n goes to the first new 
   p.key("N"); await p.flush(); assert.deepEqual(cur(),["area"],"its reverse starts from the cursor moved by k");
 });
 
+// N from the top of the list wraps to the last stop the list places, as n from the bottom wraps to the first one: a stop whose item the
+// list has no row for comes last in the stop order and takes no part in the wrap from a row.
+async function wrapBackFromTop(reverts: Revert[] = []) {
+  const s = snapshot(), [a,b] = ["a","b"].map(x => x.repeat(40)) as [string,string];
+  s.items.plain = {title:"Plain",group:"Project",status:"todo",updated:at,rev:1,deps:[],links:[],log:[]};
+  const doc = (id:string) => ({kind:"item" as const,id,summary:"head changed",pieces:{progress:0,reply:0,other:1}});
+  // Page order: area, its child, then plain; the last stop is an item the board no longer has, which the list cannot place.
+  const p = await page(s,[{id:a,commits:[a],author:"Session A",at,docs:[doc("plain"),doc("child"),doc("gone")]},{id:b,commits:[b],author:"Session B",at,docs:[doc("area")]}],null,undefined,{reverts});
+  await wideCaret(p).click(); await p.flush();
+  const cur = () => ["area","child","plain"].filter(id => item(p,id).className.split(" ").includes("cur"));
+  p.key("n"); await p.flush(); p.key("n"); await p.flush(); assert.deepEqual(cur(),["child"],"setup: n went to the second stop");
+  await selectWide(p,"area"); p.key("N"); await p.flush();
+  assert.deepEqual(cur(),["plain"],"wrap-back: N from the top row did not wrap to the last stop the list places");
+}
+test("N from the top of the list wraps to the last new stop the list places, not to one it has no row for", () => wrapBackFromTop());
+test("N from the top of the list is reported by a page that wraps to the last stop whether the list places it or not", async () => {
+  await assert.rejects(wrapBackFromTop([{ file: "web/app.ts", edit: "N wraps to the last stop of all", find: "goFresh(k >= 0 ? k : bottom >= 0 ? bottom : all.length - 1); return; }", replace: "goFresh(k < 0 ? all.length - 1 : k); return; }" }]), (error: unknown) => {
+    assert.match((error as Error).message, /^wrap-back:/, "the scenario failed on the spoiled page, but not with the family of the fix");
+    return true;
+  });
+});
+
 test("shared plan rows are one line: no owner or origin line under them", async () => {
   const s=nativeSnapshot(); s.board.projects.push({name:"Other project"});
   s.items.sib={...s.items.child!,title:"Sibling",plan:planWork([planStep("work")])}; s.items.area!.plan=planWork([ownedRow("child"),ownedRow("sib")]);
