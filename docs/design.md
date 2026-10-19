@@ -741,7 +741,8 @@ log:
   a schema on read and write.
 - `rev` counts writes to the file. A write that replaces content names the
   `rev` it read. For `update_item` it stands when that is the current `rev` or
-  when none of the fields it replaces (`title`, `head`, `links`, `data`, `order`) differs
+  when none of the fields it replaces (`title`, `head`, `links`, `data`, `order`; a head changed in
+  parts replaces `head`, section 6, Changing things) differs
   between the version `rev` names, read back from the history, and the current one;
   the answer then ends with a `note:` saying what changed meanwhile (`+1 log, plan
   changed`). Otherwise, or when the history cannot be read back within the request's
@@ -2641,7 +2642,7 @@ authors `总管` and `PM` is refused by every tool.
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes no other argument |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
+| `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
@@ -2657,6 +2658,38 @@ authors `总管` and `PM` is refused by every tool.
 | `set_term(term, definition)` | Adds or replaces a term in the author's own glossary | Author is a configured project; term one line without surrounding spaces; definition nonempty. The description asks for words the project coined and uses repeatedly, not industry-standard terms, never in place of describing the phenomenon in plain words |
 | `delete_term(term)` | Removes a term from the author's own glossary | The term is in it |
 | `send_message(to, text, item?)` | Sends a message from the caller's session (section 8, Messages) | A session name; `to` the architect's session, a session with an open dispatch, or a long-lived credential's session, else refused naming those that work; `text` one line of at most 150 characters, refused, never cut, when longer; `item` exists |
+
+**A head changed in parts.** A writer that changes a sentence or a section gives `sections`, `replace` or
+both instead of the whole `head`, and does not read the head back to send it again. In the eleven architect sessions before
+this change 583 whole-head rewrites were made (counted by the architect from its session records), and the architect wrote a
+script that replaced exact texts and read the head back to check, which it ran more than a hundred times; in one day it made 75
+changes to seven rule blocks that way. Each element of `sections` is `{title, text}`: the title as `context` lists it (`开头` for the
+text before the first title) and the whole new section, its title line first and no other title line (`splitHead` tells the lines
+that are titles, so a bold line inside a fenced block is none). It replaces the old section from its title line to the next
+section's, and the blank lines that ended the old section end the new one, so the other sections stay character for
+character. Each element of `replace` is `{old, new}`: `old` must occur exactly once in the head (places that overlap each other count as
+separate places), and `new` may be empty, which deletes the text. Every edit is located in the head as the write queue holds it, never in the
+result of another edit, and no two edits may change the same text, so the order they are written in changes nothing (two texts that swap
+places do swap); all are made in one commit, the `rev` rises by one and the log gets the one line `改了 head：<reason>`, or none is:
+the first edit that does not fit, a text found 0 or 2 or more times, a title that is no section or the title of several, a new section that is not
+exactly that section, or two edits that change the same text, refuses the call and is named by its place in it (`replace[1].old: "…"
+occurs 2 times in the head (lines 4, 9); add words around it so that it occurs exactly once`), and nothing is written. A call that would leave the head
+blank, a blank `old` and an empty list are refused, and every new text is checked for the line a cut `context` answer writes, as a whole head is
+(A summary is not a head, above); the refusal is in the words of the edit (`replace[1].new: it holds the line …`) and sends the writer to
+`context` with `section: "<title>"`, not back to reading the whole head. An edit may not change whether a fenced block is open at its
+end: a fence line (``` or ~~~) that it adds or removes without its partner would turn every title below it into code, so `context` could
+not find those sections and the page would draw them as code, and a new section that is one section when cut out alone (`splitHead`
+reads only it) would pass a check on the text alone; the check reads the fences of the head before and of the result at the end of
+every edit (`fencedBefore`) and refuses the first edit where they differ (`sections[0].text: it opens a fenced block … that it does
+not close`). The ends of the new text are cut with `trimEnd`, since a regular expression for trailing white space is quadratic on a
+long run of it (measured: four times as long for twice the run) and the write queue is one. The pattern that read the title of a `#` heading was quadratic on such a run too, and `splitHead` runs it on the new text and `context` runs it on every head; it is now a function with the same results (checked against the old pattern on lines with a carriage return or line separator inside, which a dot does not match) that takes linear time. The `rev` rule is that of a whole head: the write stands on a `rev` that is behind when the head did not change since, and is
+refused with the changes when it did, even if the text it replaces is still there once; a revision of each section, with which two writers
+could change two sections at once, belongs to storing a head by section, which this does not decide. The answer to the write has, after its
+first line and `note`, the changes in head order: for each, its place (`replace[2] in 做法 · line 12`, `sections[0] "做法" · line 12–15`, the line
+numbers those of the head before the write) and the lines before and after it, marked `-` and `+`, at most three lines of each side and
+the count of the rest, a long line cut to the change and 40 characters on each side, a deletion of whole lines as `+ (deleted)`; at most 30 changes
+are shown and the rest counted. A write that changes nothing says `head unchanged`. Tests: `test/head-edit.test.ts` (locating, checking and showing),
+`test/head-edit-write.test.ts` (the write, `rev`, the credential), `test/lean.test.ts` (the tool's answer and its table).
 
 ## 7. The page
 
