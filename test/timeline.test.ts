@@ -14,9 +14,10 @@ import { createMcpServer } from "../src/mcp.ts";
 import { applyActivityDelta } from "../src/rules.ts";
 import type { Item, RunnerState, StateStart } from "../src/model.ts";
 import {
-  STATE_STARTS_MAX, TIMELINE_AGENTS, TIMELINE_ROWS, LONG_SEGMENT_MS, drawLength, endOf, lineOf, lineOfAgent, linesOfItem, longestWaits, startOfReport, timelineText, withStateStart,
+  STATE_STARTS_MAX, TIMELINE_AGENTS, TIMELINE_CHARS, LONG_SEGMENT_MS, SEGMENT_TEXT, clockText, drawLength, endOf, lineOf, lineOfAgent, lineOfDispatch, linesOfItem, listedAgents, longestWaits, startOfReport, timelineText, totalsText, withStateStart,
 } from "../src/timeline.ts";
 import type { AgentLine, LineInput } from "../src/timeline.ts";
+import { spanText } from "../src/whole-view.ts";
 import { board, asArchitect, author } from "./helpers.ts";
 
 const T0 = Date.parse("2026-10-19T08:00:00Z");
@@ -101,6 +102,51 @@ test("the end of the work ends a session still open there; a session that ended 
   assert.deepEqual([shape(own).at(-1), own.ended], [["ci", 60, 120], { at: ms(120), result: "一次通过" }]);
   const early = lineOf({ starts, dispatch: session(0), over, now: ms(100) });
   assert.deepEqual([early.to, early.ended], [ms(100), undefined], "an end of the work after now is not known yet");
+});
+
+test("a review and an architect's turn are one stretch of work from start to end, whatever the runner reported while they ran, and the engineer's line does not change", () => {
+  const starts = [start(0, "running"), start(30, "ci"), start(60, "ask", { to: "architect" }), start(90, "running")];
+  const review = lineOf({ starts, dispatch: session(40, 80, { role: "审查", agentId: "r1" }), now: ms(200) });
+  assert.deepEqual(shape(review), [["work", 40, 80]], "the states of the item, which are the engineer's, are not the review's");
+  assert.deepEqual([review.totals.work / 60_000, review.totals.ci, review.totals.architect, review.ended?.at], [40, 0, 0, ms(80)]);
+  const turn = lineOf({ starts, dispatch: session(65, 70, { role: "架构师", agentId: "a1" }), now: ms(200) });
+  assert.deepEqual(shape(turn), [["work", 65, 70]], "an architect's turn is one answer, not a wait for the architect");
+  const none = lineOf({ starts: undefined, dispatch: session(0, 10, { role: "审查" }), pauses: [{ start: T(2), end: T(5) }], now: ms(20) });
+  assert.deepEqual(shape(none), [["work", 0, 10]], "a review needs no report of the runner to have a line, and a pause does not cut it");
+  assert.deepEqual(shape(lineOf({ starts, dispatch: session(120, undefined, { role: "审查" }), now: ms(200) })), [["work", 120, 200]], "a review still open runs to now");
+  assert.deepEqual(shape(lineOf({ starts, dispatch: session(0), now: ms(200) })), [["work", 0, 30], ["ci", 30, 60], ["architect", 60, 90], ["work", 90, 200]], "the engineer's line has all the states");
+});
+
+const dispatchesOf = (sessions: object[]) => sessions.map(x => ({ model: "m", level: 2, ...x })) as unknown as Item["dispatches"];
+
+test("a session with no finish ends where the next of its role on the item began, a session of another role does not end it, and the end of the work ends it if that came first", () => {
+  const sessions = dispatchesOf([
+    { agentId: "e1", agent: "dead", role: "工程师", started: T(0) },
+    { agentId: "r1", agent: "rev", role: "审查", started: T(50), finish: { ended: T(70), result: "一次通过" } },
+    { agentId: "e2", agent: "second", role: "工程师", started: T(100) },
+  ]);
+  const states = { i: [start(0, "running"), start(20, "ci"), start(100, "running"), start(130, "ask", { to: "owner", cards: ["k"] })] };
+  const withPlan = (plan: Item["plan"]) => ({ items: { i: item({ dispatches: sessions, plan }) }, activity: { writes: [], items: {}, states } });
+  const wip = { statusOf: () => "wip" as const }, s = withPlan([]);
+  const [dead, rev, second] = linesOfItem(s, wip, "i", ms(400));
+  assert.deepEqual(shape(dead!), [["work", 0, 20], ["ci", 20, 100]], "the dead session's wait stops where the next engineer began, not where the review did, and it takes no state of the next");
+  assert.deepEqual(dead!.ended, { at: ms(100), result: "后一次派活开始了，这次没有收尾记录" });
+  assert.deepEqual(shape(rev!), [["work", 50, 70]]);
+  assert.deepEqual([shape(second!), second!.ended], [[["work", 100, 130], ["owner", 130, 400]], undefined], "the next session is still running and owns the later states");
+  const names = (lines: Array<{ line: AgentLine }>) => lines.map(x => x.line.agent);
+  const listed = listedAgents(s, wip, ms(400));
+  assert.deepEqual([names(listed.running), names(listed.recent)], [["second"], ["dead", "rev"]], "the dead one is no longer running; the ones that ended are newest first, whatever ended them");
+  assert.deepEqual(names(listedAgents(s, wip, ms(100 + 24 * 60 + 1)).recent), [], "an end more than 24 hours back is not listed");
+  assert.deepEqual(lineOfAgent(s, wip, "i", "e1", ms(400))!.ended?.at, ms(100));
+  // The work over at 250, after the next session began: it ends that one, and the dead one still ended at 100.
+  const done = { statusOf: () => "done" as const }, over = withPlan([{ id: "w", text: "work", state: "done", doneAt: T(250) }] as unknown as Item["plan"]);
+  const after = listedAgents(over, done, ms(400));
+  assert.deepEqual([names(after.running), names(after.recent)], [[], ["second", "dead", "rev"]], "a session ended by the end of the work is listed as one that ended");
+  assert.deepEqual(after.recent[0]!.line.ended, { at: ms(250), result: "活做完了" });
+  // The work over at 90, before the next session began: the dead session ends there, and the next has nothing of its own after that.
+  const early = withPlan([{ id: "w", text: "work", state: "done", doneAt: T(90) }] as unknown as Item["plan"]);
+  assert.deepEqual(lineOfDispatch(early, done, "i", early.items.i.dispatches![0]!, ms(400)).ended, { at: ms(90), result: "活做完了" });
+  assert.equal(lineOfDispatch(early, done, "i", early.items.i.dispatches![2]!, ms(400)).segments.length, 0, "a session that began after the work was over has no line");
 });
 
 // --- the index ----------------------------------------------------------------------------------------------------------
@@ -198,7 +244,7 @@ test("an item has a line for each agent it went through, oldest first, read from
   assert.deepEqual(lines.map(l => [l.agent, l.role]), [["first", "工程师"], ["second", "审查"]], "the oldest first; a review is an agent too; the session before the runner has no line");
   assert.deepEqual(shape(lines[0]!), [["work", 0, 20], ["paused", 20, 30], ["work", 30, 60], ["ci", 60, 100]], "the first session ends with its dispatch");
   assert.deepEqual(lines[0]!.ended, { at: ms(100), result: "返工后通过" });
-  assert.deepEqual(shape(lines[1]!), [["work", 110, 120], ["closing", 120, 125]], "the second is still open when the work ends, and ends with it");
+  assert.deepEqual(shape(lines[1]!), [["work", 110, 125]], "the review is work from its start; it is still open when the work ends, and ends with it");
   assert.deepEqual(lines[1]!.ended, { at: ms(125), result: "活做完了" });
   assert.deepEqual(linesOfItem(s, { statusOf: () => "wip" }, "nobody", ms(900)), [], "an item the board does not have has no lines");
   assert.equal(lineOfAgent(s, { statusOf: () => "done" }, "i", "s1", ms(900))!.agent, "first");
@@ -234,7 +280,7 @@ test("the longest waits are the whole waits of the running agents, longest first
   assert.deepEqual(longestWaits([ended], 10).map(w => [(w.to - w.from) / 60_000, w.ongoing]), [[29, false]], "a wait that ended with its session does not go on");
 });
 
-test("the text of an item says each agent's span, its totals and each segment with what it waited for; a long line lists the newest and counts the rest", () => {
+test("the text of an item says each agent's span, its totals and each segment with what it waited for; a long answer folds the earliest segments and says how many", () => {
   const starts = [start(0, "running"), start(30, "ci"), start(90, "ask", { to: "owner", cards: ["k1", "k2"] }), start(200, "wait", { what: "执行程序重启", until: T(300) })];
   const text = timelineText("i", "一件活", [lineOf({ starts, dispatch: session(0), now: ms(400) })]);
   assert.equal(text, [
@@ -250,10 +296,21 @@ test("the text of an item says each agent's span, its totals and each segment wi
   assert.equal(over[1], "s（工程师，难度 2） · 共 40 分钟（10-19 08:00Z 起，结束于 10-19 08:40Z，一次通过）");
   assert.ok(!over.some(l => l.includes("还在这里")), "an agent that ended is not still anywhere");
   assert.match(timelineText("i", "一件活", []), /没有代理的线/);
-  const many = Array.from({ length: 80 }, (_, i) => start(i * 10, i % 2 ? "ci" : "running"));
-  const long = timelineText("i", "x", [lineOf({ starts: many, dispatch: session(0), now: ms(800) })]).split("\n");
-  assert.equal(long.filter(l => /^ {2}\d\d-\d\d /.test(l)).length, TIMELINE_ROWS, "the newest segments are listed");
-  assert.ok(long.some(l => l === `  … 前面还有 ${80 - TIMELINE_ROWS} 段没列出`), long.slice(0, 5).join("\n"));
+  // A long answer is folded from the earliest segment on, as few as bring it under the cap, and says how many.
+  const many = Array.from({ length: 300 }, (_, i) => start(i * 10, i % 2 ? "ci" : "running"));
+  const full = lineOf({ starts: many, dispatch: session(0), now: ms(3100) }), rows = timelineText("i", "x", [full]).split("\n");
+  assert.equal(full.segments.length, 300);
+  const listed = rows.filter(l => /^ {2}\d\d-\d\d /.test(l)), folded = 300 - listed.length;
+  assert.ok([...rows.join("\n")].length <= TIMELINE_CHARS && folded > 2 && folded < 300, `${[...rows.join("\n")].length} characters, ${folded} folded`);
+  assert.ok([...timelineText("i", "x", [lineOf({ starts: many.slice(0, 200), dispatch: session(0), now: ms(3100) })])].length <= TIMELINE_CHARS, "a line shorter than the whole is cut as well");
+  assert.match(rows[0]!, new RegExp(`（共 300 段，为了不超过 ${TIMELINE_CHARS} 字，最早的 ${folded} 段折起来了）$`), "the first line says how many of how many");
+  const sum = (kind: string) => full.segments.slice(0, folded).filter(seg => seg.kind === kind).reduce((n, seg) => n + seg.to - seg.from, 0);
+  assert.deepEqual(rows.filter(l => l.startsWith("  … 最早的")), [`  … 最早的 ${folded} 段折成一行：干活 ${spanText(sum("work"))} · 等 CI ${spanText(sum("ci"))}`], "the folded segments are one line of totals by kind");
+  const first = full.segments[folded]!, last = full.segments.at(-1)!;
+  assert.equal(listed[0], `  ${clockText(first.from)} · ${SEGMENT_TEXT[first.kind]} · ${spanText(first.to - first.from)}`, "the segments listed are the newest ones, from the first not folded");
+  assert.equal(listed.at(-1), `  ${clockText(last.from)} · ${SEGMENT_TEXT[last.kind]} · ${spanText(last.to - last.from)} · 还在这里`);
+  assert.ok(rows.includes(`合计：${totalsText(full)}`), "the totals still count the folded segments");
+  assert.ok(!timelineText("i", "x", [lineOf({ starts: many.slice(0, 20), dispatch: session(0), now: ms(300) })]).includes("折起来了"), "a short answer folds nothing");
   const crowd = Array.from({ length: TIMELINE_AGENTS + 2 }, (_, i) => lineOf({ starts: [start(i * 10, "running")], dispatch: session(i * 10, i * 10 + 5, { agentId: `s${i}`, agent: `a${i}` }), now: ms(900) }));
   const head = timelineText("i", "x", crowd).split("\n");
   assert.equal(head[0], `i · x · 经过 ${TIMELINE_AGENTS + 2} 个代理（前 2 个没列出）`);

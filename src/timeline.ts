@@ -149,14 +149,18 @@ function coalesced(segments: Segment[]): Segment[] {
   return out;
 }
 
+/** The role whose lines are cut from the item's state starts: the runner reports on the engineer's work, and the other roles have no waits. */
+const STATE_ROLE = "工程师";
 const zeroTotals = () => Object.fromEntries(SEGMENT_KINDS.map(k => [k, 0])) as Record<SegmentKind, number>;
 
 /**
- * The line of one agent at `now`: the session begins with a turn, so it is `work` until the first state the runner reports after its
+ * The line of one agent at `now`. An engineer's session begins with a turn, so it is `work` until the first state the runner reports after its
  * start; from there each reported state is a segment of the kind it makes, until the session's end (its dispatch finished, or the work
  * was over, else now). `paused` replaces the stretches the item was paused in (what it waited for then is not told). The time before
  * the session began and between two sessions is on no line. No segments when the runner reported nothing from the start of the session
- * (RUNNER_START_GRACE_MS before it) to its end: a session the runner did not run has no line.
+ * (RUNNER_START_GRACE_MS before it) to its end: a session the runner did not run has no line. The state starts are the engineer's: they are
+ * the item's, and a review or an architect's turn running beside the engineer must not take them, so such a session, which waits for
+ * nothing (one dispatch is one review or one answer), is `work` from its start to its end.
  */
 export function lineOf(input: LineInput): AgentLine {
   const d = input.dispatch, from = Date.parse(d.started), totals = zeroTotals();
@@ -165,9 +169,15 @@ export function lineOf(input: LineInput): AgentLine {
   const to = Math.max(from, finished ?? over?.at ?? input.now);
   const ended = finished !== undefined ? { at: finished, result: d.finish!.result } : over ? { at: Math.max(from, over.at), result: over.text } : undefined;
   const line: AgentLine = { agentId: d.agentId, agent: d.agent, role: d.role, level: d.level, from, to, segments: [], totals, ...(ended ? { ended } : {}) };
+  if (!(to > from)) return line;
+  if (d.role !== STATE_ROLE) {
+    line.segments = [{ kind: "work", from, to }];
+    totals.work = to - from;
+    return line;
+  }
   const at = (start: StateStart) => Date.parse(start.at);
   const starts = [...input.starts ?? []].sort((a, b) => at(a) - at(b));
-  if (!(to > from) || !starts.some(start => at(start) >= from - RUNNER_START_GRACE_MS && at(start) <= to)) return line;
+  if (!starts.some(start => at(start) >= from - RUNNER_START_GRACE_MS && at(start) <= to)) return line;
   const inside = starts.filter(start => at(start) > from && at(start) <= to);
   let segments: Segment[] = [{ kind: "work", from, to: inside[0] ? at(inside[0]) : to }];
   inside.forEach((start, i) => {
@@ -194,12 +204,23 @@ export function endOf(it: Item, r: Pick<Rules, "statusOf">, id: string): { kind:
 }
 
 type Board = Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] };
-/** The line of a dispatch of an item on the board, from the item's state starts, pause spans and end. */
-export function lineOfDispatch(s: Board, r: Pick<Rules, "statusOf">, id: string, dispatch: Dispatch, now: number): AgentLine {
-  const it = s.items[id]!, end = endOf(it, r, id);
-  return lineOf({ starts: s.activity?.states?.[id], dispatch, pauses: s.activity?.pauses?.[id], over: end && { at: end.at, text: end.kind === "done" ? "活做完了" : "活取消了" }, now });
+/** What ends a session that has no finish: the work being over, or the next session of the same role on the item, whichever came first. */
+function openEnd(it: Item, end: ReturnType<typeof endOf>, d: Dispatch): { at: number; text: string } | undefined {
+  const started = Date.parse(d.started);
+  const next = (it.dispatches ?? []).filter(x => x.role === d.role && Date.parse(x.started) > started).map(x => Date.parse(x.started)).sort((a, b) => a - b)[0];
+  const work = end && { at: end.at, text: end.kind === "done" ? "活做完了" : "活取消了" };
+  const replaced = next === undefined ? undefined : { at: next, text: "后一次派活开始了，这次没有收尾记录" };
+  return work && replaced ? (replaced.at < work.at ? replaced : work) : work ?? replaced;
 }
-/** The lines of the agents an item went through, oldest first; a session with no line (the runner reported nothing in it) is left out. */
+/**
+ * The line of a dispatch of an item on the board, from the item's state starts, pause spans and end. A session with no finish ends when the
+ * work is over or when the next session of its role on the item begins: it died without a finish, and must not run on over the sessions after it.
+ */
+export function lineOfDispatch(s: Board, r: Pick<Rules, "statusOf">, id: string, dispatch: Dispatch, now: number): AgentLine {
+  const it = s.items[id]!;
+  return lineOf({ starts: s.activity?.states?.[id], dispatch, pauses: s.activity?.pauses?.[id], over: dispatch.finish ? undefined : openEnd(it, endOf(it, r, id), dispatch), now });
+}
+/** The lines of the agents an item went through, oldest first; a session with no line (an engineer's the runner reported nothing in) is left out. */
 export function linesOfItem(s: Board, r: Pick<Rules, "statusOf">, id: string, now: number): AgentLine[] {
   const it = s.items[id];
   return (it?.dispatches ?? []).slice().sort((a, b) => Date.parse(a.started) - Date.parse(b.started)).map(d => lineOfDispatch(s, r, id, d, now)).filter(line => line.segments.length);
@@ -233,8 +254,8 @@ export function waitsFor(seg: Pick<Segment, "cards" | "items" | "what" | "until"
   return parts.filter(Boolean).join(" · ");
 }
 
-/** The most segments of one line the tool lists, and the most agents of one item; a longer line lists the newest and counts the rest. */
-export const TIMELINE_ROWS = 30, TIMELINE_AGENTS = 12;
+/** The most agents of one item the tool lists (the newest, the rest counted), and the most characters its answer for one item takes: past it the earliest segments are folded. */
+export const TIMELINE_AGENTS = 12, TIMELINE_CHARS = 6000;
 /** The default and the most rows of the longest-wait list. */
 export const LONGEST_DEFAULT = 10, LONGEST_MAX = 40;
 /** How far back the agents that have ended are listed, and how many of them. */
@@ -260,29 +281,70 @@ const whoText = (line: AgentLine): string => `${line.agent}（${line.role}，难
 export function totalsText(line: AgentLine): string {
   return SEGMENT_KINDS.filter(k => line.totals[k] > 0).map(k => `${SEGMENT_TEXT[k]} ${spanText(line.totals[k])}`).join(" · ");
 }
-function lineBlock(line: AgentLine): string[] {
+/** The time of some segments by kind, as the totals say it. */
+function kindsText(segments: readonly Segment[]): string {
+  const sums = new Map<SegmentKind, number>();
+  for (const seg of segments) sums.set(seg.kind, (sums.get(seg.kind) ?? 0) + seg.to - seg.from);
+  return SEGMENT_KINDS.filter(k => sums.has(k)).map(k => `${SEGMENT_TEXT[k]} ${spanText(sums.get(k)!)}`).join(" · ");
+}
+/** The block of one agent; its `folded` earliest segments are one line of totals instead of a line each. */
+function lineBlock(line: AgentLine, folded: number): string[] {
   const head = `${whoText(line)} · 共 ${spanText(line.to - line.from)}（${clockText(line.from)} 起，${line.ended ? `结束于 ${clockText(line.ended.at)}，${line.ended.result}` : "还在跑"}）`;
-  const rows = line.segments.slice(-TIMELINE_ROWS).map(seg => {
+  const rows = line.segments.slice(folded).map(seg => {
     const waits = waitsFor(seg);
     return `  ${clockText(seg.from)} · ${SEGMENT_TEXT[seg.kind]} · ${spanText(seg.to - seg.from)}${waits ? ` · ${waits}` : ""}${seg.to === line.to && !line.ended ? " · 还在这里" : ""}`;
   });
-  const more = line.segments.length > TIMELINE_ROWS ? [`  … 前面还有 ${line.segments.length - TIMELINE_ROWS} 段没列出`] : [];
-  return [head, `合计：${totalsText(line)}`, ...more, ...rows];
+  const fold = folded ? [`  … 最早的 ${folded} 段折成一行：${kindsText(line.segments.slice(0, folded))}`] : [];
+  return [head, `合计：${totalsText(line)}`, ...fold, ...rows];
 }
 
-/** The lines of the agents an item went through as the tool's text, newest TIMELINE_AGENTS of them, each with its newest TIMELINE_ROWS segments. */
+/**
+ * The lines of the agents an item went through as the tool's text, the newest TIMELINE_AGENTS of them, oldest first, a line for each segment.
+ * An answer longer than TIMELINE_CHARS folds the earliest segments, as few as bring it under, each agent's folded ones into one line of
+ * totals by kind, and says in its first line how many were folded of how many.
+ */
 export function timelineText(id: string, title: string, lines: readonly AgentLine[]): string {
   if (!lines.length) return `${id} · ${cut(title, 24)} · 执行程序没有在这件活的会话里报过状态，没有代理的线。`;
-  const shown = lines.slice(-TIMELINE_AGENTS), before = lines.length - shown.length;
-  return [`${id} · ${cut(title, 24)} · 经过 ${lines.length} 个代理${before ? `（前 ${before} 个没列出）` : ""}`, ...shown.flatMap(line => lineBlock(line))].join("\n");
+  const shown = lines.slice(-TIMELINE_AGENTS), before = lines.length - shown.length, total = shown.reduce((n, line) => n + line.segments.length, 0);
+  const render = (folded: number): string => {
+    let left = folded;
+    const blocks = shown.flatMap(line => { const take = Math.min(left, line.segments.length); left -= take; return lineBlock(line, take); });
+    const note = folded ? `（共 ${total} 段，为了不超过 ${TIMELINE_CHARS} 字，最早的 ${folded} 段折起来了）` : "";
+    return [`${id} · ${cut(title, 24)} · 经过 ${lines.length} 个代理${before ? `（前 ${before} 个没列出）` : ""}${note}`, ...blocks].join("\n");
+  };
+  // More folded is shorter, except for the first fold, which adds a note and a line: halving finds a count that fits, and the fewest to within a line or two.
+  let low = 0, high = total;
+  while (low < high) { const mid = (low + high) >> 1; if ([...render(mid)].length <= TIMELINE_CHARS) high = mid; else low = mid + 1; }
+  return render(low);
 }
 
 /** One agent of the board-wide answer: the item it works on (or worked on), its line and the item's title. */
 export interface ListedLine { item: string; title: string; line: AgentLine }
 
 /**
+ * The agents of the whole board: those running (a line with no end yet: no finish, and the work not over, nor a later session of its role begun),
+ * oldest first, and those whose line ended in the last RECENT_MS, newest first, whatever ended it (its finish, the end of the work or a later
+ * session). A session with no line is in neither.
+ */
+export function listedAgents(s: Pick<Snapshot, "items"> & { activity?: Snapshot["activity"] }, r: Pick<Rules, "statusOf">, now: number): { running: ListedLine[]; recent: ListedLine[] } {
+  const running: ListedLine[] = [], recent: ListedLine[] = [];
+  for (const [item, it] of Object.entries(s.items)) {
+    for (const d of it.dispatches ?? []) {
+      if (d.finish && now - Date.parse(d.finish.ended) > RECENT_MS) continue;
+      const line = lineOfDispatch(s, r, item, d, now);
+      if (!line.segments.length) continue;
+      if (!line.ended) running.push({ item, title: it.title, line });
+      else if (now - line.ended.at <= RECENT_MS) recent.push({ item, title: it.title, line });
+    }
+  }
+  running.sort((p, q) => p.line.from - q.line.from || (p.item < q.item ? -1 : 1));
+  recent.sort((p, q) => q.line.ended!.at - p.line.ended!.at || (p.item < q.item ? -1 : 1));
+  return { running, recent };
+}
+
+/**
  * The tool's answer without an item: the agents running, the agents that ended in the last RECENT_MS (the newest RECENT_MAX), and the longest
- * waits among the running ones. A running agent is a session with no end on an item still open.
+ * waits among the running ones.
  */
 export function agentsText(running: readonly ListedLine[], recent: readonly ListedLine[], waits: readonly LongWait[], titles: (id: string) => string, now: number): string {
   const row = ({ item, title, line }: ListedLine) => {

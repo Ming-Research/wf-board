@@ -9,8 +9,7 @@ import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import { candidates, candidatesText, candidatesUnder, candidatesUnderText } from "./candidates.ts";
 import { BUCKETS, BUCKET_TEXT, wholeView, wholeViewText } from "./whole-view.ts";
 import { DEFAULT_ROWS, LookMemory, MAX_ROWS, MIN_ROWS, look, lookText } from "./look.ts";
-import { LONGEST_DEFAULT, LONGEST_MAX, RECENT_MAX, RECENT_MS, SEGMENT_TEXT, SEGMENT_KINDS, TIMELINE_AGENTS, TIMELINE_ROWS, agentsText, linesOfItem, lineOfDispatch, longestWaits, timelineText } from "./timeline.ts";
-import type { ListedLine } from "./timeline.ts";
+import { LONGEST_DEFAULT, LONGEST_MAX, RECENT_MAX, RECENT_MS, SEGMENT_TEXT, SEGMENT_KINDS, TIMELINE_AGENTS, TIMELINE_CHARS, agentsText, linesOfItem, listedAgents, longestWaits, timelineText } from "./timeline.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
@@ -319,7 +318,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
     if (caller) looks.set(caller, { at, sigs: view.sigs });
     return lookText(view);
   });
-  register("timeline", `Where did the time of an agent go? An agent is one session the runner or the architect started on an item (a dispatch record); its line is what the runner reported while the session lasted: its segments in order, each a kind (${SEGMENT_KINDS.map(k => SEGMENT_TEXT[k]).join("、")}), a start, a length and what it waited for (the cards, the items, the event), and the totals for each kind. 干活 is a turn of the agent running; the other kinds are what it waits for between turns, and 暂停 is a stretch the item was paused. The time before a session began and between two sessions is on no line. With id: the lines of the agents that item went through, oldest first (the newest ${TIMELINE_AGENTS} agents, the newest ${TIMELINE_ROWS} segments of each). Without id: the agents running now, the agents that ended in the last ${RECENT_MS / 3600_000} hours (up to ${RECENT_MAX}), and the longest waits among the running ones (waits for CI, the owner, the architect, items, a 14900K run, an event or a merge, and work stopped for a person), longest first, with how long each has gone on; limit says how many waits (default ${LONGEST_DEFAULT}, up to ${LONGEST_MAX}).`, {
+  register("timeline", `Where did the time of an agent go? An agent is one session started on an item (a dispatch record). An engineer's line is what the runner reported while the session lasted; a review's (and an architect's turn's) is one stretch of 干活 from its start to its end, for it waits for nothing. A line has its segments in order, each a kind (${SEGMENT_KINDS.map(k => SEGMENT_TEXT[k]).join("、")}), a start, a length and what it waited for (the cards, the items, the event), and the totals for each kind. 干活 is a turn of the agent running; the other kinds are what it waits for between turns, and 暂停 is a stretch the item was paused. The time before a session began and between two sessions is on no line; a session left open ends where the next of its role on the item began, or when the work was over. With id: the lines of the agents that item went through, oldest first (the newest ${TIMELINE_AGENTS} agents; an answer over ${TIMELINE_CHARS} characters folds the earliest segments into one line of totals for each agent and says how many). Without id: the agents running now, the agents whose line ended in the last ${RECENT_MS / 3600_000} hours, by a finish or otherwise (up to ${RECENT_MAX}), and the longest waits among the running ones (waits for CI, the owner, the architect, items, a 14900K run, an event or a merge, and work stopped for a person), longest first, with how long each has gone on; limit says how many waits (default ${LONGEST_DEFAULT}, up to ${LONGEST_MAX}).`, {
     id: ref.optional(), limit: z.number().int().min(1).max(LONGEST_MAX).describe(`How many of the longest waits to list when no id is given; default ${LONGEST_DEFAULT}.`).optional(),
   }, a => {
     const x = read(), at = now ? Date.parse(now()) : Date.now();
@@ -328,19 +327,7 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
       if (!found || !it) throw new Error(`id ${a.id}: choose an existing item (its key, or its number such as #812)`);
       return timelineText(found.id, it.title, linesOfItem(x.snapshot, x.rules, found.id, at));
     }
-    const running: ListedLine[] = [], recent: ListedLine[] = [];
-    for (const [item, it] of Object.entries(x.snapshot.items)) {
-      if (!it.dispatches?.length) continue;
-      const open = x.rules.isOpenWork(item);
-      for (const d of it.dispatches) {
-        const live = !d.finish && open, lately = !!d.finish && at - Date.parse(d.finish.ended) <= RECENT_MS;
-        if (!live && !lately) continue;
-        const line = lineOfDispatch(x.snapshot, x.rules, item, d, at);
-        if (line.segments.length) (live ? running : recent).push({ item, title: it.title, line });
-      }
-    }
-    running.sort((p, r) => p.line.from - r.line.from || (p.item < r.item ? -1 : 1));
-    recent.sort((p, r) => r.line.ended!.at - p.line.ended!.at || (p.item < r.item ? -1 : 1));
+    const { running, recent } = listedAgents(x.snapshot, x.rules, at);
     return agentsText(running, recent.slice(0, RECENT_MAX), longestWaits(running, a.limit ?? LONGEST_DEFAULT), id => x.snapshot.items[id]!.title, at);
   });
   register("followups", "Coordinator follow-up: sent owner notes older than the given age, with their projects.", { minutes: z.number().nonnegative().describe("Age threshold in minutes, exclusive; zero returns all older pending work.") }, a => { const x = read(); return JSON.stringify(q.followups(x.snapshot,x.rules,a,now?.())); });

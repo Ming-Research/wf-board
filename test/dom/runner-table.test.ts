@@ -31,17 +31,18 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   assert.ok(card, "and a card with a plain question");
   const bp = await DomPage.open(t, board, { reverts }), runner = (id: string) => ({ author: s.items[id]!.group, session: "执行程序" });
   const base = bp.changes();
-  // The jobs began two hours ago: each agent's line is its session's span, so the work before the state it reports is a segment of its own.
-  const began = new Date(now - 2 * 3600_000).toISOString();
+  // The jobs began two hours ago, the one running five: each agent's line is its session's span, so the work before the state it reports is a
+  // segment of its own, and five hours are longer than the three a segment is drawn in full.
+  const began = new Date(now - 2 * 3600_000).toISOString(), beganLong = new Date(now - 5 * 3600_000).toISOString(), startOf = (id: string) => id === running ? beganLong : began;
   let n = 0;
   for (const id of [running, failed, waiting, asking]) {
-    await board.ops.dispatchStart({ ...runner(id), id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1`, startedAt: began });
+    await board.ops.dispatchStart({ ...runner(id), id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1`, startedAt: startOf(id) });
     n++;
   }
-  await board.ops.reportState({ ...runner(asking), id: asking, state: "ask", to: "owner", cards: [card], startedAt: began });
-  await board.ops.reportState({ ...runner(failed), id: failed, state: "exception", note: "提交 0578e89 的 CI 红了，日志在 ~/Library/Logs/wf-board.log", startedAt: began });
-  await board.ops.reportState({ ...runner(waiting), id: waiting, state: "items", items: [waitedFor], startedAt: began });
-  await board.ops.reportState({ ...runner(running), id: running, state: "running", note: "第 1 轮", turns: 1, cost: 0.5, startedAt: began });
+  await board.ops.reportState({ ...runner(asking), id: asking, state: "ask", to: "owner", cards: [card], startedAt: startOf(asking) });
+  await board.ops.reportState({ ...runner(failed), id: failed, state: "exception", note: "提交 0578e89 的 CI 红了，日志在 ~/Library/Logs/wf-board.log", startedAt: startOf(failed) });
+  await board.ops.reportState({ ...runner(waiting), id: waiting, state: "items", items: [waitedFor], startedAt: startOf(waiting) });
+  await board.ops.reportState({ ...runner(running), id: running, state: "running", note: "第 1 轮", turns: 1, cost: 0.5, startedAt: startOf(running) });
   await board.ops.reportLive({ ...runner(running), id: running, role: "工程师", turn: 1, turnSeconds: 125, idleSeconds: 4, action: "改 /Users/user/dev/x/web/app.ts" });
   await bp.waitChanges(base + n + 4);
   await bp.waitFor(() => /app\.ts/.test(bp.$(`.runner-row[data-agent="${running}"] .rt-what`)?.textContent ?? ""), "the beat's action on the row");
@@ -81,6 +82,20 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     assert.ok(last.classList.contains("tl-" + kinds.at(-1)), `${id}: the segment is coloured by its kind`);
     assert.match(last.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
   }
+  // Each segment is as long as the time it took, up to three hours; a longer one is drawn shorter with a gap marked in it, and the hover says how long it was.
+  const grow = (seg: Element) => Number((seg as HTMLElement).style.flexGrow);
+  const [askWork, askWait] = bp.$$(".rt-line .tl", by(asking)) as [HTMLElement, HTMLElement];
+  assert.ok(Math.abs(grow(askWork) - 120) < 3, `a segment is drawn as long as the time it took: two hours of work are 120 minutes, not ${grow(askWork)}`);
+  assert.ok(grow(askWait) >= 1 && grow(askWait) < 3, `the wait that has just begun is the one minute a segment is drawn with at least, not ${grow(askWait)}`);
+  assert.ok(grow(askWork) > 40 * grow(askWait), `the two hours are drawn about a hundred and twenty times as long as the wait just begun (${grow(askWork)} to ${grow(askWait)})`);
+  const long = bp.$$(".rt-line .tl", by(running))[0]!;
+  assert.ok(Math.abs(grow(long) - 192) < 1, `a segment over three hours is drawn shorter: five hours are 180 minutes and a tenth of the 120 beyond, 192, not ${grow(long)}`);
+  assert.equal(bp.$$(".tl-gap", long).length, 1, "a gap is marked in a segment drawn shorter than it was");
+  assert.match(long.getAttribute("title")!, /这一段太长，画短了/, "and its hover says so");
+  for (const id of [failed, waiting, asking]) assert.equal(bp.$$(".rt-line .tl-gap", by(id)).length, 0, `${id}: no gap in a line of segments under three hours`);
+  assert.match(askWork.getAttribute("title")!, /^干活 · 2 小时( \d+ 分)? · /, "the hover of a segment says how long it was");
+  assert.match(askWait.getAttribute("title")!, /^等主人 · (不到 1 分钟|\d+ 分钟) · /, "the hover of the wait says how long it was");
+  assert.match(long.getAttribute("title")!, /^干活 · 5 小时( \d+ 分)? · /, "the hover of the long segment has its whole time, not the drawn one");
   assert.match(bp.$$(".rt-line .tl", by(asking)).at(-1)!.getAttribute("title")!, new RegExp(s.decisions[card]!.question.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "an ask's segment says the question of the card it waits for");
   // What each row says in the wide column: the last action of the turn, the note, the titles of what it waits for, the question of the card.
   assert.equal(bp.$(".rt-what", by(running))!.textContent, "改 app.ts");
@@ -128,6 +143,22 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "a segment of the line was not coloured by its kind",
     reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind);', 'const cell = el("span", "tl");')], reason: /the segment is coloured by its kind/,
+  },
+  {
+    bug: "every segment of a line was drawn as long as the next",
+    reverts: [app("the length is a constant", 'cell.style.flexGrow = String(Math.max(drawLength(seg.to - seg.from) / 60_000, 1));', 'cell.style.flexGrow = "1";')], reason: /a segment is drawn as long as the time it took/,
+  },
+  {
+    bug: "a segment of five hours was drawn the whole five hours",
+    reverts: [app("the long segment is not shortened", 'cell.style.flexGrow = String(Math.max(drawLength(seg.to - seg.from) / 60_000, 1));', 'cell.style.flexGrow = String(Math.max((seg.to - seg.from) / 60_000, 1));')], reason: /a segment over three hours is drawn shorter/,
+  },
+  {
+    bug: "a segment drawn shorter than it was had no gap marked in it",
+    reverts: [app("the gap is not marked", 'if (seg.to - seg.from > LONG_SEGMENT_MS) cell.appendChild(el("i", "tl-gap"));', "")], reason: /a gap is marked in a segment drawn shorter/,
+  },
+  {
+    bug: "the hover of a segment did not say how long it was",
+    reverts: [app("the hover has no length", '[SEGMENT_TEXT[seg.kind] + " · " + spanText(seg.to - seg.from) + " · " + clockText(seg.from) + " 起", waits,', '[SEGMENT_TEXT[seg.kind] + " · " + clockText(seg.from) + " 起", waits,')], reason: /the hover of a segment says how long it was/,
   },
   {
     bug: "a click on the title opened nothing",

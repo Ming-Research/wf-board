@@ -185,7 +185,9 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .agent-state.runner.needs-person { background: var(--ask); color: var(--surface); font-weight: 600; }
 /* The runner's block is a table with a row for each piece of work. Its columns: level and title, state, one line of what the work does or
    waits on, how long it has been in the state, and how long it has run in all. A cell that can run long is cut to one line (its hover says
-   the rest). In a column too narrow for five cells, the cells fall to three lines (container query on the list's own width). */
+   the rest). In a column too narrow for six cells, the cells fall to three lines (container query on the list's own width): the columns that keep
+   their width and the least of the title and the line leave under 100 px for the words of what the work does below about 830 px, so the table
+   starts at 900. */
 .runner-list { gap: 0; container-type: inline-size; }
 .runner-head, .runner-row { display: grid; grid-template-columns: minmax(8rem, 3fr) 6.5rem minmax(0, 4fr) 5rem 12rem minmax(9rem, 3fr); column-gap: 12px; align-items: center; min-width: 0; }
 .runner-head { font-size: 11.5px; color: var(--muted); padding: 0 6px 2px 9px; border-bottom: 1px solid var(--rule); }
@@ -200,7 +202,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .rt-what.silent { color: var(--amber); }
 .rt-since, .rt-total { font-size: 12px; font-variant-numeric: tabular-nums; }
 .rt-since { text-align: right; }
-@container (max-width: 760px) {
+@container (max-width: 900px) {
   .runner-head { display: none; }
   .runner-row { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "title title" "state what" "since total" "line line"; row-gap: 1px; }
   .runner-row > .rt-title { grid-area: title; }
