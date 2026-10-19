@@ -289,6 +289,8 @@ export interface Rules {
   startable(id: string): boolean;
   /** What the item waits on: the brief tells a sub-item that only waits for its turn from one blocked for its own reason. */
   progress(id: string): Progress;
+  /** The rows before the row that owns the item in its owner's plan that are not done yet; none when the row has come up. */
+  ownerRowWaits(id: string): string[];
   /** Nearest explicit pause on this item or its same-project ownership chain. */
   pausedBy(id: string): string | undefined;
   /** Effective pause on open work; done and cancelled always win. */
@@ -960,16 +962,17 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   // Whether the row that owns the item has come up in its owner's plan: every row before it is resolved. A record's
   // rows are a list, not an order, so an item a record owns (a backlog item) is always ready. A record row in the owner's
   // plan is no step: the row after it follows the step before it.
-  function ownerRowReady(id: string): boolean {
+  function ownerRowWaits(id: string): string[] {
     const owner = parentOf(id), plan = owner ? item(owner) : undefined;
-    if (!owner || !plan || plan.record) return true;
+    if (!owner || !plan || plan.record) return [];
     const resolved = new Map<string, boolean>(), seen = new Set([id]);
     for (const [at, row] of plan.plan.entries()) {
-      if ("item" in row && row.item === id) return (row.after ?? followedRows(plan.plan, at, isRecord)).every(key => resolved.get(key) ?? false);
+      if ("item" in row && row.item === id) return (row.after ?? followedRows(plan.plan, at, isRecord)).filter(key => !(resolved.get(key) ?? false));
       resolved.set(row.id, rowResolved(row, seen));
     }
-    return true;
+    return [];
   }
+  function ownerRowReady(id: string): boolean { return ownerRowWaits(id).length === 0; }
   // Something of its own is done: a step of the plan, an item it owns that is done, or an open item it owns that has itself
   // begun. What others finished does not count: a shared row, a card and an owned record are not this item's work.
   const beginning = new Set<string>();
@@ -1308,7 +1311,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
     isOpenWork,
-    isLeaf, isStatusLeaf, statusOf, workedOn, begun: begunOf, dispatchedItems, canStart, startable, progress, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), openDependents,
+    isLeaf, isStatusLeaf, statusOf, workedOn, begun: begunOf, dispatchedItems, canStart, startable, progress, ownerRowWaits, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), openDependents,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
     cardDependents: key => (reverseDeps().cards.get(key) || []).map(e => ({ ...e })),

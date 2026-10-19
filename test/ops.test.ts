@@ -607,6 +607,20 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
 });
 
+test("a new or changed owned row that starts behind unfinished rows says which rows hold it and that after: [] starts it", async t => {
+  const { op } = await board(t);
+  await op.createItem({ ...asArchitect, key: "owner-hint", group: author, title: "Owner", accept: "Owner passes", plan: [{ id: "first", text: "First step", state: "todo" }] });
+  const behind = await op.createItem({ ...asArchitect, key: "child-behind", owner: "owner-hint", title: "Child", accept: "Child passes" });
+  assert.match(behind.note ?? "", /child-behind is blocked: its row in owner-hint's plan waits for first, not done yet.*after: \[\]/);
+  const free = await op.createItem({ ...asArchitect, key: "child-free", owner: "owner-hint", after: [], title: "Free", accept: "Free passes" });
+  assert.equal(free.note, undefined);
+  await op.createItem({ ...asArchitect, key: "child-set", group: author, title: "Set", accept: "Set passes" });
+  const set = await op.setPlan({ ...asArchitect, id: "owner-hint", row: { item: "child-set", own: true } });
+  assert.match(set.note ?? "", /child-set is blocked: its row in owner-hint's plan waits for first/);
+  const started = await op.setPlan({ ...asArchitect, id: "owner-hint", row: { item: "child-set", own: true, after: [] } });
+  assert.equal(started.note, undefined);
+});
+
 test("create_item appends accept while allowing more acceptance scenarios in its initial plan", async t => {
   const { store, op } = await board(t);
   await op.createItem({ ...asArchitect, key: "scenarios", group: author, title: "All scenarios pass", accept: "Final scenario passes", plan: [
