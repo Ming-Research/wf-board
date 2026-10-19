@@ -559,6 +559,7 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
   // A write can leave an item holding unread content that the tree has not drawn (a closed item, which a freshly loaded page draws
   // when it holds some); n draws it when it lands there. So n walks over every such item first, and the rows are read after.
+  // The page should draw them without n (live-tree-fresh-ended); when that is fixed, this walk goes and the rows are read at once.
   await bp.settle();
   bp.blur();
   const reached = new Set<string>();
