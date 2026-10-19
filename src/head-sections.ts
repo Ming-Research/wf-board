@@ -111,33 +111,27 @@ export function selectSections(head: string, name: string): HeadSection[] | unde
   return prefixed.length ? prefixed : undefined;
 }
 
-// The title of a 何时 section as items write it: bold, a colon or the text after it on the same line, or a heading.
-const WHEN_BOLD = /^\*\*何时\*\*\s*[：:]?\s*(.*)$/;
-const WHEN_HASH = /^#{1,6}\s+何时\s*$/;
+// The bold title of a section and the colon after it, which the text of the title line follows.
+const BOLD_TITLE_MARK = /^\*\*[^*\n]+\*\*\s*[：:]?/;
 
 /**
- * What an item's 何时 section says: its first paragraph, on one line. The title may be bold with the text after it on the same line
- * (`**何时**：…`, `**何时** …`) or stand alone, bold or as a heading, with the text in the paragraph below. Undefined when the
- * head has no such section or it holds no text; a title inside a fenced block is code and does not count.
+ * What an item's 何时 section says: its first paragraph, on one line. The section is the one `splitHead` finds, so `context` and the
+ * candidates read agree on what a title is: bold with the text after it on the same line, or alone with the text in the paragraph
+ * below, or a heading. Undefined when the head has no such section or it holds no text; a title inside a fenced block is code and
+ * does not count.
  */
 export function whenText(head: string): string | undefined {
   // Most heads have no such section: skip the scan.
   if (!head.includes("何时")) return undefined;
-  const all = lines(head).map(bare);
-  let fenced = false;
-  for (const [i, text] of all.entries()) {
-    if (FENCE.test(text)) { fenced = !fenced; continue; }
-    if (fenced) continue;
-    const bold = WHEN_BOLD.exec(text);
-    if (!bold && !WHEN_HASH.test(text)) continue;
-    const first = (bold?.[1] ?? "").trim(), found = first ? [first] : [];
-    for (const line of all.slice(i + 1)) {
-      if (!line.trim()) { if (found.length) break; continue; }
-      // The next section or a fenced block ends the paragraph even without a blank line.
-      if (BOLD_TITLE.test(line) || HASH_TITLE.test(line) || FENCE.test(line)) break;
-      found.push(line.trim());
-    }
-    return found.length ? found.join(" ") : undefined;
+  const section = splitHead(head).find(s => s.title === "何时");
+  if (!section) return undefined;
+  const [titleLine = "", ...below] = lines(section.text).map(bare);
+  const first = titleLine.startsWith("**") ? titleLine.replace(BOLD_TITLE_MARK, "").trim() : "", found = first ? [first] : [];
+  for (const line of below) {
+    if (!line.trim()) { if (found.length) break; continue; }
+    // A fenced block ends the paragraph even without a blank line.
+    if (FENCE.test(line)) break;
+    found.push(line.trim());
   }
-  return undefined;
+  return found.length ? found.join(" ") : undefined;
 }

@@ -2324,17 +2324,18 @@ and the board pushes nothing from it.
     dispatch holds, as for candidates), and have no open sub-item (a parent is its sub-items'
     business, as in the whole view). Two kinds. *Paused*: `isPaused` is true, by a pause marker
     on the item (`carrier` is the item) or on an item above it. *With a condition*: status
-    todo or idle, not `startable` (in practice, waiting in a backlog that no unpaused root
-    needs), and the head has a 何时 section. A startable item with a 何时 section is a
+    todo or idle, not `startable` (nobody needs it, as in a backlog that no unpaused root needs, or
+    its next step carries a wait text), and the head has a 何时 section. A startable item with a 何时 section is a
     candidate, and a blocked one is not listed: the plan names what it waits for.
   - *What a row says.* A paused row: the item, the carrier when it is not the item itself ("因 X
     暂停"), who paused (the project of the log entry `暂停：…` written with the pause, found by the
     time the marker carries), the day, how long, and the reason cut to 40 characters. A row of a
     condition: the item, the first sentence of its 何时 section (cut to 60 characters) and how
     long since the item last changed (`lastChange` of the whole view). The 何时 section is
-    read by `whenText` in `src/head-sections.ts`: a bold title (the text after it on the line, or
-    in the paragraph below) or a heading, the first paragraph, a title inside a fenced block not
-    counting.
+    the one `splitHead` finds (`src/head-sections.ts`), as `context` finds sections, so there is one
+    definition of a title: a bold title with a colon after it or alone, or a heading, a title inside a fenced
+    block not counting; `whenText` takes its first paragraph (the text after a bold title on the same
+    line included) up to a blank line or a fenced block.
   - *Grouping.* More than 3 items (of any level) under one pause marker are one row of the
     carrier and the count, and more than 3 items with a condition under one parent are one row of
     the parent and the count, each at the place of the first of its items, as the groups of

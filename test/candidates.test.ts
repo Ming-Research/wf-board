@@ -10,7 +10,8 @@ import { ops } from "../src/ops.ts";
 import { rules, isReviewStep, REVIEW_STEP } from "../src/rules.ts";
 import { brief } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { candidates, candidatesText, candidatesUnder, candidatesUnderText, POOLS, GROUP_OVER } from "../src/candidates.ts";
+import { splitHead, whenText } from "../src/head-sections.ts";
+import { candidates, candidatesText, candidatesUnder, candidatesUnderText, POOLS, GROUP_OVER, ASIDE_ROWS } from "../src/candidates.ts";
 import type { CandidateGroup, Candidate } from "../src/candidates.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import { seedBoard } from "./e2e/seed.ts";
@@ -242,6 +243,28 @@ test("on a board of the live board's shape the answer stays short", async t => {
   assert.ok(text.length < briefTodo || briefTodo === 0, `candidates ${text.length} characters, brief todo lists ${briefTodo}`);
 });
 
+test("on a board filled to the limits the whole answer, with the part for the work set aside, stays within its size", async t => {
+  const b = await empty(t), base = Date.now();
+  // Four projects, each with in both pools three candidates, two paused items and one item with a condition: more than the rows
+  // of a pool hold, with the longest titles items have (20 characters), a reason and a 何时 sentence that are cut, and keys of 30.
+  const projects = ["Whitefoot", "Firn", "Architect", "PM"], title = "标题".repeat(10), reason = "暂停的理由很长".repeat(8), when = `${"开工的条件很长".repeat(12)}。`;
+  for (const group of projects) {
+    const rec = `${group}-backlog-of-late-work`;
+    await b.op.createItem({ ...asArchitect, key: rec, group, title: "待选", record: true } as Parameters<typeof b.op.createItem>[0]);
+    for (const difficulty of [1, 2]) {
+      const key = (what: string, k: number) => `${group}-${what}-of-level-${difficulty}-${k}`;
+      for (let k = 1; k <= 3; k++) await b.item(key("candidate", k), { group, title, difficulty });
+      for (let k = 1; k <= 2; k++) { await b.item(key("paused", k), { group, title, difficulty }); await b.pause(key("paused", k), reason, base - (k + 5) * DAY); }
+      await b.item(key("later", 1), { group, title, difficulty, owner: rec, head: `**何时**：${when}` });
+    }
+  }
+  const s = b.snapshot(), text = candidatesText(candidates(s, rules(s), base + DAY));
+  t.diagnostic(`the whole answer is ${text.length} characters, ${asideLines(text).join("\n").length} of them the part for the work set aside`);
+  // Both pools list the most rows (a header, ten rows and the count left out), so this is the longest the part can be.
+  assert.equal(asideLines(text).length, 2 * (1 + ASIDE_ROWS + 1), "the rows of both pools are full");
+  assert.ok(text.length <= 4600, `the answer is ${text.length} characters`);
+});
+
 /** The lines of a candidates answer that belong to the work set aside: its header and its rows. */
 const asideLines = (text: string) => text.split("\n").filter(line => line.startsWith("  另有") || line.startsWith("    "));
 
@@ -287,12 +310,11 @@ test("what is not an item an engineer could be started on is not listed as set a
   assert.deepEqual(rows, ["sub"], "only the sub-item of the paused parent");
 });
 
-test("a 何时 section is read in the forms items write it, and a row shows its first sentence cut to 60 characters", async t => {
+test("a 何时 section is read as `context` reads sections, and a row shows its first sentence cut to 60 characters", async t => {
   const b = await empty(t);
   await b.record(); await b.root("r");
   const heads: Record<string, string> = {
     colon: "**问题**：x\n\n**何时**：有程序需要时。后面的话不要。\n\n**做法**：y",
-    space: "**何时** 下次改到时。\n",
     heading: "# 问题\n\nx\n\n## 何时\n\n等有人提需求。\n\n## 做法\n\ny",
     alone: "**何时**\n\n第一行，\n接着第二行。别的不要。\n\n**改动**：z",
     long: `**何时**：${"很".repeat(70)}。`,
@@ -302,9 +324,14 @@ test("a 何时 section is read in the forms items write it, and a row shows its 
   const text = candidatesUnderText(candidatesUnder(b.snapshot(), rules(b.snapshot()), "rec"));
   const when = Object.fromEntries(text.split("\n").slice(2).map(line => [line.trim().split(" · ")[0], /何时：(.*?) · /.exec(line)?.[1]]));
   assert.deepEqual(when, {
-    colon: "有程序需要时。", space: "下次改到时。", heading: "等有人提需求。", alone: "第一行， 接着第二行。",
+    colon: "有程序需要时。", heading: "等有人提需求。", alone: "第一行， 接着第二行。",
     long: `${"很".repeat(60)}…`, inline: "没有空行就接下一节。",
   });
+  // The section is the one `splitHead` finds, as in `context`: `**何时** …` (the text after the bold title with no colon) is no
+  // title there, so no condition here; a title with no text under it is a section with nothing to show.
+  assert.equal(splitHead("**何时** 下次改到时。\n").some(x => x.title === "何时"), false);
+  assert.equal(whenText("**何时** 下次改到时。\n"), undefined);
+  assert.equal(whenText("**何时**：\n\n**做法**：y"), undefined);
 });
 
 test("more than three under one pause or one parent are a row with the count, and a project with few items is not crowded out", async t => {
