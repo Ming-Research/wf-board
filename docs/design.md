@@ -2937,15 +2937,23 @@ library's `default` (light) and `dark` themes; `themeVariables.xyChart.backgroun
 `transparent`; and `xyChart.height` of 360. The library's own first series color is `#ECECFF`, 1.17:1
 against a white page (its second, `#8493A6`, is 3.13:1), which hides the first series; the page's first
 color is 4.42:1 on white and 4.56:1 on the dark surface (WCAG 2 gives 3:1 as the floor for a mark). The
-eight colors are the reference palette of the data-viz skill, run through its validator on this page's
-two surfaces, `#ffffff` and `#182020`: the light set passes the lightness band, the chroma floor, the
-separation of neighbors under color-vision simulation (worst pair 9.1, target 8) and the normal-vision
-floor (worst pair 19.6, floor 15), and warns that its aqua, yellow and pink are under 3:1 on white, so a chart
-with several series names each series, which makes the library draw a legend (measured: it draws none for
-a series without a name); the dark set passes all five checks. The library's dark theme gives a chart a
-`#333` plate of its own, so the plate is made clear and the page's surface shows; the height is 360
-where the library's is 500, so that a chart takes the room of a few lines of text. A settings block at the
-start of a chart wins over these, as for any diagram (`showDataLabel: true` is one such setting).
+eight colors of each set, in series order, are fixed: for the light set `#2a78d6 #eb6834 #1baf7a #eda100
+#e87ba4 #008300 #6250d6 #e34948` against the white surface `#ffffff`, for the dark set `#3987e5 #d95926
+#199e70 #c98500 #d55181 #008300 #9085e9 #e66767` against the dark surface `#182020`. The standard is 3:1,
+computed with the WCAG 2 relative luminance: every dark color meets it (the lowest is
+`#008300`, 3.35:1) and so does every light color except three on white, aqua `#1baf7a` (2.82:1), pink
+`#e87ba4` (2.69:1) and yellow `#eda100` (2.17:1). The legend carries those three, so a chart with several
+series names each series, which makes the library draw a legend (measured: it draws none for a series
+without a name). The library's
+dark theme gives a chart a `#333` plate of its own, so the plate is made clear and the page's surface
+shows; the height is 360 where the library's is 500, so that a chart does not fill the screen (a
+provisional number, not measured: reopen it when a chart with many categories is cramped). When a chart
+sets its own `theme` (for instance `theme: dark` on a light page) the library builds that theme, and the
+chart's text takes the colors of that theme while the plate stays clear: the dark theme's light grey text
+is then nearly invisible on a white page (read from the library's source, not run). A chart that sets
+its own `theme` therefore also sets `themeVariables.xyChart.backgroundColor`, or it cannot be read.
+A settings block at the start of a chart wins over these, as for any diagram (`showDataLabel: true` is one
+such setting).
 What `xychart` cannot draw: scatter, side-by-side or stacked bars, error bars and log axes; two `bar`
 series are drawn over each other, and a chart has one `y-axis`, so one unit (a second unit is a second
 chart). Three things in what the library does decide whether a chart is right,

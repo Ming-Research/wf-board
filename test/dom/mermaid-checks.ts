@@ -117,8 +117,8 @@ export async function checkCompact({ bp, lib }: Scene): Promise<string[]> {
   return got === want ? [] : [`mermaid-config: the page configured the library with ${got}, not ${want}`];
 }
 
-/** The colors the data-viz palette gives a chart's series, light and dark, checked against the page's surfaces (#ffffff and #182020) with the
- * data-viz skill's validator; a chart's plate is clear so that the page's surface shows; a chart is 360 px high (docs/design.md, section 7, Diagrams). */
+/** The colors the page gives a chart's series, light and dark, with the contrast of each against the page's surface (docs/design.md, section 7,
+ * Diagrams, Data charts); a chart's plate is clear so that the page's surface shows; a chart is 360 px high. */
 const CHART_PALETTE = {
   default: "#2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4,#008300,#6250d6,#e34948",
   dark: "#3987e5,#d95926,#199e70,#c98500,#d55181,#008300,#9085e9,#e66767",

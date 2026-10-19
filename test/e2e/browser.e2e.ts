@@ -79,7 +79,7 @@ test("nothing on the page covers the list of messages once it is open", LONG, as
   none(await checkMessages(bp, board));
 });
 
-test("the real library draws a head's diagrams and shows a bad one's error, runs no hostile text, names its ids apart and applies a diagram's own settings", LONG, async () => {
+test("the real library draws a head's diagrams and shows a bad one's error, runs no hostile text, names its ids apart, applies a diagram's own settings and draws a data chart in the page's colors", LONG, async () => {
   const { board, bp } = await open();
   none(await checkLibrary(bp, board));
 });

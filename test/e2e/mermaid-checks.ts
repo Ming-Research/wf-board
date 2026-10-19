@@ -243,8 +243,8 @@ export async function checkOwn(bp: BoardPage, wait: number): Promise<string[]> {
   return (m[0]! + m[1]! + m[2]!) / 3 < 140 ? [] : [`mermaid-own: the diagram asks for the dark theme in its frontmatter and the page does not use it: its boxes are filled ${fill} on a light page`];
 }
 
-/** The colors the page gives the first two series of a chart in each scheme (docs/design.md, section 7, Diagrams: data-viz palette, checked
- * against the page's surfaces). The library's own are #ECECFF, which is 1.17:1 on a white page, and #8493A6. */
+/** The colors the page gives the first two series of a chart in each scheme (docs/design.md, section 7, Diagrams, Data charts: each is at least 3:1
+ * against the page's surface). The library's own are #ECECFF, which is 1.17:1 on a white page, and #8493A6. */
 const CHART_SERIES = { light: ["#2a78d6", "#eb6834"], dark: ["#3987e5", "#d95926"] } as const;
 /** The real library draws a data chart (`xychart`) in the page's colors: in each color scheme the bars are the first color and the line the second, the library's plate is clear
  * (its dark theme gives a chart one of its own), the labels keep their Chinese and the chart is as high as the page asks (360 px). What the page asks of the library is the DOM layer's
