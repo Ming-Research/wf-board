@@ -124,21 +124,68 @@ test("after a restart the silence is counted from the start at the earliest, and
   assert.deepEqual(alive.told, []);
 });
 
-test("a file that is not ours, or none, leaves the runner unwatched until its first heartbeat; a file that cannot be written costs nothing", async t => {
+test("a silence that was told stays told over a restart, and the next heartbeat ends it in the file at once", async t => {
   const file = await scratch(t);
-  t.mock.method(console, "warn", () => {}); t.mock.method(console, "error", () => {});
+  t.mock.method(console, "warn", () => {});
+  const stored = async () => JSON.parse(await readFile(file, "utf8"));
+  const first = watched({ file });
+  first.heartbeat.beat();
+  first.at(T0 + 10 * MIN);
+  first.heartbeat.check();
+  assert.equal(first.told.length, 1);
+  assert.deepEqual(await stored(), { last: T0, told: true }, "the mark is written when the silence is told");
+  // The runner is back five seconds after: the file stops saying told in the same breath, however recent the write.
+  first.at(T0 + 10 * MIN + 5_000);
+  first.heartbeat.beat();
+  assert.deepEqual(await stored(), { last: T0 + 10 * MIN + 5_000 });
+  first.at(T0 + 20 * MIN + 5_000);
+  first.heartbeat.check();
+  assert.equal(first.told.length, 2, "a later silence is told again");
+  assert.deepEqual(await stored(), { last: T0 + 10 * MIN + 5_000, told: true });
+  // The board restarts inside that silence, and again hours later: the runner has already been told of it.
+  const second = watched({ file });
+  second.at(T0 + 90 * MIN);
+  second.heartbeat.check();
+  second.at(T0 + 300 * MIN);
+  second.heartbeat.check();
+  assert.deepEqual(second.told, [], "told once, not once for each start");
+  // It ends with the runner's next heartbeat, and a silence after that is told with that heartbeat's time.
+  second.at(T0 + 301 * MIN);
+  second.heartbeat.beat();
+  assert.deepEqual(await stored(), { last: T0 + 301 * MIN });
+  const third = watched({ file });
+  third.at(T0 + 311 * MIN);
+  third.heartbeat.check();
+  assert.deepEqual(third.told, [{ lastBeat: iso(T0 + 301 * MIN), limitMs: 10 * MIN }]);
+});
+
+test("a file that is not ours, or none, leaves the runner unwatched until its first heartbeat, and the log says so when a file is there; a file that cannot be written costs nothing", async t => {
+  const file = await scratch(t);
+  t.mock.method(console, "warn", () => {});
+  const logged = t.mock.method(console, "error", () => {});
   const none = watched({ file });
   none.at(T0 + 60 * MIN);
   none.heartbeat.check();
   assert.deepEqual(none.told, []);
+  assert.equal(logged.mock.callCount(), 0, "no file is the first run, which is not a fault");
   await mkdir(join(file, ".."), { recursive: true });
+  let lines = 0;
   for (const text of ["not json", '{"last":"yesterday"}', "[]", '{"last":null}']) {
     await writeFile(file, text);
     const odd = watched({ file });
     odd.at(T0 + 60 * MIN);
     odd.heartbeat.check();
     assert.deepEqual(odd.told, [], text);
+    assert.equal(logged.mock.callCount(), ++lines, `a line in the log for ${text}`);
   }
+  assert.match(String(logged.mock.calls[0]!.arguments[0]), /runner heartbeat: .*runner-heartbeat\.json is not a heartbeat file .*not watched until its next heartbeat/);
+  // The place of the file is a directory: it exists and cannot be read as a file, which the log also says.
+  const directory = watched({ file: join(file, "..") });
+  directory.at(T0 + 60 * MIN);
+  directory.heartbeat.check();
+  assert.deepEqual(directory.told, []);
+  assert.match(String(logged.mock.calls[lines]!.arguments[0]), /cannot be read .*not watched until its next heartbeat/);
+
   // The place of the file is a file itself: the write fails, the heartbeat is still kept in memory and still watched.
   await writeFile(join(file, "..", "blocker"), "x");
   const blocked = watched({ file: join(file, "..", "blocker", "runner-heartbeat.json") });

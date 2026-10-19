@@ -20,7 +20,8 @@ export interface RunnerHeartbeatOptions {
  * Whether the runner, the one resident program that starts the engineers' turns, is still there (docs/design.md, section 8, The
  * runner's heartbeat). The runner calls `report_heartbeat` at every round of its loop and the board keeps the time of the last
  * call. A round of the minute timer (`check`) tells the architect once when the later of that time and this start is more than the
- * limit old; the next heartbeat ends the silence, so a later one is told again. The board watches only this call: it reads no
+ * limit old, and keeps in the file that it did, so a restart in the same silence does not tell again; the next heartbeat ends the
+ * silence, so a later one is told again. The board watches only this call: it reads no
  * process table and reaches no machine, so a board on another machine watches the runner the same way.
  *
  * It tells only after the first heartbeat ever kept, so a board that runs before the runner has learned to send one is not
@@ -36,7 +37,7 @@ export class RunnerHeartbeat {
   /** The last heartbeat, or none until one has been kept (here or by the run before, read from the file). */
   private last: number | undefined;
   private saved = -Infinity;
-  /** Told for this stretch of silence: cleared by the next heartbeat. */
+  /** Told for this stretch of silence: cleared by the next heartbeat. Kept in the file, so a restart does not tell the same silence again. */
   private told = false;
 
   constructor(options: RunnerHeartbeatOptions) {
@@ -48,19 +49,31 @@ export class RunnerHeartbeat {
     this.load();
   }
 
+  /** Reads the run before. A file that is not there is the first run; one that is there and cannot be read leaves the runner unwatched
+   * until its next heartbeat, which the log says, since nothing else would. */
   private load(): void {
     if (!this.file) return;
+    let text: string;
+    try { text = readFileSync(this.file, "utf8"); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`runner heartbeat: ${this.file} cannot be read (${(error as Error).message}); the runner is not watched until its next heartbeat`);
+      return;
+    }
     try {
-      const doc = JSON.parse(readFileSync(this.file, "utf8")) as { last?: unknown };
-      if (typeof doc.last === "number" && Number.isFinite(doc.last)) this.last = doc.last;
-    } catch { /* no file, or not ours: the runner is not watched until its first heartbeat */ }
+      const doc = JSON.parse(text) as { last?: unknown; told?: unknown };
+      if (typeof doc.last !== "number" || !Number.isFinite(doc.last)) throw new Error("it holds no time");
+      this.last = doc.last;
+      this.told = doc.told === true;
+    } catch (error) {
+      console.error(`runner heartbeat: ${this.file} is not a heartbeat file (${(error as Error).message}); the runner is not watched until its next heartbeat`);
+    }
   }
 
   /** The runner is there now. Answers the time kept. */
   beat(): string {
-    const now = this.now();
+    const now = this.now(), ended = this.told;
     this.last = now; this.told = false;
-    if (now - this.saved >= SAVE_EVERY_MS) this.save(now);
+    // Ending a told silence is written at once, whatever the minute: a restart soon after must not read the silence as still told.
+    if (ended || now - this.saved >= SAVE_EVERY_MS) this.save(now);
     return new Date(now).toISOString();
   }
 
@@ -73,6 +86,8 @@ export class RunnerHeartbeat {
     const lastBeat = new Date(this.last).toISOString();
     console.warn(`runner heartbeat: none since ${lastBeat}, the limit is ${this.limitMs / 60_000} minutes; told the architect`);
     this.tell(lastBeat, this.limitMs);
+    // Written at once, whatever the minute: a restart soon after must not tell the same silence again.
+    this.save(now);
   }
 
   private save(at: number): void {
@@ -80,7 +95,7 @@ export class RunnerHeartbeat {
     const temporary = this.file + ".tmp";
     try {
       mkdirSync(dirname(this.file), { recursive: true });
-      writeFileSync(temporary, JSON.stringify({ last: at }) + "\n");
+      writeFileSync(temporary, JSON.stringify(this.told ? { last: this.last, told: true } : { last: this.last }) + "\n");
       renameSync(temporary, this.file);
       this.saved = at;
     } catch (error) { console.error("runner heartbeat not written", error); }

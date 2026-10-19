@@ -121,6 +121,8 @@ test("the pools take items by level and count the engineers that are working, no
   await b.child("w8", "r", { difficulty: 3, plan: [{ id: "run", text: "等跑完", state: "doing", waits: "14900K 排队中" }] }); await b.engineer("w8", 3);
   // waiting on a review: the review step is in progress.
   await b.child("w3", "r", { difficulty: 3, plan: [{ id: REVIEW_STEP, text: "审查（2 级）", state: "doing" }] }); await b.engineer("w3", 3);
+  // waiting on a second round of the review: the step of that round is in progress.
+  await b.child("w9", "r", { difficulty: 3, plan: [{ id: "review-2", text: "审查（第 2 轮）", state: "doing" }] }); await b.engineer("w9", 3);
   // blocked: its only open row is an item that is paused.
   await b.child("dep", "r"); await b.op.setPause({ ...asArchitect, id: "dep", paused: true, reason: "先放一放" });
   await b.child("w4", "r", { difficulty: 3, plan: [{ item: "dep", own: false }] }); await b.engineer("w4", 3);
@@ -137,7 +139,7 @@ test("the pools take items by level and count the engineers that are working, no
   await b.child("l1", "r", { difficulty: 1, plan: [{ id: "go", text: "干活", state: "doing" }] }); await b.engineer("l1", 1);
   await b.child("l2", "r", { difficulty: 1, plan: [{ id: "run", text: "等跑完", state: "doing", waits: "14900K 上的测量" }] }); await b.engineer("l2", 1);
   const two = b.pool("2+"), one = b.pool("1");
-  assert.equal(two.working, 4, "w1, w2 (CI), c5 and w6 work; w3 w4 w5 w7 w8 wait");
+  assert.equal(two.working, 4, "w1, w2 (CI), c5 and w6 work; w3 w4 w5 w7 w8 w9 wait");
   assert.equal(one.working, 1);
   assert.deepEqual(ids(two.listed), ["mid", "high"], "a held item is not a candidate");
 });
@@ -186,9 +188,13 @@ test("a backlog item (owned by a record) is not a candidate", async t => {
   assert.deepEqual(ids(b.pool("2+").listed), ["ok"]);
 });
 
-test("the review step is the plan step whose id is review", () => {
+test("the review step is the plan step of the stage review, in any round", () => {
   const step = (id: string) => ({ id, text: "t", state: "doing" as const });
   assert.equal(isReviewStep(step("review")), true);
+  assert.equal(isReviewStep(step("review-2")), true, "a later round is the same stage");
+  assert.equal(isReviewStep(step("review-12")), true);
+  assert.equal(isReviewStep(step("review-1")), false, "round 1 is written without a number");
+  assert.equal(isReviewStep({ ...step("review"), accept: true }), false, "an acceptance step is not a stage, whatever its id");
   assert.equal(isReviewStep(step("code-review")), false);
   assert.equal(isReviewStep({ id: "review", item: "review", own: false }), false, "an item row is not a step");
 });

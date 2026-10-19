@@ -389,10 +389,8 @@ export interface Progress {
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
 }
-/** The id of the plan step that stands for the item's review: marked in progress while a reviewer reads the pull request. */
+/** The id of the plan step that stands for the item's review in its first round: marked in progress while a reviewer reads the pull request. */
 export const REVIEW_STEP = "review";
-/** Whether a plan row is the review step. The one place that knows the convention. */
-export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
 /** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
  * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
 export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
@@ -419,6 +417,9 @@ export function stageOf(row: PlanRow): { kind: StageKind; round: number } | unde
   const m = STAGE_ID.exec(row.id);
   return m ? { kind: m[1] as StageKind, round: m[2] ? Number(m[2]) : 1 } : undefined;
 }
+/** Whether a plan row is the review step of some round (`review`, `review-2`, ...), the stage the plan marks in progress while a reviewer
+ * reads the pull request. The one place that knows the convention. */
+export function isReviewStep(row: PlanRow): boolean { return stageOf(row)?.kind === "review"; }
 /**
  * What is wrong with the stage rows of a plan an engineer holds, in words for the check, or nothing when it is right: a stage
  * every plan has is missing, the first rows of the stages are out of the order of the flow, or the rounds of one stage do not
