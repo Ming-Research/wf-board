@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Change a head in parts
+
+Nodes: mcp
+
+Summary: A head could be changed only whole, so changing a sentence meant reading the whole head and sending it back (583 whole-head rewrites in eleven architect sessions), and the architect wrote a script of its own that replaced exact texts, which it ran more than a hundred times. `update_item` now also takes `sections` (a whole section replaced by title) and `replace` (a text replaced, found exactly once); the edits are located in the head as it was and may not change the same text, so the order they are written in changes nothing, they are made together or not at all, a text found other than once names the edit and the count, the revision rule is that of a whole head, and the answer shows the lines before and after each change. The refused alternatives (a tool of its own, a patch text, texts only, edits one after another) are in the node; the rules are in docs/design.md, section 6, Changing things.
+
 ## 2026-10-19 Look at all the open work in one answer
 
 Nodes: mcp/look, mcp/whole-view
