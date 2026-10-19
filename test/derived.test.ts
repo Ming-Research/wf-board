@@ -109,7 +109,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     async s => {
       // The card's row joins its item's plan in the same commit; the item then waits for it while it is open.
       const id = pick(itemsOf(s)), key = `c${made++}`, group = s.items[id]!.group;
-      return op.writeCard({ author: group, key, item: id, question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
+      return op.writeCard({ author: group, key, item: id, kind: "design", question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }], ...(rand() < 0.5 ? { blocks: "work stops" } : {}) });
     },
     async s => {
       const open = Object.entries(s.decisions).filter(([, d]) => d.status === "open");

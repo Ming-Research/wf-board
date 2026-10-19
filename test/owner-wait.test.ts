@@ -55,7 +55,7 @@ async function mcp(t: Parameters<typeof board>[0]) {
   const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
   return { ...fixture, client, text };
 }
-const cardArgs = { author, key: "gate", item: "a", question: "合并吗？", confidence: { score: 3, reason: "只凭判断" }, options: [{ text: "是", detail: "合并，之后的工作可以开始", recommended: true }] };
+const cardArgs = { author, key: "gate", item: "a", kind: "design", question: "合并吗？", confidence: { score: 3, reason: "只凭判断" }, options: [{ text: "是", detail: "合并，之后的工作可以开始", recommended: true }] };
 
 test("write_card stores blocks, a revision can keep, replace or clear it, and context and brief show it", async t => {
   const { client, text, store } = await mcp(t);

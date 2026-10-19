@@ -203,7 +203,7 @@ export function context(s: Snapshot, r: Rules, ref: string, options: { log?: num
     dependents: r.dependents(id).filter(d => !d.own).map(d => ({ ...dependency(s, r, "item", d.id), own: d.own })),
     cards: cardIds.map(key => {
       const card = s.decisions[key]!;
-      return card.status === "open" ? { key, ...card } : { key, ...(card.num === undefined ? {} : { num: card.num }), status: card.status, question: card.question, choice: card.choice, choiceText: optionName(card.options.find(o => o.key === card.choice)), ruling: card.ruling, ruledAt: card.ruledAt };
+      return card.status === "open" ? { key, ...card } : { key, ...(card.num === undefined ? {} : { num: card.num }), status: card.status, question: card.question, kind: card.kind, choice: card.choice, choiceText: optionName(card.options.find(o => o.key === card.choice)), ruling: card.ruling, ruledAt: card.ruledAt };
     }), notes: relevantNotes(s, [`it:${id}`, ...cardIds.map(c => `q:${c}`)], 5), checks: r.checks(id), links: it.links, prs: references(documentText(s, "item", id), knownRepos(s)) };
 }
 

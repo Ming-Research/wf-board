@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Give a card a kind
+
+Nodes: cards
+
+Summary: A card had one structured field about what it asks of the owner, `blocks`; whether it was a design card, a rule card or another question was written only in the question's text, so the merge check of the runner, which holds a design card not yet ruled and lets an inquiry card pass, read a bracketed category at the start of the question and held an inquiry card whose question had none. A card now has a `kind`, `design`, `inquiry` or `rule`, which `write_card` requires when it creates the card, a revision may change, and `context` shows as a line `kind: design` on the card and in its item. A card written before the field has none stored and is read as `design`, which is what the check did to it before; the architect sets the kind of each old open card with `write_card`. The refused alternatives (a category written in the question, a hold only for blocking cards, a migration that writes a kind into every card) are in the node; the shape is in docs/design.md, section 5, Decision cards.
+
 ## 2026-10-19 Remove what a press of n inherits from the presses of other windows
 
 Nodes: testing/press-n

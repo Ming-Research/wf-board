@@ -13,7 +13,7 @@ import { board, at, later, author, architect, asArchitect, retired, rx, conf, op
 test("creation, revision, dependency, status, movement and card checks name a fix and leave the board unchanged", async t => {
   const { store, op, dir } = await board(t, { sharedProjects: true });
   const create = { ...asArchitect, key: "new", owner: "area", title: "New", accept: "New result passes" };
-  const card = { author, key: "new-card", item: "a", question: "Choose?", blocks: "The work stops", options: [opt("A")] };
+  const card = { author, key: "new-card", item: "a", kind: "design" as const, question: "Choose?", blocks: "The work stops", options: [opt("A")] };
   const cases: Array<[() => Promise<unknown>, RegExp]> = [
     [() => op.createItem({ ...create, key: "../escape" }), /key.*use/],
     [() => op.createItem({ ...create, key: "a" }), /key.*new/],
@@ -55,8 +55,10 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.writeCard({ confidence: conf, ...card, key: "ruled", rev: 1, item: "b" }), /status.*open card.*create a new card/],
     [() => op.writeCard({ confidence: conf, ...card, key: "choice", rev: 1, item: "b", before: "accept" }), /before.*placed when it starts to block/],
     [() => op.writeCard({ confidence: conf, ...card, blocks: undefined, before: "accept" }), /before.*only a card with blocks has a row/],
-    [() => op.writeCard({ author, key: "new-card", item: "a", question: "Choose?", blocks: "The work stops", options: [opt("A")] }), /confidence.*how sure.*score of 1 to 5/],
+    [() => op.writeCard({ author, key: "new-card", item: "a", kind: "design", question: "Choose?", blocks: "The work stops", options: [opt("A")] }), /confidence.*how sure.*score of 1 to 5/],
     [() => op.writeCard({ confidence: conf, ...card, options: [{ text: "A", detail: "" }] }), /detail/],
+    [() => op.writeCard({ confidence: conf, ...card, kind: undefined }), /kind.*say what the card asks.*design.*inquiry.*rule/],
+    [() => op.writeCard({ confidence: conf, ...card, kind: "question" as never }), /kind.*use one of design, inquiry, rule/],
     [() => op.ruleCard({ author, key: "ruled", choice: "A" }), /status.*open card/],
     [() => op.ruleCard({ author, key: "choice", choice: "C" }), /choice.*option keys \(A, B\)/],
     [() => op.withdrawCard({ author, key: "ruled", log: "No longer needed" }), /status.*open card/],
@@ -97,7 +99,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   await committed(() => op.updateItem({author,id:"other",rev:store.snapshot().items.other!.rev,order:2}),"update_item other",["items/other.yaml"],"item","other");
   assert.equal(store.snapshot().items.other!.order,2,"top-item order remains editable while owned order is the plan's");
   // The card is written with its row in the item's plan, in one commit with the card.
-  const writeNewCard=()=>op.writeCard({ confidence: conf,author,key:"new-card",item:"new",question:"Choose?",blocks:"The work stops",options:[opt("A", true),opt("B")]});
+  const writeNewCard=()=>op.writeCard({ confidence: conf,author,key:"new-card",item:"new",kind: "design", question:"Choose?",blocks:"The work stops",options:[opt("A", true),opt("B")]});
   await committed(writeNewCard,"write_card new-card",["decisions/new-card.yaml","items/new.yaml","numbers.yaml"],"decision","new-card");
   assert.deepEqual(store.snapshot().items.new!.plan.map(row=>row.id),["work","new-card","accept"]);
   assert.deepEqual(store.snapshot().items.new!.plan[1],{id:"new-card",card:"new-card"});
@@ -748,7 +750,7 @@ test("writes enforce configured projects and nonempty values; removed parameters
 
 test("card writes validate the question, option names, revisions and project ownership, and place the row where asked", async t => {
   const { store, op } = await board(t), before = store.snapshot();
-  const args = { author, key: "new-card", item: "a", question: "Choose?", blocks: "The work stops", options: [opt("Option")] };
+  const args = { author, key: "new-card", item: "a", kind: "design" as const, question: "Choose?", blocks: "The work stops", options: [opt("Option")] };
   for (const invalid of [
     { options: [] }, { options: [opt("A", true), opt("B", true)] },
     { options: [opt("x".repeat(21))] }, { options: [opt("two\nlines")] }, { question: "two\nlines" }, { item: "missing" },
@@ -773,12 +775,12 @@ test("write_card places the row where before and after say, and a row it waits f
     { id: "one", text: "One", state: "todo" }, { id: "two", text: "Two", state: "todo" }, { id: "three", text: "Three", state: "todo", after: ["one"] },
     { id: "accept", accept: true, text: "独立验收通过", state: "todo" },
   ] });
-  await op.writeCard({ confidence: conf, author, key: "mid", item: "a", question: "Where?", blocks: "The work stops", options: [opt("Here")], before: "three", after: ["one"] });
+  await op.writeCard({ confidence: conf, author, key: "mid", item: "a", kind: "design", question: "Where?", blocks: "The work stops", options: [opt("Here")], before: "three", after: ["one"] });
   const plan = store.snapshot().items.a!.plan;
   assert.deepEqual(plan.map(row => row.id), ["one", "two", "mid", "three", "accept"]);
   assert.deepEqual(plan[2], { id: "mid", card: "mid", after: ["one"] });
   assert.deepEqual(plan[3], { id: "three", text: "Three", state: "todo", after: ["one", "mid"] }, "the row that waits for the card keeps what it waited for");
-  await assert.rejects(op.writeCard({ confidence: conf, author, key: "dangling", item: "a", question: "Where?", blocks: "The work stops", options: [opt("Here")], after: ["missing"] }), /after must name earlier rows/);
+  await assert.rejects(op.writeCard({ confidence: conf, author, key: "dangling", item: "a", kind: "design", question: "Where?", blocks: "The work stops", options: [opt("Here")], after: ["missing"] }), /after must name earlier rows/);
   assert.equal(Object.hasOwn(store.snapshot().decisions, "dangling"), false, "a refused placement writes no card");
 });
 
@@ -789,7 +791,7 @@ test("write_card keeps what the row after the card waited for when a record row 
   await op.setPlan({ author, id: "a", rows: [
     { id: "one", text: "One", state: "todo" }, { item: "rec", own: false, after: [] }, { id: "accept", accept: true, text: "独立验收通过", state: "todo" },
   ] });
-  const args = { confidence: conf, author, key: "mid", item: "a", question: "Where?", blocks: "The work stops", options: [opt("Here")] };
+  const args = { confidence: conf, author, key: "mid", item: "a", kind: "design" as const, question: "Where?", blocks: "The work stops", options: [opt("Here")] };
   await op.writeCard(args);
   const plan = () => store.snapshot().items.a!.plan;
   assert.deepEqual(plan().map(row => row.id), ["one", "rec", "mid", "accept"]);
@@ -804,7 +806,7 @@ test("only a card that blocks has a row: a card without blocks has none, setting
   const { store, op } = await board(t);
   const plan = () => store.snapshot().items.a!.plan.map(row => row.id);
   const mismatch = () => rules(store.snapshot()).checks("a").filter(check => check.label === CARD_MISMATCH_LABEL);
-  const args = { author, key: "free", item: "a", question: "Which?", confidence: conf, options: [opt("A", true), opt("B"), opt("C")] };
+  const args = { author, key: "free", item: "a", kind: "design" as const, question: "Which?", confidence: conf, options: [opt("A", true), opt("B"), opt("C")] };
   await op.writeCard(args);
   assert.deepEqual(plan(), ["accept"], "a card that does not block gets no row");
   assert.deepEqual(store.snapshot().decisions.free!.confidence, conf);
@@ -835,7 +837,7 @@ test("rule_card takes the option the owner chose, their words, or both; neither 
   await op.ruleCard({ author, key: "choice", ruling: "Neither: do it in chat" });
   const card = store.snapshot().decisions.choice!;
   assert.deepEqual([card.status, card.choice, card.ruling], ["ruled", undefined, "Neither: do it in chat"]);
-  await op.writeCard({ author, key: "both", item: "a", question: "Which?", confidence: conf, options: [opt("A"), opt("B"), opt("C")] });
+  await op.writeCard({ author, key: "both", item: "a", kind: "design", question: "Which?", confidence: conf, options: [opt("A"), opt("B"), opt("C")] });
   await op.ruleCard({ author, key: "both", choice: "B", ruling: "B, but later" });
   assert.deepEqual([store.snapshot().decisions.both!.choice, store.snapshot().decisions.both!.ruling], ["B", "B, but later"]);
   await assert.rejects(op.ruleCard({ author, key: "both", choice: "Z" }), /only an open card/);
@@ -947,7 +949,7 @@ test("cancelling an item withdraws its open cards in the same commit; reopening 
   const { store, op } = await board(t, { sharedProjects: true });
   const openCards = () => Object.entries(store.snapshot().decisions).filter(([, card]) => card.item === "cancel-cards" && card.status === "open").map(([key]) => key).sort();
   await op.createItem({ ...asArchitect, key: "cancel-cards", group: author, title: "Cancel cards", accept: "Pass" });
-  for (const key of ["cancel-card-one", "cancel-card-two", "cancel-card-manual"]) await op.writeCard({ ...asArchitect, confidence: conf, key, item: "cancel-cards", question: `Question ${key}?`, options: [opt("A")] });
+  for (const key of ["cancel-card-one", "cancel-card-two", "cancel-card-manual"]) await op.writeCard({ ...asArchitect, confidence: conf, key, item: "cancel-cards", kind: "design", question: `Question ${key}?`, options: [opt("A")] });
   await op.withdrawCard({ ...asArchitect, key: "cancel-card-manual", log: "Not needed" });
   assert.deepEqual(openCards(), ["cancel-card-one", "cancel-card-two"]);
   const commits = (await store.log()).length;

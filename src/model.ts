@@ -332,6 +332,12 @@ export type Option = z.infer<typeof Option>;
 /** A card is open until the owner's pick is recorded (ruled) or it is withdrawn. */
 export const DECISION_STATUSES = ["open", "ruled", "withdrawn"] as const;
 
+/** What a card asks, chosen when it is written: a decision that goes into the design tree, a change to the rules, or any other question the owner decides. */
+export const CARD_KINDS = ["design", "inquiry", "rule"] as const;
+export type CardKind = (typeof CARD_KINDS)[number];
+/** The kind a card is read as: a card written before the field existed has none and counts as a design card, which the merge check holds until ruled. */
+export const cardKind = (card: { kind?: CardKind }): CardKind => card.kind ?? "design";
+
 /**
  * What a card carried before the form it has now: its background, kept word for word on the cards written then. Only
  * the migration writes it; the page shows it folded. The grounds of a card written now stand in its item's head.
@@ -355,6 +361,8 @@ export const Decision = z.object({
   num: Num.optional(),
   item: Key,
   question: z.string().min(1),
+  /** What the card asks. Absent on a card written before the field existed; read it with `cardKind`. */
+  kind: z.enum(CARD_KINDS).optional(),
   options: z.array(Option).min(1),
   confidence: Confidence.optional(),
   status: z.enum(DECISION_STATUSES),

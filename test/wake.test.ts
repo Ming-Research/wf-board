@@ -138,7 +138,7 @@ test("a sent note is pushed to the architect's stream with a number whatever pro
 
 test("a card ruled on the page or with rule_card is pushed to the session holding its item, as one line naming the card and the pick or the owner's words; nobody holding it, the owner's pick goes to the architect and a ruling a session recorded to no one, and a withdrawn card and a rewritten open card push nothing", async t => {
   const { url, api, op } = await server(t);
-  const card = { author, item: "b", confidence: { reason: "判断" }, options: [{ text: "先做", detail: "先做它" }, { text: "后做", detail: "后做它" }] };
+  const card = { author, item: "b", kind: "design" as const, confidence: { reason: "判断" }, options: [{ text: "先做", detail: "先做它" }, { text: "后做", detail: "后做它" }] };
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-b" });
   const worker = await agentSocket(t, url, "b-worker"), star = await agentSocket(t, url, ARCHITECT_SESSION);
   const pushed = () => worker.events().map(({ at, line, ...frame }) => (assert.match(String(at), /^\d{4}-\d\d-\d\dT/), [frame, line]));
@@ -385,7 +385,7 @@ test("a card that stops work tells the owner once; a card without blocks, a revi
   const targets: unknown[] = [];
   wake.onTell(notice => targets.push(notice.target));
   const { op } = await server(t, { wake });
-  const card = { author, key: "gate", item: "a", question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] };
+  const card = { author, key: "gate", item: "a", kind: "design" as const, question: "合并吗？", confidence: { reason: "判断" }, options: [{ text: "是", detail: "合并" }] };
   await op.writeCard(card);
   assert.deepEqual(told, [], "a card without blocks tells no one");
   await op.writeCard({ ...card, key: "hard", blocks: "#398 合并停着" });

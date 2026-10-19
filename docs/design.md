@@ -1831,7 +1831,7 @@ reasoning. Every decision a design makes is one card, standing in the head
 where the design reaches it.
 
 - **Shape.** `item`, `question` (one line, one bold sentence in the head),
-  `options` (at least one; a check flags an open card with fewer than three), `confidence`, `status`, `blocks?`, `choice?`, `ruling?`,
+  `kind?`, `options` (at least one; a check flags an open card with fewer than three), `confidence`, `status`, `blocks?`, `choice?`, `ruling?`,
   `ruledAt?`, times and `num`. An option is `{key, text, detail?,
   recommended?}`: the board assigns the keys A, B, C… in order; `text` is the
   option's name, one line of at most 20 characters (spaces not counted); `detail`
@@ -1843,6 +1843,19 @@ where the design reaches it.
   detail for every option and a confidence on a new card, and refuses
   anything else, naming the field and the fix. A card has no background: the
   head is the background.
+- **Card kind.** `kind` says what the card asks: `design` (a decision that goes
+  into the design tree), `inquiry` (any other question the owner decides) or
+  `rule` (a change to the rules). The writer chooses it where the card is written:
+  `write_card` refuses a new card without one, naming the three, and a revision may
+  change it or leave it out to keep it. A card written before the field existed has
+  none stored and is read as `design` (`cardKind` in `src/model.ts`), the kind the
+  merge check held it as before; a migration would only guess, since the question's
+  wording is all that tells an old inquiry card from a design card, so the architect
+  sets the kind of each old open card by revising it. `context` shows the kind as a
+  line `kind: design` under the card's first line, on the card and in its item,
+  closed cards included. The merge check of the runner (item
+  runner-merge-card-kind) reads this line instead of a category written in the
+  question.
 - **Where it lives.** A card is stored once in `decisions/<key>.yaml` with its
   `item`. Only a card that blocks (`blocks`) is also a row of that item's plan,
   because the work goes on without any other card. `write_card` writes both in
@@ -2247,7 +2260,7 @@ This is a temporary trim; the redesign of the tools, which is planned separately
 - *The plan* with finished rows (done, dropped) folded into `✓ N 项已完成` and `✗ M 项已放弃`
   as `brief` folds them, except the acceptance steps, which stay listed whatever their state
   (the architect checks an item by them); other rows, targets, relations and flags as before.
-- *Open cards* with the question, `rev`, `blocks`, the option names, the recommendation and
+- *Open cards* with the question, `rev`, `kind`, `blocks`, the option names, the recommendation and
   the confidence (its reason cut at 160 characters); the options' grounds are left out.
   A ruled or withdrawn card is as before.
 - *Notes* that are handled (state `done`) as the text and the reply, each cut at 160
@@ -2389,7 +2402,7 @@ authors `总管` and `PM` is refused by every tool.
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
 | `move_item_project(id, project)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); work leaving a paused chain is allowed, because the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
-| `write_card(key, item, question, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence required on a new card; `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
+| `write_card(key, item, question, kind, options, confidence, blocks?, before?, after?, rev?)` | Adds an open decision card, or revises an open card; `kind` is `design`, `inquiry` or `rule`; `options` are `{text, detail, recommended?}` (the board assigns the keys); `confidence` is `{score?, reason}`; `blocks` makes it blocking and gives it a row in the item's plan (set it only when named work cannot proceed until the owner rules; `null` on a revision clears it and removes the row) | Item exists and does not change on a revision; one-line question; one to 26 options, each with a one-line name of at most 20 characters and a detail, at most one recommended; confidence and `kind` required on a new card (a revision that omits `kind` keeps it); `blocks` nonempty; `rev` required to revise; `before` and `after` only when a card starts to block, and then it and its row are one commit |
 | `rule_card(key, choice?, ruling?)` | Records a decision the owner made outside the page, for example in chat: the option chosen, the owner's words, or both | At least one of them; choice is an option key; the card is open. A pick sent on the page is recorded by the board when it is sent |
 | `withdraw_card(key, log)` | Closes an open card nobody needs; the reason goes to the item's log | The card is open |
 | `reply_note(id, reply, replace?)` | Answers a note, stamps `repliedAt`, marks it done | An existing reply requires explicit replacement, and `replace` replaces only the reply the same author wrote; another author's is refused, unless the writer is the architect, who runs the process and replaces any reply, an old one with no author recorded and a retired author's included. An author is a project name, so two engineers of one project can replace each other's replies; their trees rarely cross, and recording the session would change the data format |

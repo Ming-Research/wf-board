@@ -481,7 +481,7 @@ test("context and graph accept a short number, rows show it, and an exact key wi
 test("write_card takes a question, options with their grounds and a confidence, rule_card a choice or the owner's words, and withdraw_card a reason; context shows the card", async t => {
   const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
   const properties = (name: string) => Object.keys(tools.find(tool => tool.name === name)!.inputSchema.properties!).sort();
-  assert.deepEqual(properties("write_card"), ["after", "author", "before", "blocks", "confidence", "item", "key", "options", "question", "rev", "session"]);
+  assert.deepEqual(properties("write_card"), ["after", "author", "before", "blocks", "confidence", "item", "key", "kind", "options", "question", "rev", "session"]);
   assert.deepEqual(properties("rule_card"), ["author", "choice", "key", "ruling", "session"]);
   assert.deepEqual(properties("withdraw_card"), ["author", "key", "log", "session"]);
   const optionProperties = (tools.find(tool => tool.name === "write_card")!.inputSchema.properties!.options as { items: { properties: object } }).items.properties;
@@ -490,11 +490,11 @@ test("write_card takes a question, options with their grounds and a confidence, 
   const confidence = { score: 4, reason: "Measured on the old run" };
   // The removed argument is refused, not ignored; a card without confidence or an option without detail is refused too.
   for (const extra of [{ background: "Why" }, { confidence: undefined }, { options: [{ text: "A" }] }]) {
-    const refused = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, ...extra } });
+    const refused = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", kind: "design", question: "Which?", options, confidence, ...extra } });
     assert.equal(refused.isError, true, JSON.stringify(extra));
   }
   assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "choice" } })).isError, true, "neither a choice nor words");
-  const created = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", question: "Which?", options, confidence, blocks: "The work stops" } });
+  const created = await client.callTool({ name: "write_card", arguments: { author, key: "q1", item: "a", kind: "design", question: "Which?", options, confidence, blocks: "The work stops" } });
   assert.equal(created.isError, undefined, text(created));
   const card = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
   assert.match(card, /^q1 · OPEN · Which\? · rev 1/m); assert.match(card, /^  A \(recommended\): First — Does the first; costs more; recommended because it is measured$/m); assert.match(card, /^  B: Second — Does the second$/m);
@@ -504,15 +504,50 @@ test("write_card takes a question, options with their grounds and a confidence, 
   assert.equal(ruled.isError, undefined, text(ruled));
   const closed = text(await client.callTool({ name: "context", arguments: { id: "q1" } }));
   assert.match(closed, /^chosen B: Second · 2026-10-11T02:03:04Z$/m); assert.match(closed, /^ruling: B, as the owner wrote$/m);
-  assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /^q1 · RULED · Which\? · #\d+\nchosen B: Second · /m);
+  assert.match(text(await client.callTool({ name: "context", arguments: { id: "a" } })), /^q1 · RULED · Which\? · #\d+\nkind: design\nchosen B: Second · /m);
   // A card the owner settled in words, without choosing an option.
-  await client.callTool({ name: "write_card", arguments: { author, key: "q2", item: "a", question: "Or?", options, confidence } });
+  await client.callTool({ name: "write_card", arguments: { author, key: "q2", item: "a", kind: "design", question: "Or?", options, confidence } });
   assert.equal((await client.callTool({ name: "rule_card", arguments: { author, key: "q2", ruling: "Settled in chat" } })).isError, undefined);
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "q2" } })), /^ruling: Settled in chat$/m);
   const withdrawn = await client.callTool({ name: "withdraw_card", arguments: { author, key: "choice", log: "No longer needed" } });
   assert.equal(withdrawn.isError, undefined, text(withdrawn));
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "choice" } })), /^choice · WITHDRAWN · 中文方案？/m);
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "b" } })), /撤回了决策卡「中文方案？」：No longer needed/);
+});
+
+test("write_card needs a kind to create a card, context shows it as a line of its own, and a card written before the field is read as a design card", async t => {
+  const { client, text, store } = await connected(t);
+  const options = [{ text: "First", detail: "Does the first", recommended: true }, { text: "Second", detail: "Does the second" }, { text: "Third", detail: "Does the third" }];
+  const card = { author, key: "ask-1", item: "a", question: "Which?", options, confidence: { score: 3, reason: "Judgment only" } };
+  const context = async (id: string) => text(await client.callTool({ name: "context", arguments: { id } }));
+  // A new card that says nothing of its kind is refused, and the refusal names the three kinds.
+  const missing = await client.callTool({ name: "write_card", arguments: card });
+  assert.equal(missing.isError, true); assert.match(text(missing), /kind: say what the card asks, one of design .*, inquiry .*or rule /);
+  assert.equal(store.snapshot().decisions["ask-1"], undefined, "a refused write makes no card");
+  // A word that is none of the three is refused by the argument check, which lists them.
+  const wrong = await client.callTool({ name: "write_card", arguments: { ...card, kind: "question" } });
+  assert.equal(wrong.isError, true); assert.match(text(wrong), /"kind" must be one of: design, inquiry, rule/);
+  // With a kind the card is made, stores it, and context shows it under the card's first line, on the card and in its item.
+  const created = await client.callTool({ name: "write_card", arguments: { ...card, kind: "inquiry" } });
+  assert.equal(created.isError, undefined, text(created));
+  assert.equal(store.snapshot().decisions["ask-1"]!.kind, "inquiry");
+  assert.match(await context("ask-1"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
+  assert.match(await context("a"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
+  // A revision that leaves the kind out keeps it; one that gives a kind changes it.
+  const kept = await client.callTool({ name: "write_card", arguments: { ...card, rev: 1, question: "Which one?" } });
+  assert.equal(kept.isError, undefined, text(kept)); assert.equal(store.snapshot().decisions["ask-1"]!.kind, "inquiry");
+  const changed = await client.callTool({ name: "write_card", arguments: { ...card, rev: 2, kind: "design" } });
+  assert.equal(changed.isError, undefined, text(changed)); assert.match(await context("ask-1"), /^kind: design$/m);
+  // The seeded cards were written before the field existed: no kind is stored and they are read as design cards, open or closed.
+  assert.equal(store.snapshot().decisions.choice!.kind, undefined);
+  assert.match(await context("choice"), /^choice · OPEN · 中文方案？ · rev 1 · #\d+\nkind: design\nblocks: /m);
+  assert.match(await context("b"), /^ruled · RULED · 旧方案？ · #\d+\nkind: design\nchosen A: Old/m);
+  // Revising such a card without a kind leaves it without one, and giving a kind fills it in.
+  const legacy = { author, key: "choice", item: "b", question: "中文方案？", options, confidence: { reason: "Judgment only" } };
+  const left = await client.callTool({ name: "write_card", arguments: { ...legacy, rev: 1 } });
+  assert.equal(left.isError, undefined, text(left)); assert.equal(store.snapshot().decisions.choice!.kind, undefined);
+  const filled = await client.callTool({ name: "write_card", arguments: { ...legacy, rev: 2, kind: "rule" } });
+  assert.equal(filled.isError, undefined, text(filled)); assert.match(await context("choice"), /^kind: rule$/m);
 });
 
 test("a card migrated from the old shape shows its old text as legacy lines in context", async t => {
