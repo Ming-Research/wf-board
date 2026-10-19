@@ -8,6 +8,12 @@ Nodes: page/diagrams/data-charts
 
 Summary: Item text could draw flow and structure diagrams but no data chart, and the library the page bundles already draws a bar and line chart (`xychart`) that the page left unusable: its first series color is `#ECECFF`, 1.17:1 on a white page, a Chinese category without quotes is a lexical error, and a bar chart without a y range is cut at the smallest value. The page now gives the library eight series colors for each theme, a clear plate and a height of 360 px, so a chart is written in the same fence as any diagram and drawn in the page's colors; the checks are in the DOM layer (what the page asks) and in the browser layer (what the real library draws). A chart library with a fence of its own, a renderer of our own and images were refused. The grounds, the refused alternatives and the measurements are in the node and in docs/design.md, section 7, Diagrams, Data charts.
 
+## 2026-10-19 Change a head in parts
+
+Nodes: mcp
+
+Summary: A head could be changed only whole, so changing a sentence meant reading the whole head and sending it back (583 whole-head rewrites in eleven architect sessions), and the architect wrote a script of its own that replaced exact texts, which it ran more than a hundred times. `update_item` now also takes `sections` (a whole section replaced by title) and `replace` (a text replaced, found exactly once); the edits are located in the head as it was and may not change the same text, so the order they are written in changes nothing, they are made together or not at all, a text found other than once names the edit and the count, the revision rule is that of a whole head, and the answer shows the lines before and after each change. The refused alternatives (a tool of its own, a patch text, texts only, edits one after another) are in the node; the rules are in docs/design.md, section 6, Changing things.
+
 ## 2026-10-19 Look at all the open work in one answer
 
 Nodes: mcp/look, mcp/whole-view
