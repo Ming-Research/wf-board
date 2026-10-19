@@ -3,7 +3,7 @@
 // may overlap, and they are made at once, so the order they are written in changes nothing and one that does not fit
 // refuses the whole call. The answer shows every change as the lines before and after it, so the writer need not read
 // the head back to check.
-import { PREAMBLE, splitHead } from "./head-sections.ts";
+import { PREAMBLE, fencedBefore, splitHead, summaryMark } from "./head-sections.ts";
 
 export interface SectionEdit {
   /** The title of the section to replace, as `context` lists it. */
@@ -31,8 +31,8 @@ export const MAX_CHANGES = 30;
 /** How much of a text an error quotes. */
 const QUOTE = 60;
 
-/** The part of the head one edit replaces, in the head as it was. */
-interface Region { start: number; end: number; text: string; label: string }
+/** The part of the head one edit replaces, in the head as it was; `path` names the field that carries the new text. */
+interface Region { start: number; end: number; text: string; label: string; path: string }
 
 const quote = (text: string): string => JSON.stringify([...text].length > QUOTE ? `${[...text].slice(0, QUOTE).join("")}…` : text);
 const lineAt = (head: string, offset: number): number => 1 + (head.slice(0, offset).match(/\n/g)?.length ?? 0);
@@ -65,8 +65,20 @@ function sectionRegions(head: string, edits: readonly SectionEdit[]): Region[] {
     }
     const old = found[0]!;
     // The blank lines that end the old section end the new one, whatever the new text ends with.
-    const tail = /\s*$/.exec(old.text)![0];
-    return { start: old.start, end: old.start + old.text.length, text: edit.text.replace(/\s+$/, "") + tail, label };
+    const tail = old.text.slice(old.text.trimEnd().length);
+    return { start: old.start, end: old.start + old.text.length, text: edit.text.trimEnd() + tail, label, path: `sections[${i}].text` };
+  });
+}
+
+/** A new text may not hold the line a cut `context` answer writes: it was copied from a summary and lacks the text that was left out. */
+function refuseCutMarks(edits: HeadEdits): void {
+  (edits.sections ?? []).forEach((edit, i) => {
+    const mark = summaryMark(edit.text);
+    if (mark) throw new HeadEditError(`sections[${i}].text: it holds the line "${mark}", which context writes where it cut a section short, so it was copied from a cut answer; get the section whole with context section: ${quote(edit.title)} and change that`);
+  });
+  (edits.replace ?? []).forEach((edit, i) => {
+    const mark = summaryMark(edit.new);
+    if (mark) throw new HeadEditError(`replace[${i}].new: it holds the line "${mark}", which context writes where it cut a section short, so it was copied from a cut answer; get the section whole with context section: "<title>" and copy the text from that`);
   });
 }
 
@@ -75,12 +87,12 @@ function replaceRegions(head: string, edits: readonly Replacement[]): Region[] {
   return edits.map((edit, i) => {
     if (!edit.old.trim()) throw new HeadEditError(`replace[${i}].old: give text that is not blank`);
     const at = occurrences(head, edit.old);
-    if (at.length === 0) throw new HeadEditError(`replace[${i}].old: ${quote(edit.old)} occurs 0 times in the head; copy it exactly from context (section "all"), punctuation and line breaks included`);
+    if (at.length === 0) throw new HeadEditError(`replace[${i}].old: ${quote(edit.old)} occurs 0 times in the head; copy it exactly from context (section: "<title>" gives one section whole), punctuation and line breaks included`);
     if (at.length > 1) {
       const lines = at.slice(0, 5).map(start => lineAt(head, start));
       throw new HeadEditError(`replace[${i}].old: ${quote(edit.old)} occurs ${at.length} times in the head (lines ${lines.join(", ")}${at.length > 5 ? ", …" : ""}); add words around it so that it occurs exactly once`);
     }
-    return { start: at[0]!, end: at[0]! + edit.old.length, text: edit.new, label: `replace[${i}]` };
+    return { start: at[0]!, end: at[0]! + edit.old.length, text: edit.new, label: `replace[${i}]`, path: `replace[${i}].new` };
   });
 }
 
@@ -139,6 +151,21 @@ function showChanges(before: string, after: string, regions: readonly Region[]):
 }
 
 /**
+ * An edit may not turn the text after it into code or out of it: a fence line (``` or ~~~) it adds without its partner would open a
+ * fenced block that swallows the section titles below, so `context` could not find them and the page would draw them as code. Whether
+ * a fenced block is open at the end of every edit must be as it was before the write.
+ */
+function refuseBrokenFences(head: string, result: string, regions: readonly Region[]): void {
+  let delta = 0;
+  const after = regions.map(region => { delta += region.text.length - (region.end - region.start); return region.end + delta; });
+  const was = fencedBefore(head, regions.map(region => region.end)), now = fencedBefore(result, after);
+  const broken = regions.findIndex((_, i) => was[i] !== now[i]);
+  if (broken === -1) return;
+  const region = regions[broken]!;
+  throw new HeadEditError(`${region.path}: it ${now[broken] ? "opens a fenced block (a line starting with \`\`\` or ~~~) that it does not close, so the text after it would be code" : "closes a fenced block that it did not open, so the text after it would stop being code"}; give every fence line together with its partner in the same edit`);
+}
+
+/**
  * `head` with the edits made, and the answer that shows them. Every edit is located in `head` as it is now, a text to replace
  * exactly once; sections are told apart by title (`splitHead`). Refuses, naming the edit, a text found other than once, a
  * title that is no section or the title of several, a new section that is not exactly that section, edits that overlap, and
@@ -147,6 +174,7 @@ function showChanges(before: string, after: string, regions: readonly Region[]):
 export function editHead(head: string, edits: HeadEdits): { head: string; shown: string } {
   if (edits.sections?.length === 0) throw new HeadEditError("sections: give at least one section, or leave it out");
   if (edits.replace?.length === 0) throw new HeadEditError("replace: give at least one pair of old and new text, or leave it out");
+  refuseCutMarks(edits);
   const regions = [...sectionRegions(head, edits.sections ?? []), ...replaceRegions(head, edits.replace ?? [])].sort((a, b) => a.start - b.start || a.end - b.end);
   let previous: Region | undefined;
   for (const region of regions) {
@@ -157,5 +185,6 @@ export function editHead(head: string, edits: HeadEdits): { head: string; shown:
   for (const region of regions) { result += head.slice(at, region.start) + region.text; at = region.end; }
   result += head.slice(at);
   if (!result.trim()) throw new HeadEditError("the edits would leave the head blank; a head keeps some text");
+  refuseBrokenFences(head, result, regions);
   return { head: result, shown: showChanges(head, result, regions) };
 }

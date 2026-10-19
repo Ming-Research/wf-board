@@ -41,6 +41,22 @@ export function splitHead(head: string): HeadSection[] {
   return sections;
 }
 
+/**
+ * For each offset of `text`, in ascending order, whether a fenced block is open there, as `splitHead` reads fences: the lines that
+ * start before the offset count, and the line that holds the offset counts whole.
+ */
+export function fencedBefore(text: string, offsets: readonly number[]): boolean[] {
+  const states: boolean[] = [];
+  let fenced = false, start = 0;
+  for (const line of lines(text)) {
+    while (states.length < offsets.length && offsets[states.length]! <= start) states.push(fenced);
+    if (FENCE.test(bare(line))) fenced = !fenced;
+    start += line.length;
+  }
+  while (states.length < offsets.length) states.push(fenced);
+  return states;
+}
+
 // The line the summary writes where it cut a section short.
 const CUT_LINE = /^ {2}… \d+ more characters \(section ".*"\)[ \t]*$/m;
 /** The mark of a summary in a text, if the text holds one: a head that carries it was copied from a cut answer, and is not a head. */

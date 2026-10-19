@@ -52,7 +52,8 @@ test("a call with an edit that does not fit writes nothing, and says which one a
     [{ sections: [{ title: "为什么", text: "**为什么**：x" }], replace: [{ old: "因为丙", new: "y" }] }, /change the same text/],
     [{ head: "整段", replace: [{ old: "因为丙", new: "y" }] }, /head: give either the whole head, or sections and replace/],
     [{ replace: [{ old: "因为丙", new: "y" }], reason: undefined }, /reason: explain why head changed/],
-    [{ replace: [{ old: "因为丙", new: "  … 12 more characters (section \"问题\")" }] }, /holds the line "… 12 more characters \(section "问题"\)".*context section: "all"/],
+    [{ replace: [{ old: "因为丙", new: "  … 12 more characters (section \"问题\")" }] }, /^replace\[0\]\.new: it holds the line "… 12 more characters \(section "问题"\)".*context section: "<title>"/],
+    [{ sections: [{ title: "为什么", text: "**为什么**：\n```\n因为" }] }, /^sections\[0\]\.text: it opens a fenced block/],
     [{ replace: [{ old: " ", new: "y" }] }, /input\.replace\.0\.old: provide nonempty text after trimming/],
   ] as Array<[Record<string, unknown>, RegExp]>) {
     await assert.rejects(write(args), (error: unknown) => error instanceof OpError && message.test(error.message), String(message));

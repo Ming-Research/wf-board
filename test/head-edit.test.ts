@@ -140,3 +140,47 @@ test("an edit that changes nothing is said to change nothing, and the answer lis
   assert.equal(answer.shown.split("\n").filter(text => text.startsWith("replace[")).length, MAX_CHANGES);
   assert.equal(answer.head, Array.from({ length: count }, (_, i) => `改 ${i}`).join("\n"), "all of them are made");
 });
+
+// A line that opens or closes a fenced block changes what the text below it is: `splitHead` reads a title inside a block as code.
+const BLOCK = ["**问题**：甲。", "", "**做法**：", "```wf", "let x = 1", "```", "", "**改动**：", "文件 a.ts。", ""].join("\n");
+const titles = (text: string) => splitHead(text).map(s => s.title);
+
+test("an edit may not leave a fenced block open or closed that it did not open or close, since the sections below would turn into code or out of it", () => {
+  // A new section that opens a block it does not close is one section alone, but it swallows every title below it.
+  refused(BLOCK, { sections: [{ title: "问题", text: "**问题**：\n```\ncode" }] }, /^sections\[0\]\.text: it opens a fenced block \(a line starting with ``` or ~~~\) that it does not close, so the text after it would be code; give every fence line together with its partner in the same edit$/);
+  refused(BLOCK, { replace: [{ old: "甲。", new: "甲。\n~~~\ncode" }] }, /^replace\[0\]\.new: it opens a fenced block/);
+  // Taking away the line that closes a block opens it to the end, and a fence line in the middle of a block closes it.
+  refused(BLOCK, { replace: [{ old: "let x = 1\n```\n", new: "let x = 1\n" }] }, /^replace\[0\]\.new: it opens a fenced block/);
+  refused(BLOCK, { replace: [{ old: "let x = 1", new: "let x = 1\n```" }] }, /^replace\[0\]\.new: it closes a fenced block that it did not open, so the text after it would stop being code/);
+  // The edit that is named is the first of the call that breaks the fences.
+  refused(BLOCK, { replace: [{ old: "文件 a.ts。", new: "文件 b.ts。" }, { old: "甲。", new: "甲。\n```" }] }, /^replace\[1\]\.new: it opens a fenced block/);
+  // Whole blocks, and fence lines changed where they stand, keep the fences as they were.
+  const kept = editHead(BLOCK, { sections: [{ title: "做法", text: "**做法**：\n```wf\nlet y = 2\n```" }], replace: [{ old: "甲。", new: "甲。\n\n```\nnew\n```" }] }).head;
+  assert.deepEqual(titles(kept), titles(BLOCK));
+  assert.ok(kept.includes("let y = 2") && kept.includes("```\nnew\n```"));
+  const added = editHead(BLOCK, { replace: [{ old: "```wf", new: "```wf2" }, { old: "let x = 1\n```\n\n", new: "let x = 1\n```\n\n**新的一节**：\n\n" }] }).head;
+  assert.deepEqual(titles(added), ["问题", "做法", "新的一节", "改动"], "a section added after a sentence has its title found");
+  // A title written inside a block stays code.
+  assert.deepEqual(titles(editHead(BLOCK, { replace: [{ old: "let x = 1", new: "**不是标题**：\nlet x = 1" }] }).head), titles(BLOCK));
+  // A head that already ends inside a block is not made worse by an edit that leaves it so.
+  assert.equal(editHead("**甲**：\n```\n没闭合", { replace: [{ old: "没闭合", new: "仍没闭合" }] }).head, "**甲**：\n```\n仍没闭合");
+});
+
+test("a new text that holds the line of a cut answer is refused in the words of its edit, pointing to the section to read", () => {
+  const mark = '  … 12 more characters (section "问题")';
+  refused(HEAD, { sections: [{ title: "问题", text: `**问题**：x\n${mark}` }] }, /^sections\[0\]\.text: it holds the line "… 12 more characters \(section "问题"\)", which context writes where it cut a section short, so it was copied from a cut answer; get the section whole with context section: "问题" and change that$/);
+  refused(HEAD, { replace: [{ old: "因为丙", new: "y" }, { old: "因为丙", new: mark }] }, /^replace\[1\]\.new: it holds the line "… 12 more characters \(section "问题"\)".*context section: "<title>" and copy the text from that$/);
+  // Neither message sends the writer back to reading the whole head.
+  for (const edits of [{ sections: [{ title: "问题", text: mark }] }, { replace: [{ old: "因为丙", new: mark }] }]) {
+    assert.throws(() => editHead(HEAD, edits), (error: unknown) => error instanceof HeadEditError && !/"all"|whole head|write it back/.test(error.message));
+  }
+});
+
+test("a long run of white space in a new section or an old one is cut off in linear time", () => {
+  // `/\s+$/` and `/\s*$/` are quadratic on a run followed by a letter (measured: four times as long for twice the run).
+  const run = " ".repeat(300_000);
+  const start = performance.now();
+  const edited = editHead(`**问题**：甲${run}乙\n\n**做法**：丙\n`, { sections: [{ title: "问题", text: `**问题**：丁${run}戊\n` }] }).head;
+  assert.equal(edited, `**问题**：丁${run}戊\n\n**做法**：丙\n`);
+  assert.ok(performance.now() - start < 2000, `${performance.now() - start} ms`);
+});

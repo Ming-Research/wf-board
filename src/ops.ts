@@ -922,7 +922,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // The head the edits make of the head the item has now, and the lines that show them.
       let head = a.head, changes: string | undefined;
       if (inParts) {
-        for (const text of [...(a.sections ?? []).map(edit => edit.text), ...(a.replace ?? []).map(edit => edit.new)]) refuseSummary(text);
+        // `editHead` refuses a new text that holds the line of a cut answer, in the words of the edit it is in.
         try { ({ head, shown: changes } = editHead(it.head ?? "", { sections: a.sections, replace: a.replace })); }
         catch (error) { throw error instanceof HeadEditError ? new OpError(error.message) : error; }
       }

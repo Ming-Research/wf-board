@@ -2562,7 +2562,14 @@ the first edit that does not fit, a text found 0 or 2 or more times, a title tha
 exactly that section, or two edits that change the same text, refuses the call and is named by its place in it (`replace[1].old: "…"
 occurs 2 times in the head (lines 4, 9); add words around it so that it occurs exactly once`), and nothing is written. A call that would leave the head
 blank, a blank `old` and an empty list are refused, and every new text is checked for the line a cut `context` answer writes, as a whole head is
-(A summary is not a head, above). The `rev` rule is that of a whole head: the write stands on a `rev` that is behind when the head did not change since, and is
+(A summary is not a head, above); the refusal is in the words of the edit (`replace[1].new: it holds the line …`) and sends the writer to
+`context` with `section: "<title>"`, not back to reading the whole head. An edit may not change whether a fenced block is open at its
+end: a fence line (``` or ~~~) that it adds or removes without its partner would turn every title below it into code, so `context` could
+not find those sections and the page would draw them as code, and a new section that is one section when cut out alone (`splitHead`
+reads only it) would pass a check on the text alone; the check reads the fences of the head before and of the result at the end of
+every edit (`fencedBefore`) and refuses the first edit where they differ (`sections[0].text: it opens a fenced block … that it does
+not close`). The ends of the new text are cut with `trimEnd`, since a regular expression for trailing white space is quadratic on a
+long run of it (measured: four times as long for twice the run) and the write queue is one. The `rev` rule is that of a whole head: the write stands on a `rev` that is behind when the head did not change since, and is
 refused with the changes when it did, even if the text it replaces is still there once; a revision of each section, with which two writers
 could change two sections at once, belongs to storing a head by section, which this does not decide. The answer to the write has, after its
 first line and `note`, the changes in head order: for each, its place (`replace[2] in 做法 · line 12`, `sections[0] "做法" · line 12–15`, the line
