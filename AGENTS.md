@@ -63,6 +63,7 @@ matches what the artifact board offered.
 - `src/timeline.ts`: the line of an agent (one dispatch record, one session): the state starts the store derives from the runner's `report_state` commits
   (`activity.states`), the segments `lineOf` cuts from them to the span of the dispatch, with the item's pause spans, the longest waits and the text of the
   `timeline` tool; imported by the server and bundled into the page, which draws the line as a bar in each row of the runner's block (design section 7, Agent list).
+- `src/look.ts`: the look: every open work item in one answer as the tree the owner's board shows, in a budget of lines, and the memory of what each session saw at its last look (daemon memory only), printed by the `look` tool (design section 6, The look).
 - `src/live.ts`: the runner's beats for the turns running now (the turn's number, its length, the last action), kept in the
   daemon's memory only and sent to the page as the event `live`; `src/runner-rows.ts`: the runner's block of the agent list, one row
   for each piece of work the runner holds, read from its report on the item, the dispatch record and the beats (design section 7,
