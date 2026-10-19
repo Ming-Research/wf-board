@@ -2840,32 +2840,63 @@ level, and whether that someone is working, waiting or has gone quiet.
   it. Their starts are within five minutes of each other (`runnerHolds`): the
   runner records the dispatch and reports in the same breath, so a report left
   from an earlier job does not make a session started on the item later the
-  runner's. A row has the session (the dispatch's agent, level, model and
-  effort), what the report says in the whole view's words (`reportText`) and
-  its limits (`limitOf`: past it, or an exception, the chip is amber), since
-  when the work has been in that state, and the time, turns and cost since it
-  began. All the rows are unfolded: the older rule unfolds only a session with a
+  runner's. All the rows are unfolded: the older rule unfolds only a session with a
   dispatch alive within six hours, which would fold a job that waits for the
   owner overnight, and a job waiting for CI, a card or the architect is what the
-  owner opens the list to see. Overdue and exception rows come first, then
-  those with a turn running, then the waiting ones, the longest in their state
-  first. A row whose report says a turn runs adds a line for the turn: from the runner's
-  beat (turn number, how long it has run, how long since its last action and
-  the action) when it sends one, else the time the report says it began and
-  that the runner has told nothing of the turn's inside; a beat not repeated
-  for 90 seconds is shown as silent, with what it last said. A row that
-  asks the architect gets the architect's turn under it while the runner beats
-  for one. A beat counts only while it agrees with the report (an engineer's while
-  the report says a turn runs, the architect's while it says the work asks the
-  architect), so a turn that ended is gone from the row at the next report
-  without the beat having to be cleared. The older rows leave out the sessions
-  the runner holds, so no session is drawn twice. The whole view is not changed: it
-  answers what is left and who has nobody, by item, and the architect reads it
-  too; the two repeat a job on purpose, and say the same words with the same
-  limits because both call the same function and table. Rejected: folding the
-  runner's rows by the older six-hour rule; dropping the whole view's rows that
-  the block repeats, which two questions each need; unfolding a report with no
-  dispatch of the runner's job behind it, which is a leftover.
+  owner opens the list to see. The older rows leave out the sessions the runner
+  holds, so no session is drawn twice. The whole view is not changed: it answers
+  what is left and who has nobody, by item, and the architect reads it too; the
+  two repeat a job on purpose. Rejected: folding the runner's rows by the older
+  six-hour rule; dropping the whole view's rows that the block repeats, which two
+  questions each need; unfolding a report with no dispatch of the runner's job
+  behind it, which is a leftover.
+- **The runner's table.** The block is a table, a row for each piece of work, so
+  that the jobs the runner can hold at once (16 at the owner's current limits, ten
+  of level 1 and six above) are as many lines that line up. The columns: the title, with the session's level as a
+  small number before it; the state in a word (`stateWord`: 在跑, 等 CI, 等主人,
+  等架构师, 等条目, 等 14900K, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
+  在跑); one line of what the work does or waits for; how long it has been in that
+  state (for a turn running, how long the turn has run); and the time, turns and cost
+  since the work began. The stylesheet cuts the title and the line of text to one
+  line, and the hover of each says the rest. The owner's list then has no second
+  place for the level (the model and effort are on the number's hover), no
+  second time (the older cell's 「N 分钟前」 is not drawn), and no key: the
+  item's key stands only on the title's hover, and the items a report waits for
+  and the cards an ask to the owner names are written as titles and questions,
+  with their keys on the hover (`runnerLine`).
+  - *The line of text* is the last action of the turn running when the runner
+    beats (the engineer's, or the architect's turn for a work that asks the
+    architect: 「架构师在答：…」), else the report's note, else for a turn running
+    that the runner has not described, 「还没报这一轮的动作」. A beat not
+    repeated for 90 seconds reads 「没有动静 N 分钟」 in amber, and the hover keeps
+    what it last said. The hover of a turn is its number, how long it has run, how
+    long since its last action and the action.
+  - *What the list does not show.* A commit id and a path on the machine the runner
+    runs on do not stand on the list, in the line of text or on a hover:
+    `listText` leaves a commit id (seven to forty hexadecimal digits holding a
+    digit and a letter, with the 「提交」 before it) out and shortens a path under
+    `~`, an environment variable or a system root to its last name, so
+    「看 ~/Library/Logs/wf-board.log 的最后几行」 reads 「看 wf-board.log 的最后几行」.
+    The owner cannot use either, and the runner and the engineers write them into
+    notes freely; the board's data keeps the text as written, and the whole view
+    shows it as written. A path inside the repository (`web/app.ts`), a pull
+    request and a run number stay.
+  - *The order.* What a person has to look at comes first and is red: an ask to
+    the owner and an exception; then the work past the time its state may last
+    (`limitOf`, amber); then the turns running; then the waiting ones; the longest
+    in their state first within each. The older order put only the late first, so an
+    ask to the owner could sit among the quiet waits.
+  - *A narrow list.* In a column narrower than 760 px (the tree's column with an
+    item open is about 300 px) the five cells fall to three lines of a row: the
+    title; the state beside the line of text; the two times. A container query on
+    the list's own width decides, not the window's, because one window holds both
+    layouts.
+  - Rejected: a group for each state, which moves a job to another group at each
+    report and so makes a job that is watched jump; the earlier small cards kept
+    tidy, which at 16 jobs is 32 lines that do not line up; the item's status
+    chip, the arrow that unfolds its sub-items and the link into the tree, which
+    the owner reaches by the title and which draw a second status beside the
+    runner's.
 - **A row.** Name; level; state word; how long ago it wrote (「N 分钟前写过」,
   or 「N 分钟前起」 when the last activity is a dispatch start); its two items.
   The level is the one in the newest dispatch record naming the session, which
@@ -4661,7 +4692,7 @@ verdict on made-up pairs whose answer is known.
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 16 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
+`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
 last check (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
@@ -4785,7 +4816,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 16 shards (8 until the checks of the browser moved into the suite), each in a job of its own, beside the type check, which is a
+full CI as 20 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -4843,6 +4874,37 @@ files, 25 to 33 seconds each among two others (`page-cards`, `page-tree`, `page-
 the three `rules-reuse` files, `page-numbers`, `page-plan`): more shards do not shorten
 a shard that holds one of them, and a typical 50 seconds needs those files split. The
 costs in the table are the mean of four runs of the 16.
+
+**After the split** (hosted runners, 19 October 2026): the files of 25 seconds and more
+were split: each `rules-reuse` seed into two files that replay the same 100 writes and
+compare half of them each (the replay takes 2.3 seconds of the 26, the comparison 24, and
+the writes depend on each other, so the writes cannot be dealt out but the comparison can,
+and `rules-reuse-share.test.ts` shows that the parts find what one comparison of every
+write finds), and the page files into 11 (the families, the two passes, the project
+filters over two files). A split file alone took 7 to 22 seconds; among two others on one
+runner 12 to 29. The sum of the files' seconds went from 906 to 941 (the earlier measurement and two main-line runs
+before the split) to 1,064 to 1,099 (four full CIs after it), since each page file builds
+its own board and bundle and an "after" pass replays the bursts of the rounds before it.
+With the largest file at about 29 seconds the floor is gone: a shard's step is about the
+sum of its files' seconds divided by three plus a second. The sums of the 16 shards
+differed by up to 25% from run to run for the same costs (51 to 89 seconds: the speed of the
+runner and of the files that share it), so the shard that ends last is about 5 seconds
+over the mean step. Four full CIs of the 16 (the cost table the mean of the runs before)
+ended the last test shard 49, 53, 53 and 56 seconds after the start of the run
+(`tests` 17 to 32, mean 25.5). The same scripts dealt to 20 shards in one run took `tests` 17
+to 27 seconds (mean 22.0), the longest job 42; to 24 shards 12 to 25 (mean 18.7), the longest
+job 41. A job is about 5 seconds of wait for a runner and 10 to 15 of set-up around its
+step. Twenty shards put the last test shard about 47 seconds after the start (42 plus the wait);
+twenty-four ones only one second sooner.
+
+**With 20 shards** (the cost table frozen, five full CIs of one commit, one after the other):
+the last test shard ended 51, 50, 46, 47 and 50 seconds after the start of the run (median
+50), its `tests` step took 14 to 31 seconds (mean 22.1; the longest of each run 31, 26, 27,
+27, 27), and the sum of the file seconds of a shard ranged from 37 to 68 seconds within a
+run (the table has about 54 for each). The total of the run was 58, 52, 52, 53 and 59
+seconds, the last job in each being a part of the n-key lane (`witnesses` or `time-writing`,
+ended 52 to 59 seconds after the start), so the test shards are no longer what ends a run
+last.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
