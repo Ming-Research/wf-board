@@ -20,6 +20,8 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # The test files that read candidates, a head's sections, or the whole view's helpers. The spec reporter prints the size test's diagnostic.
       - run: node --test --test-reporter=spec test/candidates.test.ts test/lean.test.ts test/whole-view.test.ts test/mcp.test.ts
+      # The seconds of the candidates tests alone, the way the shards of the full CI report a file, for test/shard-costs.json.
+      - run: node --test --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=times.md test/candidates.test.ts && cat times.md
   # The size test with every paused row made 300 characters longer: the bound on the whole answer must fail, for its length.
   spoiled-size:
     runs-on: ubuntu-latest

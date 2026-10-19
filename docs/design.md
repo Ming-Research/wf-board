@@ -2310,7 +2310,14 @@ and the board pushes nothing from it.
   parent's candidates of every level one by one (at most 10).
   The answer is a few lines of text: `test/candidates.test.ts` checks that on a generated board
   of the live board's shape it stays under 1500 characters and shorter than the todo lists of
-  `brief`. The character counts were not measured again after the limits went.
+  `brief`. That board has little work set aside (one pause, no 何时 section), so a second test fills
+  the rows of both pools (four projects, items with 20-character titles, reasons and 何时 sentences long
+  enough to be cut, ten rows of the part for each pool) and reads the longest the whole answer can be:
+  4837 characters, 3206 of them the part for the work set aside (read on 2026-10-19), which the test holds to 5000. A row of the part
+  is about 150 characters here, so the cap of ten rows for a pool is what bounds the part. It is not lowered
+  because the rows are taken a project at a time and the live board has eight projects: a cap under
+  eight could drop a project from the part. The character counts of the first board were not measured
+  again after the limits went.
 - *Work set aside.* A queue is refilled from this read, and a read that listed only what could
   be started hid the rest: when the owner changed a principle, six items of one project that
   had been paused, or had been left in a backlog with a written start condition, became
