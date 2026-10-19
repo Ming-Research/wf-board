@@ -5381,11 +5381,27 @@ seconds (26–48). What the lane does:
   confirm a real slowdown less often, and the rate of false reds the confirmation keeps low (Time, above) depends on it being a full run. It runs when the first run
   is red: a page 5% slower or more, or a page the same as its base in about 1% of runs while writing and 9% quiet (deduced, Time). In the second case the
   job passes after one more round, and the test step is then the first run's and one round more, about 10 to 15 seconds on the runners of the hour measured
-  (10-19, 12:00 UTC); one such run was seen in 3 of the `writing-changed` jobs below (a first run of ×1.049 against a reference on a runner whose base press took
-  89 ms, a second run of ×0.995 that passed; the test step was 47 seconds, the job 62).
+  (10-19, 12:00 UTC); one such run was seen in the 3 changed-page writing jobs of the paired run below (a first run of ×1.049 against a reference on a runner whose
+  base press took 89 ms, a second run of ×0.995 that passed; the test step was 47 seconds, the job 62).
 On the 57 runs, with the first round's end moved up by a quarter of its length (deduced), the first round ends at a median 29 seconds, 90th percentile 33
 and at most 35, against 32, 38 and 39 now, so the budget cuts 3 runs of 57 by fewer than a tenth of their pairs and keeps the second round only where it
 fits (a runner whose first round ends by about 21 seconds). The lane logs the pairs of each round, whether the budget cut or kept a round, and the time into the process.
+
+Measured on hosted runners, 10-19 (the runners' speed differed by a factor of 2.9 between jobs of one run, a base press of 31 to 89 ms, so a round is compared as
+seconds a round per millisecond of the base press):
+- *The round, old lane against new, run side by side* (run 39248986167 of `tmp-nkey-time-margin`, 3 jobs each): 0.201 against 0.159 (changed page, 4 windows,
+  writing), 0.151 against 0.119 (same page, writing), 0.157 against 0.133 (same page, quiet), medians: 21%, 21% and 15% shorter. The test step is not shorter
+  by that much because the set-up of the lane (11 to 17 s) and the runner's speed move it more: 25 s against 25 s (same page, writing, medians of 3).
+- *The witness over 10 pairs* in all 36 time jobs of the runs 39248986167, 39249580114 and 39250210058 was read as slower than the reference, ×1.28 to ×2.11, its
+  interval's half width 1.9% to 7.5% (20.9% once, on a runner whose base press took 31 ms), the lower bound of the interval 1.20 at the least.
+- *A round cut at the budget* (run 39249580114, `NKEY_BUDGET_S` of 20 and 1): 16 to 17 pairs, the floor widened from 7.6% to 11.0% (writing) and from 6.9% to
+  10.0% (quiet), as the arithmetic says (×1.37 for 16 pairs); the cut twins read ±2.2% to ±4.2%, the changed page ×0.999 to ×1.034 (ok), the witness red.
+- *A round the budget keeps from beginning* (run 39250210058, a floor of 0.1% that no twin meets): at the budget of 34 s a first round that ended at 31.0 s was
+  not followed by a second ("a further round did not fit in the time budget of 34 s") and the witness was "undecided", a warning, the job green; at 1 s the
+  round was cut to 16 pairs and no further round was begun; a run that ended its first round early made all 3 rounds and was undecided as before.
+- *A page that takes 15 ms more per draw* (run 39249583390, branch `nkey-time-margin-slow`, compared with the merge base): the writing and the quiet part were red
+  in both runs of the phase each time (4 jobs), cand/ref ×1.39 to ×1.46 writing and ×1.66 to ×2.04 quiet, with the test step 26 to 44 seconds, the confirmation included.
+`NKEY_BUDGET_S` in the environment sets the budget in seconds (as `NKEY_FLOOR` and `NKEY_SEED` set the floor run and the order), for runs that show the cut.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
