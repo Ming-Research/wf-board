@@ -1,6 +1,6 @@
 name: tmp-ci-split-big-tests
 # Temporary: delete before the last full CI, which fails while this file exists.
-# Times each new test file alone on a hosted runner, and lists the tests of the files before and after the split.
+# Shows that the test of the shared comparison (test/rules-reuse-share.test.ts) fails for each fault it guards against.
 on:
   push:
     branches-ignore: [main]
@@ -8,7 +8,7 @@ concurrency:
   group: tmp-ci-split-big-tests-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  check:
+  spoiled:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -17,62 +17,23 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run check
-  alone:
-    name: alone ${{ matrix.file }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        file:
-          - test/dom/page-tree.test.ts
-          - test/dom/page-plan.test.ts
-          - test/dom/page-plan-after.test.ts
-          - test/dom/page-cards.test.ts
-          - test/dom/page-numbers.test.ts
-          - test/dom/page-unread.test.ts
-          - test/dom/page-search.test.ts
-          - test/dom/page-filters-fresh.test.ts
-          - test/dom/page-filters-after-1.test.ts
-          - test/dom/page-filters-after-2.test.ts
-          - test/rules-reuse-a-1.test.ts
-          - test/rules-reuse-a-2.test.ts
-          - test/rules-reuse-guards.test.ts
-          - test/rules-reuse-share.test.ts
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test --test-reporter=spec ${{ matrix.file }}
-  names:
-    name: names ${{ matrix.which }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - which: base
-            files: test/rules-reuse-a.test.ts test/rules-reuse-b.test.ts test/rules-reuse-c.test.ts test/dom/page-cards.test.ts test/dom/page-tree.test.ts test/dom/page-filters-after.test.ts test/dom/page-numbers.test.ts test/dom/page-plan.test.ts
-          - which: head
-            files: test/rules-reuse-a-1.test.ts test/rules-reuse-a-2.test.ts test/rules-reuse-b-1.test.ts test/rules-reuse-b-2.test.ts test/rules-reuse-c-1.test.ts test/rules-reuse-c-2.test.ts test/dom/page-cards.test.ts test/dom/page-tree.test.ts test/dom/page-filters-after-1.test.ts test/dom/page-filters-after-2.test.ts test/dom/page-numbers.test.ts test/dom/page-plan.test.ts test/dom/page-plan-after.test.ts test/dom/page-unread.test.ts test/dom/page-search.test.ts
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      # The base side runs the files of the main line as they were before the split.
-      - if: ${{ matrix.which == 'base' }}
-        run: git checkout origin/main -- test
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: git show ${{ github.sha }}:test/tmp-names-reporter.ts > "$RUNNER_TEMP/names-reporter.ts"
-      - run: node --test --test-reporter="$RUNNER_TEMP/names-reporter.ts" ${{ matrix.files }}
+      - name: the test passes on the current code
+        run: node --test test/rules-reuse-share.test.ts
+      - name: a part that compares the writes next to its own fails
+        run: |
+          grep -c 'p.k % share.of !== share.part' test/rules-reuse.ts
+          sed -i 's/p.k % share.of !== share.part/(p.k + 1) % share.of !== share.part/' test/rules-reuse.ts
+          if node --test test/rules-reuse-share.test.ts; then echo "the test did not fail"; exit 1; fi
+          git checkout test/rules-reuse.ts
+      - name: a part that compares every write fails
+        run: |
+          sed -i 's/if (share \&\& p.k % share.of !== share.part) return;//' test/rules-reuse.ts
+          git diff --stat
+          if node --test test/rules-reuse-share.test.ts; then echo "the test did not fail"; exit 1; fi
+          git checkout test/rules-reuse.ts
+      - name: a part that compares nothing fails
+        run: |
+          sed -i 's/if (share \&\& p.k % share.of !== share.part) return;/if (share) return;/' test/rules-reuse.ts
+          git diff --stat
+          if node --test test/rules-reuse-share.test.ts; then echo "the test did not fail"; exit 1; fi
