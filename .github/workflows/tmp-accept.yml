@@ -1,0 +1,42 @@
+name: tmp-accept
+# Temporary (nkey-lane-false-red): the acceptance runs of the n-key time layer. Delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-accept-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  accept:
+    name: accept ${{ matrix.kind }} ${{ matrix.phase }} ${{ matrix.job }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [copy]
+        phase: [quiet, writing]
+        job: [0, 1, 2, 3, 4, 5]
+        include:
+          - { kind: slow25, phase: quiet, job: 0 }
+          - { kind: slow25, phase: quiet, job: 1 }
+          - { kind: slow25, phase: quiet, job: 2 }
+          - { kind: slow25, phase: quiet, job: 3 }
+          - { kind: slow25, phase: quiet, job: 4 }
+          - { kind: slow25, phase: writing, job: 0 }
+          - { kind: slow25, phase: writing, job: 1 }
+          - { kind: slow25, phase: writing, job: 2 }
+          - { kind: slow25, phase: writing, job: 3 }
+          - { kind: slow25, phase: writing, job: 4 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - env:
+          ACCEPT_KIND: ${{ matrix.kind }}
+          ACCEPT_PHASE: ${{ matrix.phase }}
+          ACCEPT_ROUNDS: ${{ matrix.kind == 'copy' && 5 || 1 }}
+        run: node --test --test-concurrency=1 test/nkey/tmp-accept.nkey.ts

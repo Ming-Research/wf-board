@@ -4649,7 +4649,10 @@ of the twin of the base (the same page again, the control) and of the page when 
 window comes right after each other window equally often (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
 holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
-otherwise. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+otherwise. One round of 30 pairs estimates the ratio within about 1.2% (the standard deviation of the estimate between rounds, 1.0–1.7% by phase, measured
+with the probe of What a press inherits), so a page the same as its base is red in about 2.5% of the runs of a phase (5% of a full CI with a changed page), a
+page 5% slower in about 98% and one 2% slower in about 35%; a red verdict says so and that a second run of the lane tells a false red from a slower page.
+These are the properties of the 95% interval and are not traded for a threshold. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
 against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in

@@ -128,6 +128,9 @@ export function describeCounts(list: Landing[]): string {
   return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)}, structure made again ${list.reduce((a, l) => a + l.structure.filter(reason => reason !== "minute").length, 0)}, stop lists ${list.reduce((a, l) => a + l.stops + l.freshStops, 0)} over ${list.length} landings`;
 }
 
+/** What a red verdict adds: the 95% interval is wholly above 1 for a page the same as its base in about one run of 40 per phase, so a
+ * run of the lane again tells the two apart (docs/design.md, The n-key lane). */
+const RERUN = "A page the same as its base is red here in about 2.5% of runs of a phase; run the n-key lane again: a page about 5% slower is red again in about 98% of runs, a false red in about 2.5%.";
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are red verdicts and witnesses that
  * were not reported, and an undecided run is a warning. */
 export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): string[] {
@@ -146,7 +149,7 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
     if (witness) {
       if (verdict === "ok") v.push(`press-n time (${name}): the time layer did not report a page whose draw takes 15 ms more (${show(r.ratios.slow!)})`);
       else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds, so the witness of 15 ms more per draw could not be judged");
-    } else if (verdict === "red") v.push(`press-n time (${name}): the page is slower than its base: ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}`);
+    } else if (verdict === "red") v.push(`press-n time (${name}): the page is slower than its base: ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}. ${RERUN}`);
     else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base did not show this run's noise within ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
     else if (polluted > 0) warn(`n-key time layer (${name})`, `the base page asked for ${polluted} reads the tape has no answer for, so its time carries the server's work`);
   }
