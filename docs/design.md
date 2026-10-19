@@ -4191,17 +4191,18 @@ pull requests of the first look, which the pushes about pull requests used and n
 
 **Merge rows.** A merge row is the plan's stage row `merge` or a round of it
 (`merge-2` and up; `stageOf` in `src/rules.ts`), or, in a plan with no such row,
-a step whose text starts with 合入 (`isMergeRow`); an acceptance step is never
-one. The board reads the id, not the word anywhere in the text, because steps
-that only mention a merge say 合入 and name its pull request too: the online
-check ("合入后……") and a step that waits for another pull request. Read as merge
-rows, they were marked and pushed before the merge they stood for (10-19: an
-online check that said "前半已验：…#142 合入" was marked done when #142 merged
-with its second half still open, and a plan rewrite that marked such a step done
-pushed `dep-merged` for a pull request that was still open). The start of the
-text is the fallback for plans written before the stage ids: the item-writing
-rule says a merge row holds only 合入 and the pull request that delivers the
-item, so the start is enough, and a row that waits (等 … 合入后合入 …) is none.
+a step whose text starts with 合入 but not 合入后 (`isMergeRow`); an acceptance
+step is never one. The board reads the id, not the word anywhere in the text,
+because steps that only mention a merge say 合入 and name its pull request too:
+the online check ("线上验证：合入后……", or one that starts with 合入后) and a step
+that waits for another pull request. Read as merge rows, they were marked and
+pushed before the merge they stood for (10-19: an online check whose first half
+was done and whose second half was open was marked done when the pull request it
+names merged, and a plan rewrite that marked such a step done pushed `dep-merged`
+for a pull request that was still open). The start of the text is the fallback
+for plans written before the stage ids: the item-writing rule says a merge row
+holds only 合入 and the pull request that delivers the item, so the start is
+enough, and a row that waits (等 … 合入后合入 …) is none.
 An open merge row (`isOpenMergeStep`), not done and not dropped, counts the pull
 requests it names, in the forms above, which the item's own 改动 section names
 as well (`mergeRowPulls` in `src/query.ts`). A line that waits for another pull

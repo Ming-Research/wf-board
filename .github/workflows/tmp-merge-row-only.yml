@@ -11,3 +11,16 @@ jobs:
       - run: |
           git config --global user.name ci; git config --global user.email ci@example.com
           node --test test/watch.test.ts test/wake-agents.test.ts test/liveness.test.ts test/ops-roles.test.ts test/access.test.ts test/rules-oracle.test.ts
+  old-fallback:
+    # Expected red: the tests against the first version of the rule, whose fallback for old plans took a step starting with 合入后 too.
+    runs-on: ubuntu-latest
+    name: old fallback (must be red)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          git fetch --depth=1 origin acff518d36b579edebcfbbd97c57e3c3d47459f3
+          git checkout acff518d36b579edebcfbbd97c57e3c3d47459f3 -- src/rules.ts
+      - run: |
+          git config --global user.name ci; git config --global user.email ci@example.com
+          node --test test/watch.test.ts test/wake-agents.test.ts

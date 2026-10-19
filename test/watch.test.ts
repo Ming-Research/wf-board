@@ -276,12 +276,14 @@ test("in a plan with no merge stage row, a merge row is an open step whose text 
     // These two say 合入 and name a PR the section names, but do not start with it: the online check and a wait for another PR.
     { id: "j", text: "等 Ming-Research/wf-board#74 合入后合入 Ming-Research/wf-board#29", state: "todo" },
     { id: "l", text: "线上验证：Ming-Research/wf-board#25 合入后，看板上能看到它", state: "todo" },
+    // The online check may start with 合入后: it is not a merge row either.
+    { id: "m", text: "合入后线上验证 Ming-Research/wf-board#25", state: "todo" },
     { id: "k", text: "合入 Ming-Research/wf-board#74", state: "todo" },
   ] });
   const s = store.snapshot(), merges = mergeRows(s, rules(s));
   assert.deepEqual(merges.map(m => `${m.item}/${m.step.id}:${m.prs.map(p => p.number).join("+")}`).sort(), [
     "second/a:25", "second/b:26", "second/i:25+26", "watch/merge:23",
-  ], "#74 is on no 改动 section: h and k are no merge rows; j and l do not start with 合入");
+  ], "#74 is on no 改动 section: h and k are no merge rows; j and l do not start with 合入, and m starts with 合入后");
 });
 
 test("in a plan with a merge stage row, only the rows merge, merge-2 and up are merge rows, whatever the other rows say", async t => {
@@ -323,6 +325,7 @@ test("a merge row is told apart by its id first: it needs no 合入 in its text,
   assert.equal(isMergeRow(old[1]!, old), true);
   assert.equal(isMergeRow(todo("ship", "  合入 x"), old), true);
   assert.equal(isMergeRow(todo("ship", "线上验证：合入后"), old), false, "it only says 合入");
+  assert.equal(isMergeRow(todo("ship", "合入后线上验证 x"), old), false, "an online check that starts with 合入后 is none");
   assert.equal(isMergeRow(todo("ship", "等 x 合入后合入 y"), old), false, "it waits for a merge first");
   assert.equal(isMergeRow(todo("ship", "合入 x", { accept: true }), old), false);
   assert.equal(isMergeRow({ id: "child", item: "child", own: true }, old), false, "a sub-item row is no step");
@@ -332,37 +335,37 @@ test("a merge row is told apart by its id first: it needs no 合入 in its text,
   assert.equal(isOpenMergeStep({ ...stage[2]!, state: "dropped", reason: "不做了" }, stage), false);
 });
 
-// The row of the item that merged one PR on 10-19, as the board held it when its online check was marked done by mistake: the check says 合入 and
-// names the merged PR, and the merge row before it was done already.
-const ONLINE_CHECK = "线上验证（第二个 PR）：合入后执行程序更新并重启（status 正常）；下一件用快检的活，在更新以后审查、审查后删临时工作流再交回 ready，合入核对没有因签名退回（从它的日志读到）。前半已验：mbbill/agents_config#142 在 04:11 本机时间合入（399e833，主线绿），执行程序进程 11242 在 04:14:20 重启，检出在 399e833，status 退出码 0。后半证据（我读了 runner-merge-check 的日志和 PR 提交核过）：runner-merge-check 的 mbbill/agents_config#143 在更新以后送审，审查时 PR 里带着临时快检工作流，审过后删掉它推上去，合入核对放行，没有因签名退回，这时候执行程序跑的是 #142 的代码。";
+// An online check of the shape that was marked done by mistake when the PR it checks merged: it starts with 线上验证, says 合入 and names the
+// merged PR, and its second half is still open. The item's merge row before it is done already, or is the row that turns done.
+const ONLINE_CHECK = "线上验证（第二个 PR）：合入后服务更新并重启（状态正常）；下一件活用到新代码时没有出错。前半已验：Ming-Research/Whitefoot#31 合入，服务已重启，状态正常。后半还没验：等下一件活用到新代码，读它的日志核对。";
 
 test("an online check that says 合入 and names the merged PR is not marked done by the merge, whether the merge row is done or not", async t => {
-  const { store, op } = await fixture(t), AC = "mbbill/agents_config";
-  await op.createItem({ ...asArchitect, key: "review-run", group: "wf-board", title: "Review run", head: "**问题**：z\n\n**改动**：mbbill/agents_config#139（已合入），mbbill/agents_config#142\n\n**参考：表**\n\nagents_config#143", accept: "验收通过" });
+  const { store, op } = await fixture(t), WF = "Ming-Research/Whitefoot";
+  await op.createItem({ ...asArchitect, key: "ship-run", group: "wf-board", title: "Ship run", head: "**问题**：z\n\n**改动**：Ming-Research/Whitefoot#30（已合入），Ming-Research/Whitefoot#31\n\n**参考：表**\n\nWhitefoot#32", accept: "验收通过" });
   const rows = (mergeState: "todo" | "done") => [
     { id: "impl-3", text: "实现（第三轮）", state: "done" as const },
     { id: "accept-3", text: "验收（第三轮）", state: "done" as const },
-    { id: "merge-3", text: "合入 mbbill/agents_config#142", state: mergeState },
+    { id: "merge-3", text: "合入 Ming-Research/Whitefoot#31", state: mergeState },
     { id: "verify-3", text: ONLINE_CHECK, state: "todo" as const },
     { id: "accept", accept: true as const, text: "验收通过", state: "todo" as const },
   ];
-  const states = [repoState(AC, { named: [{ number: 142, state: "MERGED", url: "u", mergedAt: "2026-10-19T11:11:00Z" }] })];
-  const verify = () => (store.snapshot().items["review-run"]!.plan.find(p => p.id === "verify-3") as { state: string }).state;
+  const states = [repoState(WF, { named: [{ number: 31, state: "MERGED", url: "u", mergedAt: "2026-10-19T11:11:00Z" }] })];
+  const stateOf = (row: string) => (store.snapshot().items["ship-run"]!.plan.find(p => p.id === row) as { state: string }).state;
   // The merge row is open: only it turns done.
-  await op.setPlan({ ...asArchitect, id: "review-run", rows: rows("todo") });
+  await op.setPlan({ ...asArchitect, id: "ship-run", rows: rows("todo") });
   let s = store.snapshot();
-  assert.deepEqual(mergedRows(s, rules(s), states).map(m => `${m.item}/${m.step.id}`), ["review-run/merge-3"]);
-  await new GithubWatch({ store, ops: op, wake: new Wake(), github: fake({ [AC]: states[0]! }).source }).poll();
-  assert.equal((store.snapshot().items["review-run"]!.plan.find(p => p.id === "merge-3") as { state: string }).state, "done");
-  assert.equal(verify(), "todo", "the online check waits for the live check");
-  // The merge row is done already, as at 11:19: nothing is left to mark.
-  await op.setPlan({ ...asArchitect, id: "review-run", rows: rows("done") });
+  assert.deepEqual(mergedRows(s, rules(s), states).map(m => `${m.item}/${m.step.id}`), ["ship-run/merge-3"]);
+  await new GithubWatch({ store, ops: op, wake: new Wake(), github: fake({ [WF]: states[0]! }).source }).poll();
+  assert.equal(stateOf("merge-3"), "done");
+  assert.equal(stateOf("verify-3"), "todo", "the online check waits for the live check");
+  // The merge row is done already: nothing is left to mark.
+  await op.setPlan({ ...asArchitect, id: "ship-run", rows: rows("done") });
   s = store.snapshot();
   assert.deepEqual(mergedRows(s, rules(s), states), []);
   const head = s.head;
-  await new GithubWatch({ store, ops: op, wake: new Wake(), github: fake({ [AC]: states[0]! }).source }).poll();
+  await new GithubWatch({ store, ops: op, wake: new Wake(), github: fake({ [WF]: states[0]! }).source }).poll();
   assert.equal(store.snapshot().head, head, "nothing is written");
-  assert.equal(verify(), "todo");
+  assert.equal(stateOf("verify-3"), "todo");
 });
 
 // --- What to tell ------------------------------------------------------------------------------------------------------------------

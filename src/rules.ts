@@ -52,18 +52,19 @@ export function changesSection(head: string | undefined): string {
   }
   return out.join("\n");
 }
-/** The word a merge row of a plan with no `merge` stage row starts with (isMergeRow). */
-export const MERGE_WORD = "合入";
+/** The text a merge row of a plan with no `merge` stage row starts with (isMergeRow): 合入, but not 合入后, which an online check starts with. */
+const LEGACY_MERGE_TEXT = /^合入(?!后)/;
 /**
  * Whether a plan step is a merge row of its plan, the row the board marks done when the pull request it names merges: the stage row
  * `merge` (`merge-2` and up for the rounds that going back appends, `stageOf`), or, in a plan that has no such row, a step whose
- * text starts with 合入. An acceptance step is never one, and a step that only mentions a merge is not: the online check ("合入后……")
- * and a step that waits for another pull request both name pull requests and say 合入 (docs/design.md, Watching GitHub, Merge rows).
+ * text starts with 合入 (not 合入后). An acceptance step is never one, and a step that only mentions a merge is not: the online check
+ * ("线上验证：合入后……") and a step that waits for another pull request both name pull requests and say 合入 (docs/design.md,
+ * Watching GitHub, Merge rows).
  */
 export function isMergeRow(row: PlanRow, plan: readonly PlanRow[]): row is PlanStep {
   if (!("text" in row) || row.accept) return false;
   if (stageOf(row)?.kind === "merge") return true;
-  return !plan.some(other => stageOf(other)?.kind === "merge") && row.text.trimStart().startsWith(MERGE_WORD);
+  return !plan.some(other => stageOf(other)?.kind === "merge") && LEGACY_MERGE_TEXT.test(row.text.trimStart());
 }
 /** A merge row that is not done and not dropped. */
 export function isOpenMergeStep(row: PlanRow, plan: readonly PlanRow[]): row is PlanStep {

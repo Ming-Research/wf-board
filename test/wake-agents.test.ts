@@ -419,9 +419,15 @@ test("what is not a merge row turning done tells nobody: a row naming no PR its 
 
 test("a row of an old plan that starts with 合入 and names the PR is a merge row when the plan has no merge stage row", async t => {
   const wake = new Wake({ now: () => T0 });
-  const { op, store } = await server(t, { wake });
+  const { url, op, store } = await server(t, { wake });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
+  const architect = await agentSocket(t, url, ARCHITECT_SESSION);
   await op.updateItem({ author: "Whitefoot", id: "a", rev: store.snapshot().items.a!.rev, head: "背景\n\n## 改动\n\nMing-Research/Whitefoot#7", reason: "name the PR" });
+  // An online check that starts with 合入后 is no merge row, though the plan has no merge stage row.
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "verify", text: "合入后线上验证 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "verify", text: "合入后线上验证 Ming-Research/Whitefoot#7", state: "done" } });
+  await architect.sync();
+  assert.equal(had(wake, "b-worker"), 0, "the online check turning done tells nobody");
   // The row's id is not a stage's: only its text makes it the merge row.
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "ship", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "ship", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
