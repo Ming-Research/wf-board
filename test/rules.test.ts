@@ -113,6 +113,22 @@ test("plans enforce unique ids and earlier-only after, with acceptance anywhere 
   assert.equal(PlanInput.safeParse([{ id: "work", text: "Work", state: "todo", after: ["dep"] }, { item: "dep", own: false }]).success, false);
 });
 
+test("a refused plan names the row and the id that broke it", () => {
+  const message = (rows: unknown[]) => {
+    const parsed = ItemPlan.safeParse(rows);
+    assert.equal(parsed.success, false);
+    return parsed.error.issues.map(issue => issue.message).join("\n");
+  };
+  const duplicate = message([shared("dep"), step("work"), shared("dep")]);
+  assert.match(duplicate, /row 3 "dep"/);
+  assert.match(duplicate, /already has "dep"/);
+  const late = message([step("work", "todo", { after: ["later"] }), shared("later"), accept()]);
+  assert.match(late, /row 1 "work"/);
+  assert.match(late, /"later" is not one/);
+  assert.match(late, /after must name earlier rows/);
+  assert.match(PlanInput.safeParse([{ id: "work", text: "Work", state: "todo", after: ["dep"] }, { item: "dep", own: false }]).error!.issues[0]!.message, /row 1 "work"/);
+});
+
 test("ownership builds the tree in plan order and does not follow shared rows or child order", () => {
   const s = snapshot({ root: { group: "First", plan: workPlan([own("later"), own("earlier"), shared("foreign")]) }, later: { group: "First", order: 9 }, earlier: { group: "First", order: -9, plan: workPlan([own("leaf")]) }, leaf: { group: "First" }, foreign: { group: "Second" }, recordOwner: { record: true, plan: [own("record")] }, record: { record: true } });
   const r = rules(s);
