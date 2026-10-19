@@ -38,6 +38,17 @@ jobs:
           grep -E "^✖|AssertionError|^ℹ (pass|fail)" witness-import.log || true
           test "$status" -ne 0
           git checkout src/history.ts
+      - name: Watch the source test fail on a second bare call of parse in the store
+        run: |
+          echo 'void parse("a: b");' >> src/store.ts
+          git diff --stat
+          set +e
+          node --test test/parsed-heap.test.ts > witness-call.log 2>&1
+          status=$?
+          set -e
+          grep -E "^✖|AssertionError|^ℹ (pass|fail)" witness-call.log || true
+          test "$status" -ne 0
+          git checkout src/store.ts
       - name: Watch the log test fail when the heap is read before the collection
         run: |
           sed -i 's/^  collect();$/  \/\/ collect();/' src/log.ts

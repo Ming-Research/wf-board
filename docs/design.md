@@ -480,7 +480,7 @@ cache released 1.2 MB.
 `parseDocument` (`src/store.ts`) parses and then runs `structuredClone`, which writes each string out
 flat. Run alone on the whole live-shape board it takes 83 ms against a parse of about 2.5 s (123 ms on the quoted-scalar board);
 rebuilding each string in place took 129 to 545 ms and a JSON round trip 102 to 151 ms. It is
-the one entry for every parse: the start, the history caches, the one-time conversion's reader and the
+the one entry for every parse: the start, the history caches, the pause replay's reads of old items, the one-time conversion's reader and the
 conversion command. The copy is safe for every value the core schema yields (strings, numbers,
 booleans, null, arrays and plain objects; read from the code), and a test compares a copy with
 the parse. Heap the real code kept (`Store.open`, `comparisonSnapshot`, and the real daemon `src/main.ts` after five loads of
@@ -488,35 +488,36 @@ the page):
 
 | | live shape, before | live shape, with the copy | quoted-scalar shape, before | quoted-scalar shape, with the copy |
 |---|---|---|---|---|
-| `Store.open` (mean of 15 pairs, start with the startup cache) | 55.7 MB [54.7, 56.7] | 30.7 MB [29.7, 31.7] | 503.3 MB | 29.2 MB |
-| `Store.open`, first start without the cache (one run) | | 37.4 MB | | 39.4 MB |
-| whole old board rebuilt (one run) | 55.9 MB | 29.5 MB | 501.8 MB | 29.0 MB |
-| the daemon after five page loads, heap in use (one run) | 83.7 MB | 56.1 MB | 79.6 MB | 53.4 MB |
-| the daemon, resident memory after a collection / peak | 310.8 / 439.9 MB | 275.8 / 377.5 MB | 799.5 / 881.5 MB | 289.9 / 370.8 MB |
+| `Store.open` (mean of 15 pairs, start with the startup cache) | 56.6 MB [56.6, 56.6] | 28.3 MB [27.1, 29.4] | 503.3 MB [503.3, 503.3] | 28.9 MB [28.2, 29.6] |
+| `Store.open`, first start without the cache (one run) | | 33.2 MB | | 39.7 MB |
+| whole old board rebuilt (one run) | 55.9 MB | 29.7 MB | 501.8 MB | 29.0 MB |
+| the daemon after five page loads, heap in use (one run) | 83.8 MB | 56.2 MB | 79.6 MB | 53.5 MB |
+| the daemon, resident memory after a collection / peak (one run) | 311.0 / 413.3 MB | 263.2 / 364.9 MB | 755.4 / 857.3 MB | 287.3 / 368.4 MB |
 
-A start without the startup cache replays the history, which keeps 7 to 10 MB more; the study that
+A start without the startup cache replays the history, which keeps 5 to 11 MB more; the study that
 chose the copy measured its "before" on such a start and its "after" with the cache, so its
-62.3 and 66.9 MB against 27.0 MB overstated the saving: start against start it is 25.0 MB [23.7, 26.3] on
+62.3 and 66.9 MB against 27.0 MB overstated the saving: start against start it is 28.3 MB [27.2, 29.5] on
 the live shape. The live daemon runs with the cache except on the first start after the cache's format changes.
 
 The time of the start step "read documents", which reads, parses, checks and freezes every document
-(mean of 15 pairs; the same start with the cache): live shape, 3,616.0 ms [3,602.6, 3,629.4] before the change, 3,622.0 ms for its
-twin and 3,660.9 ms [3,651.1, 3,670.8] with the copy; the twin is 6.0 ms [-15.3, 27.3] from the base (x1.002, 0.6% half width, the
-noise of this run) and this tree is 42.0 ms [26.9, 57.1] above the reference (the geometric mean of the base and
-the twin, x1.012 [1.007, 1.016]), so a slowdown is detected and it is smaller than the copy's own time, as the collector has less to do (inferred, not separated). On the
-quoted-scalar shape the step is faster, 1,798.7 ms [1,785.2, 1,812.1] against 2,662.7 ms [2,557.3, 2,768.1], 859.7 ms [776.9, 942.6]
+(mean of 15 pairs; the same start with the cache): live shape, 1,943.5 ms [1,927.4, 1,959.5] before the change, 1,924.3 ms for its
+twin and 1,980.2 ms [1,948.8, 2,011.6] with the copy; the twin is 19.2 ms [-44.7, 6.3] from the base (x0.990, 1.3% half width, the
+noise of this run) and this tree is 46.5 ms [12.6, 80.3] above the reference (the geometric mean of the base and
+the twin, x1.024 [1.007, 1.041]), so a slowdown is detected and it is smaller than the copy's own time, as the collector has less to do (inferred, not separated). On the
+quoted-scalar shape the step is faster, 957.5 ms [945.2, 969.8] against 1,792.2 ms [1,674.7, 1,909.7], 770.3 ms [678.4, 862.2]
 less than the reference (the string nodes made the collector's work heavy; inferred). No floor of noise is on record for this kind of start, and the twin's
-half width, 0.6% on the live shape and 4.2% on the other, is the noise of this run.
+half width, 1.3% on the live shape and 8.1% on the other, is the noise of this run. Another runner took 3.6 s for the step
+on the live shape and showed +42.0 ms [26.9, 57.1] in the same measurement (an earlier run, before the main line's latest merge).
 
 Flat documents measured 1.2 to 1.5 times the bytes of their files, so the history cache weighs a
 document at 2 bytes of heap for each byte of file. The 64 MB bound stays and lets the cache
 hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
-resident memory is mostly not documents: on the live-shape board the process held 310.8 MB
-after a collection (peak 439.9 MB) before the change, of which 83.7 MB was heap; a small board of about 100 documents held 153 to 163 MB (the study),
+resident memory is mostly not documents: on the live-shape board the process held 311.0 MB
+after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (the study),
 the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
 has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
-of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 16 ms (heap 56.6 MB in use after a
-full collection, rss 276.8 MB)`); the live check of the heap reads it. The live board's heap also holds what its
+of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 12 ms (heap 56.6 MB in use after a
+full collection, rss 264.7 MB)`); the live check of the heap reads it. The live board's heap also holds what its
 33,000 commits of history add to the startup cache's contents, which the synthetic boards (one commit) do not.
 
 *Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and

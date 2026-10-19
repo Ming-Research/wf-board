@@ -110,7 +110,7 @@ export function parseDocument(text: string): unknown {
 
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
 // holds and not by how many entries there are: a parsed document takes about 1.4 times the bytes of its file (opening a board of
-// 21.8 MB of files in the live board's shape keeps 30.7 MB of heap, measured in CI), and the estimate is 2 to leave room
+// 21.8 MB of files in the live board's shape keeps 28.3 MB of heap, measured in CI), and the estimate is 2 to leave room
 // for small files, whose objects are a larger part. The count bounds are for reads still pending, whose size is not known yet.
 // Normalization is needed at format boundaries, not for every old commit, so one whole old board is kept.
 const MB = 1024 * 1024;
