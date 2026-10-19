@@ -12,7 +12,7 @@ import { startBoard } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { fence, GOOD, HEAD, OWN, PIPELINE } from "../e2e/mermaid-charts.ts";
-import { scene, setHead, addLog, checkHead, checkLog, checkLazy, checkStrict, checkCompact, checkRepaint, checkIds, checkOwn, checkColors, checkTheme, checkKeep } from "./mermaid-checks.ts";
+import { scene, setHead, addLog, checkHead, checkLog, checkLazy, checkStrict, checkCompact, checkChartConfig, checkRepaint, checkIds, checkOwn, checkColors, checkTheme, checkKeep } from "./mermaid-checks.ts";
 import type { Scene } from "./mermaid-checks.ts";
 import { SPOILED } from "./mermaid-spoiled.ts";
 
@@ -66,6 +66,15 @@ test("the owner's page draws a mermaid block with the stand-in library and keeps
 
   await t.test("the page configures the library for a compact drawing: the classic look, padding 8 and gaps of 20", async st => none(await on(st, seedOne, [], checkCompact)));
   await t.test("the same check on a page that asks the library for nothing of the look and the gaps reports the configuration", async st => caught(await on(st, seedOne, [SPOILED.noCompact], checkCompact), /^mermaid-config: the page configured the library with \{\}, not/));
+
+  await t.test("the page configures the library for a data chart: series colors that follow the color scheme, a clear plate and a height of 360", async st => none(await on(st, seedOne, [], checkChartConfig)));
+  await t.test("the same check on a page that gives the library no chart colors reports the colors and the plate", async st => {
+    const v = await on(st, seedOne, [SPOILED.noChartColors], checkChartConfig);
+    caught(v, /^mermaid-chart \(dark\): the page gave the library the series colors undefined, not/);
+    caught(v, /^mermaid-chart \(light\): the page gave the library the chart plate undefined, not "transparent"/);
+  });
+  await t.test("the same check on a page that keeps the light chart colors in the dark scheme reports the dark colors missing", async st => caught(await on(st, seedOne, [SPOILED.lightChartColors], checkChartConfig), /^mermaid-chart \(dark\): the page gave the library the series colors "#2a78d6,/));
+  await t.test("the same check on a page that leaves a chart at the library's height reports the height", async st => caught(await on(st, seedOne, [SPOILED.noChartSize], checkChartConfig), /^mermaid-chart \(dark\): the page gave the library the chart height undefined, not 360/));
 
   await t.test("a diagram is a diagram again after a live update repaints its item", async st => none(await on(st, seedHead, [], sc => checkRepaint(sc, HEAD))));
   await t.test("the same check on a page that draws only its first render reports the code left behind", async st => {

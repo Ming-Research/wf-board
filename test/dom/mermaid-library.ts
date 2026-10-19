@@ -6,7 +6,12 @@
 // its sizes, its colours, how it parses, what it makes of hostile text) is the browser layer's (test/e2e/browser.e2e.ts).
 
 /** What the page gives `initialize`. */
-export interface Config { startOnLoad?: boolean; securityLevel?: string; theme?: string; suppressErrorRendering?: boolean; fontFamily?: string; look?: string; flowchart?: { look?: string; padding?: number; nodeSpacing?: number; rankSpacing?: number } }
+export interface Config {
+  startOnLoad?: boolean; securityLevel?: string; theme?: string; suppressErrorRendering?: boolean; fontFamily?: string; look?: string;
+  flowchart?: { look?: string; padding?: number; nodeSpacing?: number; rankSpacing?: number };
+  themeVariables?: { xyChart?: { plotColorPalette?: string; backgroundColor?: string } };
+  xyChart?: { height?: number };
+}
 /** One drawing the page asked for. */
 export interface Drawn { id: string; text: string; config: Config }
 
