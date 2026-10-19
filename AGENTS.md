@@ -53,8 +53,9 @@ matches what the artifact board offered.
   progress and the dispatch records. Imported by the server and bundled into
   the page.
 - `src/candidates.ts`: the items an engineer could be started on and the working engineers of the two pools, read from the
-  whole board (the `candidates` tool): the board lists and holds no limit, the architect compares the count with the owner's
-  numbers and chooses (design section 6, The candidates read).
+  whole board (the `candidates` tool), and, apart from them, the paused work and the backlog work with a written start condition
+  of each pool: the board lists and holds no limit, the architect compares the count with the owner's numbers and chooses
+  (design section 6, The candidates read).
 - `src/whole-view.ts`: the whole view: every open work item in one of five kinds (waiting too long, nobody's, being worked
   on, waiting, set aside) by the runner's report on it (`item.runner`, written by `report_state`), a live engineer session
   and the plan, in one function that the `whole_view` tool prints and the page draws (design section 6, The whole view;
@@ -82,7 +83,7 @@ matches what the artifact board offered.
   rule block `shared-rules`); `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/head-sections.ts`: an item head split into its sections (`context`'s
-  default answer and `section`); `src/tool-errors.ts`: the parameter table and
+  default answer and `section`), and the text of its 何时 section (the candidates read's start condition); `src/tool-errors.ts`: the parameter table and
   example a refused call is answered with, and the wrong names the tools read as
   the right ones. Both are in `docs/design.md`, section 6, Lean replies.
 - `src/wake.ts`: the push channel (the table of kinds, each agent's numbered
