@@ -91,6 +91,21 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
     assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
   }
+  // The kinds of a segment are told apart by colour in both themes: a probe of each kind, styled as a segment is, has a background of its own.
+  // The background is read after the cascade, so the value is the one drawn, and a paused segment's stripes count as its own background.
+  const KINDS = ["work", "ci", "owner", "architect", "items", "run", "wait", "merge", "person", "closing", "paused"];
+  for (const scheme of ["light", "dark"] as const) {
+    const look = new Styles(bp.win, { width: 1280, scheme }), doc = bp.win.document;
+    const backs = KINDS.map(kind => {
+      const probe = doc.createElement("span");
+      probe.className = "tl tl-" + kind;
+      doc.body.appendChild(probe);
+      const back = look.value(probe, "background");
+      probe.remove();
+      return back;
+    });
+    assert.equal(new Set(backs).size, KINDS.length, `${scheme}: the kinds are told apart by colour, not ${JSON.stringify(backs)}`);
+  }
   // Each segment is as long as the time it took, up to three hours; a longer one is drawn shorter with a gap marked in it, and the hover says how long it was.
   const grow = (seg: Element) => Number((seg as HTMLElement).style.flexGrow);
   const [askWork, askWait] = bp.$$(".rt-line .tl", by(asking)) as [HTMLElement, HTMLElement];
@@ -160,6 +175,10 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "the legend listed every kind, not those the rows draw",
     reverts: [app("the legend lists all kinds", "SEGMENT_KINDS.filter(kind => seen.has(kind)).forEach", "SEGMENT_KINDS.forEach")], reason: /the legend lists the kinds the rows draw/,
+  },
+  {
+    bug: "two kinds of a segment had the same colour",
+    reverts: [html("merge has the colour of ci", "--tl-merge: #d6457f;", "--tl-merge: #2bb3c0;")], reason: /the kinds are told apart by colour, not/,
   },
   {
     bug: "every segment of a line was drawn as long as the next",
