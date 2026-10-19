@@ -134,6 +134,21 @@ test("a row of an ordinary item that owns or shares a standing item raises the r
   assert.equal(new Set(two.refusals("both").filter(c => c.id === "waits-on-standing").map(checkKey)).size, 2);
 });
 
+test("a standing item's row for another standing item makes the target neither awaited nor in conflict with its pause, and a row for ordinary work still does", () => {
+  const paused = { reason: "owner asked", at: T0 };
+  const s = snapshot({
+    // Two standing items side by side at the top of one project, one sharing the other, the other paused.
+    waiter: standing({ plan: [shared("target")] }), target: standing({ paused }),
+    // The same shape with an ordinary target, the control: that row really waits.
+    waiter2: standing({ plan: [shared("plain")] }), plain: { paused },
+  });
+  const r = rules(s), kinds = (id: string) => [...r.checks(id), ...r.refusals(id)].map(c => c.id);
+  assert.deepEqual(kinds("target"), [], "no check, and no refusal for the write that builds the row");
+  assert.deepEqual(kinds("waiter"), []);
+  assert.deepEqual(kinds("plain").sort(), ["pause-conflict", "unowned-but-awaited"], "the control raises both, so the checks are alive");
+  assert.equal(r.checks("target").length, 0);
+});
+
 test("an unpaused standing item passes the need to the items it owns while it is never startable itself, and a pause takes the need away", () => {
   const items = (paused: boolean) => snapshot({
     rule: standing({ plan: [ownNow("kid")], ...(paused ? { paused: { reason: "owner asked", at: T0 } } : {}) }),

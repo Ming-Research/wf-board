@@ -136,3 +136,16 @@ test("no write builds an ordinary item's row for a standing item, and a standing
   assert.deepEqual(r.checks("rules"), []);
   assert.deepEqual((await Store.open(dir)).snapshot(), state());
 });
+
+test("a standing item may share a standing item at the top of its project, since the row waits for nothing", async t => {
+  const { store, op, dir } = await board(t);
+  for (const key of ["promise", "target"]) await op.createItem({ ...asArchitect, key, group: author, title: key, standing: true });
+  // Neither the unowned-but-awaited refusal nor the pause conflict applies: the target never completes, so nothing waits for it.
+  await op.setPlan({ ...asArchitect, id: "promise", row: { item: "target", own: false } });
+  await op.setPause({ ...asArchitect, id: "target", paused: true, reason: "owner asked" });
+  const r = rules(store.snapshot());
+  assert.equal(r.statusOf("promise"), "wip");
+  assert.equal(r.statusOf("target"), "paused");
+  assert.deepEqual(r.checks("target"), []);
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
+});

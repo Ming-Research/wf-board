@@ -1257,7 +1257,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if (!s.board.projects.some(project => project.name === it.group)) out.push(check("project-unconfigured", "项目没有配置：" + it.group));
       if ((index().owners.get(id)?.length ?? 0) > 1) out.push(check("owned-by-many", "被多个条目拥有"));
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push(check("owned-across-projects", "跨项目拥有", { kind: "item", id: owner }));
-      if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push(check("unowned-but-awaited", "同项目有条目在等它，却没有条目拥有它"));
+      // A standing item's row for another standing item waits for nothing, so it neither makes its target awaited nor conflicts with its pause.
+      const waitsFor = (waiter: string): boolean => !(item(waiter)?.standing && it.standing);
+      if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group && waitsFor(e.id))) out.push(check("unowned-but-awaited", "同项目有条目在等它，却没有条目拥有它"));
       for (const card of cardsOf(id)) for (const inner of cardChecks(card)) out.push({ ...inner, target: { kind: "card", id: card } });
       if (!it.record && !it.standing && !rows.some(({ row }) => "text" in row && row.accept)) out.push(check("no-acceptance", "没有计划：至少要有一个验收步骤"));
       // A standing item never completes, so a row of an ordinary item that owns it or waits for it can never be resolved.
@@ -1269,7 +1271,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       if (!it.tags?.length && tagsRequired(s.board.tags, it.group)) out.push(check("tags-missing", "缺标签：用 set_tags 从标签词表里给它选至少一个标签"));
       if (it.provisional) out.push(check("plan-provisional", "计划待重写"));
       if (st === "paused") for (const waiter of reverseDeps().items.get(id) || []) {
-        if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id)) out.push(check("pause-conflict", `暂停了，但 ${item(waiter.id)!.title} 在等它`, { kind: "item", id: waiter.id }));
+        if (!waiter.own && isOpenWork(waiter.id) && !isPaused(waiter.id) && waitsFor(waiter.id)) out.push(check("pause-conflict", `暂停了，但 ${item(waiter.id)!.title} 在等它`, { kind: "item", id: waiter.id }));
       }
       if (!it.record) {
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));

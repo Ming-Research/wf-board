@@ -336,7 +336,10 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
   return v;
 }
 
-/** A standing item on the board, a top item of the project the generated board's unpaused witness lives in, for the checks that need one. */
+/**
+ * A standing item on the board, a top item of the project the generated board's unpaused witness lives in, for the checks that need one.
+ * It has one done and one todo step, as an ordinary item with a band and a count would: a probe with no rows could not show a page that draws them.
+ */
 export async function seedStanding(board: BoardServer): Promise<void> {
   const s = board.store.snapshot();
   if (s.items["standing-probe"]) return;
@@ -345,4 +348,7 @@ export async function seedStanding(board: BoardServer): Promise<void> {
   // Tags are required of a new item when the vocabulary offers its project one.
   const tag = boardTags(s.board).find(x => tagApplies(x, group));
   await board.ops.createItem({ author: "Architect", session: "架构师", key: "standing-probe", group, title: "Standing probe", standing: true, ...(tag ? { tags: [tag.name] } : {}) });
+  for (const row of [{ id: "done", text: "A step done", state: "done" }, { id: "next", text: "A step to do", state: "todo" }] as const) {
+    await board.ops.setPlan({ author: "Architect", session: "架构师", id: "standing-probe", row });
+  }
 }

@@ -800,7 +800,7 @@ log:
   creation and `update_item` can set it. Records are defined with the plan in
   [Item plans](#item-plans).
 - **Standing items.** `standing: true` makes an item a standing one: work that is
-  always in progress and never completes (the board's rules, a long-term promise
+  always in progress and never completes (a long-term promise with work under it,
   such as "board operations finish within their limits"). Only the architect sets
   it, at creation and with `update_item`. It excludes `record`, takes no acceptance
   step and no difficulty. Defined with the plan in [Standing items](#standing-items).
@@ -1516,15 +1516,15 @@ own-work sub-item.
 
 #### Standing items
 
-A standing item is work that is always in progress and never completes: the board
-rules and each block under them (whose text is the rule itself), and a long-term
-promise such as "board operations finish within their limits". Before the mark
-existed they were held up by an acceptance step that was never ticked, and the
+A standing item is work that is always in progress and never completes: a long-term
+promise with work under it, such as "board operations finish within their limits". Before the mark
+existed such items were held up by an acceptance step that was never ticked, and the
 derivations took them for items about to complete: the other rows done made the
-board say 只差验收, no one dispatches an engineer on a rule block so 缺难度 stood on every
-one (read on the board copy of 2026-10-16: 4 of the 10 flagged 只差验收, all 10
-flagged 缺难度). The mark is one fact that status and the checks read, instead of a
-rule added to each.
+board say 只差验收, and no one dispatches an engineer on the promise itself, so 缺难度 stood on
+every one (read on the board copy of 2026-10-16, which held 10 such items, the board rules,
+the blocks under them and the promises, the rule blocks having since become records: 4 flagged
+只差验收, all 10 flagged 缺难度). The mark is one fact that status and the checks read, instead
+of a rule added to each.
 
 - **The mark.** The item field `standing: true`, set only by the architect through
   `create_item` or `update_item` (the part `item.standing`, reserved for the process
@@ -1543,7 +1543,9 @@ rule added to each.
 - **Rows.** A row of a standing item that owns or shares another standing item is
   resolved and left out of the counts, drawn with the glyph ∞ instead of ✓: the target
   never completes, so the row never waits for it, and an item the standing item owns
-  after it is not held back by it (rule blocks stand side by side under their parent).
+  after it is not held back by it (promises stand side by side under their parent). Because the row waits for nothing, it
+  neither makes its target "awaited" (so `unowned-but-awaited` is not raised on a top-level standing item
+  that another standing item shares) nor conflicts with the target's pause (`pause-conflict`).
   A standing item's plan ratio is 0 of 0 and it has no share of its plan done or stage
   to show; the page leaves the ratio out. An ordinary item's row for a standing item is
   not resolved: the standing item is not done however its rows stand.
@@ -1567,9 +1569,9 @@ rule added to each.
   `search`, `brief`) say `· 常设` after the status, the data rows carry `standing: true`, and
   `brief`'s 进展 list also names the standing items that are not paused. The whole view leaves a standing item out unless the runner reports
   on it or an engineer session is live on it, because it is not work waiting for someone.
-- **Rejected.** (1) Turning the rule blocks into records: a record shows 记录, not the
-  in-progress state the owner asked for; the work under a record counts as backlog and does
-  not start, and there is no other root for the rule blocks' sub-items. (2) A label that the
+- **Rejected.** (1) Making such an item a record: a record shows 记录, not the
+  in-progress state the owner asked for, and the work under a record counts as backlog and
+  does not start, though the promise has real work under it. (2) A label that the
   checks skip: status is derived and a label cannot say "always in progress"; the rules
   would depend on a name in the tag vocabulary, which the owner may rename. (3) A flag on a
   plan row marking it long-running: it covers only status and 无人推进, the checks stay,
@@ -1615,7 +1617,7 @@ registry, and a test raises every registered kind on one board.
 | `dep-cycle` | 依赖成环 | yes |
 | `owned-by-many` | 被多个条目拥有 | yes |
 | `owned-across-projects` | 跨项目拥有 | yes |
-| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 | yes |
+| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 (a standing item's shared row for a standing item does not count as waiting) | yes |
 | `waits-on-standing` | 拥有一个常设条目，它不会完成 / 等着一个常设条目，它不会完成 (a row of an ordinary item that owns or shares a standing item, pointing at it; a record and a standing item are not asked) | yes |
 | `no-acceptance` | 没有计划：至少要有一个验收步骤 (not for a record or a standing item) | yes |
 | `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
@@ -1632,7 +1634,7 @@ registry, and a test raises every registered kind on one board.
 | `title-too-long` | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | `stalled` | 无人推进 (stalled, above) | no |
 | `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
-| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
+| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter; a standing item's row for a standing item does not count) | no |
 | `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 | `approach-stale` | 做法待更新 (label `做法待更新`: an open work item with a ruled card whose `ruledAt`, in whole seconds, is later than the head's last revision, below; the text names the latest such card and when it was ruled and the head last revised, says what the rewrite is, and counts the other cards ruled since; one check per item; a write is not refused) | no |
 

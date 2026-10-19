@@ -1031,7 +1031,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
       const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.id === "unowned-but-awaited");
-      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
+      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id) && !(after.isStanding(d.id) && after.isStanding(id))).map(d => d.id);
       const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
       const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
       const fix = (id: string): string => {
