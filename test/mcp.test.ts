@@ -57,7 +57,7 @@ test("project MCP onboarding, close and coordinator reads use the configured con
   const text=(r:Awaited<ReturnType<typeof client.callTool>>)=>(r.content as Array<{text:string}>).map(c=>c.text).join("\n");
   async function call(name:string,args:Record<string,unknown>={}) {const r=await client.callTool({name,arguments:args});assert.ok(!r.isError,text(r));return text(r);}
   const instructions=client.getInstructions()!;
-  for (const term of ["projects","brief","author","session","GitHub remote","~/dev/wf/AGENTS.md",'section "Board"']) assert.ok(instructions.includes(term),term);
+  for (const term of ["projects","brief","author","session","GitHub remote",'section "The board"','"Item writing"']) assert.ok(instructions.includes(term),term);
   assert.doesNotMatch(instructions,/coordinator|总管|inbox|create_request|need not listen/i);
   const configured=JSON.parse(await call("projects"));assert.equal(Object.hasOwn(configured[0],"agents"),false);assert.equal(configured[0].repo,"Ming-Research/Whitefoot");
   await call("update_project",{author,name:"Whitefoot",repo:"Ming-Research/Whitefoot-next"});
@@ -93,9 +93,9 @@ test("MCP onboarding and write schemas use project identities", async t => {
 test("the server instructions are a short pointer to the shared Board rules and hold no rules", async t => {
   const { client } = await connected(t), instructions = client.getInstructions()!;
   assert.equal(instructions, INSTRUCTIONS);
-  // Claude Code cuts a server's instructions at 2048 characters; the usage rules live in ~/dev/wf/AGENTS.md (section "Board").
+  // Claude Code cuts a server's instructions at 2048 characters; the usage rules live in the shared rules (section "The board").
   assert.ok(instructions.length <= 2048, String(instructions.length));
-  assert.match(instructions, /~\/dev\/wf\/AGENTS\.md, section "Board"/);
+  assert.match(instructions, /shared rules, section "The board"/);
   // The three first steps, each in its own numbered line.
   assert.match(instructions, /^1\. Call projects and pick the project whose repo matches your repository's GitHub remote\.$/m);
   assert.match(instructions, /^2\. Call brief with that project's name\.$/m);

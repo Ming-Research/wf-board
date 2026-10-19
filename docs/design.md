@@ -1970,8 +1970,8 @@ and is no sign of life.
 
 The server's instructions (`src/instructions.ts`) are a short pointer of at
 most 2048 characters. They say that how to use the board and write on it is in
-the shared `AGENTS.md` (`~/dev/wf/AGENTS.md`, section "Board", kept in the
-agents_config repository), and give the first steps: call `projects`, pick the
+the shared rules (the board's rule block `shared-rules`, section "The board",
+assembled into every agent's rule file in `$WF_HOME/agents_config`), and give the first steps: call `projects`, pick the
 project whose `repo` matches the repository's GitHub remote, call `brief`, and
 pass that project's name as `author` and the session's own name as `session`
 in every write. They state no rule of their own, so each rule has one
@@ -3011,7 +3011,7 @@ session holding an item, a reviewer, the observer, and the architect, whose sess
 「架构师」) has its own stream at `/wake/<session name>` (Agents' streams, below), with its
 own numbers and retention and a record of how far it was delivered. No stream is the PM's: the
 PM is retired (The PM is retired, below). What an agent does with a push, and how it listens, is in
-its rules and in `~/dev/wf/AGENTS.md`, section "Board".
+its rules and in the shared rules, section "The board".
 
 **Where a push goes.** The kinds table gives each kind `to`: `architect`, the stream of
 the session 「架构师」; `{holder: <field>}`, the stream of the session holding the item that
