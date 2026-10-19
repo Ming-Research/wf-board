@@ -1,13 +1,16 @@
 // The last job of the full CI (`result`): it starts with the run, waits until every other job has ended, then reads how long the
 // run took from its start to now, the time of each job and how evenly the test shards shared the work, writes the outcome to the
-// head commit as the status `full-ci` and puts the table into the run's summary. The total is red above 60 s and yellow above 50 s
-// (docs/design.md, section 11, The time gate). Items ci-shards-gate, ci-status-under-1min.
+// head commit as the status `full-ci` and puts the table into the run's summary. The time that is judged is the total without the
+// wait for a runner that some job had beyond the quickest job of the run: red above 60 s and yellow above 50 s (docs/design.md,
+// section 11, The time gate). Items ci-shards-gate, ci-status-under-1min, ci-gate-queue-wait.
 //
-//   TIME_GATE=report|enforce node scripts/ci-time-gate.ts
-//     (reads the run's jobs through the API; GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA; GITHUB_JOB names this job)
+//   TIME_GATE=enforce|record node scripts/ci-time-gate.ts
+//     (reads the run's jobs through the API; GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA; GITHUB_JOB names this job;
+//     GITHUB_API_URL, which a runner sets, is the API's address)
 //
-// `report` never turns the status red for the time; `enforce` does when the total is red. The full CI enforces: the browser tests
-// are the workflow browser.yml and are not in its path (item ci-browser-lane).
+// `enforce` writes the status and turns it red when the time is red. `record` is for a push to the main line: it writes the same
+// summary and no status, and never fails, so that the main line shows how long each run waited for runners and a report cannot
+// turn it red. The browser tests are the workflow browser.yml and are not in this run (item ci-browser-lane).
 import { appendFileSync } from "node:fs";
 
 export const LIMIT_SECONDS = { yellow: 50, red: 60 };
@@ -18,8 +21,9 @@ export const SHARD_STEP = "tests";
 export const SHARD_RATIO = 1.5;
 
 export interface Step { name: string; started_at: string | null; completed_at: string | null }
-export interface Job { name: string; status?: string; conclusion: string | null; started_at: string | null; completed_at: string | null; steps?: Step[] }
+export interface Job { name: string; status?: string; conclusion: string | null; created_at: string; started_at: string | null; completed_at: string | null; steps?: Step[] }
 export type Verdict = "ok" | "yellow" | "red";
+export type Mode = "enforce" | "record";
 
 /** The job that runs this script. */
 export const SELF_JOB = "result";
@@ -53,17 +57,19 @@ export async function waitForJobs(
   }
 }
 
-/** The status the run writes: success when every other job succeeded or was skipped and the gate is not red, else failure with the reason. */
-export function statusOf(jobs: readonly Job[], self: string, gate: { total: number; fail: boolean }) {
+/** The status the run writes: success when every other job succeeded or was skipped and the gate is not red, else failure with the reason.
+ * The total and the part of it that was waiting for a runner are in the description either way. */
+export function statusOf(jobs: readonly Job[], self: string, gate: { total: number; waited: number; fail: boolean }) {
   const others = jobs.filter(job => job.name !== self);
   const failed = others.filter(job => job.conclusion !== "success" && job.conclusion !== "skipped").map(job => job.name);
-  let state: "success" | "failure" = "success", description = `full CI success (${others.length} jobs, ${gate.total} s)`;
+  const times = `${gate.total} s, ${gate.waited} s of it waiting for a runner`;
+  let state: "success" | "failure" = "success", description = `full CI success (${others.length} jobs, ${times})`;
   if (failed.length > 0) {
     state = "failure";
     description = `full CI failure (${failed.slice(0, 4).join(", ")}${failed.length > 4 ? ` and ${failed.length - 4} more` : ""} not green)`;
   } else if (gate.fail) {
     state = "failure";
-    description = `full CI failure (time gate: ${gate.total} s)`;
+    description = `full CI failure (time gate: ${times})`;
   }
   // GitHub cuts a status description at 140 characters.
   return { state, description: description.slice(0, 140) };
@@ -75,11 +81,23 @@ export function verdictOf(total: number): Verdict {
   return total > LIMIT_SECONDS.red ? "red" : total > LIMIT_SECONDS.yellow ? "yellow" : "ok";
 }
 
-/** The jobs that ran, each with the seconds it waited after the run started, the seconds it took and the second it ended at. `self` is the job that is reading, which has not ended. */
+/** The seconds a job that has started waited for a runner: from its creation, when the run lists it, to the start of its first step. */
+const waitOf = (job: Job) => seconds(job.created_at, job.started_at!);
+
+/** The least a job of this run waited for a runner: the wait of the job that was served soonest. The run's own best stands for a wait that
+ * cannot be shorter, so no number is picked; a run in which every job waited long counts that wait, as it has nothing quicker to compare with. */
+export function quickestWait(jobs: readonly Job[]) {
+  const waits = jobs.filter(job => job.started_at !== null).map(waitOf);
+  return waits.length === 0 ? 0 : Math.min(...waits);
+}
+
+/** The jobs that ran, each with the seconds it waited for a runner, the part of that wait beyond the quickest job's (`extra`), the seconds it took and the second
+ * it ended at after the run started. `self` is the job that is reading, which has not ended. */
 export function lanes(started: string, jobs: readonly Job[], self: string) {
+  const floor = quickestWait(jobs);
   return jobs
     .filter(job => job.name !== self && job.started_at !== null && job.completed_at !== null)
-    .map(job => ({ name: job.name, queued: seconds(started, job.started_at!), took: seconds(job.started_at!, job.completed_at!), ended: seconds(started, job.completed_at!) }))
+    .map(job => ({ name: job.name, waited: waitOf(job), extra: waitOf(job) - floor, took: seconds(job.started_at!, job.completed_at!), ended: seconds(started, job.completed_at!) }))
     .sort((a, b) => b.ended - a.ended || (a.name < b.name ? -1 : 1));
 }
 
@@ -100,38 +118,51 @@ export function shardTable(jobs: readonly Job[]) {
 }
 
 /** The total is the seconds from `started` to `now`, the moment the status is written, so the wait for the job that reads, its set-up and its API calls
- * count; `now` is never before the end of the last job. */
-export function evaluate(started: string, jobs: readonly Job[], options: { enforce: boolean; self?: string; now: string }) {
-  const rows = lanes(started, jobs, options.self ?? SELF_JOB);
+ * count; `now` is never before the end of the last job. The time that is judged leaves out what the run lost to waiting for a runner: each job's end
+ * (and this job's own start) is moved back by the wait it had beyond the quickest job's, the latest of them is when the status could have been written
+ * had every job been served as soon as the quickest one, and the delay after the last end (or this job's start, if that is later) is added to it.
+ * A job that is itself slow ends late all the same, so it is still counted in full. */
+export function evaluate(started: string, jobs: readonly Job[], options: { mode: Mode; self?: string; now: string }) {
+  const self = options.self ?? SELF_JOB;
+  const floor = quickestWait(jobs);
+  const rows = lanes(started, jobs, self);
   const lastEnd = rows.reduce((max, row) => Math.max(max, row.ended), 0);
   const total = Math.max(seconds(started, options.now), lastEnd);
-  const verdict = verdictOf(total);
+  const mine = jobs.find(job => job.name === self && job.started_at !== null);
+  const myStart = mine ? seconds(started, mine.started_at!) : 0, myExtra = mine ? waitOf(mine) - floor : 0;
+  const ready = Math.max(myStart - myExtra, ...rows.map(row => row.ended - row.extra));
+  const counted = Math.max(0, Math.min(total, ready + Math.max(0, total - Math.max(myStart, lastEnd))));
+  const waited = total - counted;
+  const verdict = verdictOf(counted);
   const shards = shardTable(jobs);
   const out: string[] = ["### CI time gate", ""];
   const limits = `yellow above ${LIMIT_SECONDS.yellow} s, red above ${LIMIT_SECONDS.red} s`;
   const state = verdict === "ok" ? "within the limit" : verdict === "yellow" ? "close to the limit" : "over the limit";
-  out.push(`**${total} s** from the start of the run to the status (the last job, ${rows[0]?.name ?? "no job"}, ended at ${lastEnd} s): ${state} (${limits}). ${options.enforce ? "Enforced." : "Report only, not enforced."}`, "");
-  out.push("| job | waited (s) | took (s) | ended at (s) |", "|---|---|---|---|", ...rows.map(r => `| ${r.name} | ${r.queued} | ${r.took} | ${r.ended} |`), "");
+  const longest = rows.reduce<(typeof rows)[number] | undefined>((max, row) => (max === undefined || row.waited > max.waited ? row : max), undefined);
+  out.push(`**${counted} s** from the start of the run to the status, without the wait for a runner: ${state} (${limits}). ${options.mode === "enforce" ? "Enforced." : "Recorded only: no status is written and the run does not fail for it."}`, "");
+  out.push(`The run took ${total} s in all (the last job, ${rows[0]?.name ?? "no job"}, ended at ${lastEnd} s). ${waited} s of that is waiting for a runner beyond the ${floor} s that the quickest job of the run waited${longest && longest.extra > 0 ? `; ${longest.name} waited ${longest.waited} s` : ""}.`, "");
+  out.push("| job | waited for a runner (s) | beyond the quickest (s) | took (s) | ended at (s) |", "|---|---|---|---|---|", ...rows.map(r => `| ${r.name} | ${r.waited} | ${r.extra} | ${r.took} | ${r.ended} |`), "");
   if (shards.length === 0) out.push(`No test shard found (a job named like \`test shard 1\` with a step \`${SHARD_STEP}\`), so the shard table is left out.`, "");
   else {
     out.push("| test shard | tests step (s) | mean of the others (s) |", "|---|---|---|", ...shards.map(s => `| ${s.name} | ${s.step} | ${s.others === null ? "-" : s.others.toFixed(1)} |`), "");
     for (const s of shards.filter(s => s.slow)) out.push(`${s.name} took ${s.step} s, over ${SHARD_RATIO} times the mean of the other shards (${s.others!.toFixed(1)} s): give the files new costs in test/shard-costs.json from the per-file tables of the shard summaries.`, "");
   }
-  return { total, verdict, fail: options.enforce && verdict === "red", markdown: out.join("\n") };
+  return { total, waited, counted, verdict, fail: options.mode === "enforce" && verdict === "red", markdown: out.join("\n") };
 }
 
 if (import.meta.main) {
-  const { GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA, GITHUB_SERVER_URL, GITHUB_STEP_SUMMARY, GITHUB_OUTPUT, GITHUB_JOB, TIME_GATE } = process.env;
-  if ((TIME_GATE !== "report" && TIME_GATE !== "enforce") || !GH_TOKEN || !GITHUB_REPOSITORY || !GITHUB_RUN_ID || !GITHUB_SHA) {
-    console.error("usage: TIME_GATE=report|enforce GH_TOKEN=... GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=... GITHUB_SHA=... node scripts/ci-time-gate.ts");
+  const { GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA, GITHUB_SERVER_URL, GITHUB_API_URL, GITHUB_STEP_SUMMARY, GITHUB_OUTPUT, GITHUB_JOB, TIME_GATE } = process.env;
+  if ((TIME_GATE !== "enforce" && TIME_GATE !== "record") || !GH_TOKEN || !GITHUB_REPOSITORY || !GITHUB_RUN_ID || !GITHUB_SHA) {
+    console.error("usage: TIME_GATE=enforce|record GH_TOKEN=... GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=... GITHUB_SHA=... node scripts/ci-time-gate.ts");
     process.exit(2);
   }
+  const mode: Mode = TIME_GATE;
   const self = GITHUB_JOB ?? SELF_JOB;
   // A call that fails is tried again, so a hiccup of the API does not fail a run that otherwise passed.
   const api = async (method: "GET" | "POST", path: string, body?: object) => {
     for (let attempt = 1; ; attempt++) {
       try {
-        const response = await fetch(`https://api.github.com/repos/${GITHUB_REPOSITORY}${path}`, {
+        const response = await fetch(`${GITHUB_API_URL ?? "https://api.github.com"}/repos/${GITHUB_REPOSITORY}${path}`, {
           method,
           headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", ...(body ? { "Content-Type": "application/json" } : {}) },
           body: body ? JSON.stringify(body) : undefined,
@@ -159,17 +190,18 @@ if (import.meta.main) {
     const run = (await api("GET", `/actions/runs/${GITHUB_RUN_ID}`)) as { created_at: string; run_started_at?: string };
     let looks = 0;
     const jobs = await waitForJobs(async () => { looks++; return ((await api("GET", `/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100&filter=latest`)) as { jobs: Job[] }).jobs; }, self);
-    const result = evaluate(run.run_started_at ?? run.created_at, jobs, { enforce: TIME_GATE === "enforce", self, now: new Date().toISOString() });
+    const result = evaluate(run.run_started_at ?? run.created_at, jobs, { mode, self, now: new Date().toISOString() });
     const status = statusOf(jobs, self, result);
-    await writeStatus(status);
+    if (mode === "enforce") await writeStatus(status);
     console.log(result.markdown);
-    console.log(`status ${STATUS_CONTEXT}: ${status.state}, ${status.description} (${looks} looks at the jobs)`);
+    console.log(`status ${STATUS_CONTEXT}: ${mode === "enforce" ? "" : "not written, "}${status.state}, ${status.description} (${looks} looks at the jobs)`);
     if (GITHUB_STEP_SUMMARY) appendFileSync(GITHUB_STEP_SUMMARY, `${result.markdown}\n`);
-    if (GITHUB_OUTPUT) appendFileSync(GITHUB_OUTPUT, `verdict=${result.verdict}\ntotal=${result.total}\n`);
-    if (TIME_GATE === "enforce" && result.verdict !== "ok") console.log(`::${result.verdict === "red" ? "error" : "warning"} title=CI time gate::${result.total} s, limits: yellow above ${LIMIT_SECONDS.yellow} s, red above ${LIMIT_SECONDS.red} s`);
-    process.exit(status.state === "success" ? 0 : 1);
+    if (GITHUB_OUTPUT) appendFileSync(GITHUB_OUTPUT, `verdict=${result.verdict}\ntotal=${result.total}\nwaited=${result.waited}\n`);
+    if (result.verdict !== "ok") console.log(`::${result.verdict === "red" && mode === "enforce" ? "error" : "warning"} title=CI time gate::${result.counted} s without the wait for a runner (${result.total} s in all), limits: yellow above ${LIMIT_SECONDS.yellow} s, red above ${LIMIT_SECONDS.red} s`);
+    process.exit(mode === "record" || status.state === "success" ? 0 : 1);
   } catch (error) {
     console.error(error);
+    if (mode === "record") process.exit(0);
     // The status must not stay pending for a run that is over: say that this job could not tell.
     if (!written) try { await writeStatus({ state: "failure", description: `full CI failure (the result job failed: ${error instanceof Error ? error.message : String(error)})`.slice(0, 140) }); } catch (inner) { console.error(inner); }
     process.exit(1);

@@ -5375,7 +5375,7 @@ may use `needs` (`test/ci-workflow.test.ts` holds that; The time gate).
   the red of an earlier run of the same commit does not stand while the new
   one runs; the last job (`result`), which starts with the run and waits for the
   others (The time gate), writes the outcome of the run's jobs
-  (success or failure, linking to the run). To try a commit again, start the
+  (success or failure, linking to the run; on a push it writes none). To try a commit again, start the
   full CI again; rerunning only the failed jobs leaves the earlier red
   standing until `result` runs. A run cancelled by hand leaves the pending
   that `start` wrote, over any earlier success of the commit, until the next
@@ -5504,22 +5504,71 @@ nothing would run it, which the table with a default cost cannot do.
 
 ### The time gate
 
-The last job of a full CI started by hand (`result`) starts with the run, not
-after the other jobs. `scripts/ci-time-gate.ts` in it reads the run's jobs through
-the Actions API, every 2 seconds while more than 4 jobs are open and every second
-after that, until every job but its own has ended; then it puts into the run's
-summary the seconds from the start of the run to now (the status is written a
-moment later), the end of the job that ended last, a table with the wait, the run
-and the end of each job, and the table of the shards, and writes the status
-`full-ci`: success when every job succeeded or was skipped and the total is not
-red, else failure with the jobs that were not green, or the total. Above 50
-seconds the total is yellow, above 60 red (the target is a pull request checked
-within a minute of the push; two runs of one configuration differed by 13%, so the
-target is a typical 50 seconds, which leaves the line 20% above). It starts from
-the start of the attempt, not from the creation of the run, so a rerun does not
+The last job of the full CI (`result`) starts with the run, not after the other
+jobs. `scripts/ci-time-gate.ts` in it reads the run's jobs through the Actions API,
+every 2 seconds while more than 4 jobs are open and every second after that, until
+every job but its own has ended; then it puts into the run's summary the seconds
+from the start of the run to now (the status is written a moment later), the time
+that is judged (The wait for a runner, below), the end of the job that ended last,
+a table with the wait for a runner, the part of it beyond the quickest job's, the run
+and the end of each job, and the table of the shards. On a run started by hand it
+writes the status `full-ci`: success when every job succeeded or was skipped and the
+judged time is not red, else failure with the jobs that were not green, or the
+time; the description gives the total and how much of it was waiting for a runner.
+On a push to the main line the script runs in the mode `record`: the same summary,
+no status (the checks of a push are listed on the commit) and no failure whatever
+it finds, and the step cannot fail the job, so that a report does not turn the main
+line red and every merge leaves its table where the waits can be read. Above 50
+seconds the judged time is yellow, above 60 red (the target is a pull request
+checked within a minute of the push; two runs of one configuration differed by 13%,
+so the target is a typical 50 seconds, which leaves the line 20% above). It starts
+from the start of the attempt, not from the creation of the run, so a rerun does not
 count the time before it. The 1 to 2 seconds between the call that starts a run
 and the run's start are not in it; the measurement of the item that added the
 status to the total is from the call (below).
+
+**The wait for a runner.** A job that waits for a runner is not slow, and the
+change does not control the wait, so the judged time leaves out the part of it that
+some job had beyond the quickest job of the run. A job's wait is the seconds from its
+creation, when the run lists it, to the start of its first step. The run's own
+quickest job sets the floor (3 seconds in the runs read), so no number is picked,
+and a job's wait beyond the floor is its extra. The job's end less its extra is when
+it would have ended had it been served as soon as the quickest job; the judged time
+is the latest of those, the job that reads included by its start, plus the delay
+from the last end (or this job's start, if later) to the status. A job that is slow
+itself ends late all the same and is counted in full; a run in which every job
+waited alike has no quicker job to compare with and keeps that wait. The rule is
+`evaluate` in the script and is held by tests on made-up runs and on the jobs of one
+real run, and the whole script is run in them against a stand-in for the API.
+
+Why a run waits was read from the Actions API (10-19) for 7,301 jobs of 143 runs of
+the full CI, with every other workflow's jobs of the organization's repositories
+between 10-18 23:00 and 10-19 09:00. The waits come from two causes, neither of
+them the change. (1) The organization's jobs running at once reached the limit.
+GitHub's page of usage limits gives 60 concurrent jobs of the standard hosted
+runners for the Team plan, and the most jobs running at one moment in these data
+was exactly 60. A run has 28 jobs; of the 9 runs that started while more than 32
+jobs of the organization were running, 8 had jobs that started late, 6 of them by
+more than 20 seconds (48 at most) and with 25 to 27 jobs late at once; they were
+runs started by several engineers within a minute (4 between 08:07 and 08:08). The
+more engineers work at once, the more often. (2) GitHub's own assignment of a
+runner: of the other 134 runs, 5 (3.7%) had a single job start 27 to 45 seconds
+late while fewer than 35 other jobs were running; GitHub does not say why, and the
+cause is inferred from the room the pool had. Of the 52 runs started by hand with
+the script that starts with the run (10-19), 8 ended over 60 seconds by the total;
+with the rule 5 of them come to 46 to 55 seconds (their jobs waited 21 to 45
+seconds) and 3 stay at 61, 70 and 71 seconds, where every job waited 3 or 4 seconds
+and the last to end was `nkey time-writing`, which ran 45 to 53 seconds itself. The
+medians of the 52: 52 seconds by the total, 51 judged. The time of the run, not
+only its wait, is therefore the thing the line holds. Ways not taken: the total as
+before with the wait only written beside it (5 of the 52 runs stay red for the wait
+and are run again), judging only the longest job's own time with no wait counted at
+all (the line would move up about 4 seconds, the median 48 against the 52 of the
+total, and the run of 61 seconds above would read 58), starting a run again when it
+is red for the wait (the engineer waits twice and the second run's 28 jobs queue for
+the same runners), and fewer jobs in a run (it cures only the limit, not the
+assignment of a runner, and slows the run, [Sharding the script
+tests](#sharding-the-script-tests)).
 
 **Why the job waits instead of using `needs`.** A job that needs the others
 starts 2 to 3 seconds after the last of them ends, and sets itself up then
@@ -5584,18 +5633,24 @@ called at 06:35:15, 06:36:14, 06:37:12, 06:38:07 and 06:39:04 and their statuses
 at 06:36:09, 06:37:08, 06:38:03, 06:38:59 and 06:39:59; the last check ended 48 to
 51 after the run was created and the status 2 to 3 after it). The 20 runs: median
 52.5, 18 at 56 or less. Only the last batch has the timeouts of the jobs, which the
-earlier ones lack; the files that the CI runs in it differ from the head's only by
-the design record and the temporary workflow that took the measurement (`git diff`
-on `.github`, `scripts`, `test`, `package.json`, `package-lock.json`).
+earlier ones lack. Its files differ from those of the head that merged only by the
+timeouts on the steps of the job `result`, the test that holds them and the
+temporary workflow that took the measurement (`git diff` on `.github`, `scripts`,
+`test/ci-time-gate.test.ts`, `test/ci-workflow.test.ts`, `package.json`,
+`package-lock.json`).
 In the runs over 60 one job started late on the runner pool (34 and 27 seconds
 after the rest of the run, which started within 4); of 59 runs started by hand
 before the change 7 had a job that started more than 8 seconds late, up to 28.
-That wait is in the total by design (a lane that waits for a runner is a slow
-lane), so a run on a busy pool can end red on the line, as it could before.
+Those runs were judged by their total, which counted the wait of the job that
+started late; that is what the rule above leaves out.
 
-The gate is set to `TIME_GATE=enforce` in `ci.yml`: a total over the line fails
-the status and the job, so the run ends red. It only reported while the browser
-tests were a job of the full CI, whose minutes put every total over the line. The
+The gate is set in `ci.yml` to `TIME_GATE=enforce` on a run started by hand: a judged
+time over the line fails the status and the job, so the run ends red. It only
+reported while the browser tests were a job of the full CI, whose minutes put every
+total over the line. On a push the mode is `record` and the script step has
+`continue-on-error`, and the step that writes a failed status when the script wrote
+none runs only on a run started by hand (`test/ci-workflow.test.ts` holds each of
+the three). The
 shard table reads the jobs named `test shard N` and their step `tests`; when it
 finds none, the summary says so, which shows a rename. A job that failed makes the
 status failure with its name, and the job red, so that "re-run failed jobs" runs

@@ -9,8 +9,8 @@ import { SELF_JOB } from "../scripts/ci-time-gate.ts";
 /** The id of the step of the job `result` that runs the script. */
 const SCRIPT_STEP = "result";
 
-type Step = { id?: string; if?: string; run?: string; "timeout-minutes"?: number };
-type Job = { needs?: unknown; "timeout-minutes"?: number; steps?: Step[] };
+type Step = { id?: string; if?: string; run?: string; env?: Record<string, string>; "continue-on-error"?: boolean | string; "timeout-minutes"?: number };
+type Job = { if?: string; needs?: unknown; "timeout-minutes"?: number; steps?: Step[] };
 type Workflow = { jobs: Record<string, Job> };
 const ci = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 /** The ids of the jobs that wait for another job: the run lists them only when the other has ended, so `result` would not wait for them. */
@@ -94,4 +94,37 @@ test("the check finds a fallback step that never runs, one that runs after a sta
   const elsewhere = ci.replace("-f state=failure -f context=full-ci", "-f state=failure -f context=other");
   for (const spoiled of [never, overwrites, succeeds, elsewhere]) assert.notEqual(spoiled, ci);
   for (const spoiled of [never, overwrites, succeeds, elsewhere]) assert.equal(fallbackProblems(spoiled).length, 1);
+});
+
+/** What would keep the job `result` from recording on a push to the main line, or let it write a status or turn that run red there: a condition on the job
+ * (it would run for only one of the two events), a mode that is not `record` on a push and `enforce` on a run started by hand, a script step that can fail
+ * the job on a push, and a step that writes a failed status when the script wrote none, which would also run on a push. */
+const eventProblems = (text: string) => {
+  const job = (parse(text) as Workflow).jobs[SELF_JOB];
+  const steps = job?.steps ?? [];
+  const script = steps.find(s => s.id === SCRIPT_STEP);
+  const fallback = steps.slice(Math.max(0, steps.findIndex(s => s.id === SCRIPT_STEP) + 1)).find(s => String(s.run ?? "").includes("context=full-ci"));
+  const mode = String(script?.env?.TIME_GATE ?? ""), lenient = String(script?.["continue-on-error"] ?? "");
+  const problems: string[] = [];
+  if (job?.if !== undefined) problems.push(`${SELF_JOB} has a condition, so it does not run on a push and on a run started by hand alike`);
+  if (!(mode.includes("github.event_name == 'push'") && mode.includes("'record'") && mode.includes("'enforce'"))) problems.push("the mode is not record on a push and enforce otherwise");
+  if (!lenient.includes("github.event_name == 'push'")) problems.push("the script step can fail the job on a push");
+  if (!String(fallback?.if ?? "").includes("github.event_name == 'workflow_dispatch'")) problems.push("the step that writes a failed status also runs on a push");
+  return problems;
+};
+
+test("the job `result` records on a push without failing it and enforces on a run started by hand, and only the latter writes a failed status when the script wrote none", () => {
+  assert.deepEqual(eventProblems(ci), []);
+});
+
+test("the check finds a condition on the job, the wrong mode, a script step that can fail a push and a fallback step that runs on a push", () => {
+  const conditional = ci.replace("  result:\n", "  result:\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n");
+  const enforced = ci.replace("${{ github.event_name == 'push' && 'record' || 'enforce' }}", "enforce");
+  const strict = ci.replace("        continue-on-error: ${{ github.event_name == 'push' }}\n", "");
+  const everywhere = ci.replace("github.event_name == 'workflow_dispatch' && failure()", "failure()");
+  for (const spoiled of [conditional, enforced, strict, everywhere]) assert.notEqual(spoiled, ci);
+  assert.deepEqual(eventProblems(conditional), ["result has a condition, so it does not run on a push and on a run started by hand alike"]);
+  assert.deepEqual(eventProblems(enforced), ["the mode is not record on a push and enforce otherwise"]);
+  assert.deepEqual(eventProblems(strict), ["the script step can fail the job on a push"]);
+  assert.deepEqual(eventProblems(everywhere), ["the step that writes a failed status also runs on a push"]);
 });
