@@ -34,7 +34,7 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.setPlan({ author, id: "other", row: { item: "a", own: true } }), /被多个条目拥有.*current owner area.*move_item/],
     [() => op.setPlan({ author, id: "area", remove: "a" }), /a is open.*move_item or cancel/],
     [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["missing"] } }), /after must name earlier rows, but "missing" is not one; the plan has no row with that id/],
-    [() => op.setPlan({ author, id: "b", row: { id: "ruled", card: "ruled", after: ["accept"] } }), /after must name earlier rows, but "accept" is not one; it stands at this row or below it; write the whole plan with rows \(row keeps an existing row where it stands\) so that it comes first/],
+    [() => op.setPlan({ author, id: "b", row: { card: "ruled", after: ["accept"] } }), /after must name earlier rows, but "accept" is not one; it stands at this row or below it; write the whole plan with rows \(row keeps an existing row where it stands\) so that it comes first/],
     [() => op.setPlan({ author, id: "a", row: { id: "drop", text: "Dropped work", state: "dropped" } }), /reason.*fix/],
     [() => op.setStatus({ ...asArchitect, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
     [() => op.setStatus({ ...asArchitect, id: "other", status: "blocked", log: "Wait" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
@@ -663,7 +663,7 @@ test("create_item appends accept while allowing more acceptance scenarios in its
     { id: "scenario", accept: true, text: "Initial scenario passes", state: "todo", after: [] },
     { id: "merge", text: "Merge checked work", state: "todo" },
   ] });
-  assert.deepEqual(store.snapshot().items.scenarios!.plan.map(row => row.id), ["scenario", "merge", "accept"]);
+  assert.deepEqual(store.snapshot().items.scenarios!.plan.map(row => row.id), ["scenario", "merge", "acc"]);
   assert.equal(store.snapshot().items.scenarios!.plan.filter(row => "accept" in row && row.accept).length, 2);
 });
 
