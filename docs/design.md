@@ -2444,7 +2444,8 @@ not call it.
   the count below it. `expand` opens it one level.
 - *What a line says.* The key, the title cut at 22 characters, the status in the page's words (进行中, 卡住, 停滞, 未开始, 暂停), what
   the runner reports or the live session holds (the whole view's words, with the turn the work is on for a turn in progress), 没人管 or
-  等太久 with its limit, how long it has been so, its check flags, and the item number. The kinds and the time are the whole view's
+  等太久 with its limit, how long it has been so, its check flags, the item number, and for an item whose head has a 何时 section its
+  first sentence, cut at 40 characters, as the last part of the line (the same reading the candidates use). The kinds and the time are the whole view's
   row of the item, and the whole view gives no row to a parent whose sub-items are open nor to a standing item that nobody works on:
   their lines have neither. A line not opened ends with `下面 N 件：` and the items below it by status, then the numbers of
   没人管 and 等太久 and of those changed since the last look, and `待选池 N 件` for the pools below it. An open project or pool line

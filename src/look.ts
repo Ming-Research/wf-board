@@ -8,13 +8,14 @@ import type { Rules } from "./rules.ts";
 import { reportText, spanText, wholeView } from "./whole-view.ts";
 import type { Bucket } from "./whole-view.ts";
 import type { Snapshot } from "./model.ts";
+import { whenText } from "./head-sections.ts";
 
 /** The lines an answer may take unless the caller says otherwise, and what the caller may ask for. */
 export const DEFAULT_ROWS = 80, MIN_ROWS = 10, MAX_ROWS = 400;
 /** How many sessions' last looks are kept: the architect has a handful of sessions, each of the board's size in signatures. */
 export const MEMORY_SESSIONS = 16;
 /** The longest title, pause reason and runner text a line carries; the rest is cut. */
-const TITLE_CHARS = 22, REASON_CHARS = 40, WHAT_CHARS = 44;
+const TITLE_CHARS = 22, REASON_CHARS = 40, WHAT_CHARS = 44, WHEN_CHARS = 40;
 
 /** The statuses an open work item can have, in the order a count lists them. */
 export const OPEN_STATUSES = ["wip", "blocked", "idle", "todo", "paused"] as const;
@@ -84,6 +85,8 @@ export interface LookNode {
   turns: number | undefined;
   runner: boolean;
   checks: string[];
+  /** The first sentence of the item's 何时 section (the condition for starting it), when its head has one. */
+  when: string | undefined;
   /** The pause that holds the item: the item that carries the marker (this one, or one above), its reason and when it began. */
   pause: { source: string; reason: string; at: number } | undefined;
   mark: "changed" | "new" | undefined;
@@ -127,7 +130,7 @@ function build(s: Snapshot, r: Rules, now: number, previous: Previous | undefine
   const projects = new Map<string, LookNode>(), byId = new Map<string, LookNode>(), sigs = new Map<string, string>(), seen = new Set<string>();
   let counter = 0;
   const make = (kind: LookNode["kind"], id: string, project: string, title: string, num: number | undefined, parent: LookNode | undefined): LookNode => ({
-    kind, id, project, title, num, depth: parent ? parent.depth + 1 : 0, order: counter++, parent, kids: [], stray: false, status: undefined, what: undefined, since: undefined,
+    kind, id, project, title, num, depth: parent ? parent.depth + 1 : 0, order: counter++, parent, kids: [], stray: false, status: undefined, what: undefined, since: undefined, when: undefined,
     bucket: undefined, fresh: false, limit: undefined, turns: undefined, runner: false, checks: [], pause: undefined, mark: undefined, own: zero(), sub: zero(),
   });
   const projectNode = (name: string): LookNode => {
@@ -139,6 +142,7 @@ function build(s: Snapshot, r: Rules, now: number, previous: Previous | undefine
     const it = s.items[id]!, status = r.statusOf(id) as OpenStatus, row = rows.get(id), checks = r.checks(id);
     const node = make("item", id, host.project, it.title, it.num, host);
     node.stray = stray; node.status = status; node.checks = [...new Set(checks.map(checkLabel))];
+    node.when = whenText(it.head ?? "");
     if (row) {
       node.what = row.what; node.since = row.since; node.bucket = row.bucket; node.fresh = row.fresh === true; node.limit = row.limit; node.turns = row.turns; node.runner = row.from === "runner";
     }
@@ -353,6 +357,8 @@ function nodeLine(node: LookNode, open: boolean, now: number): string {
   if (node.stray) parts.push("没挂在树上");
   if (!open && node.kids.length) parts.push(below(node.sub));
   if (node.num !== undefined) parts.push(`#${node.num}`);
+  // The condition for starting the item goes last, so the line ends with it.
+  if (node.when) parts.push(`何时：${cut(node.when, WHEN_CHARS)}`);
   return `${mark}${indent}${parts.join(" · ")}`;
 }
 
