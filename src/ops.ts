@@ -697,7 +697,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     markMerged: a => edit(a, "item.merge-row", "mark_merged", (it, s, at) => {
       // The row as it is now decides, not the one the watch read before GitHub answered: a row edited, dropped or removed meanwhile stays as written.
       const row = it.plan.find(r => r.id === a.row);
-      if (!row || !isOpenMergeStep(row) || !mergeRowDone(mergeRowPulls(s, a.id, row).map(prKey), new Set(a.merged.map(prKey)))) return it;
+      if (!row || !isOpenMergeStep(row, it.plan) || !mergeRowDone(mergeRowPulls(s, a.id, row).map(prKey), new Set(a.merged.map(prKey)))) return it;
       const { doneAt: _done, since: _since, droppedAt: _dropped, waits: _waits, ...input } = row;
       return { ...it, updated: at, plan: it.plan.map(r => r === row ? stampPlanRow({ ...input, state: "done" }, row, at) : r), log: [...it.log, entry(a.author, at, a.log)] };
     }),
