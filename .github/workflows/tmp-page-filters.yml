@@ -1,0 +1,39 @@
+name: tmp-page-filters
+# Temporary (board-cpu-usage): the checks the group filter rows touch, and the page benchmark of this tree against the merged head
+# without the change (6da39f6), interleaved on four runners, with one profile.
+on: push
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: npm run build:web
+      - run: node --test test/web.test.ts test/dom/page-filters-after-1.test.ts test/dom/page-filters-after-2.test.ts test/dom/page-filters-fresh.test.ts test/dom/page-chips.test.ts test/dom/page-tree.test.ts
+  pairs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4]
+    name: page pairs ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - name: Interleaved page runs
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/before" 6da39f6c369ca9013b2da0bbd8b1c139878490a9
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/before/node_modules"
+          for round in 1 2 3; do
+            echo "round $round before"; (cd "$RUNNER_TEMP/before" && node scripts/bench-page.ts | grep -E 'event:')
+            echo "round $round after"; node scripts/bench-page.ts | grep -E 'event:'
+          done
+  profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: node scripts/bench-page.ts --profile

@@ -493,23 +493,35 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key, tags: f.tags }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidateView(); }
   // The filter row under a project heading: the status filters with their counts in that project, then the dependency ones it has.
-  function filterRow(g: string) {
-    const row = el("div", "sum-row grp-filters");
-    const f = groupFilter(g);
-    const btn = (on: boolean, text: string, title: string, fn: () => void) => { const b = el("button", "sbtn s-plain" + (on ? " s-on" : ""), text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", fn); return b; };
+  // A group's filter buttons as what they show (class, text, title) and what a click does; the row is made from them, and
+  // a partial render compares what they show with the row on the page, which it replaces only when that changed.
+  function filterButtons(g: string) {
+    const f = groupFilter(g), out: Array<{ on: boolean; text: string; title: string; tag?: boolean; fn: () => void }> = [];
     STATUS_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(key, g), on = f.status.includes(key);
-      if (n || on) row.appendChild(btn(on, label + " " + n, title + "（可多选）", () => toggleStatusFilter(g, key)));
+      if (n || on) out.push({ on, text: label + " " + n, title: title + "（可多选）", fn: () => toggleStatusFilter(g, key) });
     });
     DEP_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(key, g), on = f.dep === key;
-      if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
+      if (n || on) out.push({ on, text: label + " " + n, title, fn: () => setDepFilter(g, key) });
     });
     (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
       const n = tagCount(t.name, g), on = f.tags.includes(t.name);
-      if (n || on) { const b = btn(on, esc(t.name) + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
+      if (n || on) out.push({ on, text: esc(t.name) + " " + n, title: t.meaning + "（可多选，显示带任一所选标签的条目）", tag: true, fn: () => toggleTagFilter(g, t.name) });
     });
-    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
+    if (filtering(g)) out.push({ on: false, text: "清除筛选", title: "", fn: () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); } });
+    return out;
+  }
+  const filterShown = (buttons: ReturnType<typeof filterButtons>) => JSON.stringify(buttons.map(b => [b.on, b.text, b.title, !!b.tag]));
+  function filterRow(g: string, buttons = filterButtons(g)) {
+    const row = el("div", "sum-row grp-filters");
+    row.dataset.shown = filterShown(buttons);
+    for (const { on, text, title, tag, fn } of buttons) {
+      const b = el("button", "sbtn s-plain" + (on ? " s-on" : "") + (tag ? " tagfilter" : ""), text); b.type = "button";
+      if (title) b.title = title;
+      b.addEventListener("click", fn);
+      row.appendChild(b);
+    }
     return row;
   }
   // For each item, how many waiting and new stops lie below it; recomputed once per render.
@@ -2899,10 +2911,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // Group counts and dependency summaries are independent of the unchanged item/card subtrees.
     projectGroups().forEach((g,i) => {
       const box=get("group-"+i); if (!box) return;
-      const filters=[...box.children].find(e => e.classList.contains("grp-filters")); if (filters) filters.replaceWith(filterRow(g.name));
+      const filters=[...box.children].find(e => e.classList.contains("grp-filters")) as HTMLElement | undefined;
+      if (filters) { const buttons=filterButtons(g.name); if (filters.dataset.shown !== filterShown(buttons)) filters.replaceWith(filterRow(g.name,buttons)); }
       const head=box.children[0] as HTMLElement | undefined; if (!head) return;
-      const next=el("h2","group-head",inline(g.name || "其他"));
-      head.replaceWith(next);
+      const html=inline(g.name || "其他");
+      if (head.innerHTML !== html) head.replaceWith(el("h2","group-head",html));
     });
     const order=stops().map(s => s.id);
     if (!sameValue(order,waitingOrder)) {
