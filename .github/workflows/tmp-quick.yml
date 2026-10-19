@@ -17,4 +17,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node --test test/ci-workflow.test.ts test/ci-time-gate.test.ts test/shard-costs.test.ts
+      - run: node --test test/ci-workflow.test.ts test/ci-time-gate.test.ts test/test-shard.test.ts
