@@ -3,8 +3,9 @@
 // runner's next beat. The agent list reads it beside the runner's report on the item (src/runner-rows.ts). docs/design.md, section 7,
 // "The live view of a turn", gives the reasons for each rule.
 
-/** Whose turn it is: an engineer's, or the architect's turn the runner starts to answer an engineer's question. */
-export const LIVE_ROLES = ["工程师", "架构师"] as const;
+/** Whose turn it is: an engineer's, a review round's (the runner's read-only review of the engineer's pull request), or the architect's
+ * turn the runner starts to answer an engineer's question. */
+export const LIVE_ROLES = ["工程师", "审查", "架构师"] as const;
 export type LiveRole = (typeof LIVE_ROLES)[number];
 /** The most characters of the one-line action a beat carries. */
 export const LIVE_ACTION_MAX = 80;
@@ -15,13 +16,13 @@ const LIVE_KEEP_MS = 24 * 3600_000;
 
 /**
  * The latest beat for one turn. The times are the board's: the runner sends durations and the board counts back from the moment
- * the beat arrives, so the runner's clock decides nothing. `item` is the engineer's item, also for the architect's turn that
- * answers its question.
+ * the beat arrives, so the runner's clock decides nothing. `item` is the engineer's item, also for a review round of its pull request
+ * and for the architect's turn that answers its question.
  */
 export interface LiveEntry {
   role: LiveRole;
   item: string;
-  /** The turn's number: the item's turn count for an engineer, the architect session's for the architect. */
+  /** The turn's number: the item's turn count for an engineer, the round for a review, the architect session's for the architect. */
   turn: number;
   turnStartedAt: string;
   lastActionAt?: string;

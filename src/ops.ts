@@ -785,7 +785,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       onlyProcessOrRunnerWithoutCredential(a, "report a turn's live state");
       const it = ownedItem(store.snapshot(), a.id, a);
       if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
-      if (!LIVE_ROLES.includes(a.role)) throw new OpError(`role: give ${LIVE_ROLES.join(" or ")}`);
+      if (!LIVE_ROLES.includes(a.role)) throw new OpError(`role: give one of ${LIVE_ROLES.join(", ")}`);
       const whole = (value: unknown, field: string, min: number): number => {
         if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) throw new OpError(`${field}: give a whole number, ${min} or more`);
         return value;

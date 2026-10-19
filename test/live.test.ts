@@ -33,9 +33,10 @@ test("a beat is kept in memory with the times counted back from the moment it ar
   setClock("2026-10-18T09:00:30Z");
   await op.reportLive({ ...runner, id: "a", role: "工程师", turn: 2, turnSeconds: 770 });
   assert.deepEqual(live.all().map(e => [e.role, e.item, e.turnStartedAt, e.lastActionAt, e.action, e.at]), [["工程师", "a", "2026-10-18T08:47:40Z", undefined, undefined, "2026-10-18T09:00:30Z"]]);
-  // The architect's turn that answers a question on the same item is a beat of its own.
+  // The architect's turn that answers a question on the same item, and a review round of its pull request, are beats of their own.
   await op.reportLive({ ...runner, id: "a", role: "架构师", turn: 3, turnSeconds: 5 });
-  assert.deepEqual(live.all().map(e => `${e.role}:${e.item}:${e.turn}`).sort(), ["工程师:a:2", "架构师:a:3"]);
+  await op.reportLive({ ...runner, id: "a", role: "审查", turn: 1, turnSeconds: 40, action: "读 src/rules.ts" });
+  assert.deepEqual(live.all().map(e => `${e.role}:${e.item}:${e.turn}`).sort(), ["工程师:a:2", "审查:a:1", "架构师:a:3"].sort());
   assert.equal(store.snapshot().head, head);
 });
 
@@ -43,7 +44,7 @@ test("a beat that does not say what a beat must is refused in the rule's own wor
   const { op, live } = await clocked(t);
   const ok = { ...runner, id: "a", role: "工程师" as const, turn: 1, turnSeconds: 1 };
   const cases: Array<[Parameters<typeof op.reportLive>[0], RegExp]> = [
-    [{ ...ok, role: "审查" as "工程师" }, /role: give 工程师 or 架构师/],
+    [{ ...ok, role: "观察者" as "工程师" }, /role: give one of 工程师, 审查, 架构师/],
     [{ ...ok, turn: 0 }, /turn: give a whole number, 1 or more/],
     [{ ...ok, turn: 1.5 }, /turn: give a whole number/],
     [{ ...ok, turnSeconds: -1 }, /turnSeconds: give a whole number, 0 or more/],

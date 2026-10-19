@@ -3033,7 +3033,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   of level 1 and six above) are as many lines that line up. The columns: the title, with the session's level as a
   small number before it; the state in a word (`stateWord`: 在跑, 等 CI, 等主人,
   等架构师, 等条目, 等 14900K, 等事件, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
-  在跑); one line of what the work does or waits for; how long it has been in that
+  在跑, and the beat of a review round turns 等事件 into 「审查 第 N 轮」); one line of what the work does or waits for; how long it has been in that
   state (for a turn running, how long the turn has run); and the time, turns and cost
   since the work began. The stylesheet cuts the title and the line of text to one
   line, and the hover of each says the rest. The owner's list then has no second
@@ -3043,8 +3043,9 @@ level, and whether that someone is working, waiting or has gone quiet.
   and the cards an ask to the owner names are written as titles and questions,
   with their keys on the hover (`runnerLine`).
   - *The line of text* is the last action of the turn running when the runner
-    beats (the engineer's, or the architect's turn for a work that asks the
-    architect: 「架构师在答：…」), else the report's note (after the event of a `wait`
+    beats (the engineer's; the architect's turn for a work that asks the
+    architect: 「架构师在答：…」; the review round of a work that waits for it:
+    「审查中：…」), else the report's note (after the event of a `wait`
     with its wake time, `waitFor`, as after the titles of the items and the questions
     of the cards a report waits for), else for a turn running
     that the runner has not described, 「还没报这一轮的动作」. A beat not
@@ -3155,8 +3156,8 @@ A turn can run ten minutes and more (an engineer's first turn in the second tria
 minutes), and the runner's report on the item changes only when a turn starts or ends,
 so the report cannot say whether a running turn is moving. The runner therefore beats: about
 every 30 seconds, for each turn whose process runs, it calls `report_live` with the item, the
-role (`工程师`, or `架构师` for the architect's turn that answers the engineer's question on
-that item), the turn's number, how many seconds it has run, how many seconds since its last
+role (`工程师`; `审查` for a review round of the engineer's pull request; `架构师` for the architect's
+turn that answers the engineer's question on that item), the turn's number, how many seconds it has run, how many seconds since its last
 action (the runner reads the session transcript's last change) and the action in one line of at
 most 80 characters (for example 「改 web/app.ts」).
 
@@ -3171,6 +3172,11 @@ most 80 characters (for example 「改 web/app.ts」).
 - *The writers* are those of `report_state` (the same part, `item.runner`, section 9): the runner
   from its own session, and the architect. The tool is `write` class of the time limits, but
   it does not wait in the write queue, since it commits nothing.
+- *The review round.* The runner reports a review round of the engineer's pull request as a `wait` on
+  the item and beats for it with the role `审查`. The runner's row reads that beat while the report says
+  `wait` and the beat is not older than the wait (`since`), so the beat of an earlier round, which no report
+  agrees with, is not shown on a later wait; the row's state word then reads 「审查 第 N 轮」 and its line
+  「审查中：…」.
 - *To the page.* The event stream sends a `live` event with all the beats when it opens and after
   every beat (a few entries; the page replaces its list). It is not a change of the board: the page
   counts no change, keeps its snapshot and redraws only the agent list, and only when the minutes
