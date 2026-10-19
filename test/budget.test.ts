@@ -207,6 +207,12 @@ test("a version conflict reads back only as far as the revision it was written a
   shown.mock.resetCalls();
   await assert.rejects(conflict(current - 4), /\+4 log/);
   assert.equal(shown.mock.callCount(), 5);
+  // Git is asked for those commits and no more: asked for all of an item's commits, it looks through the whole history for the
+  // rest when the item has few (2 to 3 s on the live board's 27,666 commits, with every other write waiting; item write-tail-3s).
+  const asked = t.mock.method(store, "log");
+  await assert.rejects(conflict(current - 4), /\+4 log/);
+  await assert.rejects(conflict(current - 1), /\+1 log/);
+  assert.deepEqual(asked.mock.calls.map(call => call.arguments[0]), [{ kind: "item", id: "a", limit: 5 }, { kind: "item", id: "a", limit: 2 }]);
 });
 
 test("ReadCache drops the oldest reads once they weigh more than the limit or number more than the entries, keeps no failed read, and lets no evicted read remove a retry", async () => {

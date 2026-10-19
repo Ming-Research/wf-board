@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Decision, Item, PlanStep, PlanStepInput, PlanRow, PlanRowInput, PlanInput, ItemPlan, Project, ItemTarget, ItemTargetInput, Note } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { rules, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
+import { rules, CHECK_KINDS, CHECK_LABEL, checkKind, checkKey, affectedItems, presentationSignature, changedItemPlan, planChanged, stampPlanRow, changedItemTargets, targetsChanged, stampItemTarget, targetLine, checkLabel, cardMarker, placedCards, placedCardsOf, CARD_UNPLACED_LABEL, CARD_MISMATCH_LABEL, STALLED_LABEL, STAGE_FORMAT_LABEL, WAITS_TEXT_LABEL, withoutHistoricalDetail, isLogChange, isPlainPick } from "../src/rules.ts";
 
 const T0 = "2026-10-10T00:00:00Z", T1 = "2026-10-11T00:00:00Z", T2 = "2026-10-12T00:00:00Z";
 const step = (id = "work", state: PlanStep["state"] = "todo", fields: Partial<PlanStep> = {}): PlanStep => ({ id, text: id, state, ...(state === "done" ? { doneAt: T0 } : state === "doing" ? { since: T0 } : state === "dropped" ? { droppedAt: T0, reason: "Replaced" } : {}), ...fields });
@@ -206,7 +206,7 @@ test("a paused child conflicts with shared dependents but not its unpaused owner
   s.items.child!.paused = { reason: "Owner paused this part", at: T1 };
   const r = rules(s);
   assert.equal(r.statusOf("parent"), "blocked", "the owning row still waits for the owner's resumption");
-  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 dependent 在等它", target: { kind: "item", id: "dependent" } }], "the shared dependent retains its conflict even when the target is owned");
+  assert.deepEqual(r.checks("child").filter(check => check.label === "暂停冲突"), [{ id: "pause-conflict", label: "暂停冲突", text: "暂停了，但 dependent 在等它", target: { kind: "item", id: "dependent" } }], "the shared dependent retains its conflict even when the target is owned");
 });
 
 test("a paused root stays a root and needs nothing; pausing it does not promote its targets", () => {
@@ -226,7 +226,7 @@ test("unpaused shared dependents flag conflicts on paused targets", () => {
   s.items.paused!.paused = { reason: "Stopped", at: T1 };
   s.items.other!.paused = { reason: "Also stopped", at: T1 };
   const r = rules(s);
-  assert.deepEqual(r.checks("paused").filter(check => check.label === "暂停冲突"), [{ label: "暂停冲突", text: "暂停了，但 urgent 在等它", target: { kind: "item", id: "urgent" } }]);
+  assert.deepEqual(r.checks("paused").filter(check => check.label === "暂停冲突"), [{ id: "pause-conflict", label: "暂停冲突", text: "暂停了，但 urgent 在等它", target: { kind: "item", id: "urgent" } }]);
   assert.equal(r.checks("urgent").some(check => check.label === "暂停冲突"), false, "the warning belongs to the paused target");
   s.items.urgent!.paused = { reason: "Owner also stopped waiter", at: T2 };
   assert.equal(rules(s).checks("paused").some(check => check.label === "暂停冲突"), false);
@@ -627,13 +627,13 @@ test("a todo step that writes its waits as text gets one check per open item, li
   const r = rules(s);
   const waitsChecks = (id: string) => r.checks(id).filter(check => check.label === WAITS_TEXT_LABEL);
   const hint = "在等的事写在文字里，看板看不出，所以这些行看着能开工。改法：等别的条目就用共享依赖；等主人就出卡；等 CI、14900K 这类看板外的事，把这一行标成进行中；暂时不做就挪进待选。写了在等的行：";
-  assert.deepEqual(waitsChecks("two"), [{ label: WAITS_TEXT_LABEL, text: hint + "ci、pr" }]);
-  assert.deepEqual(waitsChecks("mixed"), [{ label: WAITS_TEXT_LABEL, text: hint + "review" }], "only the todo row is listed, not the doing row beside it");
+  assert.deepEqual(waitsChecks("two"), [{ id: "waits-in-text", label: WAITS_TEXT_LABEL, text: hint + "ci、pr" }]);
+  assert.deepEqual(waitsChecks("mixed"), [{ id: "waits-in-text", label: WAITS_TEXT_LABEL, text: hint + "review" }], "only the todo row is listed, not the doing row beside it");
   assert.deepEqual(waitsChecks("doingOnly"), [], "a doing step's waits is a live wait, not a check");
   assert.deepEqual(waitsChecks("doneOnly"), [], "a done step's waits is history");
   assert.deepEqual(waitsChecks("droppedOnly"), [], "a dropped step's waits is history");
   assert.deepEqual(waitsChecks("plain"), [], "a todo step without waits text passes");
-  assert.deepEqual(waitsChecks("acceptWaits"), [{ label: WAITS_TEXT_LABEL, text: hint + "accept" }], "an acceptance row waiting in text is listed like any other");
+  assert.deepEqual(waitsChecks("acceptWaits"), [{ id: "waits-in-text", label: WAITS_TEXT_LABEL, text: hint + "accept" }], "an acceptance row waiting in text is listed like any other");
   assert.deepEqual(waitsChecks("cancelled"), [], "cancelled items stay silent");
   assert.deepEqual(waitsChecks("record"), [], "records are not work");
   assert.deepEqual(waitsChecks("paused"), [], "a paused item stays silent until resumed");
@@ -968,4 +968,57 @@ test("the format check reads who holds the item: an open engineer dispatch or a 
   });
   const flagged = Object.keys(s.items).filter(id => formatCheck(s, id) !== undefined).sort();
   assert.deepEqual(flagged, ["dispatch", "running"], "a finished dispatch, a reviewer, a finished runner report and a finished item are not held");
+});
+
+test("every kind of check is registered once under a fixed id, and a board that raises them all meets no id outside the registry", () => {
+  const s = snapshot({
+    // Missing dependencies, an item and a card.
+    missing: { plan: workPlan([shared("gone"), card("gone-card")]) },
+    cancelled: { status: "cancelled" }, awaiting: { plan: workPlan([shared("cancelled")]) },
+    cycleA: { plan: workPlan([shared("cycleB")]) }, cycleB: { plan: workPlan([shared("cycleA")]) },
+    // Two owners in two projects: owned by many, and across projects.
+    first: { plan: workPlan([own("owned")]) }, other: { group: "Second", plan: workPlan([own("owned")]) }, owned: {},
+    // A shared row for an item nobody owns, in the same project.
+    loose: {}, waiter: { plan: workPlan([shared("loose")]) },
+    noPlan: {}, provisional: { provisional: true }, placeholder: { plan: [step(), { ...accept(), text: "（转换时没找到完成条件，待补）" }] },
+    onlyAcceptance: { plan: workPlan() }, closedOwner: { status: "cancelled", plan: workPlan([own("ownedByClosed")]) }, ownedByClosed: {},
+    unconfigured: { group: "Unknown" },
+    // An open card with one option and a row, though it does not block, that its item's head does not place.
+    cards: { plan: workPlan([card("loose-card")]) },
+    longTitle: { title: "长".repeat(21) }, untagged: { group: "Second" }, unrated: { difficulty: undefined },
+    waitsInText: { plan: workPlan([step("ci", "todo", { waits: "CI" })]) },
+    pausedTarget: { paused: { reason: "Owner deferred", at: T1 } }, pauseWaiter: { plan: workPlan([shared("pausedTarget")]) },
+    engineer: held({ plan: workPlan([step("work")]) }),
+    quiet: { plan: workPlan([step("work", "doing")]) },
+  }, { "loose-card": { item: "cards" } });
+  s.items.noPlan!.plan = [];
+  s.board.tags = [{ name: "标签", meaning: "For the second project", projects: ["Second"] }];
+  s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0 } };
+  const r = rules(s, start + 3 * hour), raised = Object.keys(s.items).flatMap(id => r.checks(id));
+  const registered = Object.keys(CHECK_KINDS), ids = new Set<string>(raised.map(c => c.id));
+  assert.deepEqual(registered.filter(id => !ids.has(id)), [], "kinds this board does not raise: add a case for each");
+  assert.deepEqual([...ids].filter(id => !registered.includes(id)), [], "ids the rules raise without registering them");
+  // The label of a check is its kind's, whichever way it was made.
+  for (const c of raised) assert.equal(c.label, checkKind(c.id).label, c.text);
+});
+
+test("check ids are words in lower case, labels are never shared, and the kinds a write may not introduce are the ones that were refused", () => {
+  for (const id of Object.keys(CHECK_KINDS)) assert.match(id, /^[a-z]+(-[a-z]+)*$/, id);
+  const labels: string[] = Object.values(CHECK_KINDS).flatMap(kind => "label" in kind ? [kind.label] : []);
+  assert.equal(new Set(labels).size, labels.length, "one label names one kind");
+  assert.ok(!labels.includes(CHECK_LABEL), "the label of a check with none is not any kind's");
+  const refused = Object.entries(CHECK_KINDS).filter(([, kind]) => "refused" in kind).map(([id]) => id).sort();
+  assert.deepEqual(refused, ["dep-card-missing", "dep-cycle", "dep-item-missing", "no-acceptance", "owned-across-projects", "owned-by-many", "unowned-but-awaited"]);
+});
+
+test("a check is the same check by its id and what it points at, whatever its text says", () => {
+  const title = (n: number) => rules(snapshot({ a: { title: "长".repeat(n) } })).checks("a").find(c => c.id === "title-too-long")!;
+  const [short, long] = [title(21), title(30)];
+  assert.notEqual(short.text, long.text, "the count is in the text");
+  assert.equal(checkKey(short), checkKey(long), "and not in the identity");
+  // Two missing dependencies of one item are two checks of one kind: the target tells them apart.
+  const missing = rules(snapshot({ a: { plan: workPlan([shared("gone"), shared("gone-too"), card("gone-card")]) } })).checks("a");
+  assert.deepEqual(missing.map(c => c.id), ["dep-item-missing", "dep-item-missing", "dep-card-missing"]);
+  assert.deepEqual(missing.map(c => c.target), [{ kind: "item", id: "gone" }, { kind: "item", id: "gone-too" }, { kind: "card", id: "gone-card" }]);
+  assert.equal(new Set(missing.map(checkKey)).size, 3);
 });

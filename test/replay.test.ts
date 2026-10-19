@@ -30,6 +30,18 @@ test("the same session appending the same text within a minute writes it once an
   assert.equal(logOf(store).length, length);
 });
 
+test("the check for a repeated write asks git for the last minute, not for the item's commits back through the whole history", async t => {
+  const { store, op, setClock } = await clocked(t);
+  const asked = t.mock.method(store, "log");
+  await op.appendLog({ author, session: "S", id: "a", text: "done" });
+  assert.equal(asked.mock.callCount(), 0, "the item was last written long before: no earlier write to find, nothing asked");
+  setClock("2026-10-16T10:00:30Z");
+  assert.equal((await op.appendLog({ author, session: "S", id: "a", text: "done" })).repeated, true);
+  // A path-limited log that is asked for 20 commits looks through the whole history for them when the item has fewer: 2 to 3 s on the
+  // live board's 27,666 commits, with every other write waiting (item write-tail-3s). The minute bounds it by what the minute holds.
+  assert.deepEqual(asked.mock.calls.map(call => call.arguments[0]), [{ kind: "item", id: "a", since: "2026-10-16T09:59:30.000Z", limit: 20 }]);
+});
+
 test("a write that differs in text, session, item or time is written", async t => {
   const { store, op, setClock } = await clocked(t);
   await op.appendLog({ author, session: "S", id: "a", text: "done" });

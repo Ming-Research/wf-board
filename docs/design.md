@@ -219,7 +219,11 @@ line of the same author with the same text; for `journal_entry`, the same text
 at the end of the head; for `set_status`, also only while the item is in the state the
 call asks for, so a cancel after a reopen is a new decision). The answer is that first
 commit, marked `repeated`. The check reads history under the request's budget; when
-the budget is spent the write is made, at worst once too often. The
+the budget is spent the write is made, at worst once too often. It asks git for the
+item's commits of the last minute (`git log --since`), not for its 20 newest: a log
+limited to one file and asked for 20 commits looks through the whole history for them
+when the file has fewer, which took 2 to 3 s on the live board's 27,666 commits, and the
+write queue waited for it (Time limits, Where a write's time went). The
 rule reads the commit's message and `Session:` trailer and the item as the
 commit left it, so it holds across a restart with nothing kept in memory, and
 one function serves the four writes. A caller that names no session is not
@@ -303,6 +307,46 @@ live board, the times in the log show which ordinary operations exceed them; eac
 is then looked at to see whether it is slow, and the number changed or the
 slowness fixed. No write waits for a push to the remote: the push runs beside the
 write queue (Storage).
+
+**Where a write's time went.** The line of an operation says how long it took, which for a
+write that waits in two queues and runs a handful of git commands is not enough to tell
+what was slow. A write call (a tool that changes the board, a page request of the write
+class) carries a `WriteTrace` (`src/write-trace.ts`) in its async context, and the places
+it waits or works end a step in it: the wait in the operations' own queue (`ops queue`,
+`src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
+queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
+behind: `write`, `owner state` or `maintenance`); the code before the first git command
+(`validate`), the writing of the files (`files`), each git command by its name (`git diff`,
+`git add`, `git commit`, `git show`), the update of the board in memory (`publish`), the
+observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
+each is the time since the one before ended, so they add up to the call. When the call took
+500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
+limits), its ordinary log line carries them after a semicolon:
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git diff 8 ms, git add 14 ms, git commit 2400 ms, ...`.
+A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
+The maintenance step, which a commit queues from inside its own call, belongs to no call and
+adds nothing to any trace. A second line says when the event loop itself was held: a timer
+due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
+`event loop held for N ms`, because a git command's time that is the time of a held loop
+is not git's. The two make the slow tail of the writes readable as one of: waiting in a
+queue, a slow git command, work in the process, or a held loop.
+
+The tail they were made for had a cause that the service log of 10-16 to 10-18 and the data
+repository showed before they were deployed. The log of 10-18 holds 90 writes of 5360 over
+2 s, most between 2.1 and 2.6 s, and nearly every group of them began with an `append_log`
+(the others queued behind it, finishing about 100 ms apart, the time of an ordinary write).
+Not the cause, measured in that log: a push (the 3 percent of slow writes that overlapped
+one against 0.3 percent of the others) and a held event loop (40 of the last 60 slow writes
+answered another request meanwhile). The cause is the retry check above: for a session that
+appends to an item written in the last minute it ran `git log --max-count=20 -- items/<id>.yaml`
+inside the operations' queue. On the live repository (27,666 commits, measured with that
+command) it took 2.06 s for an item with 104 commits, most of them old, 2.43 s for one with 19 and
+3.02 s for one with 11, against 0.14 s for an item whose 20 newest commits are recent; the
+slow lines of the service log for the first two items read 2116 and 2584 ms. With `--since` of the last minute it took 20 to 36 ms. A version conflict
+(`versionAt`) read an item's whole path history the same way; it now asks for the
+`current.rev - rev + 1` newest commits, which is as far back as the revision it was written
+against, as the request budget rule below says it reads. Both costs grow with the history,
+which gains thousands of commits a day.
 
 **Why at the entries.** The request handler and `register` are the places every
 operation already passes. A timer inside each tool or route would miss the next
@@ -1398,32 +1442,43 @@ item in the default tree.
 
 The checks touching plans, replacing the dependency and completion-condition
 checks. A cancelled item, and each card of one, shows none of them; the
-write-time refusals in the last column still apply to it:
+write-time refusals in the last column still apply to it.
 
-| Check | Refused when newly introduced |
-|---|---|
-| 依赖的条目不存在 / 依赖的决策卡不存在 | yes |
-| 依赖成环 | yes |
-| 被多个条目拥有 | yes |
-| 跨项目拥有 | yes |
-| 同项目有条目在等它，却没有条目拥有它 | yes |
-| 没有计划：至少要有一个验收步骤 | yes |
-| 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
-| 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
-| 依赖的条目已取消 (shared row to a cancelled item) | no |
-| 拥有它的条目已关闭 | no |
-| 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
-| 项目没有配置：<group> (the item's `group` is not a configured project) | no |
-| 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
-| 卡没标位置 (an open card the item's head does not place, below) | no |
-| 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
-| 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
-| 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
-| 无人推进 (stalled, above) | no |
-| 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
-| 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work) | no |
-| 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+Every kind of check has a fixed id, registered once in `CHECK_KINDS` (`src/rules.ts`),
+beside its short label and whether a write that introduces it is refused. A check is made
+only through that registry, so its id is never missing and its label never disagrees with
+its kind. An id is a short English word chain that is not reused, renamed or given another
+meaning. What says two checks are the same one, on two boards or at two times, is the id and
+the item or card the check points at (`checkKey`); the text, which may carry a count that
+changes while the check stays, is for people. A check whose kind can occur more than once on
+an item points at each object it is about (the missing dependency, the waiting item, the
+card), which is what tells the occurrences apart. A new kind of check is a new entry in the
+registry, and a test raises every registered kind on one board.
+
+| Id | Check | Refused when newly introduced |
+|---|---|---|
+| `dep-item-missing`, `dep-card-missing` | 依赖的条目不存在 / 依赖的决策卡不存在 (pointing at the missing row's key) | yes |
+| `dep-cycle` | 依赖成环 | yes |
+| `owned-by-many` | 被多个条目拥有 | yes |
+| `owned-across-projects` | 跨项目拥有 | yes |
+| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 | yes |
+| `no-acceptance` | 没有计划：至少要有一个验收步骤 | yes |
+| `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
+| `acceptance-pending` | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
+| `dep-item-cancelled` | 依赖的条目已取消 (shared row to a cancelled item) | no |
+| `owner-closed` | 拥有它的条目已关闭 | no |
+| `only-acceptance-left` | 只差验收：其它行都已完成 (all non-acceptance rows resolved, with at least one acceptance step still todo or doing; the item stays open until its checks are resolved) | no |
+| `project-unconfigured` | 项目没有配置：<group> (the item's `group` is not a configured project) | no |
+| `card-plan-mismatch` | 卡和计划对不上 (an open blocking card and the plan rows of its item disagree, below) | no |
+| `card-unplaced` | 卡没标位置 (an open card the item's head does not place, below) | no |
+| `card-options-short` | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
+| `tags-missing` | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
+| `difficulty-missing` | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
+| `title-too-long` | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
+| `stalled` | 无人推进 (stalled, above) | no |
+| `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
+| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
+| `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1954,8 +2009,8 @@ whose commits do not count.
   the board settings of before the range: the head's settings stand, and the version is
   counted. The flags that settings change brings (a newly approved tag vocabulary, say)
   are then not new in that range, unlike the flags of a document that could not be read. A flag is the same
-  flag on both boards when its short label (else its text without the count of the
-  title-length flag) and the item or card it points at are equal. A new flag's row names
+  flag on both boards when its check id (below, Checks) and the item or card it points at are
+  equal; its text and short label are for people and play no part. A new flag's row names
   every session that wrote the item in the range, its cards and notes included, whether or
   not `except` names it; with no writer the row says no session wrote it in the range (the
   flag came from another item's change, or from time). Flags are never left out by

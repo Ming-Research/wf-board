@@ -67,6 +67,9 @@ matches what the artifact board offered.
 - `src/slow-ops.ts`: the routes the page server serves (`PAGE_ROUTES`, which the router in `http.ts` consults) and the
   time limits (a class for every page request and tool call, the numbers in design section 4), the timing at the two
   entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
+- `src/write-trace.ts`: where the time of one write call went (the waits in the two queues, each git command, the work between),
+  kept in the call's async context and told in the call's log line when it took long (design section 4, Time limits);
+  `src/loop-watch.ts`: the log line for a stretch in which the event loop was held.
 - `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
