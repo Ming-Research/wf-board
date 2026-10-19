@@ -361,7 +361,7 @@ test("the replay of pauses covers only the commits after the cache, and a cache 
     return original(args, author);
   });
   await internals(store).loadActivity();
-  assert.deepEqual(logs, [`${knownHead}..${store.snapshot().head}`], "one walk of git, over the commits after the cache");
+  assert.deepEqual(logs, [`${knownHead}..HEAD`], "one walk of git, over the commits after the cache");
   assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt, end: resumed.updated }]);
   const latest = store.snapshot().items.root!;
   await store.commit({ author: "总管", message: "Pause again", puts: [put("root", { ...latest, paused: { reason: "Deferred", at: "2026-10-11T08:20:00.125Z" } }, latest.rev)] });

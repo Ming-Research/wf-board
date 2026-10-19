@@ -35,7 +35,8 @@ matches what the artifact board offered.
   Request budgets.
 - `src/pauses.ts`: the graph the pause spans of the activity index come from (each item's project, record mark, pause and owned items, and the
   owner of each), changed in place by the items of a commit, so the replay of a history and a live write cost the changed items and their
-  subtrees (design section 5, the activity index).
+  subtrees, and the signature of an item file (the lines that name those fields), by which the replay parses only a file that changed them
+  (design section 5, the activity index).
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
   line and the start-up step timings.
