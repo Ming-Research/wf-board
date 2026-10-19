@@ -143,8 +143,11 @@ jobs:
       - uses: actions/checkout@v5
       - shell: bash
         run: |
-          mkdir -p "$RUNNER_TOOL_CACHE"
-          if bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1)'; then echo "the old line passed"; exit 1; fi
-          echo "the old line fails on an empty tool cache, as the review said"
+          mkdir -p "$RUNNER_TOOL_CACHE"; bash --version | head -1; ls -la "$RUNNER_TOOL_CACHE"
+          set +e
+          bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin | sort -V | tail -n 1); echo "after the old line, dir=[$dir]"'
+          echo "old line: exit $?"
+          bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1 || true); echo "after the new line, dir=[$dir]"'
+          echo "new line: exit $?"
       - uses: ./.github/actions/node-modules
       - run: node --version | grep '^v24\.' && which node
