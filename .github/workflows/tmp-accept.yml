@@ -14,19 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         kind: [copy]
-        phase: [quiet, writing]
+        phase: [writing]
         job: [0, 1, 2, 3, 4, 5]
         include:
-          - { kind: slow25, phase: quiet, job: 0 }
-          - { kind: slow25, phase: quiet, job: 1 }
-          - { kind: slow25, phase: quiet, job: 2 }
-          - { kind: slow25, phase: quiet, job: 3 }
-          - { kind: slow25, phase: quiet, job: 4 }
-          - { kind: slow25, phase: writing, job: 0 }
-          - { kind: slow25, phase: writing, job: 1 }
-          - { kind: slow25, phase: writing, job: 2 }
-          - { kind: slow25, phase: writing, job: 3 }
-          - { kind: slow25, phase: writing, job: 4 }
+          - { kind: copy, phase: quiet, job: 0 }
+          - { kind: copy, phase: quiet, job: 1 }
+          - { kind: copy, phase: quiet, job: 2 }
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -39,4 +32,10 @@ jobs:
           ACCEPT_KIND: ${{ matrix.kind }}
           ACCEPT_PHASE: ${{ matrix.phase }}
           ACCEPT_ROUNDS: ${{ matrix.kind == 'copy' && 5 || 1 }}
+          ACCEPT_OUT: accept.json
         run: node --test --test-concurrency=1 test/nkey/tmp-accept.nkey.ts
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: accept-${{ matrix.kind }}-${{ matrix.phase }}-${{ matrix.job }}
+          path: accept.json

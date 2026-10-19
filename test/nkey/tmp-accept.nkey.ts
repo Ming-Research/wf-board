@@ -3,6 +3,7 @@
 // ACCEPT_KIND=slow25: a page whose draw takes 2.5 ms more in the changed page's place, judged as the lane judges a changed page.
 
 import { test } from "node:test";
+import { writeFileSync } from "node:fs";
 import { PAIRS, WARMUP, timePhase } from "./press.ts";
 import type { PhaseWindow } from "./press.ts";
 import { FLOOR, SLOW_DRAW, lap, log, startLane } from "./lane.ts";
@@ -22,10 +23,14 @@ test(`acceptance of the time layer: ${kind} ${phase}`, { timeout: 20 * 60_000 },
   ];
   // A copy is measured one round at a time, so that each round's ratio stands alone; the slow page is judged as the lane judges.
   if (kind === "copy") process.env.NKEY_FLOOR = "1";
+  const dump: unknown[] = [];
   for (let k = 0; k < rounds; k++) {
     const r = await timePhase(windows, FLOOR[phase], phase === "writing" ? lane.events : undefined);
     const ratio = compare(r.busy.cand!, r.busy.base!);
     log(`accept ${kind} ${phase} run ${k + 1}: cand/base ${show(ratio)} log ${Math.log(ratio.ratio).toFixed(5)} rounds ${r.rounds} verdict ${r.verdicts.cand} twin ${show(r.ratios.twin!)}`);
     lap(`accept run ${k + 1}`);
+    // Every landing of the round with what the page marked, for the analysis of a window that reads slower than its twin.
+    for (const [label, list] of Object.entries(r.first)) list.forEach((l, i) => dump.push({ run: k, label, i, busy: l.busy, draws: l.draws, rules: l.rules, full: l.full, structure: l.structure, stops: l.stops, freshStops: l.freshStops, filters: l.filters, innerHtml: l.innerHtml, created: l.created, scopes: l.scopes, item: l.item }));
   }
+  if (process.env.ACCEPT_OUT) writeFileSync(process.env.ACCEPT_OUT, JSON.stringify(dump));
 });
