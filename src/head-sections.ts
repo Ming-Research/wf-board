@@ -18,7 +18,7 @@ export const MIN_OMIT = 100;
 
 // A line that opens a section: a bold title that stands alone or goes on with a colon or a bracket, or a `#` heading.
 const BOLD_TITLE = /^\*\*([^*\n]+)\*\*(?:\s*$|[：:（(])/;
-const HASH_TITLE = /^#{1,6}\s+(.+?)\s*$/;
+const HASH_OPEN = /^#{1,6}(?=\s)/;
 // A title line with no text of its own after the title: the section's text starts below it.
 const BARE_TITLE = /^(?:#{1,6}\s+.*|\*\*[^*\n]+\*\*)\s*$/;
 const FENCE = /^\s*(?:```|~~~)/;
@@ -26,19 +26,49 @@ const FENCE = /^\s*(?:```|~~~)/;
 const lines = (text: string): string[] => text.split(/(?<=\n)/);
 const bare = (line: string): string => line.replace(/\r?\n$/, "");
 
+/**
+ * The title of a `#` heading line, which the pattern `^#{1,6}\s+(.+?)\s*$` finds, but without its backtracking: that pattern takes
+ * time quadratic in a long run of white space inside the title (measured: four times as long for twice the run). `.` does not match a
+ * line terminator, so a title with a CR, U+2028 or U+2029 inside is none, and a line of only white space is a title with no text when
+ * its run has a second character a dot matches.
+ */
+function hashTitle(text: string): string | undefined {
+  const open = HASH_OPEN.exec(text);
+  if (!open) return undefined;
+  const run = text.slice(open[0].length), title = run.trimStart();
+  if (title) { const shown = title.trimEnd(); return /[\r\u2028\u2029]/.test(shown) ? undefined : shown; }
+  return run.length >= 2 && /[^\r\u2028\u2029]/.test(run.slice(1)) ? "" : undefined;
+}
+
 export function splitHead(head: string): HeadSection[] {
   const sections: HeadSection[] = [];
   let fenced = false;
   for (const line of lines(head)) {
     const text = bare(line);
     // A title line inside a fenced block is code, not a title.
-    const title = fenced ? undefined : (BOLD_TITLE.exec(text) ?? HASH_TITLE.exec(text))?.[1]?.trim();
+    const title = fenced ? undefined : (BOLD_TITLE.exec(text)?.[1] ?? hashTitle(text))?.trim();
     if (FENCE.test(text)) fenced = !fenced;
     const last = sections.at(-1);
     if (title !== undefined || !last) sections.push({ title: title ?? "", text: line });
     else last.text += line;
   }
   return sections;
+}
+
+/**
+ * For each offset of `text`, in ascending order, whether a fenced block is open there, as `splitHead` reads fences: the lines that
+ * start before the offset count, and the line that holds the offset counts whole.
+ */
+export function fencedBefore(text: string, offsets: readonly number[]): boolean[] {
+  const states: boolean[] = [];
+  let fenced = false, start = 0;
+  for (const line of lines(text)) {
+    while (states.length < offsets.length && offsets[states.length]! <= start) states.push(fenced);
+    if (FENCE.test(bare(line))) fenced = !fenced;
+    start += line.length;
+  }
+  while (states.length < offsets.length) states.push(fenced);
+  return states;
 }
 
 // The line the summary writes where it cut a section short.
@@ -109,4 +139,29 @@ export function selectSections(head: string, name: string): HeadSection[] | unde
   if (exact.length) return exact;
   const prefixed = sections.filter(s => title(s).startsWith(name));
   return prefixed.length ? prefixed : undefined;
+}
+
+// The bold title of a section and the colon after it, which the text of the title line follows.
+const BOLD_TITLE_MARK = /^\*\*[^*\n]+\*\*\s*[：:]?/;
+
+/**
+ * What an item's 何时 section says: its first paragraph, on one line. The section is the one `splitHead` finds, so `context` and the
+ * candidates read agree on what a title is: bold with the text after it on the same line, or alone with the text in the paragraph
+ * below, or a heading. Undefined when the head has no such section or it holds no text; a title inside a fenced block is code and
+ * does not count.
+ */
+export function whenText(head: string): string | undefined {
+  // Most heads have no such section: skip the scan.
+  if (!head.includes("何时")) return undefined;
+  const section = splitHead(head).find(s => s.title === "何时");
+  if (!section) return undefined;
+  const [titleLine = "", ...below] = lines(section.text).map(bare);
+  const first = titleLine.startsWith("**") ? titleLine.replace(BOLD_TITLE_MARK, "").trim() : "", found = first ? [first] : [];
+  for (const line of below) {
+    if (!line.trim()) { if (found.length) break; continue; }
+    // A fenced block ends the paragraph even without a blank line.
+    if (FENCE.test(line)) break;
+    found.push(line.trim());
+  }
+  return found.length ? found.join(" ") : undefined;
 }

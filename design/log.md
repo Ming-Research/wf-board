@@ -8,6 +8,24 @@ Nodes: storage, storage/write-path, storage/write-path/page-rules-reuse
 
 Summary: After the quick fixes a `set_tags` write still cost the daemon 36.6 to 46.5 ms of CPU on hosted runners with nothing unread, and 55.5 to 75.7 ms with the owner 4,000 commits behind, because the open page asked for the whole unread list after every change event and each new head walked the history from the read cursor again; the daemon also derived the rules of every published state from nothing, about 16 ms a write in a profile, where the page already built them from the state before. The unread list is now carried on over the new commits of each head and the page gets only the stops after those its version shares; the daemon's rule cache is told which state each published one was made from and reuses the page's step. A write now commits exactly its own paths with `git commit --only` and no longer refuses while something is staged by hand, because starting a git process was about half of the remaining CPU and the start still refuses uncommitted board documents (node storage). The refused alternatives (the page deriving the list, the change pushed with every event, the look at the index before every write) are in the nodes; the numbers are in docs/design.md, section 4, Write cost.
 
+## 2026-10-19 Change a head in parts
+
+Nodes: mcp
+
+Summary: A head could be changed only whole, so changing a sentence meant reading the whole head and sending it back (583 whole-head rewrites in eleven architect sessions), and the architect wrote a script of its own that replaced exact texts, which it ran more than a hundred times. `update_item` now also takes `sections` (a whole section replaced by title) and `replace` (a text replaced, found exactly once); the edits are located in the head as it was and may not change the same text, so the order they are written in changes nothing, they are made together or not at all, a text found other than once names the edit and the count, the revision rule is that of a whole head, and the answer shows the lines before and after each change. The refused alternatives (a tool of its own, a patch text, texts only, edits one after another) are in the node; the rules are in docs/design.md, section 6, Changing things.
+
+## 2026-10-19 Look at all the open work in one answer
+
+Nodes: mcp/look, mcp/whole-view
+
+Summary: The architect read the board one item at a time (1,193 `context` calls in eleven sessions) because the reads that show a whole each showed a corner, and six paused items were missed when the queue of engineers was filled. A new read, `look`, answers with the tree the owner's board shows, one line for each open work item, in a budget of lines the caller sets: it opens the subtrees that need a reader first, folds a pause into one line with its reason, counts a project's backlog apart, and puts every open item in a line or in a count. What a session saw at its last look is kept in the daemon's memory as a signature for each open item (not in the data repository), so the next look marks what changed, including changes no write made; the memory is kept under the credential's session together with the session the call names. The whole-view node now records what the code already did, that a backlog item the runner reports on is a row, which the look's header counts the same way. The grounds and the refused alternatives (a tree option on `whole_view`, only the time of the last look, a commit for each look, listing every item) are in the node; the shape is in docs/design.md, section 6, The look.
+
+## 2026-10-19 List paused work and work with a start condition beside the candidates
+
+Nodes: mcp/candidates
+
+Summary: The candidates read listed only what could be started, so the architect, refilling the queue from it, answered that no work was left while six items of one project, paused or waiting in a backlog with a written start condition, had become startable under the owner's changed principle and nobody saw them. After each pool's candidates the read now lists, outside their count, the rated items nobody holds that cannot be started: paused work with who paused it, when, for how long and why, merged under the pause that holds it when more than three stand under it, and todo or idle work that cannot be started now (mostly backlog work) with the first sentence of its start-condition section and how long since it last changed, merged under its parent when more than three stand there, at most ten rows for a pool taken a project at a time. The refused alternatives (a separate tool, counting such work as candidates) are in the node; the rules are in docs/design.md, section 6, The candidates read.
+
 ## 2026-10-19 Write the CI status from a job that waits, and cache node_modules
 
 Nodes: testing/ci-time-gate, testing/ci-job-setup, testing/ci-shards
