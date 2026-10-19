@@ -1,0 +1,24 @@
+name: tmp-offheap
+# Temporary (item board-offheap): the memory study of the daemon, on a macOS and a Linux hosted runner. Removed before the
+# pull request is ready. The variants and sizes are in study-config.json, so a change of them is a push.
+on:
+  push:
+    branches: [board-offheap]
+jobs:
+  study:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    name: study ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - name: Study
+        run: |
+          sw_vers 2>/dev/null || uname -a
+          node --version
+          node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
+          grep -v '^STUDY ' study-output.txt >> "$GITHUB_STEP_SUMMARY"

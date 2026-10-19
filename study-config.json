@@ -1,0 +1,4 @@
+{
+  "args": ["--phases", "2", "--per-phase", "1500", "--idle", "10"],
+  "variants": [{ "name": "default", "flags": [], "env": {} }]
+}
