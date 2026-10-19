@@ -133,19 +133,18 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=failure -f context=full-ci \
             -f description="full CI failure (the result job ended without a status)" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-  # The action on an image without Node 24 in its tool cache: it must fall back to setup-node, where the old line failed the step.
+  # The action on an image without Node 24 in its tool cache: the image's Node directory is moved away first. The old lookup line and the
+  # new one are run on that image as the action's shell runs them, and the action must still end with Node 24 on the path.
   fallback:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      RUNNER_TOOL_CACHE: ${{ github.workspace }}/../empty-tool-cache
     steps:
       - uses: actions/checkout@v5
       - shell: bash
         run: |
-          mkdir -p "$RUNNER_TOOL_CACHE"; bash --version | head -1; ls -la "$RUNNER_TOOL_CACHE"
+          sudo mv "$RUNNER_TOOL_CACHE/node" "$RUNNER_TOOL_CACHE/node-hidden"; bash --version | head -1
           set +e
-          bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin | sort -V | tail -n 1); echo "after the old line, dir=[$dir]"'
+          bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1); echo "after the old line, dir=[$dir]"'
           echo "old line: exit $?"
           bash -eo pipefail -c 'dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1 || true); echo "after the new line, dir=[$dir]"'
           echo "new line: exit $?"
