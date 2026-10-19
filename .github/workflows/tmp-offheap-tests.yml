@@ -62,3 +62,56 @@ jobs:
           for variant in "" "--max-semi-space-size=4 --heap-growing-percent=50" "--max-semi-space-size=4" "--max-semi-space-size=8 --heap-growing-percent=50" "--max-semi-space-size=64 --heap-growing-percent=50" "--max-semi-space-size=16"; do
             for run in 1 2 3 4 5; do echo "flags [$variant] run $run: peak used physical (MB): $(node $variant /tmp/probe.js)"; done
           done
+  # Which part of the test's way of running the probe makes the new space exceed two halves: `-e`, or the test runner's environment.
+  probe-e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          cat > /tmp/probe-e.js <<'EOF'
+          const v8 = require("node:v8");
+          const keep = [];
+          let peak = 0;
+          for (let i = 0; i < 3_000_000; i++) {
+            keep.push({ i, text: "x" + i });
+            if (i % 50_000 === 0) peak = Math.max(peak, v8.getHeapSpaceStatistics().find(s => s.space_name === "new_space").space_size);
+          }
+          console.log(peak / 1048576);
+          EOF
+          cat > /tmp/probe-iife.js <<'EOF'
+          (() => {
+            const v8 = require("node:v8");
+            const keep = [];
+            let peak = 0;
+            for (let i = 0; i < 3_000_000; i++) {
+              keep.push({ i, text: "x" + i });
+              if (i % 50_000 === 0) peak = Math.max(peak, v8.getHeapSpaceStatistics().find(s => s.space_name === "new_space").space_size);
+            }
+            console.log(peak / 1048576);
+          })();
+          EOF
+          cat > /tmp/diag.test.js <<'EOF'
+          const { test } = require("node:test");
+          const { execFileSync } = require("node:child_process");
+          const fs = require("node:fs");
+          const flags = ["--max-semi-space-size=4", "--heap-growing-percent=50"];
+          const run = (label, args, env) => {
+            const out = [];
+            for (let i = 0; i < 4; i++) out.push(execFileSync(process.execPath, args, { encoding: "utf8", env }).trim());
+            console.log(label, out.join(" "));
+          };
+          test("diag", () => {
+            const { NODE_TEST_CONTEXT, ...rest } = process.env;
+            console.log("NODE_TEST_CONTEXT=" + NODE_TEST_CONTEXT);
+            const e = fs.readFileSync("/tmp/probe-e.js", "utf8"), iife = fs.readFileSync("/tmp/probe-iife.js", "utf8");
+            run("in test, -e, inherited env:", [...flags, "-e", e], process.env);
+            run("in test, -e, no NODE_TEST_CONTEXT:", [...flags, "-e", e], rest);
+            run("in test, -e iife, inherited env:", [...flags, "-e", iife], process.env);
+            run("in test, file, inherited env:", [...flags, "/tmp/probe-e.js"], process.env);
+          });
+          EOF
+          for run in 1 2 3 4; do echo "shell -e: $(node --max-semi-space-size=4 --heap-growing-percent=50 -e "$(cat /tmp/probe-e.js)")"; done
+          for run in 1 2 3 4; do echo "shell -e iife: $(node --max-semi-space-size=4 --heap-growing-percent=50 -e "$(cat /tmp/probe-iife.js)")"; done
+          for run in 1 2 3 4; do echo "shell file: $(node --max-semi-space-size=4 --heap-growing-percent=50 /tmp/probe-e.js)"; done
+          node --test /tmp/diag.test.js
