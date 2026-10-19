@@ -157,12 +157,13 @@ if (import.meta.main) {
   try {
     // The start of this attempt: a run started again keeps its creation time, which would count the wait for the rerun.
     const run = (await api("GET", `/actions/runs/${GITHUB_RUN_ID}`)) as { created_at: string; run_started_at?: string };
-    const jobs = await waitForJobs(async () => ((await api("GET", `/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100&filter=latest`)) as { jobs: Job[] }).jobs, self);
+    let looks = 0;
+    const jobs = await waitForJobs(async () => { looks++; return ((await api("GET", `/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100&filter=latest`)) as { jobs: Job[] }).jobs; }, self);
     const result = evaluate(run.run_started_at ?? run.created_at, jobs, { enforce: TIME_GATE === "enforce", self, now: new Date().toISOString() });
     const status = statusOf(jobs, self, result);
     await writeStatus(status);
     console.log(result.markdown);
-    console.log(`status ${STATUS_CONTEXT}: ${status.state}, ${status.description}`);
+    console.log(`status ${STATUS_CONTEXT}: ${status.state}, ${status.description} (${looks} looks at the jobs)`);
     if (GITHUB_STEP_SUMMARY) appendFileSync(GITHUB_STEP_SUMMARY, `${result.markdown}\n`);
     if (GITHUB_OUTPUT) appendFileSync(GITHUB_OUTPUT, `verdict=${result.verdict}\ntotal=${result.total}\n`);
     if (TIME_GATE === "enforce" && result.verdict !== "ok") console.log(`::${result.verdict === "red" ? "error" : "warning"} title=CI time gate::${result.total} s, limits: yellow above ${LIMIT_SECONDS.yellow} s, red above ${LIMIT_SECONDS.red} s`);

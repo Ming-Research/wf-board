@@ -4783,12 +4783,13 @@ verdict on made-up pairs whose answer is known.
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the push to the
-last check (The time gate), and the browser tests are not in it; a change under way
+`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the start of the run
+to the status `full-ci` (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
-start it. A project that adopts this scheme copies `ci.yml` and `ci-mark.yml`
-and changes the test jobs and the job list in `needs` of `result`, which reads
-only the jobs it lists.
+start it. A project that adopts this scheme copies `ci.yml`, `ci-mark.yml` and the
+action `.github/actions/node-modules` and changes the test jobs: `result` waits
+for every other job of the run, so a new job is not listed anywhere, and no job
+may use `needs` (`test/ci-workflow.test.ts` holds that; The time gate).
 
 - **While writing**, the engineer adds a temporary workflow
   `.github/workflows/tmp-<name>.yml` that a push to the branch triggers and
@@ -4797,8 +4798,8 @@ only the jobs it lists.
   push result is listed on the pull request like any push check. Wait for it
   with `wait-ci.mjs <owner/repo> --commit <sha>`, which waits for every run
   of the commit; the pull request form would wait on `full-ci` below. The
-  skeleton, whose setup steps are those of the `test` job of `ci.yml` and the
-  `layout` job of `browser.yml`: keep each step the selected tests need and drop the others:
+  skeleton, whose setup steps are those of the `test` job of `ci.yml` (the action `node-modules`, The set-up of a job)
+  and the `layout` job of `browser.yml`: keep each step the selected tests need and drop the others:
 
   ```yaml
   name: tmp-quick
@@ -4814,11 +4815,7 @@ only the jobs it lists.
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
-        - uses: actions/setup-node@v5
-          with:
-            node-version: 24
-            cache: npm
-        - run: npm ci
+        - uses: ./.github/actions/node-modules
         - run: npm run build:web
         - run: git config --global user.name ci && git config --global user.email ci@example.invalid
         # The test files the change touches.
@@ -4873,7 +4870,8 @@ only the jobs it lists.
   pending on every pull request push, unless the commit already has one. The
   first job of a run started by hand (`start`) writes it as pending again, so
   the red of an earlier run of the same commit does not stand while the new
-  one runs; the last job (`result`) writes the outcome of the run's jobs
+  one runs; the last job (`result`), which starts with the run and waits for the
+  others (The time gate), writes the outcome of the run's jobs
   (success or failure, linking to the run). To try a commit again, start the
   full CI again; rerunning only the failed jobs leaves the earlier red
   standing until `result` runs. A run cancelled by hand leaves the pending
@@ -5003,21 +5001,72 @@ nothing would run it, which the table with a default cost cannot do.
 
 ### The time gate
 
-The last job of a full CI started by hand (`result`) reads the run's jobs through
-the Actions API (`scripts/ci-time-gate.ts`) and puts into the run's summary the
-seconds from the start of the run to the end of the job that ended last, a table
-with the wait, the run and the end of each job, and the table of the shards.
-Above 50 seconds the total is yellow, above 60 red (the target is a pull request
-checked within a minute of the push; two runs of one configuration differed by
-13%, so the target is a typical 50 seconds, which leaves the line 20% above).
-It starts from the start of the attempt, not from the creation of the run, so a
-rerun does not count the time before it.
+The last job of a full CI started by hand (`result`) starts with the run, not
+after the other jobs. `scripts/ci-time-gate.ts` in it reads the run's jobs through
+the Actions API, every 2 seconds while more than 4 jobs are open and every second
+after that, until every job but its own has ended; then it puts into the run's
+summary the seconds from the start of the run to now (the status is written a
+moment later), the end of the job that ended last, a table with the wait, the run
+and the end of each job, and the table of the shards, and writes the status
+`full-ci`: success when every job succeeded or was skipped and the total is not
+red, else failure with the jobs that were not green, or the total. Above 50
+seconds the total is yellow, above 60 red (the target is a pull request checked
+within a minute of the push; two runs of one configuration differed by 13%, so the
+target is a typical 50 seconds, which leaves the line 20% above). It starts from
+the start of the attempt, not from the creation of the run, so a rerun does not
+count the time before it. The 1 to 2 seconds between the call that starts a run
+and the run's start are not in it; the measurement of the item that added the
+status to the total is from the call (below).
+
+**Why the job waits instead of using `needs`.** A job that needs the others
+starts 2 to 3 seconds after the last of them ends, and sets itself up then
+(checkout, Node, the script, the call): in 8 runs of three dummy checks the status
+came 6 to 10 seconds after the last check; a lean job that needs them (no checkout,
+no Node, one step with `gh` and `jq`) 5 to 6 seconds; a job that started with the
+run and waited, 1 to 2 seconds (two runs of four rounds, 10-19). A waiting job
+sees only the jobs the run listed when it looked: a job with `needs` is listed
+once the jobs it needs have ended (the first look of each waiting job showed the
+twelve checks and the four waiting jobs themselves, not the eight jobs with `needs`), so no job of the full CI may use `needs` (`test/ci-workflow.test.ts`). It
+costs one runner for the length of the run and about 25 requests of the run's
+token, of the 1,000 an hour the whole repository may make; the full CI was started
+by hand up to 20 times in an hour. A run that is cancelled ends this job too, and
+a cancelled run must write nothing, since the pending status of the newer run
+that replaced it must stand: a job found cancelled therefore makes the job wait
+10 seconds more, and if it is still there the cancelled job had timed out, not
+been cancelled, and the result is written.
 
 The gate is set to `TIME_GATE=enforce` in `ci.yml`: a total over the line fails
-the gate's step, and `result` writes the status `full-ci` as failed and ends the
-run red. It only reported while the browser tests were a job of the full CI, whose
-minutes put every total over the line. The shard table reads the jobs named `test shard N` and their step
-`tests`; when it finds none, the summary says so, which shows a rename.
+the status and the job, so the run ends red. It only reported while the browser
+tests were a job of the full CI, whose minutes put every total over the line. The
+shard table reads the jobs named `test shard N` and their step `tests`; when it
+finds none, the summary says so, which shows a rename. A job that failed makes the
+status failure with its name, and the job red, so that "re-run failed jobs" runs
+it again; the pending that `start` wrote is not written again then.
+
+### The set-up of a job
+
+Every job of the full CI starts the same way, and 28 jobs run at once, so the
+set-up is in the time of the job that ends last: the runner's wait (3 to 4
+seconds), `Set up job` (about 1), `checkout` (about 1; 2 for the n-key parts, which
+fetch the history for the base page), Node and the packages (8 to 9 with the cache
+of npm that `setup-node` restores in 2 to 3 seconds and `npm ci` in 5 to 6). Ways
+of doing it were timed on hosted runners (10-19, whole seconds, checkout to the
+build of the page): as it was 12.5 seconds at the median (10 to 19, 12 jobs); with
+`npm ci --ignore-scripts --no-audit --no-fund --prefer-offline` 14.5 (12 to 19, 4
+jobs); with no cache of npm 13.5 (10 to 15, `npm ci` 7 to 9, 4 jobs); with a cache
+of `node_modules` itself (65 MB compressed) 8.5 when it was found (7 to 10, the
+restore 2 to 3, 8 jobs) and 16 to 19 when it was not (4 jobs), the `npm ci`
+included. The action `.github/actions/node-modules` does this: Node 24,
+the cache of `node_modules` with the hash of `package.json` and `package-lock.json`
+in its key (a restored directory would hide that `npm ci` refuses a disagreement
+between the two), `npm ci` on a miss. A cache is read from the branch that made it
+and from the main line; a change of the packages makes one miss on its branch, as
+slow as before. The Node that the runner has already is 22, and the project runs on
+24, so the step `setup-node` stays (0 to 1 second without a cache). A history
+without the file contents (`filter: blob:none`) for the n-key parts was not
+measurably faster (one run of 3 jobs each: checkout 1 to 3 seconds against 2 to 4),
+and a base that differs from the checkout would read its changed files from the
+remote (deduced, not tried), so it was left.
 
 ### The browser file
 
