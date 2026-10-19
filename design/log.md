@@ -8,6 +8,12 @@ Nodes: mcp
 
 Summary: A head could be changed only whole, so changing a sentence meant reading the whole head and sending it back (583 whole-head rewrites in eleven architect sessions), and the architect wrote a script of its own that replaced exact texts, which it ran more than a hundred times. `update_item` now also takes `sections` (a whole section replaced by title) and `replace` (a text replaced, found exactly once); the edits are located in the head as it was and may not change the same text, so the order they are written in changes nothing, they are made together or not at all, a text found other than once names the edit and the count, the revision rule is that of a whole head, and the answer shows the lines before and after each change. The refused alternatives (a tool of its own, a patch text, texts only, edits one after another) are in the node; the rules are in docs/design.md, section 6, Changing things.
 
+## 2026-10-19 List paused work and work with a start condition beside the candidates
+
+Nodes: mcp/candidates
+
+Summary: The candidates read listed only what could be started, so the architect, refilling the queue from it, answered that no work was left while six items of one project, paused or waiting in a backlog with a written start condition, had become startable under the owner's changed principle and nobody saw them. After each pool's candidates the read now lists, outside their count, the rated items nobody holds that cannot be started: paused work with who paused it, when, for how long and why, merged under the pause that holds it when more than three stand under it, and todo or idle work that cannot be started now (mostly backlog work) with the first sentence of its start-condition section and how long since it last changed, merged under its parent when more than three stand there, at most ten rows for a pool taken a project at a time. The refused alternatives (a separate tool, counting such work as candidates) are in the node; the rules are in docs/design.md, section 6, The candidates read.
+
 ## 2026-10-19 Write the CI status from a job that waits, and cache node_modules
 
 Nodes: testing/ci-time-gate, testing/ci-job-setup, testing/ci-shards
