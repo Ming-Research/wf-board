@@ -7,7 +7,7 @@ import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey, HEAD_REVISED_LOG } from "./rules.ts";
 import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
@@ -695,7 +695,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (earlier) return replay(key, earlier);
         if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
         const head = it.head ? `${it.head}\n\n${line}` : line;
-        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
+        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `${HEAD_REVISED_LOG}加了 ${clock} 的一条`)] };
         return { id: key, kind: "item", message: `journal_entry ${key}`, puts: [itemPut(key, doc)] };
       }
       newKey(s, key);
@@ -945,7 +945,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         doc.plan = [...it.plan ?? [], stampPlanRow({ id: acceptId(it.plan ?? []), accept: true, text: a.accept, state: "todo" }, undefined, at)];
         doc.log.push(entry(a.author, at, "改为工作条目：状态由计划推导"));
       } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record or standing to work; edit acceptance with set_plan");
-      if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
+      if (changedHead) doc.log.push(entry(a.author, at, `${HEAD_REVISED_LOG}${a.reason}`));
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)], ...(note === undefined ? {} : { note }) };
     }, true),
     setStatus: a => run(a, ["item.cancel", "card.write"], async (s, at) => {
