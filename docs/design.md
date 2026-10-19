@@ -1009,6 +1009,20 @@ log:
   and puts them first by id, ahead of the entries the session already had,
   without repeats; so the list does not depend on the order the store met the
   items in, and a restart gives the list live writes gave.
+  The same index keeps, per item the runner has reported on, the reports that
+  began a state of the work (`activity.states`, read by the agent list and the
+  `timeline` tool, sections 6 and 7): `at` (the report's `since`), `state` and
+  what the state waits for, oldest first, at most 500 of the newest
+  (`STATE_STARTS_MAX`). `startOfReport` in `src/timeline.ts` makes a start from a
+  stored or historical runner report, read leniently, and `withStateStart` adds
+  it unless it repeats the last one, so a report that only moves `at` (a new
+  turn's figures) adds nothing. Live, every written item that carries a
+  report goes through it; a start replays the commits whose message begins
+  `report_state ` (`REPORT_MESSAGE`; 1463 of the 32978 commits of the live
+  board on 2026-10-19), reading the item at each, and no other. The delta of a live
+  update carries the whole new list of each item whose list changed, as for
+  pause spans. The cache holds the lists, so `STARTUP_CACHE_VERSION` is 3 and
+  the first start after this change scans the history once.
   Content commits touching board metadata,
   items, cards, notes or glossaries count (and the notice files of history, below); commits containing only
   owner reading cursors, read-ahead marks or messages do not. Current document timestamps
@@ -2228,6 +2242,7 @@ instructions within the limit and free of rule text.
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog (unless the runner reports on it), in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
 | `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look) |
+| `timeline(id?, limit?)` | Where did the time of an agent go? | An agent is a dispatch record; its line is what the runner reported while the session lasted: segments in order (kind, start, length, what it waited for) and the totals for each kind; an engineer's line is cut from what the runner reported, a review's is one stretch of work. With `id`: the lines of the agents that item went through, oldest first (the newest 12 agents, at most 6000 characters, the earliest segments folded); without: the agents running, the agents whose line ended in the last 24 hours (up to 10) and the longest waits among the running ones, longest first, with how long each has gone on (section 7, Agent list) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -3247,11 +3262,19 @@ level, and whether that someone is working, waiting or has gone quiet.
     (`limitOf`, amber); then the turns running; then the waiting ones; the longest
     in their state first within each. The older order put only the late first, so an
     ask to the owner could sit among the quiet waits.
-  - *A narrow list.* In a column narrower than 760 px (the tree's column with an
-    item open is about 300 px) the five cells fall to three lines of a row: the
-    title; the state beside the line of text; the two times. A container query on
-    the list's own width decides, not the window's, because one window holds both
-    layouts.
+  - *A narrow list.* In a column narrower than 900 px (the tree's column with an
+    item open is about 300 px) the six cells fall to four lines of a row: the
+    title; the state beside the line of text; the two times; the line of the
+    agent. A container query on the list's own width decides, not the window's,
+    because one window holds both layouts. The table needs 900 px: the cells that
+    keep their width (6.5, 5 and 12 rem), the least width of the title (8 rem) and
+    of the line (9 rem), the gaps and the padding leave about 723 px of a row
+    spoken for, so the words of what the work does had 53 px in a list 776 px
+    wide and 93 px in one 816 px wide (measured in the browser file on a page
+    with the breakpoint at 760 px), about 37 px at 761 px (deduced from the
+    stylesheet), and have about 175 px at 901 px (deduced); the browser file
+    measures that column at windows from 800 to 1000 px and holds it at 100 px
+    at least.
   - Rejected: a group for each state, which moves a job to another group at each
     report and so makes a job that is watched jump; the earlier small cards kept
     tidy, which at 16 jobs is 32 lines that do not line up; the item's status
@@ -3329,6 +3352,93 @@ level, and whether that someone is working, waiting or has gone quiet.
   shows changed (its inputs are compared). The minute timer that re-derives
   active time also moves the 「N 分钟前」 texts. The page test measures a
   session's write to its row's update against the two seconds the item set.
+
+- **The line of an agent.** The owner's question is where each agent's time
+  went: an agent (one dispatch record, one session from its start to its end;
+  an engineer, a review, and the architect's turns once the board holds a record
+  of them) is either working or waiting until it ends, so its life is a line of
+  stretches, each as long as the time it took, and the longest stretch is the
+  stuck place. An item that passed through several agents has several lines;
+  the time before the first session and between two sessions is on no line,
+  because no agent was there to wait. One function, `lineOf` in
+  `src/timeline.ts`, cuts the line from what the board already holds: the item's
+  state starts (`activity.states`, section 5), the dispatch record and the
+  item's pause spans (`activity.pauses`, an inherited pause included). Its
+  segments have a kind, a start, an end and what they wait for; the `timeline`
+  tool prints them (section 6) and the runner's block draws them, so the two
+  give the same numbers.
+  Decisions:
+  - A state start is a report's `since`, not the commit's time: the board stamps
+    both, and `since` is the moment the work entered the state. A report that
+    repeats the state moves `at` only and adds no start. The state starts belong
+    to the item, and the runner reports on the engineer's work: a line takes
+    them from its session's start to its end only when it is an engineer's. A
+    review or an architect's turn waits for nothing (one dispatch is one review
+    or one answer, and the engineer's wait for it is on the engineer's line), so
+    its line is work from its start to its end, with no state start and no
+    pause; if it took the item's starts, a review would show the engineer's
+    waits as its own, such as 等事件 for the whole of the review.
+  - The line has two kinds of stretch. Work (干活) is a turn of the agent running.
+    The others are waits between turns that say what for: 等 CI, 等主人 and
+    等架构师 (an `ask` to each), 等条目, 等 14900K, 等事件 (`wait`, with its words
+    and its wake time), 等合入 (`ready`), 要人看 (`exception`, work stopped for a
+    person) and 待收尾 (`done`, wrapping up); 暂停 is the stretch the item was
+    paused, whatever the state was, whose waits are not told. An engineer waiting
+    for the architect's answer is 等架构师 on the engineer's line.
+  - An engineer's session begins with a turn, so its line is work until the first
+    state the runner reports after its start; a report made no later than the
+    start (and up to five minutes before it, `RUNNER_START_GRACE_MS`) is that
+    turn's own and not a stretch. A session with no report from five minutes
+    before its start to its end, such as one that ran before the runner
+    existed, has no line. The line ends at the dispatch's end. A session with no
+    finish ends when the work was over (its last plan row done or dropped, or
+    the item cancelled) or when the next session of its role on the item began,
+    whichever came first, since one that died without a finish would otherwise
+    run on over the sessions after it, take their states and stay among the
+    running; one that died with no later session of its role runs to the end of
+    the work, else to now. Neighbouring pieces that are the same thing are
+    joined.
+  - The architect's turn that answers an engineer's question has no line yet:
+    the board holds no dispatch record of it (the runner's beats live in memory,
+    section 7, The live view of a turn). It will have one when the runner
+    records each turn as a dispatch with a role of its own. That line is work
+    from the turn's start to its end, like a review's, because the engineer's
+    wait for the answer is already 等架构师 on the engineer's line and the
+    turn's own states are not the item's; `lineOf` takes the role into account
+    for that, and a turn queued more than five minutes after the question still
+    has its line, since a line of work needs no report of the runner.
+  - The runner's block draws the line on the row of its agent, as a bar in its last
+    cell: a segment for each stretch, as long as the time it took up to three
+    hours and a tenth of the rest beyond (`drawLength`), a gap marked in a
+    stretch drawn shorter, a segment at least one pixel wide so a short one can
+    still be pointed at, and each segment's hover saying its kind, its length and
+    start (UTC), what it waits for (the cards' questions and items' titles) and
+    why it looks the way it does. The bar's hover has the totals. The row stays
+    one line high, so the table keeps its form (the Agent list's table rows
+    above). An agent that ended leaves the list; its line is read with the tool.
+  - The longest waits (`longestWaits`) are the waiting stretches of the running
+    agents' lines, a pause is none, and work is not a wait; `exception` is, being
+    work stopped for a person. The running agents are the lines with no end
+    (`listedAgents`); the agents that ended lately are the lines that ended in
+    the last 24 hours by whatever ended them: a finish, the end of the work or a
+    later session.
+  - The tool's answer for one item has at most 6000 characters, as the whole
+    view's has: of the newest 12 agents it folds the earliest segments, as few as
+    bring the answer under, each agent's folded ones into one line of totals by
+    kind, and says in its first line how many of how many were folded. The totals
+    of every agent stay whole.
+  Rejected: one line for the whole piece of work with the stretches that had no
+  session open marked, because the owner asked for each agent and a stretch with
+  no session is nobody's wait; appending a segment to the item at each report,
+  because the item would grow with its reports as a log entry per report would
+  (section 5, Runner reports), work done before the change would have no line
+  unless a second path filled it in from the history, and the past would be
+  stored twice; reading the item file's history for each request, because an
+  item file has hundreds of versions of tens of kilobytes and the page could not
+  be told when the line moved; drawing at true scale, because one wait of a week
+  leaves the day's work a pixel wide; drawing every segment the same width,
+  because the longest wait would not look longest; a block of lines apart from
+  the table, because the title and its line would stand in two places.
 
 ### The live view of a turn
 
