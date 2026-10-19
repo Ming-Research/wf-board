@@ -34,7 +34,9 @@ jobs:
       - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # A floor no twin can meet, so that the run asks for more rounds and the budget decides whether they are made.
-      - run: sed -i 's/writing: 0.076/writing: 0.001/' test/nkey/lane.ts && grep -n "writing: 0.001" test/nkey/lane.ts
+      - run: |
+          sed -i 's/writing: 0.076/writing: 0.001/' test/nkey/lane.ts
+          grep -n "writing: 0.001" test/nkey/lane.ts
       - run: echo "NKEY_BASE=${{ github.event.before }}" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/time-writing.nkey.ts
         env:
