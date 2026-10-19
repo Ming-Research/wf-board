@@ -131,7 +131,7 @@ export function wholeView(s: Input, r: Rules, now: number): WholeView {
     const it = s.items[id]!, project = r.projectOf(id), c = countOf(project);
     const report = it.runner, engineer = liveDispatches(s, id, now).find(d => d.role === "工程师");
     // A backlog item is not started on purpose, so it is counted apart; one the runner reports on is being worked on, and is listed.
-    if (r.isBacklog(id)) { c.backlog++; continue; }
+    if (r.isBacklog(id) && !report) { c.backlog++; continue; }
     // A parent with open sub-items is its sub-items' business; it is a row of its own only when a session works on it itself.
     if (!report && !engineer && r.children(id).some(child => r.isOpenWork(child))) continue;
     c.remaining++;
