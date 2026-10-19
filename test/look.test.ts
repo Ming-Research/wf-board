@@ -215,10 +215,9 @@ test("the budget opens work being done before a check flag, a check flag before 
   assert.match(line(all, "r2a")!, /暂停/);
   // The room of 13 lines is the header, the project, its six roots, the one line of r0 and two roots opened; each more root takes two.
   const opened = (rows: number) => ["r1", "r2", "r3", "r4", "r5"].filter(root => line(lookText(view(s, { rows })), `${root}a`));
-  assert.deepEqual(opened(13), ["r4", "r5"]);
-  assert.deepEqual(opened(15), ["r3", "r4", "r5"]);
-  assert.deepEqual(opened(17), ["r2", "r3", "r4", "r5"]);
-  assert.deepEqual(opened(19), ["r1", "r2", "r3", "r4", "r5"]);
+  for (const [rows, roots] of [[13, ["r4", "r5"]], [15, ["r3", "r4", "r5"]], [17, ["r2", "r3", "r4", "r5"]], [19, ["r1", "r2", "r3", "r4", "r5"]]] as const) {
+    assert.deepEqual(opened(rows), roots, `rows ${rows}\n${lookText(view(s, { rows }))}`);
+  }
   // Equal priority and depth: the earlier in the walk. Both hold four items nobody holds, and the room is for one of them.
   const four = (root: string): Spec[] => [{ id: root, plan: owns(...[1, 2, 3, 4].map(i => `${root}${i}`)) }, ...[1, 2, 3, 4].map(i => ({ id: `${root}${i}` }))];
   const tie = lookText(view(board([...four("qa"), ...four("qb")]), { rows: MIN_ROWS }));
