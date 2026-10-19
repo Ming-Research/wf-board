@@ -9,6 +9,7 @@
 // present. The real board's counts, surveyed when this was written, are in docs/design.md section 11.
 
 import type { Put } from "../../src/store.ts";
+import { HEAD_REVISED_LOG } from "../../src/rules.ts";
 
 export interface Batch { message: string; puts: Omit<Put, "expectRev">[] }
 export interface Witness {
@@ -277,6 +278,9 @@ export function generateBoard(seed = 1, scale = 1): Generated {
     it.head = parts.join("\n\n");
     const nLog = it.index % 13 === 0 ? 25 : r.int(4);
     for (let k = 0; k < nLog; k++) it.log.push({ at: tick(), by: it.group, text: r.pick(STEPS) + "，" + r.pick(["完成", "进行中", "有新发现"]) + "。" });
+    // An item with a ruled card has had its head rewritten since, as nearly every one on the real board has (the check 做法待更新 flags 3 of 1941
+    // there): a board where many carried the check would make every press of n draw one more row than the page of the base does.
+    if (it.cards.some(key => cards.get(key)!.status === "ruled")) it.log.push({ at: tick(), by: it.group, text: HEAD_REVISED_LOG + "按裁定改写了做法。" });
     if (r.chance(0.2)) it.links.push({ label: "PR #" + (100 + it.index), url: `https://example.invalid/${it.group}/pull/${100 + it.index}` });
   }
   // Pauses: one root explicitly, its descendants by inheritance.

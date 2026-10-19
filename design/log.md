@@ -8,6 +8,12 @@ Nodes: testing/ci-time-gate, testing/ci-job-setup
 
 Summary: The status `full-ci` came 59 to 65 seconds after a full CI was started (median 61 in 5 runs): 49 to 57 seconds to the last check, then 7 to 9 for the job that waited for the checks with `needs` to start, set itself up and write. The job that writes the status now starts with the run and waits in the time gate script until the others have ended, and writes the status itself, which measured 1 to 2 seconds after the last check against 6 to 10 for the job with `needs` and 5 to 6 for a lean one; no job of the full CI may then use `needs`, since such a job is not listed until the jobs it needs have ended, and a test holds that. The time gate's total now runs to the status. Each job gets `node_modules` from a cache keyed by the lock file and `package.json` instead of the cache of npm and `npm ci`, which took the set-up of a job from 12.5 seconds at the median to 8.5. The grounds and the refused alternatives (a job that needs the others, the last check writing the status, no cache, the flags of `npm ci`, the runner's own Node, a history without file contents) are in the nodes; the measurements are in docs/design.md, section 11, The time gate and The set-up of a job.
 
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's approach section could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check `approach-stale` on an open work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only, leaving paused items out) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards
