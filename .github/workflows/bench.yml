@@ -27,6 +27,7 @@ jobs:
           BENCH_BASE: ${{ inputs.base }}
         run: |
           node scripts/bench-writes.ts --label "this tree"
+          node scripts/bench-writes.ts --label "this tree, 4000 unread" --unread 4000
           base=$(git merge-base HEAD "$BENCH_BASE")
           git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
