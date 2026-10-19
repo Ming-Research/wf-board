@@ -48,7 +48,7 @@ export interface Ops {
   /** Completes a started dispatch with its result, counts, usage and cost, and logs the end on the item. */
   dispatchFinish(a: { author: string; session?: string; access?: Access; id: string; agentId: string; result: (typeof DISPATCH_RESULTS)[number]; usage: DispatchUsage; cost: number; reports?: number; kickbacks?: number; rounds?: number; waited?: number; signals?: Array<{ kind: (typeof DISPATCH_SIGNALS)[number]; note?: string }>; note?: string; endedAt?: string; replace?: boolean }): Promise<Result>;
   /** The runner's report on the work on an item (docs/design.md, section 5, Runner reports): replaces the item's `runner`, stamps `since` and `at`, and writes nothing when the report changes nothing. */
-  reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
+  reportState(a: { author: string; session?: string; access?: Access; id: string; state: RunnerState; to?: "owner" | "architect"; cards?: string[]; items?: string[]; what?: string; until?: string; note?: string; turns?: number; cost?: number; startedAt?: string }): Promise<Result>;
   /**
    * The runner's beat for a turn it is running (docs/design.md, section 7, The live view of a turn): the same writers as `reportState`,
    * kept in the options' `live` store and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
@@ -721,13 +721,15 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     reportState: a => edit(a, "item.runner", "report_state", (it, _s, at) => {
       onlyProcessOrRunnerWithoutCredential(a, "report the runner's state on an item");
       if (it.record) throw new OpError(`id ${a.id}: a record has no work to report on`);
-      const problem = runnerReportProblem(a);
+      // The note and what the work waits for are one line: a reporter's line breaks (a failure's text, say) become spaces rather than a refusal.
+      const oneLine = (text: string | undefined) => text?.replace(/\s+/g, " ").trim();
+      const before = it.runner, note = oneLine(a.note), what = oneLine(a.what);
+      const problem = runnerReportProblem({ ...a, ...(what === undefined ? {} : { what }) });
       if (problem) throw new OpError(problem);
       if (a.cost !== undefined && (!Number.isFinite(a.cost) || a.cost < 0)) throw new OpError("cost: give the cost so far in US dollars, zero or more");
-      // The note is one line: a reporter's line breaks (a failure's text, say) become spaces rather than a refusal.
-      const before = it.runner, note = a.note?.replace(/\s+/g, " ").trim();
+      const until = a.until === undefined ? undefined : dispatchTime(a.until, at, "until");
       // The work waits on the same thing as in the last report: only then does `since` stay.
-      const sameWait = before !== undefined && before.state === a.state && before.to === a.to && isDeepStrictEqual(before.cards, a.cards) && isDeepStrictEqual(before.items, a.items);
+      const sameWait = before !== undefined && before.state === a.state && before.to === a.to && isDeepStrictEqual(before.cards, a.cards) && isDeepStrictEqual(before.items, a.items) && before.what === what && before.until === until;
       const turns = a.turns ?? before?.turns, cost = a.cost === undefined ? before?.cost : milliDollars(a.cost) / 1000;
       const since = sameWait && before ? before.since : at;
       // The work cannot have begun after it entered its state: a start time a moment ahead of the board's clock is cut back to it.
@@ -735,6 +737,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       const next = parse(RunnerReport, {
         state: a.state, since, at, started,
         ...(a.to === undefined ? {} : { to: a.to }), ...(a.cards === undefined ? {} : { cards: a.cards }), ...(a.items === undefined ? {} : { items: a.items }),
+        ...(what === undefined ? {} : { what }), ...(until === undefined ? {} : { until }),
         ...(note === undefined ? {} : { note }), ...(turns === undefined ? {} : { turns }), ...(cost === undefined ? {} : { cost }),
       });
       // A report that repeats the last one changes nothing, and `at` is the time of the last change: no commit for it.

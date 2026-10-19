@@ -82,3 +82,29 @@ test("the architect's turn is drawn under the work that asks the architect while
   assert.ok(bp.$(".runner-turn.silent", rowOf(bp, id)!), "marked for the reader's eye");
   assert.deepEqual(bp.errors, []);
 });
+
+test("a wait for an event is drawn in its words with its wake time, and turns amber once an hour has passed after a wake time that is gone", async t => {
+  const board = await startBoard(t), bp = await DomPage.open(t, board), { id, runner } = target(board);
+  const base = bp.changes();
+  await board.ops.dispatchStart({ ...runner, id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1` });
+  const until = iso(Date.now() + 22 * 3_600_000);
+  await board.ops.reportState({ ...runner, id, state: "wait", what: "上线后 24 小时的日志", until });
+  await bp.waitChanges(base + 2);
+  const chip = () => bp.$(".agent-state.runner", rowOf(bp, id)!)!;
+  assert.equal(chip().textContent, `等：上线后 24 小时的日志（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`, "the event and the time, not an ask of the architect");
+  assert.equal(rowOf(bp, id)!.dataset.runner, "wait");
+  assert.equal(chip().classList.contains("overdue"), false, "22 hours before its wake time: on time");
+  assert.equal(turnLine(bp, id), null, "no turn is running");
+  // A wake time that went by more than an hour before the wait was reported: there is no time left to wait out, so amber at once.
+  const gone = bp.changes();
+  await board.ops.reportState({ ...runner, id, state: "wait", what: "上线后 24 小时的日志", until: iso(Date.now() - 2 * 3_600_000) });
+  await bp.waitChanges(gone + 1);
+  assert.equal(chip().classList.contains("overdue"), true, "past its wake time and the hour after it: amber");
+  // The same wait with no time is on time for a day.
+  const undated = bp.changes();
+  await board.ops.reportState({ ...runner, id, state: "wait", what: "执行程序重启" });
+  await bp.waitChanges(undated + 1);
+  assert.equal(chip().textContent, "等：执行程序重启");
+  assert.equal(chip().classList.contains("overdue"), false);
+  assert.deepEqual(bp.errors, []);
+});

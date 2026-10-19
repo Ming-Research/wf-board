@@ -13,7 +13,7 @@ import { rules } from "../src/rules.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { Board, Decision, Item } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
-import { wholeView, wholeViewText, spanText, limitOf, BUCKETS, BUCKET_ROWS, WAIT_LIMITS_MS } from "../src/whole-view.ts";
+import { wholeView, wholeViewText, spanText, limitOf, reportText, BUCKETS, BUCKET_ROWS, WAIT_LIMITS_MS } from "../src/whole-view.ts";
 import type { Bucket, WholeView } from "../src/whole-view.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import type { Generated } from "./e2e/board-gen.ts";
@@ -188,9 +188,60 @@ test("the text lists a few rows of each kind and counts the rest; bucket and pro
 
 test("spans read as a person says them, and each state has a limit", () => {
   assert.deepEqual([0, 59_000, 12 * MIN, 3 * HOUR + 20 * MIN, 47 * HOUR, 49 * HOUR, 4 * 24 * HOUR + 5 * HOUR].map(spanText), ["不到 1 分钟", "不到 1 分钟", "12 分钟", "3 小时 20 分", "47 小时", "2 天", "4 天"]);
-  assert.equal(limitOf({ state: "ask", to: "owner" }), WAIT_LIMITS_MS.ownerAsk);
-  assert.equal(limitOf({ state: "ask", to: "architect" }), WAIT_LIMITS_MS.architectAsk);
-  for (const state of ["running", "ci", "items", "run", "ready", "exception", "done"] as const) assert.equal(limitOf({ state }), WAIT_LIMITS_MS[state], state);
+  const since = "2026-10-18T09:00:00Z";
+  assert.equal(limitOf({ state: "ask", to: "owner", since }), WAIT_LIMITS_MS.ownerAsk);
+  assert.equal(limitOf({ state: "ask", to: "architect", since }), WAIT_LIMITS_MS.architectAsk);
+  for (const state of ["running", "ci", "items", "run", "wait", "ready", "exception", "done"] as const) assert.equal(limitOf({ state, since }), WAIT_LIMITS_MS[state], state);
+});
+
+test("a wait with a wake time lasts until an hour after it, counted from since, and never less than nothing", () => {
+  const since = "2026-10-18T09:00:00Z";
+  assert.equal(WAIT_LIMITS_MS.wait, 24 * HOUR, "a wait nobody dates lasts a day, like a wait for items");
+  assert.equal(limitOf({ state: "wait", since }), 24 * HOUR);
+  // Woken in 22 hours: on time for 23 hours from the start of the wait.
+  assert.equal(limitOf({ state: "wait", since, until: "2026-10-19T07:00:00Z" }), 23 * HOUR);
+  // Woken in 10 minutes: an hour and ten minutes, so a short wait is not marked before its time has come and gone.
+  assert.equal(limitOf({ state: "wait", since, until: "2026-10-18T09:10:00Z" }), 70 * MIN);
+  // A wake time less than an hour behind `since` still leaves the rest of the hour; one further behind is overdue at once.
+  assert.equal(limitOf({ state: "wait", since, until: "2026-10-18T08:30:00Z" }), 30 * MIN);
+  assert.equal(limitOf({ state: "wait", since, until: "2026-10-18T07:00:00Z" }), 0);
+  // The words: the event, and the time when there is one.
+  const report = { state: "wait", since, at: since, started: since, what: "上线后 24 小时的日志" } as const;
+  assert.equal(reportText(report), "等：上线后 24 小时的日志");
+  assert.equal(reportText({ ...report, until: "2026-10-19T23:55:00Z" }), "等：上线后 24 小时的日志（到 10-19 23:55Z）");
+  assert.equal(reportText({ ...report, note: "第 3 轮" }), "等：上线后 24 小时的日志：第 3 轮");
+});
+
+test("a wait for an event is among the waiting in its words, and overdue an hour after its wake time or, with none, after a day", async t => {
+  const b = await empty(t);
+  // On a whole second, so that the edge of a limit is hit exactly: the board stamps `since` in whole seconds.
+  const t0 = b.base - b.base % 1000;
+  for (const key of ["dated", "undated", "woken-long-ago"]) await b.item(key);
+  // Both waits began 2 hours ago; one is to be woken in 22 hours, the other has no time.
+  const until = iso(t0 + 22 * HOUR);
+  await b.report("dated", t0 - 2 * HOUR, { state: "wait", what: "上线后 24 小时的日志", until });
+  await b.report("undated", t0 - 2 * HOUR, { state: "wait", what: "执行程序重启" });
+  // A wake time that had gone by more than an hour before the wait was reported: overdue as soon as it is there.
+  await b.report("woken-long-ago", t0 - HOUR, { state: "wait", what: "到点叫醒", until: iso(t0 - 5 * HOUR) });
+  const waiting = (now: number) => { const { v, kind } = b.view(now); return { v, kind, row: (id: string) => v.rows.find(x => x.id === id)! }; };
+  const now = waiting(t0);
+  assert.deepEqual([now.kind.dated, now.kind.undated, now.kind["woken-long-ago"]], ["waiting", "waiting", "overdue"]);
+  assert.equal(now.row("dated").what, `等：上线后 24 小时的日志（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`);
+  assert.equal(now.row("undated").what, "等：执行程序重启");
+  assert.equal(now.row("woken-long-ago").limit, 0, "its limit is nothing");
+  // The wake time and an hour more: on time to the minute before the hour is out, overdue after it, with the limit counted from the start.
+  const edge = t0 + 22 * HOUR + HOUR;
+  assert.equal(waiting(edge - MIN).kind.dated, "waiting");
+  assert.equal(waiting(edge).kind.dated, "waiting", "exactly at the limit is still on time");
+  const late = waiting(edge + MIN);
+  assert.equal(late.kind.dated, "overdue");
+  assert.equal(late.row("dated").limit, 25 * HOUR, "an hour after the wake time, counted from the start of the wait");
+  // With no wake time the day is counted from the start of the wait.
+  assert.equal(waiting(t0 - 2 * HOUR + 24 * HOUR).kind.undated, "waiting");
+  assert.equal(waiting(t0 - 2 * HOUR + 24 * HOUR + MIN).kind.undated, "overdue");
+  assert.equal(waiting(t0 - 2 * HOUR + 24 * HOUR + MIN).row("undated").limit, WAIT_LIMITS_MS.wait);
+  // The text of the answer lists the wait among the waiting.
+  assert.match(wholeViewText(now.v), /^在等 2\n(  .*\n)*  undated · Whitefoot · undated · 等：执行程序重启 · 2 小时 · 共 2 小时/m);
 });
 
 test("whole_view answers over MCP, narrows by project and kind, and refuses a kind it does not have", async t => {

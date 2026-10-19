@@ -45,6 +45,28 @@ test("every piece of work the runner holds is a row with the words and the limit
   assert.deepEqual(rows.map(r => [r.item, r.overdue]), [["late", true], ["bad", true], ["run", false], ["owner", false], ["ci", false]]);
 });
 
+test("a wait for an event is a row in its words, amber an hour after its wake time and, with none, after a day", () => {
+  const started = ago(30 * 60);
+  const s = snap(
+    // Began an hour ago, to be woken in two hours: on time for another three hours.
+    job("dated", { state: "wait", what: "上线后 24 小时的日志", until: ago(-120), since: ago(60) }, started),
+    // Woken 61 minutes ago by its time, and still here: the hour of room is used up.
+    job("not-woken", { state: "wait", what: "到点叫醒", until: ago(61), since: ago(300) }, started),
+    job("undated", { state: "wait", what: "执行程序重启", since: ago(23 * 60) }, started),
+    job("undated-late", { state: "wait", what: "主线下一次合入", since: ago(25 * 60) }, started),
+  );
+  const rows = rowsOf(s, open(), [], NOW), by = Object.fromEntries(rows.map(r => [r.item, r]));
+  assert.deepEqual(rows.map(r => [r.item, r.overdue]), [["undated-late", true], ["not-woken", true], ["undated", false], ["dated", false]], "overdue first, then the longest in the state first");
+  const until = s.items.dated!.runner!.until!;
+  assert.equal(by.dated!.what, `等：上线后 24 小时的日志（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`);
+  assert.equal(by["undated-late"]!.what, "等：主线下一次合入");
+  assert.deepEqual([by.dated!.state, by.dated!.live, by.dated!.architect, by.dated!.turnStartedAt], ["wait", undefined, undefined, undefined], "a wait has no turn running and no architect's turn");
+  assert.equal(limitOf(s.items.dated!.runner!), 4 * 60 * 60_000, "from the start of the wait to an hour after the wake time");
+  // A beat for the engineer or the architect is not read for a wait: only a running turn and an ask to the architect have one.
+  const withBeats = rowsOf(s, open(), [beat("dated"), beat("dated", { role: "架构师" })], NOW).find(r => r.item === "dated")!;
+  assert.deepEqual([withBeats.live, withBeats.architect], [undefined, undefined]);
+});
+
 test("a report counts only with the job's own open engineer dispatch, on open and unpaused work", () => {
   const started = ago(60);
   const items = [

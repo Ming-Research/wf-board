@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Let the runner report a wait for an event
+
+Nodes: items
+
+Summary: The runner has a state for work that waits for an event settled beforehand (its restart, the main line's next merge, a set time) and needs no one, but the board had no such state, so the runner reported it as an ask to the architect and the agent list marked it overdue after that ask's one hour, a wait of a day being amber for 23 hours with nothing to look at. A report may now be in the state `wait`, with the event as its own field `what` and an optional UTC wake time `until`; the lists say 「等：<what>」, with the wake time when there is one, and the wait is on time until an hour after `until` or, with none, for 24 hours (provisional like the other limits), `since` moving when either field changes. The grounds and the refused alternatives (the ask to the architect, the event in the note, no limit without a wake time) are in the node; the derivation is in docs/design.md, section 5, Runner reports.
+
 ## 2026-10-18 Keep the page's structure through a write that reused the rules
 
 Nodes: storage/write-path/page-rules-reuse, testing/press-n
