@@ -30,5 +30,4 @@ jobs:
           test "$code" -ne 0
           grep -c '✖ a tool call that runs over its limit' /tmp/old-checks.log
           grep -c '✖ a tool that fails is timed as an error' /tmp/old-checks.log
-          test "$(grep -c '^ℹ fail ' /tmp/old-checks.log)" = 1
-          grep '^ℹ fail ' /tmp/old-checks.log
+          grep -q '^ℹ fail 2$' /tmp/old-checks.log
