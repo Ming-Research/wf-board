@@ -12,6 +12,7 @@ import type { Rules } from "../../src/rules.ts";
 import { difficultyText } from "../../src/model.ts";
 import type { Snapshot } from "../../src/model.ts";
 import { prng } from "../e2e/board-gen.ts";
+import { openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import { oracle } from "../e2e/invariants.ts";
 import type { Oracle } from "../e2e/invariants.ts";
@@ -556,10 +557,18 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
  * nearest the top of the screen. With the cursor moved to an end of the list by j or k instead of a click, n and N start from the cursor.
  * Families: wrap-n, wrap-card, wrap-cursor. */
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
-  const early = bp.treeRows().length;
+  // A write can leave an item holding unread content that the tree has not drawn (a closed item, which a freshly loaded page draws
+  // when it holds some); n draws it when it lands there. So n walks over every such item first, and the rows are read after.
   await bp.settle();
+  const hidden0 = [...o.fresh].filter(id => !bp.treeRows().includes(id));
+  bp.blur();
+  const reached = new Set<string>();
+  for (let k = 0; k < 4 * o.docs.size + 4 && [...o.fresh].some(id => !reached.has(id)); k++) {
+    bp.key("n"); await bp.settle();
+    const sel = bp.selected();
+    if (sel) reached.add(sel);
+  }
   const v: string[] = [], rows = bp.treeRows();
-  console.log(`WRAPDBG rows before settle ${early}, after ${rows.length}`);
   if (!rows.length) return v;
   const last = rows[rows.length - 1]!, freshRows = rows.filter(id => o.fresh.has(id));
   if (freshRows.length) {
@@ -578,13 +587,7 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
       if (sel && seen.at(-1) !== sel) seen.push(sel);
     }
     const start = freshRows.indexOf(expected), lap = [...freshRows.slice(start), ...freshRows.slice(0, start)];
-    if (seen.join(",") !== lap.join(",")) {
-      // Where a row the lap did not expect (or expected and missed) stands: drawn in the tree, and the unread documents that name it.
-      const named = (id: string) => [...o.docs].filter(d => d === "item:" + id || o.s.decisions[d.slice(9)]?.item === id && d.startsWith("decision:")
-        || d.startsWith("note:") && [o.s.notes[d.slice(5)]?.target].some(t => t === "it:" + id || t?.startsWith("q:") && o.s.decisions[t.slice(2)]?.item === id));
-      const where = (id: string) => `${id} [${rows.includes(id) ? "in" : "not in"} the tree, ${o.fresh.has(id) ? "unread" : "not unread"}: ${named(id).join(" ") || "no unread document"}; ${o.r.statusOf(id)}, above it ${o.r.ancestors(id).map(a => a + (rows.includes(a) ? "+" : "-")).join(" ") || "nothing"}]`;
-      v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}; unexpected ${seen.filter(id => !lap.includes(id)).map(where).join("; ")}; missed ${lap.filter(id => !seen.includes(id)).map(where).join("; ")}`);
-    }
+    if (seen.join(",") !== lap.join(",")) v.push(`wrap-n: a lap of n from ${last} went ${seen.join(",")}, expected ${lap.join(",")}`);
   }
   // j and k move the cursor over the rows without selecting them, so the row clicked or landed on last is not the cursor's. n goes
   // from the cursor's row all the same: from the bottom row wrapping to the first row holding unread content, and N from the top row
@@ -613,6 +616,10 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
     const sel = bp.selected(), cards = bp.currentCards();
     if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
   }
+  // TEMPORARY PROBE
+  await bp.reset(openAll(bp.board));
+  const reloaded = bp.treeRows();
+  console.log(`WRAPDBG fresh rows not drawn before n: ${hidden0.join(",") || "none"}; drawn on a freshly loaded page: ${hidden0.filter(id => reloaded.includes(id)).join(",") || "none"}`);
   return v;
 }
 
