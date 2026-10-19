@@ -38,8 +38,9 @@ export const WITNESS_LANDINGS = 8, COUNT_LANDINGS = 12, LANDINGS_FOR_LATE_ROWS =
  * page with itself over 30 pairs, 5 hosted runners with 3 rounds each (docs/design.md, The n-key lane): 6.9% quiet, 7.6% while writing. */
 export const FLOOR = { quiet: 0.069, writing: 0.076 };
 /** What one press that lands writes, the median over the landings of the first walk: characters assigned to innerHTML and elements
- * made. A page that writes more is red; a change to the page that moves them changes the numbers here, and the pull request says why. */
-const WRITES = { innerHtml: 33873, created: 756 };
+ * made. A page that writes more is red; a change to the page or to the generated board that moves them changes the numbers here, and the pull
+ * request says why. */
+const WRITES = { innerHtml: 34167, created: 756 };
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
 export const ms = (x: number) => x.toFixed(0);

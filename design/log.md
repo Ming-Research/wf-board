@@ -8,6 +8,12 @@ Nodes: mcp/look
 
 Summary: The architect read the board one item at a time (1,193 `context` calls in eleven sessions) because the reads that show a whole each showed a corner, and six paused items were missed when the queue of engineers was filled. A new read, `look`, answers with the tree the owner's board shows, one line for each open work item, in a budget of lines the caller sets: it opens the subtrees that need a reader first, folds a pause into one line with its reason, counts a project's backlog apart, and puts every open item in a line or in a count. What a session saw at its last look is kept in the daemon's memory as a signature for each open item (not in the data repository), so the next look marks what changed, including changes no write made. The grounds and the refused alternatives (a tree option on `whole_view`, only the time of the last look, a commit for each look, listing every item) are in the node; the shape is in docs/design.md, section 6, The look.
 
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's approach section could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check `approach-stale` on an open work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only, leaving paused items out) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards
