@@ -78,7 +78,9 @@ test("each operation records its effects, author and single atomic commit", asyn
     const doc = kind === "item" ? after.items[id]! : kind === "decision" ? after.decisions[id]! : after.notes[id]!;
     assert.equal((await store.log()).length,count+1,"all document effects enter one atomic commit");
     assert.notEqual(after.head,previous); assert.equal(result.commit,after.head); assert.equal(result.commit,log[0]!.commit);
-    assert.deepEqual(result,{commit:after.head,id,rev:doc.rev,summary:message},"the result names the revision and commit actually produced");
+    // A note says how the write was made (a row behind its owner's), not what it produced: it is left out here.
+    const { note: _note, ...named } = result;
+    assert.deepEqual(named,{commit:after.head,id,rev:doc.rev,summary:message},"the result names the revision and commit actually produced");
     assert.equal(log[0]!.author,by); assert.equal(log[0]!.message,message);
     assert.deepEqual(log[0]!.files.slice().sort(),files.slice().sort(),"the commit contains every effect and no unrelated document");
     assert.deepEqual(await store.show(kind,id,result.commit),doc,"the returned revision is stored in that exact commit");
@@ -605,6 +607,20 @@ test("acceptance done writes follow ordinary step rules rather than requiring al
   assert.ok("state" in work); assert.equal(work.state, "todo");
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "done", after: [] } });
   assert.equal(rules(store.snapshot()).statusOf("a"), "done");
+});
+
+test("a new or changed owned row that starts behind unfinished rows says which rows hold it and that after: [] starts it", async t => {
+  const { op } = await board(t);
+  await op.createItem({ ...asArchitect, key: "owner-hint", group: author, title: "Owner", accept: "Owner passes", plan: [{ id: "first", text: "First step", state: "todo" }] });
+  const behind = await op.createItem({ ...asArchitect, key: "child-behind", owner: "owner-hint", title: "Child", accept: "Child passes" });
+  assert.match(behind.note ?? "", /child-behind is blocked: its row in owner-hint's plan waits for first, not done yet.*after: \[\]/);
+  const free = await op.createItem({ ...asArchitect, key: "child-free", owner: "owner-hint", after: [], title: "Free", accept: "Free passes" });
+  assert.equal(free.note, undefined);
+  await op.createItem({ ...asArchitect, key: "child-set", group: author, title: "Set", accept: "Set passes" });
+  const set = await op.setPlan({ ...asArchitect, id: "owner-hint", row: { item: "child-set", own: true } });
+  assert.match(set.note ?? "", /child-set is blocked: its row in owner-hint's plan waits for child-free, not done yet/);
+  const started = await op.setPlan({ ...asArchitect, id: "owner-hint", row: { item: "child-set", own: true, after: [] } });
+  assert.equal(started.note, undefined);
 });
 
 test("create_item appends accept while allowing more acceptance scenarios in its initial plan", async t => {
