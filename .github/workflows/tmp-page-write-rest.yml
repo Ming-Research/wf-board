@@ -1,0 +1,19 @@
+name: tmp-page-write-rest
+# Temporary, for page-write-rest; removed before the branch is ready.
+on:
+  push:
+    branches: [page-write-rest]
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run build:web
+      - run: npm run check
+      - run: node --test test/dom/witnesses.ts
