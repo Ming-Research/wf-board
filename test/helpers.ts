@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { WebSocket } from "ws";
 import { stringify } from "yaml";
 import { Store } from "../src/store.ts";
+import { cleanup } from "./cleanup.ts";
 import { ops } from "../src/ops.ts";
 import { LiveStore } from "../src/live.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -48,7 +49,7 @@ export const asArchitect = { author: architect, session: architectSession };
 /** Synthetic plans preserve the unrelated query, note and history witnesses. */
 export async function board(t: { after(fn: () => void | Promise<void>): void }, options: { sharedProjects?: boolean; unmigrated?: boolean; requireBudget?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-agent-"));
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  cleanup(t, () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, requireBudget: options.requireBudget, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "总管" }, { name: "Architect" }, { name: "PM" }] } });
   // Rated, so a fixture item raises no 缺难度 check and can be listed as startable; tests of difficulty change it.
   const item = (title: string, fields: object = {}) => ({ title, group: author, difficulty: 2, plan: [{ id: "accept", accept: true, text: "独立验收通过", state: "todo" }], updated: at, ...fields });
@@ -73,7 +74,7 @@ export async function server(t: Parameters<typeof board>[0], extra: { now?: () =
   extra.prepare?.(fixture);
   const http = createHttpServer({ store, ops: op, live: fixture.live, ownerOps: ownerOps(store), webDir: extra.webDir ?? join(import.meta.dirname, "../web"), createMcp: credential => createMcpServer({ store, ops: op, wake: extra.wake, credential }), credentials: extra.credentials, now: extra.now, checkIntervalMs: extra.checkIntervalMs, wake: extra.wake, architectTimedWakeMs: extra.architectTimedWakeMs, watch: extra.watch?.(fixture), ci: extra.ci?.(fixture) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  cleanup(t, () => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   async function api(path: string, data?: unknown, method = "POST") {

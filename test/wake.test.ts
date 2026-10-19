@@ -9,6 +9,7 @@ import { request } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { agentSocket, board, author, later, server, asArchitect } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { AgentStream, Wake, WAKE_KINDS, CONTROL_FRAMES, agentFileName } from "../src/wake.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import type { WakeFrame } from "../src/wake.ts";
@@ -217,7 +218,7 @@ test("an agent's socket that connects after undelivered pushes were dropped gets
 async function restart(t: Parameters<typeof board>[0], store: Awaited<ReturnType<typeof board>>["store"], op: Awaited<ReturnType<typeof board>>["op"], extra: { now?: () => number; checkIntervalMs?: number; wake?: Wake; architectTimedWakeMs?: number }) {
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op, wake: extra.wake }), ...extra });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>(resolve => http.close(() => resolve())));
+  cleanup(t, () => new Promise<void>(resolve => http.close(() => resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   return { url: `http://127.0.0.1:${address.port}` };
 }
@@ -277,6 +278,30 @@ test("the architect's timed wake comes every hour with the items changed since t
   const next = resumed.events()[0]!;
   assert.equal(next.n, 2); assert.equal(next.since, mark.at);
   assert.deepEqual((next.changed as Array<{ item: string }>).map(e => e.item), ["b"], "only what changed after the last wake");
+});
+
+test("closing the server waits for the architect's timed wake that is running, so nothing reads the board once it answers", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let clock = T0;
+  const wake = new Wake({ now: () => clock });
+  const { store, op } = await board(t);
+  const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op, wake }), now: () => clock, checkIntervalMs: 1000, wake });
+  http.listen(0, "127.0.0.1"); await once(http, "listening");
+  // Closed by the test itself; this one only makes sure it is closed when the test fails before.
+  cleanup(t, () => new Promise<void>(resolve => http.close(() => resolve())));
+  // The wake reads the history: that read holds until the test lets it go.
+  const read = store.log.bind(store);
+  let reading = false, release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  store.log = async (...args: Parameters<typeof read>) => { reading = true; await gate; return read(...args); };
+  clock = T0 + HOUR; t.mock.timers.tick(1000);
+  await until(() => reading, started => started, "the timed wake to start reading");
+  let closed = false;
+  http.close(() => { closed = true; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(closed, false, "the server is not closed while the wake still reads");
+  release();
+  await until(() => closed, done => done, "the server to answer that it is closed");
 });
 
 test("the architect's timed wake lists at most 20 items and counts the rest, and leaves out an item only the architect wrote", async t => {

@@ -14,6 +14,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { SlowOps, STEPS_FROM_MS } from "../src/slow-ops.ts";
 import { WriteTrace, currentTrace, withTrace } from "../src/write-trace.ts";
 import { board, author } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 
 // Where the time of a slow write went (docs/design.md, section 4, Time limits): the steps of a write call. The stalls of the
 // event loop that make a git command's time not git's own are told by the watch tested in test/loop-watch.test.ts.
@@ -185,7 +186,7 @@ test("a page write that takes long says where it went, and reads carry no steps"
   await slowCommits(dir, 0.6);
   const slow = new SlowOps(), http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), slow, createMcp: () => createMcpServer({ store, ops: op, slow }) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  cleanup(t, () => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   const { info } = await logged(async () => {

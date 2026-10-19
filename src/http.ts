@@ -395,18 +395,20 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   heartbeat.unref();
   // The architect's timed wake, once `architectTimedWakeMs` has passed since its last one (kept across restarts), or since the start when there is none.
   const architectTimedMs = deps.architectTimedWakeMs ?? 60 * 60_000, started = new Date(now()).toISOString();
-  let timing = false;
+  /** The wake that is being made, kept so that stopping can wait for its read of the history. It never rejects. */
+  let timing: Promise<void> | undefined;
   /** Make the architect's timed wake if it is due; one at a time. */
-  async function timed() {
+  function timed() {
     const stream = wake.agent(ARCHITECT_SESSION), last = stream.lastTimed;
     if (timing || now() < Date.parse(last?.at ?? started) + architectTimedMs) return;
-    timing = true;
-    try {
-      const s = store.snapshot();
-      await withBudget(new Budget("timed wake", limits), async () => { wake.push("timed-architect", { ...await architectTimedWake(store, s, store.derived.rules(s, now()), last, started) }); });
-      stream.markTimed({ at: new Date(now()).toISOString(), head: s.head });
-    } catch (error) { console.error(error); }
-    finally { timing = false; }
+    const making = (async () => {
+      try {
+        const s = store.snapshot();
+        await withBudget(new Budget("timed wake", limits), async () => { wake.push("timed-architect", { ...await architectTimedWake(store, s, store.derived.rules(s, now()), last, started) }); });
+        stream.markTimed({ at: new Date(now()).toISOString(), head: s.head });
+      } catch (error) { console.error(error); }
+    })();
+    timing = making.finally(() => { timing = undefined; });
   }
   // The time limits run out without a write, and a session can go silent without one, so re-evaluate on a timer.
   const checker = setInterval(() => {
@@ -416,7 +418,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     // Only a session holding an item in progress is watched: one holding a paused, done, cancelled or blocked item is waiting or finished, not silent.
     // An item the runner reports on is left out: its turns have no session between them, and whether its work is there is the report's to say (the whole view).
     wake.liveness.check(holders(s, item => r.statusOf(item) === "wip" && s.items[item]!.runner === undefined), item => ({ project: r.projectOf(item), title: s.items[item]!.title }));
-    void timed();
+    timed();
   }, deps.checkIntervalMs ?? 60_000);
   checker.unref();
   // The look at GitHub (src/watch.ts) runs on its own timer, every five minutes.
@@ -434,10 +436,13 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     for (const stream of streams) stream.end();
     for (const connection of connections) connection.socket.terminate();
     ws.close();
-    const cut = setTimeout(() => server.closeAllConnections(), deps.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
+    const grace = deps.shutdownGraceMs ?? SHUTDOWN_GRACE_MS, cut = setTimeout(() => server.closeAllConnections(), grace);
+    // The timed wake that is running reads the history: the server answers that it is closed after that read, within the same grace,
+    // so that nothing of it touches the board once the caller goes on (a test removes the board's directory, the daemon commits).
+    const reading = timing && Promise.race([timing, new Promise<void>(resolve => setTimeout(resolve, grace).unref())]);
     return close(error => {
       clearTimeout(cut);
-      callback?.(error);
+      void Promise.resolve(reading).then(() => callback?.(error));
     });
   };
   return server;
