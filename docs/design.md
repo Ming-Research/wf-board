@@ -5350,7 +5350,7 @@ own and short enough to be dealt out to the shards (the longest of the layer's
 run side by side.
 
 Diagrams are checked in two places. The page's own doing runs in the DOM layer
-(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`) against the stand-in library:
+(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`, `mermaid-toolbar.test.ts`) against the stand-in library:
 a block in a head and one in a log are drawn; a block that does not parse shows its code
 and the error while the blocks after it are drawn; the library is asked for when a block is
 shown and only once, and with the strict security level and the diagram's text whole; the

@@ -145,3 +145,18 @@ jobs:
           git checkout origin/main -- src/store.ts
           if node --test --test-name-pattern="adds only the files new to the head" test/store.test.ts; then echo "the test passed on the old store"; exit 1; fi
           echo "the test failed on the old store, as it should"
+  # Where the seconds of the files that mostly wait go: each alone, every line of its report stamped as it comes.
+  linger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: |
+          for f in test/shutdown.test.ts test/push.test.ts test/stateless.test.ts test/ops-roles.test.ts; do
+            echo "== $f"; start=$(date +%s.%N)
+            node --test --test-reporter=tap "$f" 2>&1 | while IFS= read -r line; do printf '%6.2f %s\n' "$(echo "$(date +%s.%N) - $start" | bc)" "$line"; done | grep -E "^ *[0-9.]+ (ok|not ok|# (tests|duration))" | cut -c1-140
+            echo "ended $(echo "$(date +%s.%N) - $start" | bc)"
+          done

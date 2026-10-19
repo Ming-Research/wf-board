@@ -172,9 +172,10 @@ test("a tool call that takes long says where it went; the writes behind it say h
   for (const line of writes) assert.match(line, /^tool append_log ok \d+ ms; /);
   for (const line of steps) {
     assert.ok((stepMs(line, "git commit") ?? 0) >= 550, line);
-    // An append also reads the item's log (git log) before it commits; the commit's own commands come in this order.
-    assert.deepEqual(stepNames(line).filter(name => ["git add", "git commit"].includes(name)), ["git add", "git commit"], line);
-    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git add") || stepMs(line, "ops queue") === undefined, line);
+    // An append also reads the item's log (git log) before it commits. It changes a document the head has, so its commit is one git
+    // command: nothing is added first.
+    assert.deepEqual(stepNames(line).filter(name => ["git add", "git commit"].includes(name)), ["git commit"], line);
+    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git commit") || stepMs(line, "ops queue") === undefined, line);
   }
   const waited = steps.map(line => stepMs(line, "ops queue") ?? 0);
   assert.ok(Math.max(...waited) >= 550, `the second call waited for the first's commit: ${steps.join(" | ")}`);

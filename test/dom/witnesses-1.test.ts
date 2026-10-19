@@ -1,5 +1,5 @@
-// The page checks on pages with one thing spoiled, a fifth of the witnesses (test/dom/witnesses.ts).
+// The page checks on pages with one thing spoiled, an eighth of the witnesses (test/dom/witnesses.ts).
 
 import { witnessTests } from "./witnesses.ts";
 
-witnessTests(0, 5);
+witnessTests(0, 8);
