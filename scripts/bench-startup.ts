@@ -31,7 +31,7 @@ import { stringify } from "yaml";
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   src: { type: "string", default: join(here, "../src") }, label: { type: "string", default: "this tree" }, "report-only": { type: "boolean", default: false },
-  commits: { type: "string", default: "35000" }, steps: { type: "string", default: "3" }, case: { type: "string" }, dir: { type: "string" },
+  commits: { type: "string", default: "35000" }, steps: { type: "string", default: "3" }, case: { type: "string" }, dir: { type: "string" }, keep: { type: "string" },
 } });
 const COMMITS = Number(args.commits), STEPS = Number(args.steps);
 // The live board had 1,965 items at 34,651 commits.
@@ -183,6 +183,7 @@ try {
         ok();
       });
     });
+    if (args.keep && size === sizes.at(-1)) execFileSync("cp", ["-r", dir, args.keep]);
     await rm(dir, { recursive: true, force: true });
   }
 } finally {

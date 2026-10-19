@@ -36,5 +36,71 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: smoke
         run: node scripts/bench-startup.ts --report-only --commits 1500 --steps 2
-      - name: scan
-        run: node scripts/bench-startup.ts --report-only --commits 35000 --steps 3 | tee "$RUNNER_TEMP/new.txt"
+      - name: build the 35000-commit history and keep it
+        run: node scripts/bench-startup.ts --report-only --commits 35000 --steps 1 --keep "$RUNNER_TEMP/kept" | tee "$RUNNER_TEMP/new.txt"
+      - name: experiment
+        run: |
+          cat > "$RUNNER_TEMP/exp.mjs" <<'EOF'
+          // Experiment (temporary): where does a cheaper pause replay spend its time on a history of the live shape.
+          import { execFile, spawn } from "node:child_process";
+          import { promisify } from "node:util";
+          const exec = promisify(execFile);
+          const dir = process.argv[2];
+          const t = async (name, fn) => { const t0 = performance.now(); const r = await fn(); console.log(`EXP ${name}: ${Math.round(performance.now() - t0)} ms${r === undefined ? "" : ` (${r})`}`); return r; };
+          const git = (...a) => exec("git", a, { cwd: dir, maxBuffer: 1 << 30 }).then(r => r.stdout);
+          const total = Number((await git("rev-list", "--count", "HEAD")).trim());
+          console.log(`EXP commits ${total}`);
+          await t("log --name-only (what the start reads today)", async () => (await git("log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z", "HEAD", "--")).length);
+          await t("log --name-only -- items", async () => (await git("log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z", "HEAD", "--", "items")).length);
+          const raw = await t("log --raw -- items", async () => await git("log", "--format=%x01%H", "--raw", "--no-abbrev", "--no-renames", "HEAD", "--", "items"));
+          await t("log -G first pause (whole)", async () => (await git("log", "--format=%H", "--no-renames", "-G", "^paused:", "HEAD", "--", "items")).trim().split("\n").length);
+          await t("log -n1 -G latest pause", async () => (await git("log", "-n1", "--format=%H", "--no-renames", "-G", "^paused:", "HEAD", "--", "items")).trim().length);
+          // parse the raw log into [commit, path, oldBlob, newBlob]
+          const entries = [];
+          let hash = "";
+          for (const line of raw.split("\n")) {
+            if (line.startsWith("\x01")) { hash = line.slice(1); continue; }
+            if (!line.startsWith(":")) continue;
+            const [meta, path] = line.split("\t"), f = meta.split(" ");
+            entries.push({ hash, path, old: f[2], now: f[3], status: f[4] });
+          }
+          console.log(`EXP raw entries ${entries.length}`);
+          const ids = entries.filter(e => !/^0+$/.test(e.now)).map(e => e.now);
+          // cat-file --batch, sequential awaits (what readAt does per read)
+          function reader() {
+            const child = spawn("git", ["cat-file", "--batch"], { cwd: dir });
+            let buf = Buffer.alloc(0), waiting = null;
+            child.stdout.on("data", chunk => { buf = Buffer.concat([buf, chunk]); drain(); });
+            function drain() {
+              while (waiting) {
+                const nl = buf.indexOf(10); if (nl < 0) return;
+                const [, , size] = buf.subarray(0, nl).toString().split(" ");
+                const n = Number(size); if (buf.length < nl + 1 + n + 1) return;
+                const body = buf.subarray(nl + 1, nl + 1 + n); buf = buf.subarray(nl + 1 + n + 1);
+                const w = waiting; waiting = null; w(body);
+              }
+            }
+            return { read: id => new Promise(ok => { waiting = ok; child.stdin.write(id + "\n"); }), close: () => child.kill() };
+          }
+          const FIELD = /^(?:paused:.*(?:\n[ \t]+.*)*|group:.*|record:.*|[ \t]*-?[ \t]*(?:item|own):.*)$/gm;
+          let sigs = 0, changed = 0;
+          const last = new Map();
+          await t("cat-file every after-blob, sequential", async () => {
+            const r = reader(); let bytes = 0;
+            for (const id of ids) bytes += (await r.read(id)).length;
+            r.close(); return `${ids.length} blobs, ${(bytes / 1e6).toFixed(0)} MB`;
+          });
+          await t("cat-file + signature regex", async () => {
+            const r = reader();
+            for (const e of entries) {
+              if (/^0+$/.test(e.now)) continue;
+              const text = (await r.read(e.now)).toString("utf8");
+              const sig = (text.match(FIELD) ?? []).join("\n");
+              sigs++;
+              if (last.get(e.path) !== sig) { changed++; last.set(e.path, sig); }
+            }
+            r.close(); return `${sigs} signatures, ${changed} changed`;
+          });
+          
+          EOF
+          node "$RUNNER_TEMP/exp.mjs" "$RUNNER_TEMP/kept"
