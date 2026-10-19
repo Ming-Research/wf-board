@@ -469,6 +469,8 @@ test("brief progress retains records and blocked work without repeating queues o
   s.items.a!.plan=[{id:"ready",text:"Ready work",state:"todo"}, {...acceptance(),id:"accept"}];
   // Three options, so the card raises no 选项不足 check that would list its item under checks instead.
   s.decisions.choice!.options=[...s.decisions.choice!.options,{key:"C",text:"第三个做法"}];
+  // A head written after the ruling of the card "ruled", so that card raises no 做法待更新 check that would list its item under checks too.
+  s.items.b!.log=[...s.items.b!.log,{at:"2026-10-11T03:00:00Z",by:author,text:"改了 head：Wrote the ruled design"}];
   const brief=q.brief(s,rules(s),author);
   assert.ok(brief.todo.some(row=>row.id==="a"));
   assert.ok(brief.progress.some(row=>row.id==="record"));

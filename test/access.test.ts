@@ -10,7 +10,7 @@ import { board, asArchitect, retiredPM, rx } from "./helpers.ts";
 
 const grants = (role: Role) => Object.entries(ACCESS[role]).map(([part, scope]) => `${part}:${scope}`).sort();
 // What the design (docs/design.md, section 9) reserves for the architect, written out here and not read from the table.
-const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
+const PROCESS: Part[] = ["item.create", "item.title", "item.difficulty", "item.standing", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 // What only the architect may do beyond that (no role has the merge row: the GitHub watch marks it).
 const ARCHITECT_ONLY: Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: Part[] = [...PROCESS, ...ARCHITECT_ONLY];
@@ -39,6 +39,7 @@ test("the writes the code reserves are the parts the table withholds from the ob
     ["item.move-project", rx`only ${PROCESS_WRITERS}`, () => op.moveItemProject({ ...legacy, id: "a", project: "Firn" })],
     ["item.cancel", rx`only ${PROCESS_WRITERS}`, () => op.setStatus({ ...legacy, id: "a", status: "cancelled", log: "l" })],
     ["item.title", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, title: "new title" })],
+    ["item.standing", rx`only ${PROCESS_WRITERS}`, () => op.updateItem({ ...legacy, id: "a", rev: 1, standing: true })],
     ["item.runner", rx`only ${PROCESS_WRITERS}, or the runner from the session 执行程序, may report the runner's state`, () => op.reportState({ ...legacy, id: "a", state: "running" })],
   ];
   for (const [part, message, call] of reserved) {
@@ -53,7 +54,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   createProject: [{ parts: ["project.create"], args: { name: "N" } }],
   updateProject: [{ parts: ["project.update"], args: { name: "Whitefoot", repo: "o/r" } }],
   closeNote: [{ parts: ["note.close"], args: { id: "note-1", log: "l" } }],
-  createItem: [{ parts: ["item.create"], args: { key: "n", title: "N", accept: "ok", group: "Whitefoot" } }],
+  createItem: [{ parts: ["item.create"], args: { key: "n", title: "N", accept: "ok", group: "Whitefoot" } }, { parts: ["item.create", "item.standing"], args: { key: "n", title: "N", standing: true, group: "Whitefoot" } }],
   appendLog: [{ parts: ["item.log"], args: { id: "a", text: "t" } }],
   markMerged: [{ parts: ["item.merge-row"], args: { id: "a", row: "r", merged: [], log: "l" } }],
   journalEntry: [{ parts: ["journal"], args: { text: "t" } }],
@@ -67,7 +68,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
     { parts: ["item.title"], args: { id: "a", rev: 1, title: "t" } }, { parts: ["item.head"], args: { id: "a", rev: 1, head: "h", reason: "r" } },
     { parts: ["item.links"], args: { id: "a", rev: 1, links: [] } },
     { parts: ["item.data"], args: { id: "a", rev: 1, data: "d" } }, { parts: ["item.order"], args: { id: "a", rev: 1, order: 1 } },
-    { parts: ["item.record"], args: { id: "a", rev: 1, record: true } }, { parts: ["item.head", "item.links"], args: { id: "a", rev: 1, head: "h", reason: "r", links: [] } },
+    { parts: ["item.record"], args: { id: "a", rev: 1, record: true } }, { parts: ["item.standing"], args: { id: "a", rev: 1, standing: true } }, { parts: ["item.head", "item.links"], args: { id: "a", rev: 1, head: "h", reason: "r", links: [] } },
     { parts: ["item.head"], args: { id: "a", rev: 1, sections: [{ title: "开头", text: "h" }], reason: "r" } }, { parts: ["item.head"], args: { id: "a", rev: 1, replace: [{ old: "o", new: "n" }], reason: "r" } },
   ],
   setStatus: [{ parts: ["item.cancel", "card.write"], args: { id: "a", status: "cancelled", log: "l" } }],

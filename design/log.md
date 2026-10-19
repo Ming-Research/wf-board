@@ -8,6 +8,18 @@ Nodes: mcp
 
 Summary: A head could be changed only whole, so changing a sentence meant reading the whole head and sending it back (583 whole-head rewrites in eleven architect sessions), and the architect wrote a script of its own that replaced exact texts, which it ran more than a hundred times. `update_item` now also takes `sections` (a whole section replaced by title) and `replace` (a text replaced, found exactly once); the edits are located in the head as it was and may not change the same text, so the order they are written in changes nothing, they are made together or not at all, a text found other than once names the edit and the count, the revision rule is that of a whole head, and the answer shows the lines before and after each change. The refused alternatives (a tool of its own, a patch text, texts only, edits one after another) are in the node; the rules are in docs/design.md, section 6, Changing things.
 
+## 2026-10-19 Mark an item as standing
+
+Nodes: plans/standing, plans, mcp/whole-view
+
+Summary: The board could not say that a long-term promise with work under it, such as keeping board operations within their limits, is work that is always in force and never completes, so a never-ticked acceptance step held it up and status and the checks took it for an item about to complete: read on a copy of the board of 2026-10-16, four of the ten such items raised the check `only-acceptance-left` and all ten raised `difficulty-missing`. An item may now carry `standing: true`, set only by the architect and excluding the record mark, with no acceptance step and no difficulty. It is in progress while it is not paused or cancelled, whatever its rows say; its rows for other standing items are resolved and uncounted, and neither make the target awaited nor conflict with its pause; the checks that ask for acceptance or a rating do not apply; a row of an ordinary item that owns or waits for a standing item is refused, since it could never be resolved; the items it owns stay needed and startable; the whole view lists it only when something works on it. The first design also gave the sub-items of a standing item their own stored priority; the item priority was removed on 2026-10-17, so that part was dropped. The refused alternatives (a never-ticked acceptance step, a record, a tag the checks skip, a flag on a plan row) are in the node; the derivation is in docs/design.md, section 5, Standing items.
+
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's approach section could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check `approach-stale` on an open work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only, leaving paused items out) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards

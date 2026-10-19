@@ -800,6 +800,11 @@ log:
   optional plan without an acceptance step, targets and log, and no status;
   creation and `update_item` can set it. Records are defined with the plan in
   [Item plans](#item-plans).
+- **Standing items.** `standing: true` makes an item a standing one: work that is
+  always in progress and never completes (a long-term promise with work under it,
+  such as "board operations finish within their limits"). Only the architect sets
+  it, at creation and with `update_item`. It excludes `record`, takes no acceptance
+  step and no difficulty. Defined with the plan in [Standing items](#standing-items).
 - **Dispatch records.** An item may carry `dispatches`, oldest first: one
   entry per agent session the architect or the runner started on it (a dispatch), in the
   columns of the dispatch format the architect keeps. An entry holds
@@ -1292,7 +1297,8 @@ plan's frontier.
 #### Status
 
 A work item's status is derived from its plan and effective pause; cancellation
-and the separate pause marker are stored.
+and the separate pause marker are stored. A standing item skips the list below:
+it is cancelled, paused or in progress, whatever its rows say ([Standing items](#standing-items)).
 Cancelling or reopening never changes plan rows, including acceptance states,
 dates and prerequisites. The converter's initial `todo` acceptance for an old
 cancelled item is a conversion mapping, not a reset performed by cancellation.
@@ -1475,7 +1481,10 @@ is itself needed. A record is not work. So backlog work is needed
 only when a needed item other than its record also holds a row for it, and
 what hangs under backlog work only when that work is needed; paused work and
 work reached only through paused items are not needed; a root that is not
-started is. The same walk
+started is. A standing item that is not paused is needed like any other open
+root and passes the need on to the items it owns, so its sub-items stay
+startable, while it is itself never startable and never asked for a difficulty
+(its status is never todo or idle). The same walk
 decides which items 缺难度 asks a difficulty for (with the state and next-step
 conditions above) and which items `brief` lists as startable. Whether an item is needed is part of the summary
 `affectedItems` compares, because a pause can change it for an item whose
@@ -1505,6 +1514,74 @@ status-based checks, and the page shows `记录` in place of a status.
 `parent_own_work` no longer exists: an item's own
 work is step rows in its own plan, so no conversion ever needs to invent an
 own-work sub-item.
+
+#### Standing items
+
+A standing item is work that is always in progress and never completes: a long-term
+promise with work under it, such as "board operations finish within their limits". Before the mark
+existed such items were held up by an acceptance step that was never ticked, and the
+derivations took them for items about to complete: the other rows done made the
+board say 只差验收, and no one dispatches an engineer on the promise itself, so 缺难度 stood on
+every one (read on the board copy of 2026-10-16, which held 10 such items, the board rules,
+the blocks under them and the promises, the rule blocks having since become records: 4 flagged
+只差验收, all 10 flagged 缺难度). The mark is one fact that status and the checks read, instead
+of a rule added to each.
+
+- **The mark.** The item field `standing: true`, set only by the architect through
+  `create_item` or `update_item` (the part `item.standing`, reserved for the process
+  like `item.difficulty`), and excluding `record`: a record is a part kept for
+  reference, a standing item is work that is in force. Both the schema and the
+  writes refuse an acceptance step and a difficulty on it.
+- **Status.** Cancelled when `status: cancelled` is stored; paused when the item or an
+  owner in its same-project chain carries a pause marker; otherwise in progress (`wip`).
+  It never reads its rows, so it is never blocked, todo, idle or done. Its rows are
+  still shown. Ending a standing item takes cancelling it (cancelling stays refused
+  while an owned item is open); turning it back into ordinary work takes
+  `update_item(standing: false, accept: ...)`, as turning a record into work does.
+  An in-progress status is a promise in force, not a session working: `workedOn`
+  and the step-in-progress rules of 无人推进 are unchanged, and a standing item
+  with a doing step quiet for an hour still shows that check.
+- **Rows.** A row of a standing item that owns or shares another standing item is
+  resolved and left out of the counts, drawn with the glyph ∞ instead of ✓: the target
+  never completes, so the row never waits for it, and an item the standing item owns
+  after it is not held back by it (promises stand side by side under their parent). Because the row waits for nothing, it
+  neither makes its target "awaited" (so `unowned-but-awaited` is not raised on a top-level standing item
+  that another standing item shares) nor conflicts with the target's pause (`pause-conflict`).
+  A standing item's plan ratio is 0 of 0 and it has no share of its plan done or stage
+  to show; the page leaves the ratio out. An ordinary item's row for a standing item is
+  not resolved: the standing item is not done however its rows stand.
+- **Checks.** Not raised: 没有计划 (it takes no acceptance step), 只差验收,
+  验收步骤待补, 缺难度 (its status is never todo or idle, so `canStart` is false).
+  Raised as before:
+  无人推进 when it has a step in progress and nothing moved for an hour, 在等文字,
+  依赖成环, 依赖的条目已取消, 缺标签, 标题超长. 暂停冲突 stays for a standing item
+  that waits for a paused ordinary item (reported on that ordinary item); a row between two standing
+  items raises none (Rows, above). New, refused when
+  introduced (`waits-on-standing`): a row of an ordinary item that owns or shares a standing item,
+  because the other never completes and the row can never be resolved. The test of a
+  dependency (could the row finish if the other never did?) says the row is not a
+  dependency at all, so the write is refused and the row is to be removed. Marking an
+  item standing is refused while an ordinary item owns it or waits for it, naming that item.
+  The same write that marks an item standing removes its acceptance steps and difficulty
+  and logs them (`改为常设条目：…；原验收：…；原难度：…`).
+- **Needed.** Unchanged (Priority, above): the walk from the unpaused roots passes through a
+  standing item to the items it owns, so those stay startable and keep their 缺难度
+  check. Pausing a standing item pauses what it owns through ownership, as for any item.
+- **Where it shows.** The page puts a small 「常设」 tag after the title (tree and detail)
+  and no `done/total` count or band; the text rows of the MCP tools (`list`, `context`,
+  `search`, `brief`) say `· 常设` after the status, the data rows carry `standing: true`, and
+  `brief`'s 进展 list also names the standing items that are not paused. The whole view leaves a standing item out unless the runner reports
+  on it or an engineer session is live on it, because it is not work waiting for someone.
+- **Rejected.** (1) Making such an item a record: a record shows 记录, not the
+  in-progress state the owner asked for, and the work under a record counts as backlog and
+  does not start, though the promise has real work under it. (2) A label that the
+  checks skip: status is derived and a label cannot say "always in progress"; the rules
+  would depend on a name in the tag vocabulary, which the owner may rename. (3) A flag on a
+  plan row marking it long-running: it covers only status and 无人推进, the checks stay,
+  and anyone could set it to hide a check.
+  The first version of this design also gave a standing item's sub-items each their own
+  stored priority, because a root's priority reached everything it needed. The item priority
+  was removed from the board on 2026-10-17 (above, Priority), so that part has no subject.
 
 #### Closed items and visibility
 
@@ -1543,8 +1620,9 @@ registry, and a test raises every registered kind on one board.
 | `dep-cycle` | 依赖成环 | yes |
 | `owned-by-many` | 被多个条目拥有 | yes |
 | `owned-across-projects` | 跨项目拥有 | yes |
-| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 | yes |
-| `no-acceptance` | 没有计划：至少要有一个验收步骤 | yes |
+| `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 (a standing item's shared row for a standing item does not count as waiting) | yes |
+| `waits-on-standing` | 拥有一个常设条目，它不会完成 / 等着一个常设条目，它不会完成 (a row of an ordinary item that owns or shares a standing item, pointing at it; a record and a standing item are not asked) | yes |
+| `no-acceptance` | 没有计划：至少要有一个验收步骤 (not for a record or a standing item) | yes |
 | `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
 | `acceptance-pending` | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
 | `dep-item-cancelled` | 依赖的条目已取消 (shared row to a cancelled item) | no |
@@ -1555,12 +1633,53 @@ registry, and a test raises every registered kind on one board.
 | `card-unplaced` | 卡没标位置 (an open card the item's head does not place, below) | no |
 | `card-options-short` | 选项不足 (label `选项不足`: an open decision card has fewer than three options; the check sits on the card and on its item, and a card with a recorded choice but not yet ruled is not checked) | no |
 | `tags-missing` | 缺标签 (the item has no tag; `set_tags` fixes it) | no |
-| `difficulty-missing` | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
+| `difficulty-missing` | 缺难度 (work an unpaused root needs, with no difficulty, that `canStart` allows: todo or idle, and whose next own step is a todo step waiting on nothing; `set_difficulty` fixes it, by the architect, or the engineer whose subtree holds the item below its root; not raised for a record, a standing item, a closed item, backlog work and what hangs under it, paused work, work only a paused root needs, a blocked item or one whose next step is another item or card) | no |
 | `title-too-long` | 标题超过 20 个字 (open items and records only; spaces are not counted, the count is in characters; writes are not refused) | no |
 | `stalled` | 无人推进 (stalled, above) | no |
 | `waits-in-text` | 在等文字 (label `在等文字`: a todo step writes `waits`, so the item reads as startable; the check lists the rows by id and names the fixes; not for paused, backlog, done or cancelled items; writing it is not refused) | no |
-| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter) | no |
+| `pause-conflict` | 暂停了，但 <dependent title> 在等它 (label `暂停冲突`, on the paused target of a shared row held by open, not-paused work, pointing at the waiter; a standing item's row for a standing item does not count) | no |
 | `stage-format` | 大步骤格式 (label `大步骤格式`: an open item an engineer holds, that is, an engineer dispatch not ended or a runner report not done, whose plan lacks a `research`, `impl` or `accept` stage row, whose first rows of the stages are not in the order of the flow (`research`, `impl`, `ci`, `accept`, `merge`, `verify`), or whose rounds of one stage do not rise (`impl-2` before `impl`); the text names what is missing or which two rows are reversed, and says so when the `accept` row carries the acceptance mark; a paused item keeps it, as a form check) | no |
+| `approach-stale` | 做法待更新 (label `做法待更新`: an open work item with a ruled card whose `ruledAt`, in whole seconds, is later than the head's last revision, below; the text names the latest such card and when it was ruled and the head last revised, says what the rewrite is, and counts the other cards ruled since; one check per item; a write is not refused) | no |
+
+**做法待更新 (`approach-stale`).** The owner reads how a piece of work is done
+from its item's head, section 做法, and not from the pull request's design
+document, so a ruling that the head does not follow leaves the owner without the
+design (the example that raised it: an item whose research, direction card and design
+approval were done while its 做法 still named the possible directions). The check
+compares two times that are already on the board:
+
+- *The head's last revision*: the later of the item's `created` and the `at` of the
+  latest log entry whose text starts with `改了 head：` (`HEAD_REVISED_LOG`, written by
+  `update_item` in the same commit as every change of the head, with the reason it
+  requires; `headRevisedAt` in `src/rules.ts`). An item with neither has no time, which is
+  older than any ruling: `created` is absent on 417 of the live board's 1,941 items,
+  written before the board dated them. 4,836 log entries on the live board start with
+  the words (both read from the data on 2026-10-19), so the revisions made since the board
+  dated its items are in the log.
+- *The ruling*: the `ruledAt` of a card of the item with status `ruled` (a card
+  withdrawn or still open, or ruled with no `ruledAt`, is not counted). The kind of the
+  card is not looked at: a ruling of an inquiry or a rule card can settle how the work is
+  done as well, and the owner's ruling on the card that asked for this check names any card.
+- *Later*: in whole seconds. The log stamps to the second and a card's `ruledAt` may carry
+  milliseconds, so a head revised in the second of the ruling is not older than it.
+- *Whom it asks*: open work only, that is, not done, not cancelled and not a record. A paused
+  item keeps it, as it keeps the other checks of form: its head is read as well. A write is never
+  refused for it.
+- *How it clears*: `update_item` changes the head, which writes a log entry later than the
+  ruling. An approach that the ruling left as it was is written down too, for example in
+  the section 以前的决定 of the head; the check cannot tell a rewrite from a touch-up, which
+  is the cost of a check that needs no new data.
+
+The reuse of the rules after a write (section 4, above) needs nothing for it: a ruling is
+a change of a decision, which makes the rules again from nothing, and a revision of the
+head is a change of the item, whose checks are derived again. Rejected: a field `headRevisedAt` on the item (the log entry of the same
+commit already says it, and every old item would need a backfill), a comparison with
+`updated` (any write moves it, so a log line after the ruling would hide a head that
+follows no ruling), copying the design document of the pull request into the item (a
+private repository to read from the page, a long English text for implementers, and it does
+not keep the 做法 current), the check on design cards only, and leaving paused items out
+(a run of the check over the live board's data on 2026-10-19, 1,941 items and 838 cards,
+flagged 3 items, none of them paused, so the special case would save no prompt).
 
 Effectively paused items retain all form checks, including provisional plans
 and missing acceptance. They receive no stalled check and no 在等文字 check.
@@ -1726,6 +1845,7 @@ follow the existing tokens with no new colours:
 | ⏸ (block colour) | waiting: shared item open, open card, blocked owned item |
 | ◌ (muted colour) | paused owned or shared item; the row waits on the owner |
 | ✗ (muted, struck text) | dropped step, cancelled owned item |
+| ∞ (muted colour) | in a standing item's plan: an owned or shared standing item |
 
 - **Step row.** `● 写解析器 · 3 天 · 等 CI` — text, then elapsed days for a
   doing step, `等 <waits>` when set, `10-12` (month-day) for a done step, the
@@ -2079,12 +2199,12 @@ instructions within the limit and free of rule text.
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
 | `changes(since, filters, limit?, except?, detail?)` | What needs handling since I last looked? | Rows to handle, each with who wrote it, and counts (below): the flags that newly appeared, the items created, the notes and cards others wrote; the other changes only as counts, and with `detail` also as documents grouped by area, each with its commits and their sessions |
 | `prs(repo, number)` | Which items concern this PR? | Items whose text or links reference it |
-| `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them |
+| `list(filters)` | Structured browsing | Compact rows matching status, area subtree, open ask, flags, updated-since; done/cancelled omitted unless an explicit status filter requests them; a row of a record or a standing item says `record: true` or `standing: true`, as `context` and `search` rows do |
 | `overview(group?, status?, detail?)` | The board at a glance | By default one line of counts for each project and, under it, the areas with an owner waiting or a check flagged; `detail` gives every area with its counts, owner actions waiting, blocked items and flags; status narrows those results while retaining area headings (below, Lean replies) |
 | `notes(filters)` | What did the owner say? | Notes by state, target subtree, kind, since |
 | `dispatches(filters?, rows?)` | How have the sessions started on items done? | The dispatch records of every project, tallied by level, by role and by the item's tags (an item with several tags counts under each, so the tag tallies can add up to more than the total): dispatches, those still running, those ended in each result, the rework share (`返工后通过` plus `换人`, over the ended ones; `放弃` is counted apart), the mean kickbacks over ended engineer dispatches, the mean rounds over ended review dispatches, and the cost; one line each for the total and the failure signals (ended dispatches carrying each). Every figure is added up from the rows; `rows: true` lists them, oldest start first. Filters: item `id`, `role`, `level`, `since` (inclusive) and `until` (exclusive) on the start time, in UTC to the minute or in full |
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
-| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
+| `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog, in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
@@ -2202,7 +2322,8 @@ it reads the items, the live dispatches and the runner reports once, and the too
 - *Which items.* Every open work item that is not in a backlog (a record's owned items are
   counted apart: they are not started on purpose) and that is not a container: a parent with
   open sub-items is its sub-items' business, unless a runner report or a live engineer
-  session is on the parent itself.
+  session is on the parent itself; a standing item is in force, not waiting for someone,
+  so it is a row only when a runner report or a live engineer session is on it.
 - *The five kinds, in the order the answer lists them.* One item is in exactly one:
   1. 等太久 (`overdue`): it has stayed in its state past that state's limit, or the runner
      reported `exception`.
@@ -2372,7 +2493,8 @@ is refused before any ownership check: `set_status`, `set_pause`, `move_item_pro
 a changed title in `update_item`, and the page order in `create_project` and
 `update_project`. `create_item`, `set_difficulty` and `set_difficulty_many` are
 the process's too, except that an engineer's credential makes the items of its own
-subtree and rates the ones below its root (section 9). Some are the architect's
+subtree and rates the ones below its root (section 9). So is the `standing` argument of
+`create_item` and `update_item`, with no exception for an engineer (part `item.standing`). Some are the architect's
 alone: `journal_entry`, the tag vocabulary tools, creating a project over a
 credential, and other projects' repositories in `update_project`.
 Turning a cancelled item into a record in `update_item` is reserved for the
@@ -2384,12 +2506,12 @@ authors `总管` and `PM` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record; the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the architect creates items |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, standing?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record and for a standing item (`standing: true`, the architect only, never with `record` or `difficulty`); the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the architect creates items |
 | `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
 | `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |
-| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5) and appends the log line for the change | The architect for an item of any project, an engineer's credential for the items below the one it was started on (`item.difficulty` at the scope `below`: the root itself is refused), nobody else; a work item, not a record; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
+| `set_difficulty(id, difficulty, reason)` | Sets the item's difficulty (1–5) and appends the log line for the change | The architect for an item of any project, an engineer's credential for the items below the one it was started on (`item.difficulty` at the scope `below`: the root itself is refused), nobody else; a work item, not a record or a standing item; `reason` nonempty, also for the first rating; no revision (a whole-field write like `set_tags`); an unchanged value writes no commit |
 | `set_difficulty_many(items: [{id, difficulty, reason?}], reason?)` | Sets many items' difficulty in one commit, for rating a backlog of unrated items | Each entry checked and logged as `set_difficulty` does, naming the entry it refuses; `reason` is the default for entries without their own, and an entry with neither is refused; one refused entry refuses the whole write; each item once; unchanged entries write nothing, and no commit is made when none changes |
 | `tags(project?)` | Lists the vocabulary with meanings and project limits; `brief` also lists the tags for its project | |
 | `set_tag(name, meaning, projects?)` | Adds a tag or changes its meaning or projects (`null` projects: every project) | Only `Architect`, after the owner approves on a decision card (process rule, not enforced); configured projects; narrowing refused while an item of an excluded project carries the tag |
@@ -2400,7 +2522,7 @@ authors `总管` and `PM` is refused by every tool.
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
-| `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
+| `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
 | `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
@@ -2580,6 +2702,17 @@ closed-item stops do not change the filters or require a tree node. They then
 scroll the right column to the exact fresh mark, card or note. Dependency links,
 Backspace/`[` and the 下一条 walk through the waits also select their target item and
 show its detail. Tree folding and detail selection are independent.
+
+Where `n` and `N` start: from the item the selection belongs to, which is the row the
+j/k cursor stands on (j and k move it without selecting, so the detail stays) or, with
+no cursor, the selected item. When that item is not the one the last stop belongs to,
+`n` goes to the first stop at or below its row in the list as shown, `N` to the last stop
+above it, and both wrap around at the ends of the list, to the first and to the last stop
+the list places (a stop whose item has no row in the list never takes part in the wrap);
+otherwise they go on from the stop last shown. The right and left arrows start from the
+same row (owner, 2026-10-14). Taking the start from the selected item alone, which j and
+k leave as it was, sent `n` from a cursor on the bottom row to wherever the last click or
+landing had been.
 
 `m` acts on the item holding the current selection: the item for `it:` and
 `log:<item>@<time>`, the card's item for `q:`, the target's item for `note:`.
@@ -4040,7 +4173,7 @@ the writer from it.
     credential.
   - The observer has every part but the ones only the architect has:
     `project.create`, `tag-vocab`, `journal`, `item.create`, `item.title`, `item.difficulty`,
-    `item.cancel`, `item.pause`, `item.move-project`, `item.runner` and starting or ending a dispatch (an engineer has
+    `item.standing`, `item.cancel`, `item.pause`, `item.move-project`, `item.runner` and starting or ending a dispatch (an engineer has
     `item.create` inside its subtree and `item.difficulty` below its root). It writes items of
     any project, recorded under its credential's project and session.
   - The resource agent writes the log of any item and ends dispatches; it writes the head
@@ -4713,8 +4846,8 @@ holds back, so a baseline that arrives 300 ms late is 300 ms of the clock's time
 **Counts**, exact on any machine, from the page's performance marks (`countEvent` in `web/app.ts`): a press that lands on another item builds the board's rules
 no time, counts the filters no time and draws once or twice, every draw from the key until the page is quiet counting, those of the rows around the target
 included; and writes no more than the markup (characters assigned to `innerHTML`) and the elements (`createElement`) it wrote when the numbers were set, held at
-the median over the landings of the first walk (`WRITES` in `test/nkey/lane.ts`; a change to the page that moves them changes the numbers and the pull request
-says why). The draws depend on when the baselines of the rows around the target answer, because the navigation waits for them 100 ms at most, so a
+the median over the landings of the first walk (`WRITES` in `test/nkey/lane.ts`; a change to the page or to the generated board that moves them changes the
+numbers and the pull request says why). The draws depend on when the baselines of the rows around the target answer, because the navigation waits for them 100 ms at most, so a
 test sets that time on the virtual clock: the rows around the target answer after 300 ms and the others after 20 ms. On a copy of the page whose wait is
 2 s, the landing draws twice at most; on the page itself it draws twice and then the late rows on their own, every later draw of other items' rows alone;
 whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
