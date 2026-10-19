@@ -1846,7 +1846,10 @@ where the design reaches it.
 - **Card kind.** `kind` says what the card asks: `design` (a decision that goes
   into the design tree), `inquiry` (any other question the owner decides) or
   `rule` (a change to the rules). The writer chooses it where the card is written:
-  `write_card` refuses a new card without one, naming the three, and a revision may
+  `write_card` refuses a new card without one, or with a word that is none of the
+  three, saying what each kind is and to choose by what the card asks, not by how the
+  question is worded (the parameter's description says the same, where every agent
+  sees it; the shared rules do not repeat the tool's behavior), and a revision may
   change it or leave it out to keep it. A card written before the field existed has
   none stored and is read as `design` (`cardKind` in `src/model.ts`), the kind the
   merge check held it as before; a migration would only guess, since the question's

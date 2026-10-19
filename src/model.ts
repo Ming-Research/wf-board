@@ -335,6 +335,9 @@ export const DECISION_STATUSES = ["open", "ruled", "withdrawn"] as const;
 /** What a card asks, chosen when it is written: a decision that goes into the design tree, a change to the rules, or any other question the owner decides. */
 export const CARD_KINDS = ["design", "inquiry", "rule"] as const;
 export type CardKind = (typeof CARD_KINDS)[number];
+/** What each kind is and how to choose, as the parameter's description and the refusal of a missing or unknown kind tell it. */
+export const CARD_KIND_WHAT = "design: a design-tree decision; inquiry: any other question for the owner; rule: a change to the rules.";
+export const CARD_KIND_HOW = "Choose by what the card asks, not by how the question is worded.";
 /** The kind a card is read as: a card written before the field existed has none and counts as a design card, which the merge check holds until ruled. */
 export const cardKind = (card: { kind?: CardKind }): CardKind => card.kind ?? "design";
 

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, CardKind, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -1030,8 +1030,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       } else newKey(s, a.key);
       if (a.confidence === undefined && !previous?.confidence) throw new OpError("confidence: say how sure you are of the recommended option (a score of 1 to 5 and the reason, with what would overturn it)");
       // kind: a new card says what it asks; a revision may change it, and one that omits it keeps the card's (a card written before the field existed has none).
-      if (a.kind !== undefined && !CARD_KINDS.includes(a.kind)) throw new OpError(`kind: use one of ${CARD_KINDS.join(", ")}`);
-      if (a.kind === undefined && previous === undefined) throw new OpError("kind: say what the card asks, one of design (a decision that goes into the design tree), inquiry (any other question the owner decides) or rule (a change to the rules)");
+      if (a.kind !== undefined && !CARD_KINDS.includes(a.kind)) throw new OpError(`kind: use one of ${CARD_KINDS.join(", ")}. ${CARD_KIND_WHAT} ${CARD_KIND_HOW}`);
+      if (a.kind === undefined && previous === undefined) throw new OpError(`kind: say what the card asks, one of ${CARD_KINDS.join(", ")}. ${CARD_KIND_WHAT} ${CARD_KIND_HOW}`);
       // blocks: text sets it, null clears it, omitted keeps the revised card's.
       const merged: Record<string, unknown> = { ...previous, item: a.item, question: a.question, options, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 };
       if (a.confidence !== undefined) merged.confidence = a.confidence;

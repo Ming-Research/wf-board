@@ -522,11 +522,14 @@ test("write_card needs a kind to create a card, context shows it as a line of it
   const context = async (id: string) => text(await client.callTool({ name: "context", arguments: { id } }));
   // A new card that says nothing of its kind is refused, and the refusal names the three kinds.
   const missing = await client.callTool({ name: "write_card", arguments: card });
-  assert.equal(missing.isError, true); assert.match(text(missing), /kind: say what the card asks, one of design .*, inquiry .*or rule /);
+  assert.equal(missing.isError, true); assert.match(text(missing), /kind: say what the card asks, one of design, inquiry, rule\. design: .*inquiry: .*rule: .*Choose by what the card asks, not by how the question is worded\./);
   assert.equal(store.snapshot().decisions["ask-1"], undefined, "a refused write makes no card");
   // A word that is none of the three is refused by the argument check, which lists them.
   const wrong = await client.callTool({ name: "write_card", arguments: { ...card, kind: "question" } });
   assert.equal(wrong.isError, true); assert.match(text(wrong), /"kind" must be one of: design, inquiry, rule/);
+  // The parameter's description, which every agent sees, says what the kinds are and how to choose.
+  const description = ((await client.listTools()).tools.find(tool => tool.name === "write_card")!.inputSchema.properties!.kind as { description: string }).description;
+  assert.match(description, /design: .*inquiry: .*rule: .*Choose by what the card asks, not by how the question is worded\./);
   // With a kind the card is made, stores it, and context shows it under the card's first line, on the card and in its item.
   const created = await client.callTool({ name: "write_card", arguments: { ...card, kind: "inquiry" } });
   assert.equal(created.isError, undefined, text(created));
