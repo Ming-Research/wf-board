@@ -327,9 +327,22 @@ A line under 500 ms stays as it was, and the push to the architect (`slow-op`) i
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
 due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
-`event loop held for N ms`, because a git command's time that is the time of a held loop
-is not git's. The two make the slow tail of the writes readable as one of: waiting in a
-queue, a slow git command, work in the process, or a held loop.
+`event loop held for 621 ms (a timer due every 100 ms came that late); cpu 612 ms, gc 3 ms, load 1.82`,
+because a git command's time that is the time of a held loop is not git's. The three
+readings say why it was held, each over the stretch between the timer's last two firings
+(the held time and the 100 ms before it): `cpu` is the CPU the process used
+(`process.cpuUsage`, user and system, all its threads), `gc` the time its garbage
+collections took (the `gc` entries of a `PerformanceObserver`) and `load` the machine's load
+average over the last minute (`os.loadavg`). `cpu` about the held time with little `gc` is
+code that did not return; `gc` about the held time is the collector; `cpu` far under the
+held time is a process that was not given the CPU, and `load` tells whether the machine was
+busy. The collector's helper threads count in `cpu`, so a collection can put it over the
+held time. The readings are taken in the check phase of the loop's next turn, not in the
+timer's callback: the entry of a collection that ran in a callback of that phase reaches the
+observer only there (measured on Node 24 with a collection forced inside a `setImmediate`
+callback: the timer's callback after it saw no entry). The two lines make the slow tail of
+the writes readable as one of: waiting in a queue, a slow git command, work in the process,
+or a held loop, which its readings tell further as code, collection or a process without CPU.
 
 The tail they were made for had a cause that the service log of 10-16 to 10-18 and the data
 repository showed before they were deployed. The log of 10-18 holds 90 writes of 5360 over
@@ -836,15 +849,17 @@ log:
     calibration item's log.
 - **Runner reports.** An open work item may carry `runner`, the state the runner (the
   program that starts and follows the engineers' turns) last reported for the work on it:
-  `state` (`running`, `ci`, `ask`, `items`, `run`, `ready`, `exception` or `done`), `since`
+  `state` (`running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception` or `done`), `since`
   (when the work entered that state), `at` (when the report last changed anything), `started`
   (when the work began) and, as the state needs, `to` (`owner` or `architect`) and `cards` of
-  an ask, `items` of a wait for other items, and optionally `note` (one line of at most 120
+  an ask, `items` of a wait for other items, `what` (one line, required) and `until` (a UTC
+  time, optional) of a `wait` for an event, and optionally `note` (one line of at most 120
   characters), `turns` and `cost` (US dollars to three decimals, rounded as dispatch cost
   is). `report_state` writes it and refuses what the state does not carry (`runnerReportProblem`
-  in `src/model.ts` words each refusal). The names and the eight states were agreed with the
-  runner's engineer (item `runner-mvp`); the board sets `since` and `at` from its own clock so
-  the runner's clock decides nothing. Decisions:
+  in `src/model.ts` words each refusal). The names and the first eight states were agreed with the
+  runner's engineer (item `runner-mvp`) and `wait` was added after them (item `board-wait-state`);
+  the board sets `since` and `at` from its own clock so the runner's clock decides nothing.
+  Decisions:
   - Stored as one field of the item, replaced by each report, not as a new document kind and
     not as an entry of the log: a report is the current state and the whole view reads it
     for every open item at once, while a log entry per turn would grow the item without bound
@@ -870,6 +885,27 @@ log:
     held a `tool report_state` error for each), because the check had only the process writers
     in mind.
   - A record has no runner report: it has no work to report on.
+  - A `wait` is the work waiting for an event settled beforehand that needs no one (the
+    runner restarting, the main line's next merge, a set time). It carries `what` and an
+    optional `until`, the time at which the runner wakes the work; they are the wait's own
+    fields, as `cards` and `items` are an ask's and a wait for items', and not the note, so
+    that `since` moves when the wait changes (a changed `what` or `until` is another wait)
+    and stays when only the figures do. Before the state existed the runner reported such a
+    wait as an ask to the architect, which the lists showed with that ask's one-hour limit:
+    a wait for 24 hours of logs would have been amber for 23 hours, with nothing to look at.
+    The limit is one hour after `until` (the runner wakes the work as the time comes, so the
+    hour is room for a runner that was stopped) and, with no `until`, 24 hours, as for a wait
+    for items; both are provisional like the other limits (section 6, The whole view). An
+    `until` that has already passed by more than that hour when it is reported is accepted and
+    the wait is overdue at once: the runner refuses to start such a wait itself, so this is a
+    wake time that went by with the work still waiting, which is what the list is for. The
+    words of the whole view are 「等：<what>」 with 「（到 MM-DD HH:MMZ）」 after them when there is
+    an `until` (`reportText`); the agent list's state column says 「等事件」 and its line of
+    text the same event and time (section 7, Agent list).
+    Rejected: the event in the note (a changed event would leave `since` where it was, or
+    `wait` would need a rule of its own for the note, and the note would be required for one
+    state); no limit without an `until` (a wait for something that never comes would show as
+    healthy for ever, the false trust in the other direction).
 - **Projects.** Every item stores its project in `group`; an item's project
   changes only through `move_item_project`, which moves the item and everything it owns
   together (section 6), and ownership never crosses projects, so the stored field and
@@ -2165,7 +2201,9 @@ it reads the items, the live dispatches and the runner reports once, and the too
   the freshest word about what the work is doing.
 - *Limits.* `WAIT_LIMITS_MS` in `src/whole-view.ts` is the one place: `running` 5 hours, `ci` 90
   minutes, an ask to the owner 12 hours, to the architect 1 hour, `items` 24 hours, `run`
-  (the 14900K) 4 hours, `ready` 1 hour, `done` 30 minutes, `exception` 0, and 72 hours for a
+  (the 14900K) 4 hours, `wait` 24 hours (a `wait` that has an `until` lasts until an hour after
+  it instead, `WAKE_GRACE_MS`; `limitOf` counts it from `since`), `ready` 1 hour, `done` 30 minutes,
+  `exception` 0, and 72 hours for a
   wait read only from the plan, counted from the item's last change. They are
   provisional starting values, not measured; real data will say which are wrong, and the numbers
   change in that one object. A report's `since` counts, so a limit applies to how long the state
@@ -2343,7 +2381,7 @@ authors `总管` and `PM` is refused by every tool.
 | `append_log(id, text)` | Adds a log entry with the server's time | Text nonempty, no reserved headings |
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse; `result` and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
-| `report_state(id, state, to?, cards?, items?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, and neither carries the other's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
+| `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, reason?, accept?)` | Changes title, head, links, `data`, `order` (top items only) or record mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept` |
 | `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
@@ -2831,7 +2869,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   that the jobs the runner can hold at once (16 at the owner's current limits, ten
   of level 1 and six above) are as many lines that line up. The columns: the title, with the session's level as a
   small number before it; the state in a word (`stateWord`: 在跑, 等 CI, 等主人,
-  等架构师, 等条目, 等 14900K, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
+  等架构师, 等条目, 等 14900K, 等事件, 等合入, 要人看, 待收尾; a beat adds 「第 N 轮」 to
   在跑); one line of what the work does or waits for; how long it has been in that
   state (for a turn running, how long the turn has run); and the time, turns and cost
   since the work began. The stylesheet cuts the title and the line of text to one
@@ -2843,7 +2881,9 @@ level, and whether that someone is working, waiting or has gone quiet.
   with their keys on the hover (`runnerLine`).
   - *The line of text* is the last action of the turn running when the runner
     beats (the engineer's, or the architect's turn for a work that asks the
-    architect: 「架构师在答：…」), else the report's note, else for a turn running
+    architect: 「架构师在答：…」), else the report's note (after the event of a `wait`
+    with its wake time, `waitFor`, as after the titles of the items and the questions
+    of the cards a report waits for), else for a turn running
     that the runner has not described, 「还没报这一轮的动作」. A beat not
     repeated for 90 seconds reads 「没有动静 N 分钟」 in amber, and the hover keeps
     what it last said. The hover of a turn is its number, how long it has run, how

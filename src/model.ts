@@ -78,17 +78,24 @@ export type PlanRow = z.infer<typeof PlanRow>;
 
 /** Both input and stored plans use target keys for reference-row ids. */
 export function planRowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
-function validPlan(rows: readonly PlanRowInput[]): boolean {
+/** The first problem in a plan, named by its row number and id; undefined when the plan is valid. */
+function planProblem(rows: readonly PlanRowInput[]): string | undefined {
   const earlier = new Set<string>();
-  for (const row of rows) {
-    const id = planRowId(row);
-    if (earlier.has(id) || row.after?.some(target => !earlier.has(target))) return false;
+  for (const [index, row] of rows.entries()) {
+    const id = planRowId(row), at = `row ${index + 1} "${id}"`;
+    if (earlier.has(id)) return `${at}: Plan ids must be unique; an earlier row already has "${id}"`;
+    const missing = row.after?.find(target => !earlier.has(target));
+    if (missing !== undefined) return `${at}: after must name earlier rows, but "${missing}" is not one`;
     earlier.add(id);
   }
-  return true;
+  return undefined;
 }
-export const PlanInput = z.array(PlanRowInput).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
-export const ItemPlan = z.array(PlanRow).refine(validPlan, "Plan ids must be unique and after must name earlier rows");
+function validPlan(rows: readonly PlanRowInput[], ctx: z.RefinementCtx): void {
+  const problem = planProblem(rows);
+  if (problem !== undefined) ctx.addIssue({ code: "custom", message: problem });
+}
+export const PlanInput = z.array(PlanRowInput).superRefine(validPlan);
+export const ItemPlan = z.array(PlanRow).superRefine(validPlan);
 
 /** One goal's latest numbers; measurement dates belong to the server. */
 export const ItemTargetInput = z.object({
@@ -203,10 +210,10 @@ export type Dispatch = z.infer<typeof Dispatch>;
 /**
  * What the runner (the resident program that runs the engineers' turns) last reported about the work on an item: one report that
  * each new report replaces, kept on the item (docs/design.md, section 5, Runner reports). The states are the ones the runner's
- * turns end in (`ci`, `ask`, `items`, `run`, `ready`, `done`) with `running` for a turn in progress and `exception` for work it has
+ * turns end in (`ci`, `ask`, `items`, `run`, `wait`, `ready`, `done`) with `running` for a turn in progress and `exception` for work it has
  * stopped and wants looked at. `since` and `at` are stamped by the server, never given by the reporter.
  */
-export const RUNNER_STATES = ["running", "ci", "ask", "items", "run", "ready", "exception", "done"] as const;
+export const RUNNER_STATES = ["running", "ci", "ask", "items", "run", "wait", "ready", "exception", "done"] as const;
 export type RunnerState = (typeof RUNNER_STATES)[number];
 /** Whom an `ask` waits on. */
 export const RUNNER_ASKS = ["owner", "architect"] as const;
@@ -214,7 +221,7 @@ export const RUNNER_ASKS = ["owner", "architect"] as const;
 export const RUNNER_NOTE_MAX = 120;
 const RunnerNote = z.string().min(1).max(RUNNER_NOTE_MAX).refine(text => !!text.trim() && !/[\r\n]/.test(text), "Give one nonempty line");
 /** What a report must say about what the work waits on, by its state: the one place the rule lives, for the schema and the write. */
-export function runnerReportProblem(r: { state: RunnerState; to?: string | undefined; cards?: readonly string[] | undefined; items?: readonly string[] | undefined }): string | undefined {
+export function runnerReportProblem(r: { state: RunnerState; to?: string | undefined; cards?: readonly string[] | undefined; items?: readonly string[] | undefined; what?: string | undefined; until?: string | undefined }): string | undefined {
   if (r.state === "ask") {
     if (r.to === undefined) return "to: a report of state ask says whom the work asks, owner or architect";
     if (r.to === "owner" && !r.cards?.length) return "cards: an ask to the owner names the cards the work waits for";
@@ -222,6 +229,8 @@ export function runnerReportProblem(r: { state: RunnerState; to?: string | undef
   } else if (r.to !== undefined || r.cards !== undefined) return "to, cards: only a report of state ask carries them";
   if (r.state === "items") { if (!r.items?.length) return "items: a report of state items names the items the work waits for"; }
   else if (r.items !== undefined) return "items: only a report of state items carries them";
+  if (r.state === "wait") { if (!r.what) return "what: a report of state wait says what the work waits for"; }
+  else if (r.what !== undefined || r.until !== undefined) return "what, until: only a report of state wait carries them";
   return undefined;
 }
 export const RunnerReport = z.object({
@@ -235,6 +244,9 @@ export const RunnerReport = z.object({
   to: z.enum(RUNNER_ASKS).optional(),
   cards: z.array(Key).min(1).optional(),
   items: z.array(Key).min(1).optional(),
+  /** Of a `wait`: the event the work waits for, in a line, and the time (UTC) the runner will wake it, when it is a time. */
+  what: RunnerNote.optional(),
+  until: Time.optional(),
   note: RunnerNote.optional(),
   /** Rounds run on the work so far, and what they cost in US dollars: cumulative figures the reporter keeps. */
   turns: Count.optional(),

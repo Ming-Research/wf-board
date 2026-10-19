@@ -86,6 +86,83 @@ test("a report that does not say what the state needs is refused in the rule's o
   assert.equal(report(store), undefined);
 });
 
+test("a wait carries the event it waits for and the time it ends, and since stays only while both stay the same", async t => {
+  const { store, op, setClock } = await clocked(t);
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "24 小时的日志\n看有没有超时", until: "2026-10-19T23:55Z", startedAt: "2026-10-18T08:30:00Z", turns: 2, cost: 1 });
+  // The event is one line, the time is kept in full, and nothing else of the wait is invented.
+  assert.deepEqual(report(store), { state: "wait", since: "2026-10-18T09:00:00Z", at: "2026-10-18T09:00:00Z", started: "2026-10-18T08:30:00Z", what: "24 小时的日志 看有没有超时", until: "2026-10-19T23:55:00Z", turns: 2, cost: 1 });
+  assert.ok(Item.safeParse(store.snapshot().items.a).success);
+  // The same wait with new figures: `at` moves, `since` does not.
+  setClock("2026-10-18T10:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "24 小时的日志 看有没有超时", until: "2026-10-19T23:55:00Z", turns: 3, cost: 1.5 });
+  assert.deepEqual([report(store)!.since, report(store)!.at], ["2026-10-18T09:00:00Z", "2026-10-18T10:00:00Z"]);
+  // Another wake time is another wait; so is another event; so is the same event with no time.
+  setClock("2026-10-18T11:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "24 小时的日志 看有没有超时", until: "2026-10-20T00:10Z" });
+  assert.equal(report(store)!.since, "2026-10-18T11:00:00Z");
+  setClock("2026-10-18T12:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "执行程序重启", until: "2026-10-20T00:10Z" });
+  assert.equal(report(store)!.since, "2026-10-18T12:00:00Z");
+  setClock("2026-10-18T13:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "执行程序重启" });
+  assert.deepEqual([report(store)!.since, report(store)!.until, report(store)!.what], ["2026-10-18T13:00:00Z", undefined, "执行程序重启"], "the time of an earlier wait is not carried over");
+  // A wake time that has already gone by is accepted: the lists show the wait overdue.
+  setClock("2026-10-18T14:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "wait", what: "到点叫醒", until: "2026-10-18T07:00Z" });
+  assert.equal(report(store)!.until, "2026-10-18T07:00:00Z");
+  // Leaving the wait takes its fields with it.
+  setClock("2026-10-18T15:00:00Z");
+  await op.reportState({ ...asArchitect, id: "a", state: "running", note: "第 4 轮" });
+  assert.equal(report(store)!.what, undefined);
+  assert.equal(report(store)!.until, undefined);
+});
+
+test("a wait that does not say what it waits for, and a field that is not a wait's, are refused in the rule's own words, and nothing is written", async t => {
+  const { store, op } = await clocked(t);
+  const before = store.snapshot().head;
+  const cases: Array<[Parameters<typeof op.reportState>[0], RegExp]> = [
+    [{ ...asArchitect, id: "a", state: "wait" }, /what: a report of state wait says what the work waits for/],
+    [{ ...asArchitect, id: "a", state: "wait", until: "2026-10-19T23:55Z" }, /what: a report of state wait says what the work waits for/],
+    [{ ...asArchitect, id: "a", state: "wait", what: " \n " }, /what: provide nonempty text after trimming/],
+    [{ ...asArchitect, id: "a", state: "wait", what: "x".repeat(121) }, /what/],
+    [{ ...asArchitect, id: "a", state: "wait", what: "重启", until: "tomorrow" }, /until: give a UTC time/],
+    [{ ...asArchitect, id: "a", state: "ci", what: "重启" }, /what, until: only a report of state wait carries them/],
+    [{ ...asArchitect, id: "a", state: "ask", to: "architect", until: "2026-10-19T23:55Z" }, /what, until: only a report of state wait carries them/],
+    [{ ...asArchitect, id: "a", state: "items", items: ["b"], what: "重启" }, /what, until: only a report of state wait carries them/],
+    [{ ...asArchitect, id: "a", state: "wait", what: "重启", items: ["b"] }, /items: only a report of state items carries them/],
+    [{ ...asArchitect, id: "a", state: "wait", what: "重启", to: "architect" }, /to, cards: only a report of state ask carries them/],
+  ];
+  for (const [args, message] of cases) await assert.rejects(() => op.reportState(args), refused(message), JSON.stringify(args));
+  assert.equal(store.snapshot().head, before);
+  assert.equal(report(store), undefined);
+  // The schema says the same for a report edited by hand.
+  const base = { since: "2026-10-18T09:00:00Z", at: "2026-10-18T09:00:00Z", started: "2026-10-18T09:00:00Z" };
+  assert.equal(RunnerReport.safeParse({ ...base, state: "wait", what: "重启" }).success, true);
+  assert.equal(RunnerReport.safeParse({ ...base, state: "wait", what: "重启", until: "2026-10-19T23:55:00Z" }).success, true);
+  assert.equal(RunnerReport.safeParse({ ...base, state: "wait" }).success, false, "a wait names its event");
+  assert.equal(RunnerReport.safeParse({ ...base, state: "ci", what: "重启" }).success, false);
+});
+
+test("a wait reported over MCP is kept with its event and time, and a wait without its event comes back as an error", async t => {
+  const { store, op } = await clocked(t);
+  const server = createMcpServer({ store, ops: op, now: () => "2026-10-18T09:00:00Z" });
+  const client = new Client({ name: "t", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  t.after(async () => { await client.close(); await server.close(); });
+  const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
+  const tool = (await client.listTools()).tools.find(x => x.name === "report_state")!;
+  assert.deepEqual(Object.keys(tool.inputSchema.properties as object).filter(name => ["what", "until"].includes(name)).sort(), ["until", "what"]);
+  const ok = await client.callTool({ name: "report_state", arguments: { ...asArchitect, id: "a", state: "wait", what: "上线后 24 小时的日志", until: "2026-10-19T23:55Z" } });
+  assert.equal(ok.isError, undefined, text(ok));
+  assert.match(text(ok), /^report_state a wait · rev \d+ · commit [0-9a-f]{40}/);
+  assert.deepEqual([report(store)!.state, report(store)!.what, report(store)!.until], ["wait", "上线后 24 小时的日志", "2026-10-19T23:55:00Z"]);
+  const bad = await client.callTool({ name: "report_state", arguments: { ...asArchitect, id: "a", state: "wait" } });
+  assert.equal(bad.isError, true);
+  assert.match(text(bad), /what: a report of state wait says what the work waits for/);
+  const worse = await client.callTool({ name: "report_state", arguments: { ...asArchitect, id: "a", state: "wait", what: "重启", until: "tomorrow" } });
+  assert.equal(worse.isError, true, "a time that is not a UTC time is refused before it is written");
+});
+
 test("a record has no work to report on", async t => {
   const { op } = await clocked(t);
   await op.createItem({ ...asArchitect, key: "rec", title: "记录", group: "Whitefoot", record: true });

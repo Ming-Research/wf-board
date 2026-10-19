@@ -14,10 +14,12 @@ import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { ARCHITECT_SESSION } from "../src/model.ts";
 import { Wake } from "../src/wake.ts";
-import { OPERATION_LIMITS_MS, PAGE_ROUTES, SlowOps, TELL_AGAIN_MS, TIME_LIMITS_MS, pageOperation, pageRoute, pathnameOf, requestParams, summarize, toolClass } from "../src/slow-ops.ts";
+import { OPERATION_LIMITS_MS, PAGE_ROUTES, STEPS_FROM_MS, SlowOps, TELL_AGAIN_MS, TIME_LIMITS_MS, pageOperation, pageRoute, pathnameOf, requestParams, summarize, toolClass } from "../src/slow-ops.ts";
 import type { OperationClass } from "../src/slow-ops.ts";
 
 const T0 = Date.parse("2026-10-16T00:00:00Z");
+/** How long the slowed tool writes wait: past STEPS_FROM_MS, so the log line of the call always carries where its time went. Under that, the real write behind the wait decides, and a loaded runner can reach it. */
+const LONG_WRITE_MS = STEPS_FROM_MS + 100;
 /** Runs `fn` with the service log captured: what it printed on info and on warn, and the errors the server logs for a request it refuses. */
 async function logged<T>(fn: () => Promise<T> | T): Promise<{ result: T; info: string[]; warn: string[]; error: string[] }> {
   const info: string[] = [], warn: string[] = [], error: string[] = [];
@@ -328,7 +330,7 @@ test("a tool call that runs over its limit is told with the tool's name and a su
   const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 150 } });
   const { store, op } = await board(t);
   // A write that is slow: the real operation behind a delay, as a push holding the write queue would make it.
-  const slowed = { ...op, appendLog: async (...a: Parameters<typeof op.appendLog>) => { await sleep(300); return op.appendLog(...a); } } as typeof op;
+  const slowed = { ...op, appendLog: async (...a: Parameters<typeof op.appendLog>) => { await sleep(LONG_WRITE_MS); return op.appendLog(...a); } } as typeof op;
   const mcp = createMcpServer({ store, ops: slowed, wake, slow }), client = new Client({ name: "Slow test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await mcp.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await mcp.close(); });
@@ -341,18 +343,19 @@ test("a tool call that runs over its limit is told with the tool's name and a su
   const [frame] = slowFrames(wake);
   assert.equal(frame!.op, "tool append_log");
   assert.equal(frame!.limitMs, 150);
-  assert.ok((frame!.ms as number) >= 300, `took ${String(frame!.ms)} ms`);
+  assert.ok((frame!.ms as number) >= LONG_WRITE_MS, `took ${String(frame!.ms)} ms`);
   assert.equal(frame!.params, "author(9 chars) session=slow-engineer id=a text(33 chars)");
   assert.doesNotMatch(JSON.stringify(frame), /must not be told/);
   assert.ok(info.some(line => /^tool projects ok \d+ ms$/.test(line)), info.join("\n"));
-  assert.ok(info.some(line => /^tool append_log ok \d+ ms$/.test(line)));
+  // A call of STEPS_FROM_MS or more says where its time went after the "; ".
+  assert.ok(info.some(line => /^tool append_log ok \d+ ms; \S/.test(line)), info.join("\n"));
 });
 
 test("a tool that fails is timed as an error; one over its limit is told all the same, one within it is not", async t => {
   const wake = new Wake(), slow = new SlowOps({ wake, limitsMs: { write: 150, read: 5000 } });
   const { store, op } = await board(t);
   // A write that fails after being slow: the id does not exist, and the operation waits first.
-  const slowed = { ...op, appendLog: async (...a: Parameters<typeof op.appendLog>) => { await sleep(300); return op.appendLog(...a); } } as typeof op;
+  const slowed = { ...op, appendLog: async (...a: Parameters<typeof op.appendLog>) => { await sleep(LONG_WRITE_MS); return op.appendLog(...a); } } as typeof op;
   const mcp = createMcpServer({ store, ops: slowed, wake, slow }), client = new Client({ name: "Slow error test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await mcp.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await mcp.close(); });
@@ -364,7 +367,7 @@ test("a tool that fails is timed as an error; one over its limit is told all the
     assert.equal(slow.isError, true);
   });
   assert.ok(info.some(line => /^tool context error \d+ ms$/.test(line)), info.join("\n"));
-  assert.ok(info.some(line => /^tool append_log error \d+ ms$/.test(line)));
+  assert.ok(info.some(line => /^tool append_log error \d+ ms; \S/.test(line)), info.join("\n"));
   const [frame] = slowFrames(wake);
   assert.equal(frame!.op, "tool append_log");
   // The operation fails as soon as its wait is over, so no work after the wait pads the time: what matters is that it is over its limit.

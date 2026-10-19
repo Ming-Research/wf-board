@@ -71,7 +71,7 @@ matches what the artifact board offered.
   entries (`http.ts` and the tool wrapper in `mcp.ts`) and the `slow-op` push to the architect.
 - `src/write-trace.ts`: where the time of one write call went (the waits in the two queues, each git command, the work between),
   kept in the call's async context and told in the call's log line when it took long (design section 4, Time limits);
-  `src/loop-watch.ts`: the log line for a stretch in which the event loop was held.
+  `src/loop-watch.ts`: the log line for a stretch in which the event loop was held, with the process's CPU and garbage collection time and the machine's load in it.
 - `src/page-version.ts`: the version of the page the daemon serves (a hash of the page files: `web/index.html`, `web/dist/app.js` and, once built, `web/dist/mermaid.js`) and
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
