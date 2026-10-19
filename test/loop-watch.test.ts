@@ -7,17 +7,21 @@ import { GcTime, LoopWatch, systemMeters, watchLoop } from "../src/loop-watch.ts
 
 // The log line of a held event loop and the readings it carries to say why (docs/design.md, section 4, Time limits).
 
-/** Meters the test sets: the totals so far, as the real ones count them. */
+/** Meters the test sets: the CPU total so far and the load as the real ones count them, and the collections, each with the time it
+ * began on the clock the test moves. */
 function fake() {
-  const total = { cpu: 0, gc: 0, load: 0 };
-  return { total, meters: { cpuMs: () => total.cpu, gcMs: () => total.gc, load: () => total.load } };
+  const total = { cpu: 0, load: 0 };
+  const collections: { start: number; ms: number }[] = [];
+  const collected = (start: number, ms: number): void => { collections.push({ start, ms }); };
+  const gcMs = (from: number, to: number): number => collections.filter(c => c.start > from && c.start <= to).reduce((sum, c) => sum + c.ms, 0);
+  return { total, collected, meters: { cpuMs: () => total.cpu, gcMs, load: () => total.load } };
 }
 /** A watch on a clock the test moves, its readings taken at once. */
 function watcher(options: { settle?: (read: () => void) => void } = {}) {
-  const { total, meters } = fake();
+  const { total, collected, meters } = fake();
   const lines: string[] = [];
   const watch = new LoopWatch({ now: 0, intervalMs: 100, stallMs: 500, log: line => lines.push(line), meters, settle: options.settle ?? (read => read()) });
-  return { total, lines, watch };
+  return { total, collected, lines, watch };
 }
 /** The number after `name` in a held-loop line. */
 const reading = (line: string, name: string): number => Number(new RegExp(`${name} (\\d+(?:\\.\\d+)?)`).exec(line)?.[1]);
@@ -52,19 +56,21 @@ test("the line tells the CPU time of the process since the timer's last firing, 
   total.cpu = 5930; w.tick(1200);
   assert.equal(lines.length, 1);
   assert.equal(reading(lines[0]!, "cpu"), 900, lines[0]!);
-  // The second stall is counted from the first line's reading.
+  // The second stall is counted from the timer's firing before it.
   total.cpu = 6330; w.tick(2300);
   assert.equal(reading(lines[1]!, "cpu"), 400, lines[1]!);
 });
 
-test("the line tells the time the process spent in garbage collection since the timer's last firing, not its total", () => {
-  const { total, lines, watch: w } = watcher();
-  total.gc = 800; w.tick(100);
-  total.gc = 810; w.tick(200);
-  total.gc = 880; w.tick(1200);
+test("the line tells the time of the collections that began between the timer's last two firings, not the total", () => {
+  const { collected, lines, watch: w } = watcher();
+  // Before the stall's stretch, and one that began as the stretch began: neither is the stall's.
+  collected(50, 800); w.tick(100);
+  collected(150, 10); collected(200, 5); w.tick(200);
+  // Two inside, and one that began as the timer fired.
+  collected(700, 70); collected(1100, 30); collected(1200, 2); w.tick(1200);
   assert.equal(lines.length, 1);
-  assert.equal(reading(lines[0]!, "gc"), 70, lines[0]!);
-  total.gc = 1280; w.tick(2300);
+  assert.equal(reading(lines[0]!, "gc"), 102, lines[0]!);
+  collected(2000, 400); w.tick(2300);
   assert.equal(reading(lines[1]!, "gc"), 400, lines[1]!);
 });
 
@@ -78,37 +84,77 @@ test("the line tells the load average as it is when the stall is told, with two 
   assert.match(lines[1]!, /; cpu 0 ms, gc 0 ms, load 0\.30$/);
 });
 
-test("the readings of a stall are taken after the timer's callback, when the entries of its collections have arrived", () => {
+test("a stall is told after the timer's callback, when the entries of its collections have arrived", () => {
   const waiting: (() => void)[] = [];
-  const { total, lines, watch: w } = watcher({ settle: read => { waiting.push(read); } });
+  const { collected, lines, watch: w } = watcher({ settle: read => { waiting.push(read); } });
+  w.tick(100);
   w.tick(1200);
-  assert.deepEqual(lines, [], "nothing is told while the readings wait");
-  // The entries of a collection that ran in the stall are handed over now.
-  total.gc = 70;
+  assert.deepEqual(lines, [], "nothing is told while the telling waits");
+  // The entries of a collection that ran in the stall are handed over now, one that began before the stretch with it.
+  collected(900, 70); collected(50, 40);
   assert.equal(waiting.length, 1);
   waiting[0]!();
   assert.equal(reading(lines[0]!, "gc"), 70, lines[0]!);
 });
 
+test("when the loop is held again before a stall is told, each line has the readings of its own stretch", () => {
+  const waiting: (() => void)[] = [];
+  const { total, collected, lines, watch: w } = watcher({ settle: read => { waiting.push(read); } });
+  total.cpu = 10; w.tick(100);
+  total.cpu = 40; w.tick(200);
+  // The first stall: 900 ms of CPU and a collection of 20 ms between the firings at 200 and 1200.
+  collected(700, 20); total.cpu = 940; w.tick(1200);
+  // Before it is told the loop is held for much longer, by code that computes and by a collection.
+  collected(3000, 300); total.cpu = 4940; total.load = 7.5;
+  waiting[0]!();
+  // The second stall, between the firings at 1200 and 6100, which is told after the first.
+  w.tick(6100);
+  waiting[1]!();
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /^event loop held for 900 ms .*; cpu 900 ms, gc 20 ms, load 7\.50$/, lines[0]!);
+  assert.match(lines[1]!, /^event loop held for 4800 ms .*; cpu 4000 ms, gc 300 ms, load 7\.50$/, lines[1]!);
+});
+
 test("the meters of the process turn the CPU time into milliseconds, add its user and system parts and take the first load average", () => {
-  const meters = systemMeters({ ms: () => 12.5 }, { cpuUsage: () => ({ user: 1_500_000, system: 250_000 }), loadavg: () => [1.5, 2.5, 3.5] });
+  const asked: number[][] = [];
+  const meters = systemMeters({ ms: (from, to) => { asked.push([from, to]); return 12.5; } }, { cpuUsage: () => ({ user: 1_500_000, system: 250_000 }), loadavg: () => [1.5, 2.5, 3.5] });
   assert.equal(meters.cpuMs(), 1750);
-  assert.equal(meters.gcMs(), 12.5);
+  assert.equal(meters.gcMs(100, 900), 12.5);
+  assert.deepEqual(asked, [[100, 900]], "the stretch is passed on to the collections' record");
   assert.equal(meters.load(), 1.5);
 });
 
-test("the garbage collection time counts the collections and stops counting when stopped", async () => {
+test("the garbage collection time counts the collections by the stretch they began in, and stops counting when stopped", async () => {
   const gc = new GcTime();
-  const before = gc.ms();
-  for (let i = 0; i < 5; i++) { void Array.from({ length: 20000 }, (_, n) => ({ n })); collect(); }
+  const burst = (): void => { for (let i = 0; i < 5; i++) { void Array.from({ length: 20000 }, (_, n) => ({ n })); collect(); } };
+  burst();
+  const middle = performance.now();
+  burst();
+  const end = performance.now();
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
-  const after = gc.ms();
-  assert.ok(after > before, `five collections took no time: ${before} to ${after}`);
+  const first = gc.ms(0, middle), second = gc.ms(middle, end);
+  assert.ok(first > 0 && second > 0, `five collections took no time: ${first}, ${second}`);
+  assert.ok(Math.abs(gc.ms(0, end) - (first + second)) < 1e-6, "the two stretches add up to the whole, each collection in one");
   gc.stop();
+  const stopped = performance.now();
   collectFor(30);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(gc.ms(), after, "a stopped meter counts no more");
+  assert.equal(gc.ms(stopped, performance.now()), 0, "a stopped meter counts no more");
+});
+
+test("the garbage collection time forgets the collections older than it keeps", async () => {
+  const gc = new GcTime(50);
+  try {
+    const start = performance.now();
+    collect();
+    await sleep(120);
+    collect();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(gc.ms(start, start + 60), 0, "the first collection is forgotten");
+    assert.ok(gc.ms(start + 100, performance.now()) > 0, "the later one is kept");
+  } finally { gc.stop(); }
 });
 
 test("a loop that is really held is told, and a stopped watch tells nothing more", async () => {
