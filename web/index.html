@@ -239,6 +239,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .log { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .steps-ratio { font-size: 12px; color: var(--muted); }
 .stage-tag { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.standing-tag { font-size: 12px; line-height: 1.5; padding: 0 5px; border-radius: 4px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap; }
 .plan { margin-top: 8px; }
 .plan > .log-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .plan > .log-head > .steps-ratio { margin-left: auto; }
@@ -249,6 +250,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .plan-row.wip > .g { color: var(--wip); }
 .plan-row.blocked > .g { color: var(--block); }
 .plan-row.paused > .g { color: var(--muted); }
+.plan-row.standing > .g { color: var(--muted); }
 .plan-row.todo > .g { color: var(--todo); }
 .plan-row.dropped { color: var(--muted); text-decoration: line-through; }
 .plan-main { grid-column: 2; min-width: 0; }

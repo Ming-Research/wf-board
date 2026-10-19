@@ -7,7 +7,7 @@ import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
 import type { Put } from "./store.ts";
-import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey } from "./rules.ts";
+import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow, followedRows, isRecordRow, OPTION_MAX_CHARS, isOpenMergeStep, mergeRowDone, checkKind, checkKey, HEAD_REVISED_LOG } from "./rules.ts";
 import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
@@ -24,6 +24,7 @@ const REFUSED_FIX: Partial<Record<CheckId, string>> = {
   "dep-cycle": "use set_plan or move_item to remove the item-row cycle",
   "no-acceptance": "use set_plan to add at least one acceptance step where its check happens",
   "owned-across-projects": "use a shared row instead of ownership",
+  "waits-on-standing": "a standing item never completes, so nothing waits for it or owns it except another standing item: remove the row with set_plan, or place the standing item at the top (move_item without owner) or under a standing item",
 };
 const OWNER_FIX = "use move_item to place the item under exactly one same-project owner";
 /** A head copied from a cut `context` answer has lost the text the answer left out; writing it would drop that text (docs/design.md, section 6, Lean replies). */
@@ -37,7 +38,7 @@ export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
+  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; standing?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
   appendLog(a: { author: string; session?: string; access?: Access; id: string; text: string }): Promise<Result>;
   /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
   markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
@@ -56,7 +57,7 @@ export interface Ops {
   reportLive(a: { author: string; session?: string; access?: Access; id: string; role: LiveRole; turn: number; turnSeconds: number; idleSeconds?: number; action?: string }): Promise<string>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
-  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
+  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; standing?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; session?: string; access?: Access; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
@@ -211,7 +212,7 @@ function behindNote(before: Snapshot, after: Snapshot, newRules: ReturnType<type
 function requiredCheckItems(before: Snapshot, after: Snapshot, work: Work, oldRules: ReturnType<typeof rules>, newRules: ReturnType<typeof rules>): Set<string> {
   if (work.board) return new Set(Object.keys(after.items));
   const affected = new Set<string>();
-  const itemInputs = (it: Item | undefined) => it && { group: it.group, record: it.record, status: it.status, paused: it.paused, plan: it.plan, ask: it.ask };
+  const itemInputs = (it: Item | undefined) => it && { group: it.group, record: it.record, standing: it.standing, status: it.status, paused: it.paused, plan: it.plan, ask: it.ask };
   const noteInputs = (note: Note | undefined) => note && { target: note.target, kind: note.kind, state: note.state, text: note.text, answerText: note.answerText };
   const card = (key: string) => {
     for (const s of [before, after]) { const owner = s.decisions[key]?.item; if (owner) affected.add(owner); }
@@ -291,7 +292,7 @@ function ownedNote(s: Snapshot, id: string, who: Writer): { note: Note; item: st
 }
 
 /** The parts an update_item changes, by the fields it gives. */
-function updateParts(a: { title?: string; head?: string; links?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
+function updateParts(a: { title?: string; head?: string; links?: unknown; data?: string | null; order?: number; record?: boolean; standing?: boolean; accept?: string }): Part[] {
   const parts: Part[] = [];
   if (a.title !== undefined) parts.push("item.title");
   if (a.head !== undefined) parts.push("item.head");
@@ -299,6 +300,7 @@ function updateParts(a: { title?: string; head?: string; links?: unknown; data?:
   if (a.data !== undefined) parts.push("item.data");
   if (a.order !== undefined) parts.push("item.order");
   if (a.record !== undefined || a.accept !== undefined) parts.push("item.record");
+  if (a.standing !== undefined) parts.push("item.standing");
   return parts;
 }
 /** A write that adds a log line, made again by the same session within this long, is the retry of a write whose answer was lost, and is not made again (docs/design.md, section 4). */
@@ -509,6 +511,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     const difficulty = Difficulty.safeParse(given);
     if (!difficulty.success) throw new OpError("difficulty: give an integer 1–5");
     if (it.record) throw new OpError("difficulty: a record has no difficulty");
+    if (it.standing) throw new OpError("difficulty: a standing item has no difficulty");
     if (typeof reason !== "string" || !reason.trim()) throw new OpError("reason: say why the difficulty is this, for the log");
     if (it.difficulty === difficulty.data) return it;
     return { ...it, difficulty: difficulty.data, updated: at, log: [...it.log, entry(author, at, difficultyLogText(it.difficulty, difficulty.data, reason.trim()))] };
@@ -629,8 +632,10 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         itemPut(item, { ...it, updated: at, log: [...it.log, entry(a.author, at, text)] }),
       ] };
     }),
-    createItem: a => run(a, "item.create", (s, at) => {
+    createItem: a => run(a, a.standing === undefined ? "item.create" : ["item.create", "item.standing"], (s, at) => {
       onlyProcessWithoutCredential(a, "create items");
+      if (a.standing !== undefined) onlyProcessWithoutCredential(a, "create a standing item");
+      if (a.standing && a.record) throw new OpError("standing: a record cannot be standing");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
       // Whoever creates an item may rate it as it is made, as in set_difficulty.
       let difficulty: Difficulty | undefined;
@@ -638,6 +643,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const given = Difficulty.safeParse(a.difficulty);
         if (!given.success) throw new OpError("difficulty: give an integer 1–5");
         if (a.record) throw new OpError("difficulty: a record has no difficulty");
+        if (a.standing) throw new OpError("difficulty: a standing item has no difficulty");
         difficulty = given.data;
       }
       newKey(s, a.key);
@@ -646,16 +652,17 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!group) throw new OpError("group: a new top item requires its project");
       requireProject(s, group);
       refuseSummary(a.head);
-      if (a.record ? a.accept !== undefined : !a.accept) throw new OpError("accept: required for work, refused for records");
+      if (a.record || a.standing ? a.accept !== undefined : !a.accept) throw new OpError("accept: required for work, refused for records and standing items");
       if (!a.owner && a.after !== undefined) throw new OpError("after: requires owner");
       const inputs = [...a.plan ?? []];
       if (inputs.some(row => "card" in row)) throw new OpError("plan: a card's row joins its item's plan when write_card creates the card; a new item has no card rows");
+      if (a.standing && inputs.some(row => "accept" in row && row.accept)) throw new OpError("plan: a standing item takes no acceptance step");
       const children = a.children ?? [];
       if (new Set(children).size !== children.length) throw new OpError("children: name each item once");
       for (const id of children) { ownedItem(s, id, a, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
-      if (!a.record) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
+      if (!a.record && !a.standing) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
-      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, ...(a.standing ? { standing: true } : {}), links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rulesOf(s).parentOf(id);
@@ -688,7 +695,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (earlier) return replay(key, earlier);
         if (!it.record) throw new OpError(`journal ${key}: is not a record; check the item`);
         const head = it.head ? `${it.head}\n\n${line}` : line;
-        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `改了 head：加了 ${clock} 的一条`)] };
+        const doc = { ...it, head, updated: at, log: [...it.log, entry(a.author, at, `${HEAD_REVISED_LOG}加了 ${clock} 的一条`)] };
         return { id: key, kind: "item", message: `journal_entry ${key}`, puts: [itemPut(key, doc)] };
       }
       newKey(s, key);
@@ -791,6 +798,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         plan = stamped(a.rows, previous, at);
       } else { const row = parse(PlanRowInput, a.row); plan = insert(previous, stampPlanRow(row, previous.find(r => r.id === rowId(row)), at)); }
       checkCardRows(previous, plan);
+      if (it.standing && plan.some(row => "accept" in row && row.accept)) throw new OpError("plan: a standing item takes no acceptance step; it is always in progress and never completes");
       if (isDeepStrictEqual(plan, previous) && !(a.rows !== undefined && it.provisional)) return it;
       const doc = { ...it, plan, updated: at };
       if (a.rows !== undefined && it.provisional) { delete doc.provisional; doc.log = [...it.log, entry(a.author, at, "重写了计划")]; }
@@ -897,11 +905,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     }, false, true),
     updateItem: a => run(a, updateParts(a), async (s, at) => {
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
+      if (a.standing !== undefined) onlyProcess(a, "mark an item standing or ordinary");
       const it = ownedItem(s, a.id, a);
-      // Turning an item into a record, or back, also rewrites its plan's acceptance rows, so it needs the revision to be the current one.
+      // Turning an item into a record or a standing item, or back, also rewrites its plan's acceptance rows, so it needs the revision to be the current one.
       const replaced = (["title", "head", "links", "data", "order"] as const).filter(key => a[key] !== undefined);
       let note: string | undefined;
-      if (a.record !== undefined || a.accept !== undefined || !replaced.length) await revision("item", a.id, a.rev, it);
+      if (a.record !== undefined || a.standing !== undefined || a.accept !== undefined || !replaced.length) await revision("item", a.id, a.rev, it);
       else note = await fieldsRevision(a.id, a.rev, it, replaced);
       const changedHead = a.head !== undefined && a.head !== it.head;
       if (changedHead) refuseSummary(a.head);
@@ -909,7 +918,21 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.order !== undefined && rulesOf(s).parentOf(a.id)) throw new OpError("order: only top items carry order; order owned items in the plan");
       const doc = { ...it, updated: at, log: [...it.log] };
       for (const key of ["title", "head", "links", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
-      if (a.record === true && !it.record) {
+      // A standing item is neither a record nor ordinary work: the two modes never hold together.
+      if ((a.standing ?? !!it.standing) && (a.record ?? !!it.record) || a.standing === false && a.record === true) throw new OpError("standing: an item is a record or standing, not both; a record becomes work first, a standing item becomes ordinary first");
+      if (a.standing === true && !it.standing) {
+        const closed = ["done", "cancelled"].includes(rulesOf(s).statusOf(a.id) ?? "");
+        if (closed) throw new OpError("standing: a done or cancelled item cannot become standing; reopen it first (set_status)");
+        if (a.accept !== undefined) throw new OpError("accept: refused for a standing item");
+        const accepts = (it.plan ?? []).filter(row => "accept" in row && row.accept);
+        doc.plan = (it.plan ?? []).filter(row => !("accept" in row && row.accept)); doc.standing = true; delete doc.difficulty;
+        doc.log.push(entry(a.author, at, `改为常设条目：一直进行中，不再有验收和难度；原验收：${accepts.map(row => "text" in row ? row.text : "").join("；")}${it.difficulty === undefined ? "" : `；原难度：${levelText(it.difficulty)}`}`));
+      } else if (a.standing === false && it.standing) {
+        if (!a.accept) throw new OpError("accept: required when changing a standing item to ordinary work");
+        delete doc.standing;
+        doc.plan = [...it.plan ?? [], stampPlanRow({ id: acceptId(it.plan ?? []), accept: true, text: a.accept, state: "todo" }, undefined, at)];
+        doc.log.push(entry(a.author, at, "改为普通条目：状态由计划推导"));
+      } else if (a.record === true && !it.record) {
         // Cancelled work turned into a record and back to work would be reopened without set_status.
         if (it.status === "cancelled") onlyProcess(a, "turn a cancelled item into a record");
         delete doc.paused;
@@ -921,8 +944,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (!a.accept) throw new OpError("accept: required when changing a record to work");
         doc.plan = [...it.plan ?? [], stampPlanRow({ id: acceptId(it.plan ?? []), accept: true, text: a.accept, state: "todo" }, undefined, at)];
         doc.log.push(entry(a.author, at, "改为工作条目：状态由计划推导"));
-      } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record to work; edit acceptance with set_plan");
-      if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
+      } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record or standing to work; edit acceptance with set_plan");
+      if (changedHead) doc.log.push(entry(a.author, at, `${HEAD_REVISED_LOG}${a.reason}`));
       return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)], ...(note === undefined ? {} : { note }) };
     }, true),
     setStatus: a => run(a, ["item.cancel", "card.write"], async (s, at) => {
@@ -1008,7 +1031,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       // arriving item (waited on by items of the new project), or a top item of the new project that a moved item waits on.
       const next = { ...s, items: { ...s.items } }; for (const put of puts) next.items[put.id] = put.doc as Item;
       const after = rules(next), unowned = (rl: ReturnType<typeof rules>, id: string) => rl.refusals(id).some(check => check.id === "unowned-but-awaited");
-      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id)).map(d => d.id);
+      const waiters = (id: string) => after.dependents(id).filter(d => !d.own && after.groupOf(d.id) === after.groupOf(id) && after.isOpenWork(d.id) && !(after.isStanding(d.id) && after.isStanding(id))).map(d => d.id);
       const candidates = new Set([a.id, ...ids.flatMap(id => after.depsOf(id).filter(d => d.kind === "item" && !d.own && !moved.has(d.id) && after.item(d.id)).map(d => d.id))]);
       const stranded = [...candidates].filter(id => unowned(after, id) && !unowned(r, id));
       const fix = (id: string): string => {
