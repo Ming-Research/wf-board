@@ -6,8 +6,8 @@ import type { RunnerRow } from "../src/runner-rows.ts";
 import type { LiveEntry } from "../src/live.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
-import { lineOfAgent, clockText, drawLength, totalsText, LONG_SEGMENT_MS, SEGMENT_TEXT } from "../src/timeline.ts";
-import type { Segment } from "../src/timeline.ts";
+import { lineOfAgent, clockText, drawLength, totalsText, LONG_SEGMENT_MS, SEGMENT_KINDS, SEGMENT_TEXT } from "../src/timeline.ts";
+import type { Segment, SegmentKind } from "../src/timeline.ts";
 import { rules, placedCardsOf, cardMarker, draftEditable, isPlainPick, noteTextProblem, changedItemPlan, changedItemTargets, isLogChange, checkLabel, STALLED_LABEL, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, rebuiltBecause } from "../src/rules.ts";
 import type { ActivityDelta, PreviousRules, Rules } from "../src/rules.ts";
 import { codeBlock } from "./highlight.ts";
@@ -1915,6 +1915,19 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     ["标题", "状态", "在做或在等", "这个状态", "合计", "时间线"].forEach(text => head.appendChild(el("span", null, text)));
     return head;
   }
+  // The legend of the line column: a swatch and the word for each kind some row draws, in the order of the kinds (src/timeline.ts). A swatch
+  // takes the colour class of its segments, so the two cannot drift apart.
+  function runnerLegend(seen: ReadonlySet<SegmentKind>) {
+    const legend = el("li", "runner-legend");
+    legend.appendChild(el("span", "runner-legend-title", "线段："));
+    SEGMENT_KINDS.filter(kind => seen.has(kind)).forEach(kind => {
+      const item = el("span", "runner-legend-item");
+      item.appendChild(el("i", "tl-swatch tl-" + kind));
+      item.appendChild(el("span", null, SEGMENT_TEXT[kind]));
+      legend.appendChild(item);
+    });
+    return legend;
+  }
   function runnerRowEl(x: RunnerRow, now: number) {
     const mark = (x.needsPerson ? " needs-person" : "") + (x.overdue ? " overdue" : "");
     const box = el("li", "agent runner-row" + mark), it = index().byId.get(x.item), line = runnerLine(x, now, runnerName);
@@ -2008,6 +2021,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       host.appendChild(el("h3", "agents-sub", "执行程序手上的 " + runner.length + " 件")).title = "执行程序对每件活的最新报告；一轮在跑时，「在做或在等」一列放它每 30 秒报的动作。超过状态该有的时间标琥珀色，和全貌的时限一样";
       const held = el("ul", "agent-list runner-list");
       held.appendChild(runnerHead());
+      const seen = new Set<SegmentKind>();
+      runner.forEach(x => lineOfAgent(snapshot, derived, x.item, x.agentId, now)?.segments.forEach(seg => seen.add(seg.kind)));
+      held.appendChild(runnerLegend(seen));
       runner.forEach(x => held.appendChild(runnerRowEl(x, now)));
       host.appendChild(held);
     }

@@ -51,7 +51,7 @@
   --font-body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-head: "Noto Sans SC", "IBM Plex Sans", "PingFang SC", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --tl-work: #2f9e5b; --tl-ci: #5aa0c8; --tl-owner: #e5574f; --tl-architect: #8b5cf6; --tl-items: #b8a2e6; --tl-run: #e08a1e; --tl-wait: #8fa3a0; --tl-merge: #2f7de1; --tl-person: #8f1d17; --tl-closing: #c9d1ce; --tl-paused: #9aa4a0;
+  --tl-work: #2f9e5b; --tl-ci: #2bb3c0; --tl-owner: #e5574f; --tl-architect: #8b5cf6; --tl-items: #b8a2e6; --tl-run: #e08a1e; --tl-wait: #8fa3a0; --tl-merge: #d6457f; --tl-person: #8f1d17; --tl-closing: #d3dbd8; --tl-paused: #4f5c59;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -63,7 +63,7 @@
     --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
     --amber: #f0c060; --amber-soft: #3a2d0a;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
-    --tl-work: #3fcf6a; --tl-ci: #5b9cc4; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #5aa0f0; --tl-person: #ff5c4d; --tl-closing: #3f4a47; --tl-paused: #5b6663;
+    --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #ef6fb4; --tl-person: #ff5c4d; --tl-closing: #b5c4c0; --tl-paused: #9aa8a4;
     color-scheme: dark;
   }
 }
@@ -76,7 +76,7 @@
   --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
   --amber: #f0c060; --amber-soft: #3a2d0a;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
-  --tl-work: #3fcf6a; --tl-ci: #5b9cc4; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #5aa0f0; --tl-person: #ff5c4d; --tl-closing: #3f4a47; --tl-paused: #5b6663;
+  --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #ef6fb4; --tl-person: #ff5c4d; --tl-closing: #b5c4c0; --tl-paused: #9aa8a4;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -220,8 +220,12 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .tl { position: relative; flex: 1 1 0; min-width: 1px; box-shadow: inset -1px 0 0 var(--surface); background: var(--tl-work); }
 .tl-work { background: var(--tl-work); } .tl-ci { background: var(--tl-ci); } .tl-owner { background: var(--tl-owner); } .tl-architect { background: var(--tl-architect); }
 .tl-items { background: var(--tl-items); } .tl-run { background: var(--tl-run); } .tl-wait { background: var(--tl-wait); } .tl-merge { background: var(--tl-merge); }
-.tl-person { background: var(--tl-person); } .tl-closing { background: var(--tl-closing); } .tl-paused { background: var(--tl-paused); }
+.tl-person { background: var(--tl-person); } .tl-closing { background: var(--tl-closing); } .tl-paused { background: repeating-linear-gradient(-45deg, var(--tl-paused) 0 2px, transparent 2px 4px); }
 .tl-gap { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--surface); transform: skewX(-20deg); }
+/* The legend above a runner's rows: a swatch and the word of each kind some row draws (src/timeline.ts). A swatch takes its segments' class. */
+.runner-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 11.5px; color: var(--muted); padding: 0 6px 4px 9px; border-bottom: 1px solid var(--rule); }
+.runner-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.tl-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 2px; }
 
 .agitem { min-width: 0; font-size: 13.5px; }
 .agitem-st { flex: none; }
