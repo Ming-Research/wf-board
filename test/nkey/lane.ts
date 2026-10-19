@@ -146,7 +146,7 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
   const polluted = (r.misses.base ?? 0) + (r.misses.twin ?? 0);
   for (const [label, verdict] of Object.entries(r.verdicts)) {
     const witness = label === "slow";
-    const against = `${label}/ref`;
+    const against = `${label}/${r.against[label]}`;
     log(`press-n time (${name}): ${against} ${show(r.ratios[label]!)}: ${verdict}`);
     rows.push(`| ${name} | ${against} | ${show(r.ratios[label]!)} | | ${verdict} |`);
     if ((r.misses[label] ?? 0) > 0) v.push(`press-n time (${name}): the ${label} window asked for ${r.misses[label]} reads the tape has no answer for; the real server answered them in this process`);
@@ -195,7 +195,8 @@ export interface Lane {
   currentLabel: string;
   /** A window answered from the tape. */
   open: (scope: Hooks, how: Omit<OpenHow, "fetch" | "misses">) => Promise<Press>;
-  /** The windows of a time phase: the base and its twin, the current page when it differs, and the current page with 15 ms more per draw. */
+  /** The windows of a time phase: the base and its twin, the current page when it differs, and the current page with 15 ms more per draw,
+   * judged against the current page. */
   windows: () => PhaseWindow[];
   /** The landings of a window that opened on the current page or a variant, in a scope of its own. */
   walk: (how: Omit<OpenHow, "fetch" | "misses">, wanted: number, withEvents?: boolean) => Promise<Landing[]>;
@@ -253,7 +254,9 @@ export async function startLane(t: { after(fn: () => unknown): void }, want: { l
       { label: "base", open: s => open(s, { label: "base", ...basePage }) },
       { label: "twin", open: s => open(s, { label: "twin", ...basePage }) },
       ...(changed ? [{ label: "cand", open: (s: Hooks) => open(s, { label: "cand" }) }] : []),
-      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }) },
+      // The witness is the current page with 15 ms more per draw, judged against the current page it was made from: a page much faster
+      // than its base stays faster than the reference with 15 ms more, and must still be told slower than itself.
+      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }), ...(changed ? { against: "cand" } : {}) },
     ],
     walk: async (how, wanted, withEvents = false) => {
       const scope = new Scope();

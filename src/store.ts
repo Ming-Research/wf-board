@@ -312,19 +312,27 @@ function sealed(state: Snapshot): Snapshot {
 }
 
 /**
- * One long-lived `git cat-file --batch` that reads `<rev>:<path>` objects in
- * order, so history queries cost no process per document. The process keeps
+ * One long-lived `git cat-file --batch` that reads `<rev>:<path>` objects, and
+ * the commit a write has just made, in order, so history queries cost no
+ * process per document and a write none for its commit's time. The process keeps
  * Node alive only while a read is pending, and restarts after a failure.
  */
 class BlobReader {
   private readonly dir: string;
   private child: ChildProcessWithoutNullStreams | undefined;
   private buffer = Buffer.alloc(0);
-  private waiting: Array<{ resolve: (b: Buffer | null) => void; reject: (e: Error) => void }> = [];
+  private waiting: Array<{ resolve: (o: { id: string; type: string; body: Buffer } | null) => void; reject: (e: Error) => void }> = [];
 
   constructor(dir: string) { this.dir = dir; }
 
-  read(spec: string): Promise<Buffer | null> {
+  /** The blob `spec` names, or null when it names none. */
+  async read(spec: string): Promise<Buffer | null> {
+    const object = await this.object(spec);
+    return object?.type === "blob" ? object.body : null;
+  }
+
+  /** The object `spec` names, with its id and type, or null when it names none. */
+  object(spec: string): Promise<{ id: string; type: string; body: Buffer } | null> {
     if (/[\n\r\0]/.test(spec)) return Promise.reject(new Error(`invalid object name: ${JSON.stringify(spec)}`));
     const child = this.start();
     if (!this.waiting.length) this.hold(child, true);
@@ -363,13 +371,13 @@ class BlobReader {
       const nl = this.buffer.indexOf(0x0a);
       if (nl === -1) return;
       const header = this.buffer.subarray(0, nl).toString("utf8");
-      const m = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+      const m = /^([0-9a-f]+) (\w+) (\d+)$/.exec(header);
       if (!m) { this.buffer = this.buffer.subarray(nl + 1); this.waiting.shift()!.resolve(null); if (!this.waiting.length && this.child) this.hold(this.child, false); continue; }
-      const size = Number(m[2]);
+      const size = Number(m[3]);
       if (this.buffer.length < nl + 1 + size + 1) return;
       const body = this.buffer.subarray(nl + 1, nl + 1 + size);
       this.buffer = this.buffer.subarray(nl + 1 + size + 1);
-      this.waiting.shift()!.resolve(m[1] === "blob" ? Buffer.from(body) : null);
+      this.waiting.shift()!.resolve({ id: m[1]!, type: m[2]!, body: Buffer.from(body) });
     }
     if (!this.waiting.length && this.child) this.hold(this.child, false);
   }
@@ -1145,7 +1153,6 @@ export class Store {
     if (numbersChanged) paths.push(numbersPath);
     const trace = currentTrace();
     trace?.lap("validate");
-    if ((await this.git(["diff", "--cached", "--name-only"])).trim()) throw new Error("Refusing to commit an already staged index");
     this.writing = true;
     let event: Change;
     try {
@@ -1160,15 +1167,24 @@ export class Store {
       trace?.lap("files");
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : [])], txn.author);
-      const [head, timestamp] = (await this.git(["show", "-s", "--format=%H%x00%aI", "HEAD"])).trimEnd().split("\0");
-      if (!head || !/^[0-9a-f]{40}$/.test(head) || !timestamp) throw new Error("Invalid git commit metadata");
+      // `--only` commits exactly these paths, whatever else is staged, so nothing staged by hand enters a board commit; the
+      // summary line names the new commit in full, and its time is read through the long-lived cat-file process: two git
+      // processes a write (docs/design.md, section 4, Write cost).
+      const summary = await this.git(["-c", "commit.gpgsign=false", "-c", "core.abbrev=no", "commit", "--only", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : []), "--", ...paths], txn.author);
+      const head = /^\[[^\n\]]* ([0-9a-f]{40})\]/m.exec(summary)?.[1];
+      const object = head && await this.blobs.object(head);
+      trace?.lap("git cat-file");
+      const seconds = object && object.type === "commit" && object.id === head ? /^author .* (\d+) [+-]\d{4}$/m.exec(object.body.toString("utf8"))?.[1] : undefined;
+      if (!head || !seconds) throw new Error("Invalid git commit metadata");
+      const timestamp = new Date(Number(seconds) * 1000).toISOString();
       next.head = head;
+      // git just named it as a commit: a read of history up to it needs no rev-parse.
+      this.resolved.set(head, head);
       // Owner writes arriving during git work stay out of the staged snapshot.
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
       // Documents in `changed` are already frozen snapshot documents.
-      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
+      event = { commit: head, at: timestamp, author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -1225,7 +1241,9 @@ export class Store {
     frozen(event);
     trace?.lap("publish");
     if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
+    const before = this.state;
     this.state = next;
+    this.derived.follows(next, before, changed, event.activity);
     this.scheduleCacheWrite();
     this.pending += 1;
     void this.queueMaintenance();

@@ -316,13 +316,13 @@ it waits or works end a step in it: the wait in the operations' own queue (`ops 
 `src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
 queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
 behind: `write`, `owner state` or `maintenance`); the code before the first git command
-(`validate`), the writing of the files (`files`), each git command by its name (`git diff`,
-`git add`, `git commit`, `git show`), the update of the board in memory (`publish`), the
+(`validate`), the writing of the files (`files`), each git command by its name (`git add`,
+`git commit`, and `git cat-file`, the read of the new commit's time), the update of the board in memory (`publish`), the
 observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
 limits), its ordinary log line carries them after a semicolon:
-`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git diff 8 ms, git add 14 ms, git commit 2400 ms, ...`.
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git add 14 ms, git commit 2400 ms, ...`.
 A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
@@ -598,7 +598,20 @@ derivation design that replaced this:
   reads, the check scan, the "before" side of a write's validation) within the
   same minute; a Rules object reads the clock only for elapsed time (active
   time, doing days), so its results are exactly `rules(snapshot, t)` for the
-  time `t` of the first read in that minute. A prospective state inside a
+  time `t` of the first read in that minute. The store tells the cache which
+  state each published one was made from, with the write's changed documents and
+  activity delta (`DerivedCache.follows`), and the Rules object of the new state
+  is built from that state's one, as the page builds its own (below): it then
+  answers for the time that one answered for, in the same minute (`answersFor`). The cache keeps only the
+  newest such step, and no Rules object keeps the one it was built from: the first version kept a step for
+  every state, each holding the state before it, and a closure of every Rules object read the options that
+  held the Rules object before it, so each kept every earlier state reachable and the daemon's peak RSS grew
+  by about 1.25 MB a write (732 MB after 300 writes, 2,227 MB after 1,500, on a hosted runner). After the fix,
+  with the owner 4,000 commits behind, the heap left after a full collection grows 22 KB a write over 300 writes
+  and 5.7 KB over 1,500 (peak RSS 529 and 726 MB): from these two, about 6 MB once, the kept walk of the unread
+  list, and under 2 KB a write after it, the unread list itself growing by a stop a write; in the pairs below this
+  tree keeps 26.8 to 29.8 KB a write more than the base over 200 writes. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
+  (at most 3 of 51; each of the two chains keeps all 51). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
@@ -634,8 +647,8 @@ derivation design that replaced this:
   holds it against a derivation from nothing after random writes on a board of
   the live board's size, and each guard taken out of a copy must fail it. A log
   write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
-  runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
-  write there is a new snapshot, rebuilt as before.
+  runner, n-writes-stable-study). The daemon's shared rules reuse the same way since
+  board-cpu-usage (the numbers are in the unread list's point below).
 - The page keeps what depends only on the rules' structure and on ids through a write that
   reused the rules (section 7, The page): the order of the items, the stops that wait on the
   owner, the unread stops, the counts by status and the ancestors and waiters of open work, which
@@ -657,11 +670,71 @@ derivation design that replaced this:
   0.97 times, 0.88–1.07, and 0.91 times, 0.86–0.96).
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
+- The owner's unread list is continued, not walked again. The walk of the history
+  after the read cursor (`src/history.ts`) keeps where it stands: its stops, whether
+  the last is still open to the next commit of the same author on the same document,
+  and how many commits it has passed. A head that descends from the head of the newest
+  walk of the same cursor and read marks carries that walk on over its new commits
+  alone, copying the open stop before it extends it; a finished stop is kept while the
+  walked one is the same object ending at the same commit, so the lists of two heads
+  share the stops neither changed. Each list has a version, and the page sends the
+  version it holds (`GET /api/unread?since=`): the answer is the number of stops that
+  stay (`keep`) and the stops after them, or the whole list when the server no longer
+  keeps that version or the reading state moved. `test/history.test.ts` holds the
+  continued list, and the page's spliced one, equal to the list derived from nothing
+  after random writes, owner comments and reads. Before, each change event made the
+  page fetch the whole list again (347 KB with 1,000 stops) and each new head walked
+  the history from the cursor again: with the owner 4,000 commits behind, a `set_tags`
+  write cost the daemon 55.5 and 75.7 ms of CPU in two runs against 36.6 and 46.5 ms
+  with nothing unread (hosted runners, `scripts/bench-writes.ts --unread 4000`, without
+  the profiler, board-cpu-usage). The daemon also derived the rules of every published
+  state from nothing: in the profile of the replay with nothing unread, the rules'
+  memoized derivations (`cached` in `src/rules.ts`) took 16.3 ms a write, the profiler's
+  own cost included. With the
+  continued list, the shared rules' reuse and the commit below, a single run gave 35.9 ms
+  with the owner 4,000 commits behind and 25.4 ms with nothing unread (45.8 ms on the base):
+  hosted runners differ by more than 20 ms for the same code, so the comparison is made in
+  interleaved pairs (`scripts/bench-pairs.ts`: on each of four hosted runners, ten rounds
+  of the merge base, its twin and this tree in an order drawn each round, 200 writes each,
+  the owner 4,000 commits behind). There a write cost ×0.418 to ×0.448 of the base (every
+  runner's 95% interval within 0.410–0.459, the twin against the base within ±1.8 to
+  ±4.0%), 26.0 to 35.5 ms of CPU against 60.3 to 84.9 ms, the highest upper bound of a
+  95% interval 36.4 ms (board-cpu-usage).
+- A write starts two git processes: `git add` of its paths and `git commit --only` of
+  the same paths, which commits exactly them whatever else is staged, so a file staged
+  by hand stays out of the board's commit and the write goes on (before, the write
+  checked the index with `git diff --cached` and refused). The commit's summary line
+  names the new commit in full (`core.abbrev=no`), and its author time is read through
+  the long-lived `git cat-file` process the history reads use, where `git show` ran
+  before. Starting a process is what a write's git work costs the daemon: on a hosted
+  runner, with the daemon holding about 1.9 GB (most of it the chain of states above, removed
+  since), the profile of a `set_tags` write gave
+  24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
+  the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
+  the store's own code around them. The process costs here were taken from the profile of that
+  first version, with its heap; they were not measured again after the fix.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory, and the characters of each project's brief); the `bench` workflow
-runs it by hand on this tree and on a base commit, without gating.
+peak memory, the growth of the heap after a full collection per write, and the characters
+of each project's brief); the `bench` workflow runs it by hand on this tree and on a base
+commit, without gating, `scripts/bench-pairs.ts` in interleaved pairs against the base on four
+runners, and this tree at 300 and 1,500 writes; `--unread N`
+puts the owner's cursor N commits back and asks for the unread list after each write,
+as the open page does, and `--profile` prints where the CPU went.
+`scripts/bench-page.ts` measures the page's side: the real page in jsdom on a board of
+the live board's weight (`test/e2e/live-board.ts`), given the change events of real
+`set_tags` and log writes with the server's answers recorded beforehand, so the time
+is the page's own; it prints the busy time from each event until the page is quiet. With the
+spliced unread list and the top bar drawn again only when its inputs change, the 90th percentile
+of that time over 100 events of each kind, in three runs on each of four hosted runners, was 29.2
+to 47.8 ms for a `set_tags` event and 17.6 to 30.4 ms for a log event; the runners differ more than
+the runs on one (at most 4.2 ms apart), and a later run of the same page on four other runners reached
+60.7 ms, so the runner decides whether 50 ms holds. A partial render then stopped making every project
+group's filter row and heading again when what they show is unchanged: in three interleaved pairs on
+each of four runners, every pair was faster, the `set_tags` 90th percentile going from 32.2–50.4 ms
+to 28.7–44.6 ms and the log event's from 21.3–33.6 to 18.4–32.2 ms (board-cpu-usage). Before this
+item, one run gave 53.1 and 32.0 ms.
 
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
@@ -3024,7 +3097,12 @@ second draw and not one draw for each row. A baseline that is slower than that, 
 comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
-(15 MB on the live board). The page leaves a performance mark for each draw, each build
+(15 MB on the live board). After a live change it asks with the version of the list it
+holds and splices in what the server says changed (section 4, Write cost). The panel of
+work that waits on the owner is drawn again only when its rows' markup changes, and the
+whole view is made again when the board changes or a minute passes, not when only the
+unread list does: a `set_tags` write, which moves the unread list, otherwise drew the
+header twice, the panel and the whole view each time. The page leaves a performance mark for each draw, each build
 of the rules, each build that derived them from scratch, with its reason, each count of
 every item's filters, each time the structure is made again, with its reason, and each time
 the list of stops that wait on the owner and the list of unread stops are made (`board:render`,
@@ -5202,7 +5280,7 @@ The owner reads the board a stop at a time with n and wants the page to answer w
 took 0.3–0.5 s, because each of its four draws rebuilt the board's rules and counted every filter again (page-n-fast). The default generated board has
 176 items and a press of n there takes about a quarter of the time, so the lane (`test/nkey/`, the CI job `nkey`, `npm run test:nkey`) runs on a board of the
 live board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a 15 MB snapshot and 330 unread commits). The unread commits, which
-through the store are four git processes each, are made by one `git fast-import`, the documents written as the store writes them, and the board is then
+through the store are two git processes each, are made by one `git fast-import`, the documents written as the store writes them, and the board is then
 opened again as a daemon starts. The lane runs the real page in jsdom (`DomPage`, `test/dom/page.ts`) against the real server in the same process, and no
 browser. Its first version ran in headless Chromium (`test/e2e/press-n.e2e.ts`) and took most of that job; the layout it needed was never part of the question.
 
@@ -5302,7 +5380,9 @@ temporary workflow `tmp-accept`, which also holds the acceptance runs of the con
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
 waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (the current page with that edit,
-judged against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page).
+judged against the current page when it differs from the base, else against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page). Against
+the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
+15 ms more per draw ×1.005 (board-cpu-usage).
 
 **Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
 (the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two

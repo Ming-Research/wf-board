@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Continue the unread list and the daemon's rules from the state before
+
+Nodes: storage, storage/write-path, storage/write-path/rules-reuse, storage/write-path/page-rules-reuse
+
+Summary: After the quick fixes a `set_tags` write still cost the daemon 36.6 to 46.5 ms of CPU on hosted runners with nothing unread, and 55.5 to 75.7 ms with the owner 4,000 commits behind, because the open page asked for the whole unread list after every change event and each new head walked the history from the read cursor again; the daemon also derived the rules of every published state from nothing, about 16 ms a write in a profile, where the page already built them from the state before. The unread list is now carried on over the new commits of each head and the page gets only the stops after those its version shares; the daemon's rule cache is told which state each published one was made from and reuses the page's step. A write now commits exactly its own paths with `git commit --only` and no longer refuses while something is staged by hand, because starting a git process was about half of the remaining CPU and the start still refuses uncommitted board documents unless a board write to the document came first (node storage). The node page-rules-reuse is renamed rules-reuse, since its decision now governs the daemon's reuse as well as the page's. The refused alternatives (the page deriving the list, the change pushed with every event, the look at the index before every write, a look at the index in the maintenance step) are in the nodes; the numbers are in docs/design.md, section 4, Write cost.
+
 ## 2026-10-19 Judge the CI time gate without the wait for a runner
 
 Nodes: testing/ci-time-gate

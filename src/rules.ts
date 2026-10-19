@@ -760,6 +760,15 @@ export function changeSeeds(before: Pick<Snapshot, "decisions" | "notes">, after
 export class DerivedCache {
   private latest?: ActivityIndex;
   private readonly byState = new WeakMap<object, { bucket: number; rules: Rules }>();
+  /** The newest published state, the state one write made it from and what that write changed (`follows`). Only the newest step
+   * is kept: a step per state, each holding the state before it, would keep every state since the cache began. */
+  private step?: { after: object; before: object } & Omit<PreviousRules, "rules">;
+  /** `after` was published by one write on `before` that changed the documents `changed` and moved the activity by `activity`:
+   * its Rules object is built from before's when that one is of the same minute (rules' `previous`), as the page builds its own
+   * (docs/design.md, section 4, Write cost). It replaces the step before, so the cache holds two states at most. */
+  follows(after: RulesInput, before: RulesInput, changed: PreviousRules["changed"], activity?: ActivityDelta): void {
+    this.step = { after, before, changed, ...(activity ? { activity } : {}) };
+  }
   /** The activity index of `s`, advanced from the newest index this cache made. */
   activity(s: ActivityInput): ActivityIndex {
     this.latest = this.latest ? this.latest.advance(s) : ActivityIndex.build(s);
@@ -768,7 +777,9 @@ export class DerivedCache {
   rules(s: RulesInput, now = Date.now()): Rules {
     const bucket = Math.floor(now / 60_000), hit = this.byState.get(s);
     if (hit?.bucket === bucket) return hit.rules;
-    const made = rules(s, now, { activity: () => this.activity(s) });
+    const step = this.step?.after === s ? this.step : undefined, prior = step && this.byState.get(step.before);
+    const previous = step && prior?.bucket === bucket ? { rules: prior.rules, changed: step.changed, ...(step.activity ? { activity: step.activity } : {}) } : undefined;
+    const made = rules(s, now, { activity: () => this.activity(s), ...(previous ? { previous } : {}) });
     this.byState.set(s, { bucket, rules: made });
     return made;
   }
@@ -789,12 +800,16 @@ const carried = new WeakMap<Rules, Carried>();
 /** Why `r` derived everything from scratch ("no previous", "minute", "document", "activity", "session"), or null when it
  * reused the previous Rules object it was given. */
 export function rebuiltBecause(r: Rules): string | null { const kept = carried.get(r); return kept ? kept.rebuilt : "no previous"; }
+/** The time `r` answers for: the time it was asked for, or, when it reused its previous one, the time that one answered for. */
+export function answersFor(r: Rules): number | undefined { return carried.get(r)?.now; }
 /**
  * `activity`, when given, must be the index of exactly `s` (ActivityIndex.build(s) or advanced to s); without it the times are
  * scanned from `s`. `previous`, when given, lets a write that changed no field a status reads keep what was derived before it
  * (docs/design.md, section 4, Write cost).
  */
-export function rules(s: RulesInput, now = Date.now(), options: { activity?: ActivityIndex | (() => ActivityIndex); previous?: PreviousRules } = {}): Rules {
+export function rules(s: RulesInput, now = Date.now(), { activity: activityOption, previous: previousOption }: { activity?: ActivityIndex | (() => ActivityIndex); previous?: PreviousRules } = {}): Rules {
+  // No function below reads `previousOption`: a closure that did would keep the Rules object before this one, and through it
+  // every earlier one with its state, alive as long as this one (docs/design.md, section 4, Write cost).
   function stepDays(step: PlanStep): number { return step.since ? Math.max(0, Math.floor((now - Date.parse(step.since)) / (24 * 60 * 60 * 1000))) : 0; }
   function stepLine(step: PlanStep): string {
     if (step.state === "done") return `✓ ${step.text} (${step.doneAt!.slice(5, 10)})`;
@@ -1163,8 +1178,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   // overwritten revisions and deleted cards/notes, which current fields cannot.
   function activity(): { intervals: Array<[number, number]>; changedAt(id: string): number } {
     return cached("activity", "", () => {
-      if (options.activity) {
-        const index = typeof options.activity === "function" ? options.activity() : options.activity;
+      if (activityOption) {
+        const index = typeof activityOption === "function" ? activityOption() : activityOption;
         return { intervals: index.intervals(now), changedAt: (id: string) => index.changedAt(id, now) };
       }
       const writes: number[] = [], changed = new Map<string, number>();
@@ -1351,7 +1366,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     for (const [k, v] of was.targetStatuses) targetStatuses.set(k, v as Status | undefined);
     return null;
   }
-  const asked = now, rebuilt = options.previous ? reuse(options.previous) : "no previous";
+  const asked = now, rebuilt = previousOption ? reuse(previousOption) : "no previous";
   if (rebuilt !== null) { now = asked; memo.clear(); }
   const made: Rules = {
     stepDays, stepLine, planRatio, progressShare,

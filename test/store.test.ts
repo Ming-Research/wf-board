@@ -308,12 +308,13 @@ test("post-commit metadata failure rolls back HEAD, files, index and memory with
   const bytes = await readFile(join(dir, "items/a.yaml"));
   let emitted = false;
   store.onChange(() => { emitted = true; });
-  const internals = store as unknown as { git(args: string[], author?: string): Promise<string> };
-  const originalGit = internals.git.bind(store);
+  // The commit's time is read after git committed, through the cat-file process.
+  const internals = store as unknown as { blobs: { object(spec: string): Promise<unknown> } };
+  const originalObject = internals.blobs.object.bind(internals.blobs);
   let failed = false;
-  t.mock.method(internals, "git", async (args: string[], author?: string) => {
-    if (!failed && args.includes("--format=%H%x00%aI")) { failed = true; throw new Error("Metadata unavailable"); }
-    return originalGit(args, author);
+  t.mock.method(internals.blobs, "object", async (spec: string) => {
+    if (!failed && /^[0-9a-f]{40}$/.test(spec)) { failed = true; throw new Error("Metadata unavailable"); }
+    return originalObject(spec);
   });
   await assert.rejects(store.commit({ author: "a", message: "Rollback committed change", puts: [put("a", item("Bad"), 1), put("new", item())] }), /Metadata unavailable/);
   assert.ok(failed); assert.equal(emitted, false);
@@ -388,12 +389,30 @@ test("preexisting staged files cannot enter a board transaction", async t => {
   const { dir, store } = await setup(t);
   await writeFile(join(dir, "unrelated.txt"), "Keep this out of the board commit");
   await git(dir, "add", "unrelated.txt");
-  const snapshot = store.snapshot();
-  await assert.rejects(store.commit({ author: "a", message: "Create", puts: [put("a", item())] }), /staged index/);
-  assert.deepEqual(store.snapshot(), snapshot);
-  assert.equal(await git(dir, "rev-parse", "HEAD"), snapshot.head);
-  assert.equal(await git(dir, "diff", "--cached", "--name-only"), "unrelated.txt");
-  await assert.rejects(readFile(join(dir, "items/a.yaml")), { code: "ENOENT" });
+  const ats: string[] = [];
+  store.onChange(change => ats.push(change.at));
+  const { commit } = await store.commit({ author: "a", message: "Create", puts: [put("a", item())] });
+  assert.equal(await git(dir, "rev-parse", "HEAD"), commit);
+  assert.equal(store.snapshot().head, commit);
+  assert.equal(await git(dir, "show", "--name-only", "--format=", commit), "items/a.yaml\nnumbers.yaml", "the commit holds the write's paths alone");
+  assert.equal(await git(dir, "diff", "--cached", "--name-only"), "unrelated.txt", "what was staged by hand stays staged");
+  const [stamp] = (await git(dir, "show", "-s", "--format=%aI", commit)).split("\n");
+  assert.deepEqual(ats, [new Date(stamp!).toISOString()], "the write's time is its commit's author time");
+});
+
+test("a board document changed by hand is refused at the next start, unless a board write to it came first", async t => {
+  const { dir, store } = await setup(t);
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("b", item())] });
+  // Hand edits staged in two documents: the board writes one of them before the next start.
+  for (const id of ["a", "b"]) await writeFile(join(dir, `items/${id}.yaml`), (await readFile(join(dir, `items/${id}.yaml`), "utf8")).replace("An item", "Edited by hand"));
+  await git(dir, "add", "items/a.yaml", "items/b.yaml");
+  await store.commit({ author: "a", message: "Update", puts: [put("a", item("Written by the board"), 1)] });
+  assert.equal(await git(dir, "diff", "--cached", "--name-only"), "items/b.yaml", "the write committed its own document, over the hand edit");
+  await assert.rejects(Store.open(dir), /uncommitted changes: M {2}items\/b\.yaml$/);
+  // Once the remaining edit is undone, the board opens with the board's own version of the document it wrote.
+  await git(dir, "reset", "-q", "--", "items/b.yaml");
+  await git(dir, "checkout", "--", "items/b.yaml");
+  assert.equal((await Store.open(dir)).snapshot().items.a!.title, "Written by the board");
 });
 
 async function pauseCommit(dir: string) {
