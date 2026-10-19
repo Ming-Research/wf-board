@@ -160,7 +160,7 @@ export async function slotsLine(t: Hooks, reverts: Revert[] = []) {
   const slots = () => bp.$("#agents .agents-slots");
   assert.equal(bp.visible(bp.$("#agents")), false, "the runner has reported no slots yet: no list");
   board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 2, dryForSeconds: 600 }]);
-  await bp.waitFor(() => !!slots(), "the line about the free slots", 10_000);
+  await bp.waitFor(() => !!slots(), "the line about the free slots", 5_000);
   assert.match(slots()!.textContent!, /^名额：1 级 空着 8 个（共 10），派活队列里没有能开工的活已 10 分钟$/);
   assert.equal(bp.visible(bp.$("#agents")), true, "the slots alone make the list appear");
   assert.equal(slots()!.classList.contains("idle"), false, "ten minutes with nothing to start does not mark the line");
@@ -168,7 +168,7 @@ export async function slotsLine(t: Hooks, reverts: Revert[] = []) {
   assert.equal(board.told.length, 0, "and the owner is told nothing");
   // An hour and a minute of nothing to start: the line is marked, and the owner is told once.
   board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 2, dryForSeconds: 3660 }]);
-  await bp.waitFor(() => /已 1 小时 1 分$/.test(slots()?.textContent ?? ""), "the line to count past the hour", 10_000);
+  await bp.waitFor(() => /已 1 小时 1 分$/.test(slots()?.textContent ?? ""), "the line to count past the hour", 5_000);
   assert.equal(slots()!.classList.contains("idle"), true, "an hour with nothing to start marks the line");
   assert.deepEqual(board.told.map((x: { title: string }) => x.title), ["名额空着 · 1 级"], "the owner is told once");
   // The line stays under the heading when the list is folded: it is what the owner must see without opening anything.
@@ -178,7 +178,7 @@ export async function slotsLine(t: Hooks, reverts: Revert[] = []) {
   assert.ok(slots(), "the line about the slots stays under the heading when the list is folded");
   // All the slots taken: the line says full, and is not marked.
   board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 10, dryForSeconds: 3700 }]);
-  await bp.waitFor(() => /满 10\/10/.test(slots()?.textContent ?? ""), "the line to say the pool is full", 10_000);
+  await bp.waitFor(() => /满 10\/10/.test(slots()?.textContent ?? ""), "the line to say the pool is full", 5_000);
   assert.equal(slots()!.classList.contains("idle"), false, "a full pool is not idle");
   assert.deepEqual(bp.errors, []);
 }

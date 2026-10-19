@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - name: server
-            files: test/under.test.ts test/agent-list.test.ts test/runner-pools.test.ts test/runner-heartbeat.test.ts test/agents.test.ts test/runner-rows.test.ts test/look.test.ts test/mcp.test.ts test/lean.test.ts test/ops.test.ts test/http.test.ts test/whole-view.test.ts test/timeline.test.ts test/access.test.ts test/candidates.test.ts test/dispatch.test.ts test/query.test.ts test/wake.test.ts
+            files: test/under.test.ts test/agent-list.test.ts test/runner-pools.test.ts test/runner-heartbeat.test.ts test/agents.test.ts test/runner-rows.test.ts test/look.test.ts test/mcp.test.ts test/lean.test.ts test/ops.test.ts test/http.test.ts test/whole-view.test.ts test/timeline.test.ts test/access.test.ts test/candidates.test.ts test/dispatch.test.ts test/query.test.ts test/wake.test.ts test/test-shard.test.ts
           - name: page
             files: test/web.test.ts test/dom/agents.test.ts test/dom/runner-block.test.ts test/dom/whole.test.ts
           - name: spoiled
