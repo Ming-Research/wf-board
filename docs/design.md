@@ -5710,6 +5710,32 @@ seconds, the last job in each being a part of the n-key lane (`witnesses` or `ti
 ended 52 to 59 seconds after the start), so the test shards are no longer what ends a run
 last.
 
+**With the table brought up to date** (hosted runners, 19 October 2026): the cost table had
+gone stale. `runner-table.test.ts` was recorded at 15.6 seconds and took 24 to 36 (it ran
+one scenario of about 1.2 seconds 17 times, once on the current page and 16 times on a page with
+one thing spoiled), and 14 other files differed from their measured seconds by 5 or more, so
+the shards' file seconds ranged from 31 to 75 against an ideal 55 and the slowest shard's
+`tests` step was 29 to 35 seconds in six runs before the change (35, 35, 34, 32, 31, 29). The file became a module with the scenario
+(`test/dom/runner-table.ts`) and four test files, as the agent list scenarios are, and the table
+was rewritten from the mean of seven runs of the test shards (three full CIs before the split and four runs after it, so the four new files have four
+samples each; the shard counts differ, but in each a file runs three at a time). In the four runs of 20 shards read first (runs 39251491131, 39252111546, 39251144264 and
+39254317071, 80 shard samples) a shard's
+step is about 0.32 times the sum of its files' seconds plus 5.5 (residual standard deviation
+2.7 seconds), and in only 8 of the 80 samples was a file of the shard longer than the step, so
+the sum decides a shard, not its largest file. With the new table the sums of the 20 shards come
+out level: one run took `tests` 13 to 29 seconds (mean 23.4, against 22.6 to 23.6 before) and
+its last shard ended 44 seconds after the start of the run; 24 shards took 14 to 27 (mean 20.7,
+last end 44) and 28 shards 9 to 27 (mean 17.8, last end 40), one run each, where the model
+predicts the means 23.4, 20.4 and 18.3. The count stays 20: in six runs before the change the n-key jobs took 25 to 44
+seconds and the last of them ended 42 to 51 seconds after the start of the run (the last test shard 45 to 61), so more
+shards would not shorten the run much, and every four shards add four jobs to a run against the 60 concurrent jobs of the
+organization's plan. Two settings that looked cheap gave nothing on whole shards: a temp directory in memory (`TMPDIR=/dev/shm`, mean
+`tests` 22.8 seconds against 23.2) and git without fsync (no difference on one file). Counters put in the shared set-up of the DOM tests
+for one run of the 20 shards (run 39255686754, removed again) found 34 of the 35 DOM files (the one missing takes 2.5 seconds); the 35 take 554 of the 1,086 seconds of file time of that run (51%); seeding a board is 7.5% of all file seconds
+(79 boards), opening a page 13.7% (189 pages, bundling the page included, 1.5%), so the page checks themselves are about 30% and the other test
+files 49%. Copying a seeded board would save about 6% at most; opening a page has no such cheap cut. Bringing the slowest of 100 samples to 20
+seconds needs the mean near 13, the sum per shard near 23 seconds, which is a cut of the total by about 55%, or a faster runner.
+
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
 nothing would run it, which the table with a default cost cannot do.
