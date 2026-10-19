@@ -515,14 +515,20 @@ test("write_card takes a question, options with their grounds and a confidence, 
   assert.match(text(await client.callTool({ name: "context", arguments: { id: "b" } })), /撤回了决策卡「中文方案？」：No longer needed/);
 });
 
-test("write_card needs a kind to create a card, context shows it as a line of its own, and a card written before the field is read as a design card", async t => {
-  const { client, text, store } = await connected(t);
+/** What the kind tests of write_card and context share: a new card on item a, and a way to read what context answers for a key. */
+async function kindFixture(t: Parameters<typeof connected>[0]) {
+  const fixture = await connected(t), { client, text } = fixture;
   const options = [{ text: "First", detail: "Does the first", recommended: true }, { text: "Second", detail: "Does the second" }, { text: "Third", detail: "Does the third" }];
   const card = { author, key: "ask-1", item: "a", question: "Which?", options, confidence: { score: 3, reason: "Judgment only" } };
   const context = async (id: string) => text(await client.callTool({ name: "context", arguments: { id } }));
+  return { ...fixture, options, card, context };
+}
+
+test("write_card refuses a new card without a kind or with an unknown one, and says what the kinds are and how to choose", async t => {
+  const { client, text, store, card } = await kindFixture(t);
   // A new card that says nothing of its kind is refused, and the refusal names the three kinds.
   const missing = await client.callTool({ name: "write_card", arguments: card });
-  assert.equal(missing.isError, true); assert.match(text(missing), /kind: say what the card asks, one of design, inquiry, rule\. design: .*inquiry: .*rule: .*Choose by what the card asks, not by how the question is worded\./);
+  assert.equal(missing.isError, true, "a card without a kind is refused"); assert.match(text(missing), /kind: say what the card asks, one of design, inquiry, rule\. design: .*inquiry: .*rule: .*Choose by what the card asks, not by how the question is worded\./);
   assert.equal(store.snapshot().decisions["ask-1"], undefined, "a refused write makes no card");
   // A word that is none of the three is refused by the argument check, which lists them.
   const wrong = await client.callTool({ name: "write_card", arguments: { ...card, kind: "question" } });
@@ -530,22 +536,35 @@ test("write_card needs a kind to create a card, context shows it as a line of it
   // The parameter's description, which every agent sees, says what the kinds are and how to choose.
   const description = ((await client.listTools()).tools.find(tool => tool.name === "write_card")!.inputSchema.properties!.kind as { description: string }).description;
   assert.match(description, /design: .*inquiry: .*rule: .*Choose by what the card asks, not by how the question is worded\./);
-  // With a kind the card is made, stores it, and context shows it under the card's first line, on the card and in its item.
+});
+
+test("context shows the kind of a card as a line of its own, on the card and in its item", async t => {
+  const { op, context, card } = await kindFixture(t);
+  // Written through the operation, so that the test judges what context shows and not what the tool does with the parameter.
+  await op.writeCard({ ...card, kind: "inquiry" });
+  assert.match(await context("ask-1"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
+  assert.match(await context("a"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
+});
+
+test("a card written before the field is read as a design card, open or closed, and stays without a kind in storage", async t => {
+  const { store, context } = await kindFixture(t);
+  // The seeded cards were written before the field existed: no kind is stored, and context says design for both.
+  assert.equal(store.snapshot().decisions.choice!.kind, undefined);
+  assert.match(await context("choice"), /^choice · OPEN · 中文方案？ · rev 1 · #\d+\nkind: design\nblocks: /m);
+  assert.match(await context("b"), /^ruled · RULED · 旧方案？ · #\d+\nkind: design\nchosen A: Old/m);
+});
+
+test("write_card takes a kind through the tool, and a revision keeps the kind or changes it", async t => {
+  const { client, text, store, card, options, context } = await kindFixture(t);
   const created = await client.callTool({ name: "write_card", arguments: { ...card, kind: "inquiry" } });
   assert.equal(created.isError, undefined, text(created));
   assert.equal(store.snapshot().decisions["ask-1"]!.kind, "inquiry");
-  assert.match(await context("ask-1"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
-  assert.match(await context("a"), /^ask-1 · OPEN · Which\? · rev 1 · #\d+\nkind: inquiry$/m);
   // A revision that leaves the kind out keeps it; one that gives a kind changes it.
   const kept = await client.callTool({ name: "write_card", arguments: { ...card, rev: 1, question: "Which one?" } });
   assert.equal(kept.isError, undefined, text(kept)); assert.equal(store.snapshot().decisions["ask-1"]!.kind, "inquiry");
   const changed = await client.callTool({ name: "write_card", arguments: { ...card, rev: 2, kind: "design" } });
   assert.equal(changed.isError, undefined, text(changed)); assert.match(await context("ask-1"), /^kind: design$/m);
-  // The seeded cards were written before the field existed: no kind is stored and they are read as design cards, open or closed.
-  assert.equal(store.snapshot().decisions.choice!.kind, undefined);
-  assert.match(await context("choice"), /^choice · OPEN · 中文方案？ · rev 1 · #\d+\nkind: design\nblocks: /m);
-  assert.match(await context("b"), /^ruled · RULED · 旧方案？ · #\d+\nkind: design\nchosen A: Old/m);
-  // Revising such a card without a kind leaves it without one, and giving a kind fills it in.
+  // Revising a card with no kind stored without giving one leaves it without; giving a kind fills it in.
   const legacy = { author, key: "choice", item: "b", question: "中文方案？", options, confidence: { reason: "Judgment only" } };
   const left = await client.callTool({ name: "write_card", arguments: { ...legacy, rev: 1 } });
   assert.equal(left.isError, undefined, text(left)); assert.equal(store.snapshot().decisions.choice!.kind, undefined);
