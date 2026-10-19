@@ -47,7 +47,7 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   const rows = bp.$$("#agents .runner-row"), by = (id: string) => rows.find(r => r.dataset.agent === id)!;
   assert.equal(rows.length, 4);
   const header = bp.$("#agents .runner-head");
-  assert.deepEqual([...header!.children].map(c => c.textContent), ["标题", "状态", "在做或在等", "这个状态", "合计"], "the columns are named");
+  assert.deepEqual([...header!.children].map(c => c.textContent), ["标题", "状态", "在做或在等", "这个状态", "合计", "时间线"], "the columns are named");
   // A person's work first (the longest in its state first), then the turn running, then the waiting.
   assert.deepEqual(new Set(rows.slice(0, 2).map(r => r.dataset.agent)), new Set([failed, asking]), "an ask to the owner and an exception come first");
   assert.deepEqual(rows.slice(2).map(r => r.dataset.agent), [running, waiting], "then the turn running, then what waits");
@@ -56,7 +56,7 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
 
   for (const id of [running, failed, waiting, asking]) {
     const row = by(id), title = s.items[id]!.title, cells = [...row.children].map(c => c.className.split(" ")[0]);
-    assert.deepEqual(cells, ["rt-title", "agent-state", "rt-what", "rt-since", "rt-total"], `${id}: the five cells of a row, the title first`);
+    assert.deepEqual(cells, ["rt-title", "agent-state", "rt-what", "rt-since", "rt-total", "rt-line"], `${id}: the six cells of a row, the title first and the line last`);
     const name = bp.$(".rt-name", row)!;
     assert.equal(name.textContent, title, `${id}: the title stands in the row`);
     assert.ok(!row.textContent!.includes(id), `${id}: the key is not in the row`);
@@ -71,6 +71,14 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     const said = sayings(row);
     assert.doesNotMatch(said, /0578e89|\/Users|Library\/Logs|~\//, `${id}: no commit id and no path of the machine`);
   }
+  // The line of the work (src/timeline.ts): one report each, so one segment of the kind the state makes, which says on hover what it is.
+  for (const [id, kind, label] of [[running, "work", "干活"], [failed, "person", "要人看"], [waiting, "items", "等条目"], [asking, "owner", "等主人"]] as const) {
+    const segments = bp.$$(".rt-line .tl", by(id));
+    assert.deepEqual(segments.map(x => x.dataset.kind), [kind], `${id}: the line has one segment, of the kind its state makes`);
+    assert.ok(segments[0]!.classList.contains("tl-" + kind), `${id}: the segment is coloured by its kind`);
+    assert.match(segments[0]!.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
+  }
+  assert.match(bp.$(".rt-line .tl", by(asking))!.getAttribute("title")!, new RegExp(s.decisions[card]!.question.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "an ask's segment says the question of the card it waits for");
   // What each row says in the wide column: the last action of the turn, the note, the titles of what it waits for, the question of the card.
   assert.equal(bp.$(".rt-what", by(running))!.textContent, "改 app.ts");
   assert.equal(bp.$(".rt-what", by(failed))!.textContent, "的 CI 红了，日志在 wf-board.log");
@@ -109,6 +117,14 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "a long line in the wide column was not cut to one line",
     reverts: [html("the line is not cut", ".rt-what, .rt-total { overflow: hidden; text-overflow: ellipsis; }\n", "")], reason: /a long rt-what is cut to one line/,
+  },
+  {
+    bug: "a segment of the line said nothing on hover",
+    reverts: [app("the segment has no hover", "cell.title = segmentTip(seg);", "")], reason: /the hover of the segment says what it is/,
+  },
+  {
+    bug: "a segment of the line was not coloured by its kind",
+    reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind + (seg.down ? " down" : ""));', 'const cell = el("span", "tl" + (seg.down ? " down" : ""));')], reason: /the segment is coloured by its kind/,
   },
   {
     bug: "a click on the title opened nothing",

@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { RUNNER_ASKS, RUNNER_STATES } from "./model.ts";
 import type { Snapshot } from "./model.ts";
 
 /** The format of the startup cache (docs/design.md, the activity index). Change it whenever the cache holds
  * something else or the replay derives it differently: a cache of another version is refused, and the next start
  * scans the whole history once and writes a new one. */
-export const STARTUP_CACHE_VERSION = 2;
+export const STARTUP_CACHE_VERSION = 3;
 
 type Activity = NonNullable<Snapshot["activity"]>;
 
@@ -17,6 +18,9 @@ const CachedActivity: z.ZodType<{ [K in keyof Activity]-?: undefined extends Act
   pauses: z.record(z.string(), z.array(z.object({ start: z.string(), end: z.string().optional() }).strict())).nullable(),
   sessions: z.record(z.string(), z.object({ name: z.string(), at: z.string() }).strict()).nullable(),
   agents: z.record(z.string(), z.array(z.object({ item: z.string(), at: z.string() }).strict())).nullable(),
+  states: z.record(z.string(), z.array(z.object({
+    at: z.string(), state: z.enum(RUNNER_STATES), to: z.enum(RUNNER_ASKS).optional(), cards: z.array(z.string()).optional(), items: z.array(z.string()).optional(), what: z.string().optional(), until: z.string().optional(),
+  }).strict())).nullable(),
 }).strict();
 
 /** What the pause replay needs of an item (store.ts pauseProjection): project, record, owned targets, pause. */

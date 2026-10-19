@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Draw the state timeline of each job
+
+Nodes: mcp/timeline, storage/activity, page/agent-list
+
+Summary: The agent list showed only the state a job is in now, so where its time went (each round, and each wait for CI, the owner, the architect or a 14900K run) could be found only by adding up the runner's lines in the item's log. The activity index now also keeps, for each item, the runner's reports that began a state, derived from the history's `report_state` commits (1463 of 32978 on the live board) by one function for live writes and the replay, so finished work has its line too and the startup cache changes format once; one function makes the segments from those starts, the dispatch records, the pause spans and the item's end, and the `timeline` tool and the runner's block draw its result, the block as a bar of fixed height in the row's last cell. A stretch is drawn as long as it took up to three hours and a tenth beyond; pauses replace the state and a wait with no engineer session open is marked. The refused alternatives (a segment stored on the item at each report, a read of the item's history for each request, true scale, equal widths, a block apart from the table, a segment for the architect's turn) are in the node; the derivation is in docs/design.md, section 5 (the activity index) and section 7, Agent list.
+
 ## 2026-10-19 Mark an item as standing
 
 Nodes: plans/standing, plans, mcp/whole-view

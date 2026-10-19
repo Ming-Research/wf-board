@@ -618,9 +618,18 @@ export interface Snapshot {
     /** Per session name, the last two distinct items it wrote to, newest first, from the same trailers. The page's
      * agent list reads it (src/agents.ts). Like `sessions`, an observation of writes, not an assignment of work. */
     agents?: Record<string, AgentTouch[]>;
+    /** Per item, the reports of the runner that began a state of the work, oldest first, from the commits of `report_state`
+     * (src/timeline.ts, docs/design.md, section 7, Agent list). The page and the `timeline` tool draw the work's line from it. */
+    states?: Record<string, readonly StateStart[]>;
   };
 }
 /** One item a session wrote to and when. */
 export interface AgentTouch { item: string; at: string }
+/**
+ * The runner's report at the moment it began a state of the work: `at` is the report's `since`, and the rest is what the state
+ * says (`to` and `cards` of an ask, `items` of a wait for items, `what` and `until` of a wait for an event). A report that repeats the
+ * state leaves no start of its own. How many the index keeps for one item: STATE_STARTS_MAX in src/timeline.ts.
+ */
+export interface StateStart { at: string; state: RunnerState; to?: "owner" | "architect"; cards?: readonly string[]; items?: readonly string[]; what?: string; until?: string }
 /** How many items an agent keeps in the index and the list. */
 export const AGENT_TOUCHES = 2;

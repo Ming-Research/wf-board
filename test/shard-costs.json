@@ -106,6 +106,7 @@
   "test/tags.test.ts": 3.6,
   "test/test-shard.test.ts": 0.2,
   "test/threads.test.ts": 0.2,
+  "test/timeline.test.ts": 3.0,
   "test/update.test.ts": 0.2,
   "test/wake-agents.test.ts": 3.0,
   "test/wake.test.ts": 3.7,

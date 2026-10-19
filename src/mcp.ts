@@ -8,6 +8,7 @@ import * as q from "./query.ts";
 import { dispatchRows, dispatchReport, normalizeTime } from "./dispatch.ts";
 import { candidates, candidatesText, candidatesUnder, candidatesUnderText } from "./candidates.ts";
 import { BUCKETS, BUCKET_TEXT, wholeView, wholeViewText } from "./whole-view.ts";
+import { LONGEST_DEFAULT, LONGEST_MAX, SEGMENT_TEXT, SEGMENT_KINDS, longestWaits, longestWaitsText, timelineOfItem, timelineText } from "./timeline.ts";
 import type { DispatchFilters } from "./dispatch.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import type { Wake } from "./wake.ts";
@@ -299,6 +300,18 @@ export function createMcpServer({ store, ops, now, wake, slow, credential, budge
   register("whole_view", `Where does every open work item stand? One pass over the board, each open work item in one of five kinds, most pressing first: ${BUCKETS.map(b => `${b} (${BUCKET_TEXT[b]})`).join(", ")}. overdue: working or waiting past the limit for its state, or reported as an exception; unattended: unfinished rows but no session, no pause and nothing the board knows it waits for (half done first, then not started); working: the runner reports a turn in progress, or a live session holds the item; waiting: the runner reports it waits for CI, a card, the architect, items, a 14900K run or a merge, or the plan shows it blocked, with what for and how long; parked: a pause marker holds it, listed once per pause with how many items stand under it. The answer is the totals, up to a few rows per kind with the rest counted, and what each project has left; items in a backlog are counted, not listed. bucket lists one kind in full (up to 40 rows); project narrows to one project.`, {
     bucket: z.enum(BUCKETS).describe("List only this kind, in full.").optional(), project: text("Exact configured project name: only its items.").optional(),
   }, a => { const x = read(); return wholeViewText(wholeView(x.snapshot, x.rules, now ? Date.parse(now()) : Date.now()), a); });
+  register("timeline", `Where did the time of a piece of work go? The runner's reports as a line: the segments of its life in order, each a kind (${SEGMENT_KINDS.map(k => SEGMENT_TEXT[k]).join("、")}), a start, a length and what it waited for (the cards, the items, the event), and the totals for each kind. 放下等待 marks the part of a wait in which no engineer session was open; 暂停 is a stretch the item was paused. A finished item keeps its whole line, ending in 做完 or 取消. With id: that item's line (the newest 60 segments, the rest counted). Without id: the longest waits, over every open, unpaused item the runner has reported on (waits for CI, the owner, the architect, items, a 14900K run, an event or a merge, and work stopped for a person), longest first, with how long each has gone on; limit says how many (default ${LONGEST_DEFAULT}, up to ${LONGEST_MAX}).`, {
+    id: ref.optional(), limit: z.number().int().min(1).max(LONGEST_MAX).describe(`How many of the longest waits to list when no id is given; default ${LONGEST_DEFAULT}.`).optional(),
+  }, a => {
+    const x = read(), at = now ? Date.parse(now()) : Date.now();
+    if (a.id !== undefined) {
+      const found = q.resolveId(x.snapshot, a.id), it = found?.kind === "item" ? x.snapshot.items[found.id] : undefined;
+      if (!found || !it) throw new Error(`id ${a.id}: choose an existing item (its key, or its number such as #812)`);
+      return timelineText(found.id, it.title, timelineOfItem(x.snapshot, x.rules, found.id, at));
+    }
+    const lines = Object.keys(x.snapshot.items).filter(id => x.snapshot.items[id]!.runner && x.rules.isOpenWork(id) && !x.rules.isPaused(id)).map(id => ({ id, timeline: timelineOfItem(x.snapshot, x.rules, id, at) }));
+    return longestWaitsText(longestWaits(lines, a.limit ?? LONGEST_DEFAULT), id => x.snapshot.items[id]!.title, lines.length, at);
+  });
   register("followups", "Coordinator follow-up: sent owner notes older than the given age, with their projects.", { minutes: z.number().nonnegative().describe("Age threshold in minutes, exclusive; zero returns all older pending work.") }, a => { const x = read(); return JSON.stringify(q.followups(x.snapshot,x.rules,a,now?.())); });
   register("search", "Where is this text mentioned? Search Chinese or other substrings across titles, heads, plan text, target goals, target values, current values, comparison baselines, logs, decisions and owner notes. Read context for a hit before editing it.", {
     query: text("Case-insensitive substring to find, including Chinese text."), filters: z.object({ ...scope, status: statuses, kind: z.array(z.enum(["item", "card", "note"])).describe("Search only these document kinds.").optional(), since: Time.describe("Only fields with timestamps at or after this ISO time; logs and notes use their own times.").optional(), limit: limit(20) }).strict().describe("Narrow the matches to relevant board context.").optional(),
