@@ -20,4 +20,4 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # The files that hold the page's n, its check on the page and its witnesses.
-      - run: node --test --test-timeout=300000 test/web.test.ts test/dom/page-wrap.test.ts test/dom/witnesses-1.test.ts test/dom/witnesses-2.test.ts test/dom/witnesses-3.test.ts test/dom/witnesses-4.test.ts test/dom/witnesses-5.test.ts test/test-shard.test.ts
+      - run: node --test --test-timeout=300000 test/dom/page-wrap.test.ts
