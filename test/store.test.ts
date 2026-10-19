@@ -415,7 +415,7 @@ test("a write adds only the files new to the head; a change or a deletion of a d
   const { revs } = await store.commit({ author: "a", message: "Change a, delete b, create c", puts: [put("a", item("Changed"), 1), put("c", item())], deletes: [{ kind: "item", id: "b", expectRev: 1 }] });
   assert.deepEqual((await adds()).slice(before), [["items/c.yaml"]], "only the new file is added: the numbers file is in the head since the first write");
   assert.equal(revs.a, 2);
-  assert.equal(await git(dir, "show", "--name-status", "--format=", "HEAD"), "M\titems/a.yaml\nD\titems/b.yaml\nA\titems/c.yaml\nM\tnumbers.yaml");
+  assert.equal(await git(dir, "show", "--name-status", "--no-renames", "--format=", "HEAD"), "M\titems/a.yaml\nD\titems/b.yaml\nA\titems/c.yaml\nM\tnumbers.yaml");
   assert.equal(parse(await git(dir, "show", "HEAD:items/a.yaml")).title, "Changed", "the board's version of a is committed, not the one staged by hand");
   assert.equal(await git(dir, "status", "--porcelain"), "", "the index and the working tree are the head's");
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());

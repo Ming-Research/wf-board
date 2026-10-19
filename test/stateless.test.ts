@@ -50,7 +50,9 @@ test("a client keeps working across a replacement of the daemon process, and a r
   async function stop(daemon: ChildProcess): Promise<void> {
     const exited = once(daemon, "exit");
     daemon.kill("SIGTERM");
-    const [code] = await Promise.race([exited, sleep(10_000).then(() => { throw new Error("the daemon was still running 10 s after SIGTERM"); })]) as [number | null];
+    // The deadline's timer does not hold the process: the daemon's exit ends the race, and a timer left running would keep the
+    // file's process, and its shard, waiting the full 10 seconds after the last test.
+    const [code] = await Promise.race([exited, sleep(10_000, undefined, { ref: false }).then(() => { throw new Error("the daemon was still running 10 s after SIGTERM"); })]) as [number | null];
     assert.equal(code, 0);
   }
 

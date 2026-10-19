@@ -8,6 +8,7 @@
 // (test/e2e/browser.e2e.ts). Docs/design.md, section 11.
 
 import { test } from "node:test";
+import assert from "node:assert/strict";
 import { startBoard } from "../e2e/board-server.ts";
 import { checkFit, checkZoom } from "./mermaid-checks.ts";
 import { SPOILED } from "./mermaid-spoiled.ts";

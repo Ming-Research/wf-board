@@ -23,8 +23,13 @@ const at = "2026-10-16T01:02:03Z";
 const item = (n: number) => ({ title: `Item ${n}`, group: "Test", head: "h".repeat(200), plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], updated: at });
 let counter = 0;
 const write = (store: Store) => { const n = ++counter; return store.commit({ author: "push-test", message: `Write ${n}`, puts: [{ kind: "item", id: `i${n}`, doc: item(n), expectRev: null }] }); };
-/** `promise`, or a failure after `ms`: with the push in the write queue a write never ends, and the test must say so and not hang. */
-const within = <T>(promise: Promise<T>, ms: number, what: string) => Promise.race([promise, sleep(ms).then((): never => { throw new Error(`${what} did not end within ${ms} ms`); })]);
+/** `promise`, or a failure after `ms`: with the push in the write queue a write never ends, and the test must say so and not hang.
+ * The timer goes when the promise ends first: a timer left running holds the file's process, and its shard, until it fires. */
+const within = async <T>(promise: Promise<T>, ms: number, what: string) => {
+  const deadline = new AbortController();
+  try { return await Promise.race([promise, sleep(ms, undefined, { signal: deadline.signal }).then((): never => { throw new Error(`${what} did not end within ${ms} ms`); })]); }
+  finally { deadline.abort(); }
+};
 
 /** A board with a bare remote behind the fake ssh. The fake's environment is set for this process while the test runs, since the
  * store runs git with the process's environment. */

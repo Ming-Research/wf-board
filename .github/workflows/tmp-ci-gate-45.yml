@@ -45,6 +45,8 @@ jobs:
       - name: tests
         env:
           NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+          LINGER_LOG: ${{ runner.temp }}/linger.txt
+          NODE_OPTIONS: --import ${{ github.workspace }}/scripts/tmp-linger.ts
         run: |
           timeout 60 node --test --test-timeout=40000 \
             --test-reporter=spec --test-reporter-destination=stdout \
@@ -52,6 +54,8 @@ jobs:
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
         run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+      - if: ${{ !cancelled() }}
+        run: echo LINGER; sort -rn "$RUNNER_TEMP/linger.txt" | cut -c1-300 || true
   # The n-key lane (test/nkey, docs/design.md, section 11, The n-key lane): the page in jsdom on a board of the live board's weight,
   # the counts of one press of n and its time against the base page, in four parts that each seed the board and run at once. A part
   # takes about 10 seconds to start and 15 to 30 to run. The time parts compare with the page of the base: on a main-line push the
@@ -131,32 +135,3 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=failure -f context=full-ci \
             -f description="full CI failure (the result job ended without a status)" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-  # The new store test watched failing on the store of the main line, which adds every path it writes.
-  witness:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/node-modules
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: |
-          git checkout origin/main -- src/store.ts
-          if node --test --test-name-pattern="adds only the files new to the head" test/store.test.ts; then echo "the test passed on the old store"; exit 1; fi
-          echo "the test failed on the old store, as it should"
-  # Where the seconds of the files that mostly wait go: each alone, every line of its report stamped as it comes.
-  linger:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: |
-          for f in test/shutdown.test.ts test/push.test.ts test/stateless.test.ts test/ops-roles.test.ts; do
-            echo "== $f"; start=$(date +%s.%N)
-            node --test --test-reporter=tap "$f" 2>&1 | while IFS= read -r line; do printf '%6.2f %s\n' "$(echo "$(date +%s.%N) - $start" | bc)" "$line"; done | grep -E "^ *[0-9.]+ (ok|not ok|# (tests|duration))" | cut -c1-140
-            echo "ended $(echo "$(date +%s.%N) - $start" | bc)"
-          done
