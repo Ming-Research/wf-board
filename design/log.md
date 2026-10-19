@@ -8,6 +8,12 @@ Nodes: page/diagrams/data-charts
 
 Summary: Item text could draw flow and structure diagrams but no data chart, and the library the page bundles already draws a bar and line chart (`xychart`) that the page left unusable: its first series color is `#ECECFF`, 1.17:1 on a white page, a Chinese category without quotes is a lexical error, and a bar chart without a y range is cut at the smallest value. The page now gives the library eight series colors for each theme, a clear plate and a height of 360 px, so a chart is written in the same fence as any diagram and drawn in the page's colors; the checks are in the DOM layer (what the page asks) and in the browser layer (what the real library draws). A chart library with a fence of its own, a renderer of our own and images were refused. The grounds, the refused alternatives and the measurements are in the node and in docs/design.md, section 7, Diagrams, Data charts.
 
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's approach section could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check `approach-stale` on an open work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only, leaving paused items out) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards

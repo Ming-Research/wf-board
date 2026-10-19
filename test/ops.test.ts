@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops, OpError } from "../src/ops.ts";
-import { rules, CARD_MISMATCH_LABEL } from "../src/rules.ts";
+import { rules, CARD_MISMATCH_LABEL, APPROACH_STALE_LABEL } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
@@ -978,3 +978,28 @@ test("cancelling an item withdraws its open cards in the same commit; reopening 
   assert.equal(store.snapshot().decisions["cancel-card-manual"]!.status, "withdrawn", "a card withdrawn by hand stays withdrawn");
 });
 
+test("a card ruled after the head was last written raises 做法待更新, and the update_item that rewrites the head answers it", async t => {
+  const { store } = await board(t);
+  let clock = Date.parse("2026-10-12T00:00:00Z");
+  const tick = (seconds = 60) => { clock += seconds * 1000; };
+  const op = ops(store, () => new Date(clock).toISOString().replace(/\.\d{3}Z$/, "Z"));
+  const stale = () => rules(store.snapshot()).checks("new").some(c => c.label === APPROACH_STALE_LABEL);
+  const rewrite = (head: string) => op.updateItem({ author, id: "new", rev: store.snapshot().items.new!.rev, head, reason: "Wrote the ruled design" });
+  await op.createItem({ ...asArchitect, key: "new", owner: "area", title: "New", head: "Several approaches are possible", accept: "New result passes" });
+  const ask = (key: string) => op.writeCard({ confidence: conf, author, key, item: "new", kind: "design", question: `Which approach for ${key}?`, options: [opt("A", true), opt("B"), opt("C")] });
+  await ask("first");
+  assert.equal(stale(), false, "a card not ruled yet asks nothing of the head");
+  tick(); await op.ruleCard({ author, key: "first", choice: "A" });
+  assert.equal(stale(), true, "ruled after the head was created");
+  // A write of anything but the head leaves the head older than the ruling.
+  tick(); await op.appendLog({ author, id: "new", text: "Evidence for approach A" });
+  assert.equal(stale(), true);
+  tick(); await rewrite("Approach A, because B and C were slower");
+  assert.equal(stale(), false, "the entry update_item writes for a changed head is later than the ruling");
+  // A second ruling asks again, and a head written within the second of the ruling is not older than it.
+  tick(); await ask("second");
+  tick(); await op.ruleCard({ author, key: "second", choice: "B" });
+  assert.equal(stale(), true);
+  await rewrite("Approach A for the first question, B for the second");
+  assert.equal(stale(), false, "a rewrite in the same second as the ruling is not older than it");
+});
