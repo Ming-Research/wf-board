@@ -1264,8 +1264,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
           if (problems.length) out.push(check("stage-format", `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`));
         }
         // A ruling can settle how the work is done, and the head's 做法 is where the owner reads it: a card ruled after the head was last
-        // revised asks for a rewrite. Paused work is not asked, as for 无人推进 and 在等文字; it is asked again once it resumes.
-        if (isOpenWork(id) && !isPaused(id)) {
+        // revised asks for a rewrite. Paused work is asked too, as it is for the other checks of form: its head is read as well.
+        if (isOpenWork(id)) {
           const ruled = own.flatMap(key => { const d = index().decisions.get(key); return d?.status === "ruled" && d.ruledAt !== undefined ? [d] : []; });
           const revised = ruled.length ? headRevisedAt(it) : -Infinity, later = ruled.filter(d => wholeSeconds(d.ruledAt!) > revised);
           if (later.length) {

@@ -1027,22 +1027,19 @@ test("the head's last revision is read from the creation and the log's head entr
   assert.match(staleCheck(undated, "a")!, /最后一次修改（没有记录）/);
 });
 
-test("only a ruled card with a ruling time of an open, unpaused work item raises the stale-approach check", () => {
+test("only a ruled card with a ruling time of an open work item raises the stale-approach check", () => {
   const done = [step("work", "done"), accept("done")];
   const s = snapshot({
     open: { created: T0 }, closed: { created: T0, plan: done }, dropped: { created: T0, status: "cancelled" }, note: { created: T0, record: true },
-    paused: { created: T0, paused: { reason: "Owner deferred", at: T1 } }, owned: { created: T0, paused: { reason: "Owner deferred", at: T1 }, plan: workPlan([own("child")]) }, child: { created: T0 },
+    paused: { created: T0, paused: { reason: "Owner deferred", at: T1 } },
     undecided: { created: T0 }, withdrawn: { created: T0 }, unstamped: { created: T0 },
   }, {
-    a: ruledAt("open", T1), b: ruledAt("closed", T1), c: ruledAt("dropped", T1), d: ruledAt("note", T1), e: ruledAt("paused", T1), f: ruledAt("owned", T1), g: ruledAt("child", T1),
+    a: ruledAt("open", T1), b: ruledAt("closed", T1), c: ruledAt("dropped", T1), d: ruledAt("note", T1), e: ruledAt("paused", T1),
     h: { item: "undecided", status: "open" }, i: { item: "withdrawn", status: "withdrawn", ruledAt: T1 }, j: { item: "unstamped", status: "ruled", choice: "A" }, k: ruledAt("open", T1, { kind: "inquiry" }),
   });
   const flagged = Object.keys(s.items).filter(id => staleCheck(s, id) !== undefined).sort();
-  assert.deepEqual(flagged, ["open"], "an open card, a withdrawn one and a ruling without a time do not count; nor does a finished, cancelled, record or paused item (child: paused through its owner)");
-  assert.equal(rules(s).statusOf("child"), "paused");
-  // Resumed, the paused item is asked.
-  delete s.items.paused!.paused;
-  assert.ok(staleCheck(s, "paused"), "a resumed item is asked");
+  assert.deepEqual(flagged, ["open", "paused"], "an open card, a withdrawn one and a ruling without a time do not count; nor does a finished, cancelled or record item; a paused item keeps the check, as the other checks of form");
+  assert.equal(rules(s).statusOf("paused"), "paused");
   // The kind of the card is not narrowed: an inquiry card ruled after the head asks as a design card does.
   const inquiry = snapshot({ a: { created: T0 } }, { q: ruledAt("a", T1, { kind: "inquiry" }) });
   assert.ok(staleCheck(inquiry, "a"));
