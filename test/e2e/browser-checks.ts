@@ -65,6 +65,8 @@ export async function checkAgentList(bp: BoardPage, board: BoardServer): Promise
   return v;
 }
 
+/** The least width, in px, of the column of what a job does in the table: a short note such as 「改 app.ts」 and a title's start must show. */
+const RUNNER_WHAT_MIN = 100;
 /** The five cells of a runner row, in the order they lie in a wide row. */
 const RUNNER_CELLS = ["rt-title", "agent-state", "rt-what", "rt-since", "rt-total"] as const;
 /** The boxes (left, top, right, bottom) of the runner's table, its head and its rows' cells, and whether a row's line of text is cut. */
@@ -122,11 +124,24 @@ export async function checkRunnerTable(bp: BoardPage, board: BoardServer): Promi
     if (!longRow.cut || longRow.overflow !== "ellipsis") v.push(`runner-table: a text of 117 characters is not cut with an ellipsis (cut ${longRow.cut}, text-overflow ${longRow.overflow})`);
     if (shortRow.cut) v.push("runner-table: a short text is cut");
     if (wide.page[0]! > wide.page[1]! + 1) v.push(`runner-table: the page is ${wide.page[0]} px wide in a window of ${wide.page[1]} px`);
+    // Where the table begins (the list wider than the breakpoint of the stylesheet's container query) the column of what the job does must not be
+    // squeezed to a few letters by the columns that keep their width: measured at windows from 800 to 1000 px.
+    for (const width of [800, 840, 880, 920, 960, 1000]) {
+      await bp.page.setViewportSize({ width, height: 1000 });
+      await bp.settle();
+      const m = await bp.page.evaluate(() => {
+        const list = document.querySelector<HTMLElement>("#agents .runner-list")!;
+        return { list: list.clientWidth, table: getComputedStyle(list.querySelector(".runner-head")!).display !== "none", what: list.querySelector<HTMLElement>(".runner-row .rt-what")!.clientWidth };
+      });
+      if (m.table && m.what < RUNNER_WHAT_MIN) v.push(`runner-table: in a window of ${width} px the list is ${m.list} px wide, drawn as a table, and the column of what a job does is ${m.what} px, under ${RUNNER_WHAT_MIN}`);
+    }
+    await bp.page.setViewportSize({ width: 1280, height: 1000 });
+    await bp.settle();
     // With an item open the list's column is the tree's, about 300 px: the cells of a row lie on three lines.
     await bp.select(failed);
     await bp.settle();
     const narrow = await measureRunnerTable(bp);
-    if (narrow.pane >= 760) v.push(`runner-table: with an item open the list's column is ${narrow.pane} px wide, not under 760`);
+    if (narrow.pane >= 900) v.push(`runner-table: with an item open the list's column is ${narrow.pane} px wide, not under 900`);
     if (narrow.headShown) v.push("runner-table: the head of the columns is drawn in a narrow column");
     for (const r of narrow.rows) {
       const [title, state, what, since, total] = r.cells as [number[], number[], number[], number[], number[]];

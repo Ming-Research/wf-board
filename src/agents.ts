@@ -13,7 +13,7 @@ export const AGENT_STALE_MS = 30 * 60_000;
 /** A session waiting for longer than this is marked amber: Claude Code stops an idle session about an hour in. */
 export const AGENT_WAIT_LONG_MS = 60 * 60_000;
 /** How far apart a dispatch and the runner's report on its item may start and still be the same job: the runner records the dispatch and reports in the same breath. */
-const RUNNER_START_GRACE_MS = 5 * 60_000;
+export const RUNNER_START_GRACE_MS = 5 * 60_000;
 /** A write counts as made after a dispatch ended only when it is later than this past the recorded end, which may be to the minute. */
 const FINISH_GRACE_MS = 60_000;
 
