@@ -31,9 +31,10 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   assert.ok(card, "and a card with a plain question");
   const bp = await DomPage.open(t, board, { reverts }), runner = (id: string) => ({ author: s.items[id]!.group, session: "执行程序" });
   const base = bp.changes();
-  // The jobs began two hours ago, the one running five: each agent's line is its session's span, so the work before the state it reports is a
-  // segment of its own, and five hours are longer than the three a segment is drawn in full.
-  const began = new Date(now - 2 * 3600_000).toISOString(), beganLong = new Date(now - 5 * 3600_000).toISOString(), startOf = (id: string) => id === running ? beganLong : began;
+  // The jobs began two hours ago, the one running five (and half a minute more, so that a report stamped to the second a moment before this test's
+  // clock still leaves two full hours of work): each agent's line is its session's span, so the work before the state it reports is a segment of
+  // its own, and five hours are longer than the three a segment is drawn in full.
+  const began = new Date(now - 2 * 3600_000 - 30_000).toISOString(), beganLong = new Date(now - 5 * 3600_000 - 30_000).toISOString(), startOf = (id: string) => id === running ? beganLong : began;
   let n = 0;
   for (const id of [running, failed, waiting, asking]) {
     await board.ops.dispatchStart({ ...runner(id), id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1`, startedAt: startOf(id) });
