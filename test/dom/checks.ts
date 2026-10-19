@@ -12,7 +12,6 @@ import type { Rules } from "../../src/rules.ts";
 import { difficultyText } from "../../src/model.ts";
 import type { Snapshot } from "../../src/model.ts";
 import { prng } from "../e2e/board-gen.ts";
-import { openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import { oracle } from "../e2e/invariants.ts";
 import type { Oracle } from "../e2e/invariants.ts";
@@ -555,12 +554,12 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
  * the tree holding unread content (or on the bottom row itself when that holds some), and a lap of n visits every such row once, in tree
  * order; the right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
  * nearest the top of the screen. With the cursor moved to an end of the list by j or k instead of a click, n and N start from the cursor.
- * Families: wrap-n, wrap-card, wrap-cursor. */
+ * The rows are read once n has walked over every item holding unread content, so a page kept open through writes is judged on the
+ * same rows as a freshly loaded one. Families: wrap-n, wrap-card, wrap-cursor. */
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
   // A write can leave an item holding unread content that the tree has not drawn (a closed item, which a freshly loaded page draws
   // when it holds some); n draws it when it lands there. So n walks over every such item first, and the rows are read after.
   await bp.settle();
-  const hidden0 = [...o.fresh].filter(id => !bp.treeRows().includes(id));
   bp.blur();
   const reached = new Set<string>();
   for (let k = 0; k < 4 * o.docs.size + 4 && [...o.fresh].some(id => !reached.has(id)); k++) {
@@ -616,10 +615,6 @@ export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
     const sel = bp.selected(), cards = bp.currentCards();
     if (sel !== target && !(cards[0] && o.s.decisions[cards[0]]?.item === target)) v.push(`wrap-card: the right arrow from ${target} went to ${sel} (card ${cards[0]}), not to the card of ${target}, the last row holding one`);
   }
-  // TEMPORARY PROBE
-  await bp.reset(openAll(bp.board));
-  const reloaded = bp.treeRows();
-  console.log(`WRAPDBG fresh rows not drawn before n: ${hidden0.join(",") || "none"}; drawn on a freshly loaded page: ${hidden0.filter(id => reloaded.includes(id)).join(",") || "none"}`);
   return v;
 }
 
