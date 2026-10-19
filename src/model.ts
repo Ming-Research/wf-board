@@ -143,13 +143,20 @@ export const difficultyText = (difficulty: Difficulty): string => `难度 ${diff
  * (docs/design.md section 5 lists them). The fixed options below are that format's own; nothing else is
  * accepted for them.
  */
-export const DISPATCH_ROLES = ["工程师", "审查"] as const;
+/** The role name of the architect, as a credential, the access table and an architect turn's dispatch record name it. */
+export const ARCHITECT_ROLE = "架构师";
+/** The roles of a dispatch that writes over a credential of its own: the dispatch tool issues it, and the access table has an entry of the same name. */
+export const SESSION_ROLES = ["工程师", "审查"] as const;
+/** Every role a dispatch record names: the two sessions above, and the architect's turn (the runner starts one to answer an engineer or to check a merge), which is a record only: no credential is issued for it, since the credential of this role is the architect's whole access. */
+export const DISPATCH_ROLES = [...SESSION_ROLES, ARCHITECT_ROLE] as const;
 /** What a dispatch that ended the work (or gave it up) came to: the four outcomes the tallies count and the rework share is read from. */
 export const DISPATCH_OUTCOMES = ["一次通过", "返工后通过", "换人", "放弃"] as const;
 /** The result of a session the runner put down because its work waits for something long: the work goes on in a later session, so
  * this is no outcome of the work and the tallies list it apart (docs/design.md section 5, Dispatch records). */
 export const PARKED_RESULT = "放下等待";
-export const DISPATCH_RESULTS = [...DISPATCH_OUTCOMES, PARKED_RESULT] as const;
+/** The one result of an architect's turn: a turn answers a question and comes to no outcome of the work, so it stands in none of the four outcomes, and the tallies list the turns apart (docs/design.md section 5, Dispatch records). */
+export const TURN_RESULT = "轮次结束";
+export const DISPATCH_RESULTS = [...DISPATCH_OUTCOMES, PARKED_RESULT, TURN_RESULT] as const;
 export const DISPATCH_SIGNALS = ["验收没过", "架构师打回", "做法被否", "长时间没进展", "换模型"] as const;
 const Count = z.number().int().nonnegative();
 /** US dollars with at most three decimals, so any sum of costs is exact in thousandths (see `milliDollars`). */
@@ -181,12 +188,24 @@ export type DispatchFinish = z.infer<typeof DispatchFinish>;
  * the schema below and the write that ends a dispatch both ask it, the write to word the refusal.
  */
 export function dispatchCountProblem(role: (typeof DISPATCH_ROLES)[number], c: { reports?: number | undefined; kickbacks?: number | undefined; rounds?: number | undefined }): string | undefined {
+  if (role === ARCHITECT_ROLE) {
+    const given = c.reports !== undefined ? "reports" : c.kickbacks !== undefined ? "kickbacks" : c.rounds !== undefined ? "rounds" : undefined;
+    return given && `${given}: an architect dispatch carries no counts; reports and kickbacks are an engineer's, rounds a review's`;
+  }
   if (role === "工程师") {
     if (c.reports === undefined || c.kickbacks === undefined) return `${c.reports === undefined ? "reports" : "kickbacks"}: an engineer dispatch ends with reports and kickbacks (how often it stopped to report, how often it was sent back)`;
     return c.rounds === undefined ? undefined : "rounds: only a review dispatch carries rounds; an engineer carries reports and kickbacks";
   }
   if (c.rounds === undefined) return "rounds: a review dispatch ends with rounds (how many review rounds it took: the first review and each re-review count one)";
   return c.reports === undefined && c.kickbacks === undefined ? undefined : `${c.reports === undefined ? "kickbacks" : "reports"}: only an engineer dispatch carries reports and kickbacks; a review carries rounds`;
+}
+/**
+ * What is wrong with the result a finished dispatch of `role` carries, or undefined when it is right: an architect's turn ends with
+ * `TURN_RESULT` and no other role may. The one place the rule lives, like `dispatchCountProblem`.
+ */
+export function dispatchResultProblem(role: (typeof DISPATCH_ROLES)[number], result: (typeof DISPATCH_RESULTS)[number]): string | undefined {
+  if (role === ARCHITECT_ROLE) return result === TURN_RESULT ? undefined : `result: an architect dispatch ends with ${TURN_RESULT}, a turn comes to no outcome of the work`;
+  return result === TURN_RESULT ? `result: ${TURN_RESULT} is the result of an architect dispatch only` : undefined;
 }
 export const Dispatch = z.object({
   /** The dispatched session's full id; unique on the board. */
@@ -207,8 +226,9 @@ export const Dispatch = z.object({
   finish: DispatchFinish.optional(),
 }).strict().superRefine((d, ctx) => {
   // A record edited by hand that breaks the rule is refused with the rule's own words.
-  const problem = d.finish && dispatchCountProblem(d.role, d.finish);
+  const problem = d.finish && (dispatchCountProblem(d.role, d.finish) ?? dispatchResultProblem(d.role, d.finish.result));
   if (problem) ctx.addIssue(problem);
+  if (d.role === ARCHITECT_ROLE && d.credential !== undefined) ctx.addIssue("credential: an architect dispatch is a record only and carries no credential");
 }).refine(d => !d.finish || Date.parse(d.finish.ended) >= Date.parse(d.started), "A dispatch ends no earlier than it started");
 export type Dispatch = z.infer<typeof Dispatch>;
 
@@ -474,8 +494,6 @@ export const ARCHITECT = "Architect";
 export const ARCHITECT_SESSION = "架构师";
 /** The session name the runner writes from: the resident program that starts the engineers' turns and reports their state (docs/design.md, sections 5 and 9). It writes as the author of the item's project and has no credential. */
 export const RUNNER_SESSION = "执行程序";
-/** The role name of the architect, as a credential and the access table name it. */
-export const ARCHITECT_ROLE = "架构师";
 /** The architect alone, as an error text or a tool description names it (ops `onlyArchitect`, the journal and tag tools). */
 export const ARCHITECT_WRITER = `${ARCHITECT} with a session name starting ${ARCHITECT_SESSION}`;
 /** The writer that does the process, in English: the one definition every such text is built from (ops `onlyProcess`, the tool descriptions, the errors that say who may). The architect does it since the PM was retired. */
@@ -518,7 +536,7 @@ export const RETIRED_AUTHORS: readonly string[] = ["总管", "PM"];
  * The roles of the long-lived credentials are the architect, the observer and the resource agent; the roles of a dispatch
  * credential are the dispatch's own (an engineer or a review).
  */
-export const ROLES = [ARCHITECT_ROLE, "观察者", "资源管理", ...DISPATCH_ROLES] as const;
+export const ROLES = [ARCHITECT_ROLE, "观察者", "资源管理", ...SESSION_ROLES] as const;
 export type Role = (typeof ROLES)[number];
 /** The roles a long-lived credential (kept in a file outside the data directory) can name. */
 export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, "观察者", "资源管理"] as const;

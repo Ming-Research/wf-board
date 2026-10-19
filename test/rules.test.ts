@@ -847,6 +847,20 @@ test("workedOn and progress say who is on an item and what it waits on, from row
   assert.deepEqual([r.progress("kid").behind, r.progress("busy").behind, r.progress("idle").behind], [true, false, false], "an owned item whose row follows an open row of its owner is behind it");
 });
 
+test("an open architect's turn does not make an item worked on, hold it or make it wip; an engineer's session beside it does", () => {
+  const now = Date.parse("2026-10-17T12:00:00Z"), ago = (hours: number) => new Date(now - hours * 3600_000).toISOString();
+  const session = (agent: string, role: "工程师" | "架构师", started: string) => ({ agentId: `id-${agent}`, agent, role, level: 2, model: "Sonnet", started });
+  // Both items have a step done and none in progress, so with nobody on them they are idle and can be started.
+  const s = snapshot({
+    asked: { plan: workPlan([step("one", "done"), step("two")]), dispatches: [session("turn", "架构师", ago(1))] },
+    both: { plan: workPlan([step("one", "done"), step("two")]), dispatches: [session("turn", "架构师", ago(1)), session("eng", "工程师", ago(1))] },
+  });
+  const r = rules(s, now);
+  assert.deepEqual([r.statusOf("asked"), r.workedOn("asked"), r.canStart("asked")], ["idle", false, true], "an open turn leaves the item idle and startable");
+  assert.deepEqual([r.statusOf("both"), r.workedOn("both"), r.canStart("both")], ["wip", true, false], "the engineer's session beside it does the work");
+  assert.deepEqual([r.dispatchedItems("turn"), r.dispatchedItems("eng")], [[], ["both"]], "a turn is dispatched on no item in the sense the status seeds read");
+});
+
 test("two plans whose owned items each wait on the other's earlier row derive without looping, and both stay blocked", () => {
   // y: [shared w, own c]  v: [shared c, own w]. c's turn needs w done and w's turn needs c done: neither can ever start.
   const s = snapshot({
