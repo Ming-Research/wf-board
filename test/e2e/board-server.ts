@@ -17,6 +17,7 @@ import { generateBoard } from "./board-gen.ts";
 import type { Generated } from "./board-gen.ts";
 import { seedBoard } from "./seed.ts";
 import { cleanup } from "../cleanup.ts";
+import { timed } from "../tmp-timing.ts";
 
 export const ROOT = join(import.meta.dirname, "../..");
 export interface Hooks { after(fn: () => unknown): void }
@@ -28,11 +29,12 @@ export function openAll(board: BoardServer): Record<string, unknown> {
   return { "board-open": Object.fromEntries(Object.keys(board.store.snapshot().items).map(id => [id, true])) };
 }
 /** Seeds a generated board into a temporary repository and serves it with the page from `webDir` (default web/). */
-export async function startBoard(t: Hooks, opts: { seed?: number; webDir?: string } = {}): Promise<BoardServer> {
+export function startBoard(t: Hooks, opts: { seed?: number; webDir?: string } = {}): Promise<BoardServer> { return timed("startBoard", () => startBoardUntimed(t, opts)); }
+async function startBoardUntimed(t: Hooks, opts: { seed?: number; webDir?: string } = {}): Promise<BoardServer> {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-e2e-"));
   cleanup(t, () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const gen = generateBoard(opts.seed ?? 1);
-  const { store } = await seedBoard(dir, gen);
+  const { store } = await timed("seedBoard", () => seedBoard(dir, gen));
   return serveBoard(t, { url: "", store, gen, dir, webDir: "" }, opts.webDir ?? join(ROOT, "web"));
 }
 /** The board served at an address of its own with the page from `webDir`: one board can be read through several pages. */
