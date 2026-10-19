@@ -1,9 +1,9 @@
 name: tmp-check-stable-id-2
 # Temporary (check-stable-id): delete before the last full CI, which fails while this file exists.
-# The main line went red on the n-key writing lane after the merge of the check-id change (cand/base x1.054 [1.014, 1.096] against the
-# commit before the merge). This runs the lane as the full CI does (one round of 30 pairs, six times) on three pages, each against
-# that commit: the page on main now, the page before the merge with one no-op statement (a control: it must read 1), and the page with
-# the fix; and the type check and the tests the fix touches.
+# The main line went red on the n-key writing lane after the merge of the check-id change, and again on a rerun (cand/base x1.054 and
+# x1.046 against the commit before the merge; six reruns here read x1.016 on average). This takes a CPU profile of the writing lane's
+# pages: the page before the merge (base and its twin) against the page on main (the red one) and against the page of this branch,
+# function by function, as the agent list's profile did.
 on:
   push:
     branches: [check-stable-id-2]
@@ -15,27 +15,13 @@ permissions:
 env:
   BEFORE_MERGE: 9e8881c32ab5a10e712b6f7f3abcdb196c1594a3
 jobs:
-  unit:
-    name: check and tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: node --test test/rules.test.ts test/rules-reuse-a.test.ts test/derived.test.ts test/changes-report.test.ts
-  lane:
-    name: nkey writing x6, ${{ matrix.variant }}
+  profile:
+    name: nkey writing, profile by page, ${{ matrix.variant }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        variant: [main, control, fix]
+        variant: [main, fix]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -46,16 +32,60 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: The page of the variant
+      - name: The page of the variant, and a name for each page's script, so the profile tells their functions apart
         run: |
           case "${{ matrix.variant }}" in
             main) git checkout origin/main -- src web ;;
-            control) git checkout "$BEFORE_MERGE" -- src web; echo 'void 0;' >> web/app.ts ;;
             fix) ;;
           esac
           echo "NKEY_BASE=$BEFORE_MERGE" >> "$GITHUB_ENV"
-      - name: The lane, six times
+          # base and twin both run the older page (options.page); cand is the current page.
+          sed -i 's|try { this.win.eval(script); }|try { this.win.eval(script + "\\n//# sourceURL=" + (this.options.page ? "base" : this.options.reverts?.length ? "slow" : "cand") + "-page.js"); }|' test/dom/page.ts
+          git diff test/dom/page.ts | grep sourceURL | cut -c1-200
+      - name: The lane, three rounds, profiled
+        env:
+          NKEY_FLOOR: 3
+        run: node --cpu-prof --cpu-prof-dir=prof --cpu-prof-interval=250 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (base|time|twin)|✔|✖" || true
+      - name: The two pages' time by function
         run: |
-          for i in 1 2 3 4 5 6; do
-            node --test --test-concurrency=1 test/nkey/time-writing.nkey.ts 2>&1 | grep -E "press-n (time|twin) \(writing\): (cand/base|[0-9]+ round|round)|press-n base" || true
-          done
+          node - <<'EOF2'
+          const fs = require("fs");
+          const NAMED = ["check", "checkKind", "checkKey", "copyChecks", "checks", "presentationSignature", "affectedItems", "summary", "stalledBelow", "checkLabel", "cardChecks", "shownCardChecks", "rules", "renderPage"];
+          for (const f of fs.readdirSync("prof").filter(f => f.endsWith(".cpuprofile"))) {
+            const p = JSON.parse(fs.readFileSync("prof/" + f, "utf8"));
+            const nodes = new Map(p.nodes.map(n => [n.id, n]));
+            const parent = new Map();
+            for (const n of p.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+            const self = new Map();
+            p.samples.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + p.timeDeltas[i]));
+            // Functions of the two pages are matched by name only (their line numbers and file names differ); other code by file and line.
+            const label = n => { const u = n.callFrame.url, nm = n.callFrame.functionName || "(anon)"; return (u === "" || /page\.js$/.test(u)) ? nm : `${nm} ${u.split("/").slice(-2).join("/")}:${n.callFrame.lineNumber}`; };
+            const group = id => {
+              for (let cur = id; cur !== undefined; cur = parent.get(cur)) { const url = nodes.get(cur).callFrame.url; if (url.endsWith("base-page.js")) return "base"; if (url.endsWith("cand-page.js")) return "cand"; if (url.endsWith("slow-page.js")) return "slow"; }
+              return "other";
+            };
+            const tot = { base: 0, cand: 0, slow: 0, other: 0 }, by = { base: new Map(), cand: new Map(), slow: new Map(), other: new Map() }, incl = { base: new Map(), cand: new Map(), slow: new Map() };
+            for (const [id, t] of self) {
+              const g = group(id); tot[g] += t;
+              const k = label(nodes.get(id)); by[g].set(k, (by[g].get(k) ?? 0) + t);
+              if (g !== "other") { const seen = new Set(); for (let cur = id; cur !== undefined; cur = parent.get(cur)) { const kk = label(nodes.get(cur)); if (!seen.has(kk)) { seen.add(kk); incl[g].set(kk, (incl[g].get(kk) ?? 0) + t); } } }
+            }
+            const ms = x => (x / 1000).toFixed(1).padStart(9);
+            console.log(`== ${f}: base+twin ${ms(tot.base)} ms (half: ${ms(tot.base / 2)}), cand ${ms(tot.cand)} ms, slow ${ms(tot.slow)} ms, other ${ms(tot.other)} ms`);
+            if (!incl.cand.get("renderPage")) { console.log("   no candidate frames in this profile"); continue; }
+            // The candidate window also served the lane's untimed walks, so its totals are scaled to the same renderPage time as base alone.
+            const scale = (incl.base.get("renderPage") / 2) / incl.cand.get("renderPage");
+            console.log(`   scale applied to cand: ${scale.toFixed(3)} (base's renderPage time is half of base+twin)`);
+            const adj = (m, k) => new Map([...m].map(([n, v]) => [n, v * k]));
+            const diff = (mapA, mapB, title, only) => {
+              const keys = new Set([...mapA.keys(), ...mapB.keys()]);
+              const rows = [...keys].filter(k => !only || only.includes(k)).map(k => ({ k, a: mapA.get(k) ?? 0, b: mapB.get(k) ?? 0 })).map(r => ({ ...r, d: r.b - r.a }));
+              console.log(`-- ${title}: base, cand, cand minus base (ms)`);
+              rows.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, only ? 50 : 40).forEach(r => console.log(ms(r.a), ms(r.b), ms(r.d), r.k));
+            };
+            diff(adj(by.base, 0.5), adj(by.cand, scale), "self time by function");
+            diff(adj(incl.base, 0.5), adj(incl.cand, scale), "inclusive time by function");
+            diff(adj(by.base, 0.5), adj(by.cand, scale), "named, self", NAMED);
+            diff(adj(incl.base, 0.5), adj(incl.cand, scale), "named, inclusive", NAMED);
+          }
+          EOF2
