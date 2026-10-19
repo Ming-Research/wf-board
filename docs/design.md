@@ -1888,6 +1888,26 @@ are selectable for navigation, `c` on a row comments on the item, and no new
 anchor kind is added. Log and reply anchors stay as they are, so existing
 notes keep their anchors.
 
+**Threads.** A comment whose anchor names another comment (`{kind: note, id}`)
+follows it, and the comments that follow each other form a thread. The page lists
+the comments of an item or card in the order written, except that a comment which
+follows another comment of the list comes right under it, after the comments that
+follow that one in turn (`threadOrder` in `web/threads.ts`, a plain function the
+tests call). It is indented one step for each comment it follows in turn, three
+steps at most, with a thin rule on its left, and does not name what it follows:
+its place says so. `c` on a selected comment opens the comment field under that
+comment and the thread below it, so a follow-up is written where it will be listed;
+the first comment of a thread, and any comment whose anchor names no comment of the
+list (a log entry, a comment that is gone), stays where its time puts it and keeps
+its "about" line. The data is unchanged: the anchor already held the relation (on the
+live board 68 comments carry one, 19 of them following a comment that itself follows
+one), and each comment keeps its own reply, so a session answers a follow-up with
+`reply_note` on it, as on any comment. Rejected: a stored list of followers on the
+parent, or a `parent` field beside the anchor (a second copy of a relation the anchor
+holds, which the storage tree forbids); a screen of its own for a conversation (the
+owner asked for the thread where the comments are, and a comment is read with its
+item); indenting without limit (a long chain would leave no width for the text).
+
 #### Open questions
 
 Each is written as the assumption the design proceeds on; the owner can
@@ -2174,7 +2194,12 @@ This is a temporary trim; the redesign of the tools, which is planned separately
   the confidence (its reason cut at 160 characters); the options' grounds are left out.
   A ruled or withdrawn card is as before.
 - *Notes* that are handled (state `done`) as the text and the reply, each cut at 160
-  characters and without the original action line; an unhandled note whole.
+  characters and without the original action line; an unhandled note whole. A note that
+  follows another (its anchor names a note, section 5, Comments) is followed by the lines
+  `follows note <id>: <text>` and `its reply: <reply>`: the followed note's text and reply,
+  each cut at 160 characters, in every answer that lists notes (`notes`, `context`) and as
+  `follows` in the JSON of `brief` and `followups`, which also carry the `anchor`; a note
+  whose anchored note is gone, or whose anchor is a log entry, has no `follows`.
 - *Pull requests*: the first five references and the count of the rest (`prs` lists the rest).
 - *The log*: the latest five entries, each cut at 240 characters with its full length.
   A call that gives `log` gets the entries it asked for whole.

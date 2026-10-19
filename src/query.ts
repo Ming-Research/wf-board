@@ -130,6 +130,21 @@ export function list(s: Snapshot, r: Rules, f: ListFilters = {}) {
   for (const id of Object.keys(s.items)) walk(id); // retain inspectability of malformed imported trees
   return out.slice(0, f.limit ?? 50);
 }
+/** At most `limit` characters of a text, then how long it is in all. */
+export const cut = (text: string, limit: number): string => {
+  const chars = [...text];
+  return chars.length <= limit ? text : `${chars.slice(0, limit).join("")} … (${chars.length} characters in all)`;
+};
+/** The note a note follows, as a reader of the follow-up needs it: id, text and reply, each cut to this many characters. */
+const FOLLOWS_CUT = 160;
+export interface Follows { id: string; text: string; reply?: string }
+/** What a note that follows another (its anchor is `{kind: note}`) follows, so the follow-up is read with what it answers and
+ * needs no second call. Absent for a note with no such anchor and for one whose note is gone. */
+function followsOf(s: Snapshot, n: Note): { follows?: Follows } {
+  if (n.anchor?.kind !== "note" || !Object.hasOwn(s.notes, n.anchor.id)) return {};
+  const parent = s.notes[n.anchor.id]!;
+  return { follows: { id: n.anchor.id, text: cut(parent.text, FOLLOWS_CUT), ...(parent.reply === undefined ? {} : { reply: cut(parent.reply, FOLLOWS_CUT) }) } };
+}
 export interface NoteFilters { state?: Note["state"][]; under?: string; kind?: Note["kind"][]; since?: string; limit?: number }
 export function notes(s: Snapshot, f: NoteFilters = {}) {
   validateScope(s, f);
@@ -137,7 +152,7 @@ export function notes(s: Snapshot, f: NoteFilters = {}) {
   return Object.entries(s.notes).filter(([, n]) => (!f.state || f.state.includes(n.state)) && (!f.kind || f.kind.includes(n.kind)) &&
     (!f.since || Date.parse(n.repliedAt ?? n.sentAt ?? n.at) >= Date.parse(f.since)) && inScope(r, noteItem(s, n), f))
     .sort((a, b) => Date.parse(b[1].repliedAt ?? b[1].sentAt ?? b[1].at) - Date.parse(a[1].repliedAt ?? a[1].sentAt ?? a[1].at) || a[0].localeCompare(b[0]))
-    .slice(0, f.limit ?? 50).map(([id, note]) => ({ ...row(s, r, "note", id), ...note }));
+    .slice(0, f.limit ?? 50).map(([id, note]) => ({ ...row(s, r, "note", id), ...note, ...followsOf(s, note) }));
 }
 function relevantNotes(s: Snapshot, targets: string[], limit?: number) {
   return notes(s, { limit: Object.keys(s.notes).length }).filter(n => targets.includes(n.target)).slice(0, limit);
@@ -227,7 +242,7 @@ export function projects(s: Snapshot, r: Rules = makeRules(s)) {
   });
 }
 function sentNotes(s: Snapshot, r: Rules) {
-  return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), sentAt: n.sentAt ?? n.at,
+  return Object.entries(s.notes).filter(([,n]) => n.state === "sent").map(([id,n]) => ({ id, target: n.target, title: row(s,r,"note",id).title, kind: n.kind, text: n.text, ...(n.answerText !== undefined ? { answerText: n.answerText } : {}), ...(n.anchor ? { anchor: n.anchor } : {}), ...followsOf(s, n), sentAt: n.sentAt ?? n.at,
     project: r.projectOf(noteItem(s,n)) })).sort((a,b) => Date.parse(a.sentAt)-Date.parse(b.sentAt) || a.id.localeCompare(b.id));
 }
 /** The approved tags, with meanings, that an item of `project` may carry; every tag when no project is given. */
