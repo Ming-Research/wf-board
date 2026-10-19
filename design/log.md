@@ -8,6 +8,12 @@ Nodes: storage/write-path, storage/write-path/page-rules-reuse
 
 Summary: After the quick fixes a `set_tags` write still cost the daemon 46.5 ms of CPU on a hosted runner with nothing unread, and 67 to 76 ms with the owner 4,000 commits behind, because the open page asked for the whole unread list after every change event and each new head walked the history from the read cursor again; the daemon also derived the rules of every published state from nothing, 10 to 15 ms, where the page already built them from the state before. The unread list is now carried on over the new commits of each head and the page gets only the stops after those its version shares; the daemon's rule cache is told which state each published one was made from and reuses the page's step. The refused alternatives (the page deriving the list, the change pushed with every event) are in the node; the numbers are in docs/design.md, section 4, Write cost.
 
+## 2026-10-19 Flag a head older than a ruling
+
+Nodes: cards
+
+Summary: An item's approach section could stay at its start after its research, its direction card and its design approval were done, because the rule that the head is current had no check, and the owner, who does not read pull requests, then saw no design. The board now raises the check `approach-stale` on an open work item that has a ruled card whose ruling time is in a later second than the head's last revision, read from the item's creation time and the latest log entry that says the head changed (4,836 such entries on the live board on 2026-10-19), and it clears when `update_item` next changes the head; a card of any kind counts, and a write is never refused. The grounds and the refused alternatives (the design document copied into the item, a stored time of the head's revision, the item's `updated`, design cards only, leaving paused items out) are in the node; the check's definition is in docs/design.md, section 5, Checks.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards
