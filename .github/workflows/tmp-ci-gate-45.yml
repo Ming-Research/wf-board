@@ -1,0 +1,61 @@
+name: tmp-ci-gate-45
+# Temporary experiments of item ci-gate-45; deleted before review.
+on:
+  push:
+    branches: [ci-gate-45]
+permissions:
+  contents: read
+jobs:
+  # Every test file of a shard alone, one after another, with its wall and CPU time and a CPU profile of each of its node processes.
+  prof:
+    name: prof ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: nproc; node -e 'console.log(require("os").availableParallelism())'
+      - run: |
+          mkdir -p sums
+          for f in $(node scripts/test-shard.ts ${{ matrix.shard }} 20); do
+            slug=$(echo "$f" | tr '/.' '__')
+            mkdir -p "prof/$slug"
+            NODE_OPTIONS="--cpu-prof --cpu-prof-dir=$PWD/prof/$slug" /usr/bin/time -f "%e %U %S" -o t.txt \
+              node --test --test-concurrency=1 --test-reporter=dot "$f" > /dev/null 2>&1 || echo "FAILED $f"
+            read w u s < t.txt
+            node scripts/tmp-prof.ts "prof/$slug" "sums/$slug.json" "$f" "$w" "$u" "$s"
+            echo "$f wall $w user $u sys $s"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prof-${{ matrix.shard }}
+          path: sums
+  # The test step of the full CI with four files at a time instead of the default.
+  conc:
+    name: conc${{ matrix.conc }} shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        conc: [4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          timeout 120 node --test --test-timeout=60000 --test-concurrency=${{ matrix.conc }} \
+            --test-reporter=dot --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} 20)
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
