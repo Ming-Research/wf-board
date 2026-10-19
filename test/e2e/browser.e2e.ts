@@ -13,7 +13,7 @@ import { startBoard, launch, BoardPage, openAll } from "./harness.ts";
 import type { BoardServer } from "./harness.ts";
 import type { Hooks } from "./board-server.ts";
 import { oracle, checkFullWidth, checkPlanCardLayout, checkCardFold, checkDifficultyChipLayout, checkProgressBands } from "./invariants.ts";
-import { checkSmoke, planItems, cardSample, checkAgentList, checkMessages } from "./browser-checks.ts";
+import { checkSmoke, planItems, cardSample, checkAgentList, checkRunnerTable, checkMessages } from "./browser-checks.ts";
 import { checkCompact } from "./mermaid-compact.ts";
 import { WAIT, showHead, atNarrow, checkLibrary, checkFitWindows, checkZoom, checkActual, checkKeep, checkColors, seedPipeline, seedOne } from "./mermaid-checks.ts";
 
@@ -67,9 +67,10 @@ test("the difficulty chip lies on the tags' line, below the title", LONG, async 
   none(await checkDifficultyChipLayout(bp, await oracle(board.store)));
 });
 
-test("the agent list lies above the projects, 在树中 scrolls the item's tree row into view and Back scrolls back", LONG, async () => {
+test("the agent list lies above the projects, 在树中 scrolls the item's tree row into view and Back scrolls back, and the runner's table lies in rows of one line, narrow or wide", LONG, async () => {
   const { board, bp } = await fresh();
   none(await checkAgentList(bp, board));
+  none(await checkRunnerTable(bp, board));
 });
 
 test("nothing on the page covers the list of messages once it is open", LONG, async () => {

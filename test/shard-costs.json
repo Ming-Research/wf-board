@@ -33,6 +33,7 @@
   "test/dom/page-plan.test.ts": 24.3,
   "test/dom/page-tree.test.ts": 30.3,
   "test/dom/runner-block.test.ts": 5.0,
+  "test/dom/runner-table.test.ts": 15.0,
   "test/dom/styles.test.ts": 18.6,
   "test/dom/whole.test.ts": 8.9,
   "test/dom/width-caps-1.test.ts": 19.5,

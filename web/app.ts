@@ -1,8 +1,8 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
 import { agentRows } from "../src/agents.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { runnerRows } from "../src/runner-rows.ts";
-import type { RunnerRow, RunnerTurn } from "../src/runner-rows.ts";
+import { runnerRows, runnerLine } from "../src/runner-rows.ts";
+import type { RunnerRow } from "../src/runner-rows.ts";
 import type { LiveEntry } from "../src/live.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
@@ -1815,41 +1815,40 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (cells.children.length) box.appendChild(cells);
     return box;
   }
-  // A turn the runner says is running: how long it has run, and when and what its last action was. A turn the runner has not
-  // mentioned for a while is shown as silent, with what it last said.
-  function runnerTurnText(t: RunnerTurn, now: number, at = now) {
-    const bits = ["这一轮 " + spanText(at - t.startedAt)];
-    if (t.lastActionAt !== undefined) bits.push("最后动作 " + spanText(at - t.lastActionAt) + "前" + (t.action ? "：" + t.action : ""));
-    else if (t.action) bits.push(t.action);
-    return t.silent ? "没有动静：执行程序 " + spanText(now - t.heardAt) + "没报这一轮；上次报的是第 " + t.turn + " 轮，" + bits.join("，") : "第 " + t.turn + " 轮 · " + bits.join(" · ");
+  // The runner's block is a table with a row for each piece of work (docs/design.md, section 7, Agent list): the level and title, the
+  // state in a word, one line of what the work does or waits on, how long it has been in that state, and how long it has run in all.
+  // The stylesheet cuts a cell that can run long to one line; the hover says the rest. The item's key is on the title's hover only.
+  function runnerName(kind: "item" | "card", key: string) {
+    if (kind === "item") { const it = index().byId.get(key); return it ? plain(it.title) : undefined; }
+    const d = index().decById.get(key); return d ? plain(d.question) : undefined;
+  }
+  // How long the state in the fourth column has lasted: for a turn running, the turn.
+  function runnerStateSince(x: RunnerRow) { return x.state === "running" ? x.turnStartedAt! : x.since; }
+  function runnerHead() {
+    const head = el("li", "runner-head");
+    ["标题", "状态", "在做或在等", "这个状态", "合计"].forEach(text => head.appendChild(el("span", null, text)));
+    return head;
   }
   function runnerRowEl(x: RunnerRow, now: number) {
-    const box = el("li", "agent runner-row");
+    const mark = (x.needsPerson ? " needs-person" : "") + (x.overdue ? " overdue" : "");
+    const box = el("li", "agent runner-row" + mark), it = index().byId.get(x.item), line = runnerLine(x, now, runnerName);
     box.dataset.agent = x.agent; box.dataset.runner = x.state;
-    const head = el("div", "agent-head");
-    head.appendChild(el("span", "agent-name", esc(x.agent)));
-    head.appendChild(el("span", "tagchip diffchip", esc(x.level + " 级 " + x.model + (x.effort ? " " + x.effort : "")))).title = "起这个会话时定的等级、模型和推理强度（派活记录）";
-    const chip = el("span", "agent-state runner " + x.state + (x.overdue ? " overdue" : ""), esc(x.what));
-    chip.title = "执行程序对这件活的最新报告，和全貌说的一样" + (x.overdue ? "。已超过这个状态该有的时间，或报告说它要人看" : "");
-    head.appendChild(chip);
-    const spent = "共 " + spanText(now - x.started) + (x.turns === undefined ? "" : "，" + x.turns + " 轮") + (x.cost === undefined ? "" : " $" + x.cost.toFixed(2));
-    head.appendChild(el("span", "agent-ago", esc(spanText(now - x.since) + " · " + spent))).title = "在这个状态已经多久；这件活开始以来的时间、轮数和花费（执行程序报的）";
+    const head = el("div", "rt-title");
+    head.appendChild(el("span", "tagchip diffchip rt-level", String(x.level))).title = x.level + " 级 " + x.model + (x.effort ? " " + x.effort : "") + "（起这个会话时定的等级、模型和推理强度，派活记录）";
+    const title = el("button", "agitem-title rt-name", it ? inline(it.title) : esc(x.item));
+    title.type = "button"; title.title = it ? x.item + " · " + plain(it.title) : x.item;
+    title.addEventListener("click", ev => { ev.stopPropagation(); selectItem(x.item); setCurrent(itemBox(x.item)); });
+    head.appendChild(title);
     box.appendChild(head);
-    if (x.state === "running") {
-      const turn = el("div", "runner-turn" + (x.live?.silent ? " silent" : ""));
-      turn.textContent = x.live ? runnerTurnText(x.live, now, x.live.silent ? x.live.heardAt : now) : "这一轮从 " + spanText(now - x.turnStartedAt!) + "前起；执行程序还没报这一轮之内的动作";
-      turn.title = x.live ? "执行程序每 30 秒报一次这一轮的动静，只放在看板的内存里" : "条目上的报告只在轮次开始和结束时更新";
-      box.appendChild(turn);
-    }
-    const it = index().byId.get(x.item);
-    if (it) { const cells = el("ul", "agent-items"); cells.appendChild(agentItem(x.agent, { item: x.item, at: new Date(x.since).toISOString() }, it)); box.appendChild(cells); }
-    if (x.architect) {
-      const arch = el("div", "runner-architect" + (x.architect.silent ? " silent" : ""));
-      arch.dataset.architect = x.item;
-      arch.appendChild(el("span", "agent-name", "架构师"));
-      arch.appendChild(el("span", "runner-turn", esc(runnerTurnText(x.architect, now, x.architect.silent ? x.architect.heardAt : now))));
-      box.appendChild(arch);
-    }
+    const chip = el("span", "agent-state runner " + x.state + mark, esc(x.label));
+    chip.title = "执行程序对这件活的最新报告" + (x.needsPerson ? "。在等主人，或报告说它要人看" : x.overdue ? "。已超过这个状态该有的时间" : "");
+    box.appendChild(chip);
+    const what = el("span", "rt-what" + (line.silent ? " silent" : ""), esc(line.text));
+    what.title = line.full || line.text;
+    box.appendChild(what);
+    box.appendChild(el("span", "rt-since", esc(spanText(now - runnerStateSince(x))))).title = x.state === "running" ? "这一轮跑了多久" : "在这个状态已经多久";
+    const spent = "共 " + spanText(now - x.started) + (x.turns === undefined ? "" : " · " + x.turns + " 轮") + (x.cost === undefined ? "" : " · $" + x.cost.toFixed(2));
+    box.appendChild(el("span", "rt-total", esc(spent))).title = "这件活开始以来的时间、轮数和花费（执行程序报的）";
     return box;
   }
   // The line that holds the rows which are not running: a count that opens them, below the running rows.
@@ -1875,14 +1874,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       return it ? [t.item, it.title, it.num, statusOf(it), inTree(it), agoText(t.at), unfolded(agentMount(r.name), t.item)] : null;
     })];
     // The rows behind the closed line are not drawn, so only their number can change what is on screen.
-    // The runner's rows: what each says, in the units it is drawn in (minutes), and the item cell it draws.
-    const turnShown = (t: RunnerTurn | undefined) => t ? [t.turn, t.silent, spanText(now - (t.silent ? t.heardAt : t.startedAt)), t.lastActionAt === undefined ? null : spanText((t.silent ? t.heardAt : now) - t.lastActionAt), t.action ?? null] : null;
-    const runnerShown = (x: RunnerRow) => {
-      const it = index().byId.get(x.item);
-      return [x.item, x.agent, x.level, x.model, x.effort, x.state, x.what, x.overdue, spanText(now - x.since), spanText(now - x.started), x.turns, x.cost,
-        x.turnStartedAt === undefined ? null : spanText(now - x.turnStartedAt), turnShown(x.live), turnShown(x.architect),
-        it ? [it.title, it.num, statusOf(it), inTree(it), unfolded(agentMount(x.agent), x.item)] : null];
-    };
+    // The runner's rows: what each says, in the units it is drawn in (minutes), and the title it draws.
+    const runnerShown = (x: RunnerRow) => [x.item, x.agent, x.level, x.model, x.effort, x.state, x.label, x.needsPerson, x.overdue, runnerLine(x, now, runnerName),
+      spanText(now - runnerStateSince(x)), spanText(now - x.started), x.turns, x.cost, index().byId.get(x.item)?.title ?? null];
     const signature = JSON.stringify([agentsOpen, othersOpen, runner.map(runnerShown), running.map(shown), othersOpen ? others.map(shown) : others.length]);
     if (signature === agentsSignature) return;
     agentsSignature = signature;
@@ -1895,8 +1889,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
     if (!agentsOpen) return;
     if (runner.length) {
-      host.appendChild(el("h3", "agents-sub", "执行程序手上的 " + runner.length + " 件")).title = "执行程序对每件活的最新报告；一轮在跑时再加它每 30 秒报的动静。和全貌用同一套话和时限";
+      host.appendChild(el("h3", "agents-sub", "执行程序手上的 " + runner.length + " 件")).title = "执行程序对每件活的最新报告；一轮在跑时，「在做或在等」一列放它每 30 秒报的动作。超过状态该有的时间标琥珀色，和全貌的时限一样";
       const held = el("ul", "agent-list runner-list");
+      held.appendChild(runnerHead());
       runner.forEach(x => held.appendChild(runnerRowEl(x, now)));
       host.appendChild(held);
     }
