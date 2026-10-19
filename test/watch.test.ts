@@ -325,7 +325,7 @@ test("a merge row is told apart by its id first: it needs no 合入 in its text,
   assert.equal(isMergeRow(todo("ship", "线上验证：合入后"), old), false, "it only says 合入");
   assert.equal(isMergeRow(todo("ship", "等 x 合入后合入 y"), old), false, "it waits for a merge first");
   assert.equal(isMergeRow(todo("ship", "合入 x", { accept: true }), old), false);
-  assert.equal(isMergeRow({ item: "child", own: true }, old), false, "a sub-item row is no step");
+  assert.equal(isMergeRow({ id: "child", item: "child", own: true }, old), false, "a sub-item row is no step");
   // Open: not done, not dropped.
   assert.equal(isOpenMergeStep({ ...stage[2]!, state: "doing" }, stage), true);
   assert.equal(isOpenMergeStep({ ...stage[2]!, state: "done" }, stage), false);
