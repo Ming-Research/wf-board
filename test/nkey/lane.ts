@@ -138,7 +138,7 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
   const base = median(r.busy.base!);
   log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (not within ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
-  log(`press-n time (${name}): press orders drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
+  log(`press-n time (${name}): orders of opening and pressing drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
   const rows = [`| ${name} | base busy median ${ms(base)} ms | twin ${show(r.ratios.twin!)} | rounds ${r.rounds} | ${r.sound ? "counts" : "does not count"} |`];
   const polluted = (r.misses.base ?? 0) + (r.misses.twin ?? 0);
   for (const [label, verdict] of Object.entries(r.verdicts)) {

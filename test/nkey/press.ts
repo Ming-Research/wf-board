@@ -7,7 +7,8 @@
 //   being timed.
 // - A window's press is counted (draws, rebuilds of the board's rules, counts of the filters, markup written, elements made) and
 //   timed (the seconds the event loop was busy from the key until the page was quiet).
-// - Pages that are compared press in turn, in a random order drawn afresh each round, so landing k of every page is one pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
+// - Pages that are compared open in a random order and press in turn in a random order, both drawn afresh each round, so landing k of
+//   every page is one pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
 // - A virtual clock stands in for the page's timers longer than a frame and for the answers a test holds back, so a baseline that
 //   arrives 300 ms late is 300 ms of the clock's time and no real waiting.
 
@@ -395,7 +396,7 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
       const opening = randomOrder(windows.length, orderRnd.next), opened: Press[] = [];
       for (const k of opening) opened[k] = await windows[k]!.open(scope);
       const open = opened as Press[];
-      if (process.env.NKEY_TMP_SETTLE_GC !== "0") collect({ type: "major", execution: "sync" });
+      collect({ type: "major", execution: "sync" });
       firstOpening ??= opening.map(k => windows[k]!.label);
       const lands = await pairedLandings(open, WARMUP + PAIRS, events);
       first ??= lands;

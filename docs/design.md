@@ -4645,7 +4645,7 @@ list read. After m the page asks for the unread list and does not fetch the boar
 **Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
 the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that
 commit's `web/` and `src/`; none when `web/` and `src/` are as they are there), with the board quiet and with a write in each press. Windows of the base,
-of the twin of the base (the same page again, the control) and of the page when it differs are open side by side and press n in turn, in an order drawn at
+of the twin of the base (the same page again, the control) and of the page when it differs are open side by side, opened in a random order, and press n in turn, in an order drawn at
 random afresh each round, with a seed of each run's own that the log names (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
 holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
@@ -4683,11 +4683,18 @@ garbage collector inside it) found three sources, and the lane removes each:
   The order of each round is therefore drawn at random (`randomOrder` in `test/nkey/stats.ts`), with a new seed each run (`NKEY_SEED`
   repeats one): whatever the windows before leave falls on every window alike on average and widens the spread of the pairs, which
   the interval measures, instead of standing beside it as a bias.
+- *The window opened first.* With the order of the presses random, the base still read 0.9% slower than its twin and the copy while
+  writing (80.7 ms against 80.0 ms a press, every count of the page's work the same in all three), and the base was the window each
+  round opened first. With the windows opened in a random order as well, over 32 single rounds per phase on 8 hosted runners, the window
+  opened first read 0.98% above the mean of the three same pages while writing; one full collection once the windows are open, outside
+  the time (about a quarter of a second a round), brought that to 0.27%, within the noise of the estimate (about 0.3%). Each round now
+  opens its windows in a random order and then collects fully, so no window is always the one whose page was built first.
 
-With the first two and the balanced cycle, over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
+With the first two and the balanced cycle (before the last two were found), over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
 (±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
 probe's data are in the artifacts of the runs of the temporary workflow `tmp-probe` on the branch of item nkey-lane-false-red (runs 39189114067, 39189922884,
-39190549744), those of the balanced cycle with four windows in run 39191754978 of the temporary workflow `tmp-accept`.
+39190549744), those of the balanced cycle with four windows and of the random orders in runs 39191754978, 39192249677, 39192671312 and 39192981801 of the
+temporary workflow `tmp-accept`.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
