@@ -119,6 +119,21 @@ test("each open work item falls into the one kind its situation gives, and what 
   assert.equal(row("stopped").limit, 0);
 });
 
+test("a backlog item the runner reports on is listed with the working; a backlog item nobody reports on stays counted apart", async t => {
+  const b = await empty(t), { base } = b;
+  // Two items under a record's backlog: one an engineer has taken up and the runner reports, one nobody has started.
+  await b.item("pool", { record: true, accept: undefined, difficulty: undefined });
+  await b.child("taken", "pool"); await b.child("waiting-pool", "pool");
+  await b.report("taken", base - 50 * MIN, { state: "running", turns: 1, cost: 0.5, startedAt: iso(base - 50 * MIN), note: "第 1 轮" });
+  const { v, kind } = b.view(base), row = (id: string) => v.rows.find(x => x.id === id);
+  assert.equal(kind.taken, "working", "the report puts the backlog item among the working");
+  assert.equal(row("taken")?.from, "runner");
+  assert.equal(row("waiting-pool"), undefined, "no report: not listed");
+  const c = v.projects.find(p => p.project === "Whitefoot")!;
+  assert.equal(c.backlog, 1, "the item nobody reports on is still counted as backlog");
+  assert.equal(c.remaining, 1, "only the reported item is open work outside the backlog count");
+});
+
 test("a kind lists its rows in the order the reader needs them: the most overrun first, half done before not started, the longest first", async t => {
   const b = await empty(t), { base } = b;
   for (const key of ["late-1", "late-2", "late-3", "w-old", "w-new"]) await b.item(key);
@@ -297,7 +312,7 @@ test("on a board of the live board's size the answer is short and quick, and eve
   let expected = 0, backlog = 0;
   for (const id of Object.keys(s.items)) {
     if (!r.isOpenWork(id)) continue;
-    if (r.isBacklog(id)) { backlog++; continue; }
+    if (r.isBacklog(id) && !s.items[id]!.runner) { backlog++; continue; }
     if (s.items[id]!.runner || !r.children(id).some(child => r.isOpenWork(child))) expected++;
   }
   assert.equal(view.projects.reduce((sum, p) => sum + p.remaining, 0), expected);
