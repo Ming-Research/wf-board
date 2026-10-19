@@ -615,6 +615,25 @@ derivation design that replaced this:
   write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
   runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
   write there is a new snapshot, rebuilt as before.
+- The page keeps what depends only on the rules' structure and on ids through a write that
+  reused the rules (section 7, The page): the order of the items, the stops that wait on the
+  owner, the unread stops, the counts by status and the ancestors and waiters of open work, which
+  cost about 9 of the 31.6 ms one write cost the page (a profile of 72 log writes at 3 a second on
+  a hosted runner, one draw per write, the profiler's own cost included). Caching them as whole
+  lists, made again when the data changes, would have saved none of it: a write changes the data
+  and draws once. In the same profile, per write, `presentationScopes` went from 3.82 to 2.34 ms,
+  the stops from 2.09 to 0.42, `countBelow` from 1.30 to 0.52 and `renderPage` from 22.4 to 19.1.
+  Measured as n-writes-stable measured (a hosted EPYC 7763 runner with 4 vCPUs, the board of the
+  live board's weight, three log writes a second, 6 interleaved rounds of the main line, a twin of
+  it and this tree, at the runner's speed and with the page's CPU throttled 1.3 times; main-thread
+  busy time, 95% interval of the ratio of the tree to the main line, then the twin's ratio, the
+  noise, in brackets): one write costs 0.84 times (0.76–0.93; twin 0.94, ±8.0%) at the runner's
+  speed and 0.85 times (0.81–0.88; twin 0.98, ±3.8%) throttled; a press of n that lands while sessions
+  write costs a median of 0.90 times (0.86–0.95; twin 1.00, ±3.1%) and 0.88 times (0.83–0.93; twin
+  0.99, ±7.0%) throttled, and its 90th percentile 0.87 times (0.74–1.01; twin ±12.8%) and 0.89 times
+  (0.73–1.08; twin ±17.9%): no change detected, the intervals include 1. The time to the landing
+  is not slower either (median 0.92 times, 0.83–1.01, and 0.96 times, 0.92–1.00; 90th percentile
+  0.97 times, 0.88–1.07, and 0.91 times, 0.86–0.96).
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
