@@ -316,13 +316,13 @@ it waits or works end a step in it: the wait in the operations' own queue (`ops 
 `src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
 queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
 behind: `write`, `owner state` or `maintenance`); the code before the first git command
-(`validate`), the writing of the files (`files`), each git command by its name (`git diff`,
-`git add`, `git commit`, `git show`), the update of the board in memory (`publish`), the
+(`validate`), the writing of the files (`files`), each git command by its name (`git add`,
+`git commit`, and `git cat-file`, the read of the new commit's time), the update of the board in memory (`publish`), the
 observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
 limits), its ordinary log line carries them after a semicolon:
-`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git diff 8 ms, git add 14 ms, git commit 2400 ms, ...`.
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git add 14 ms, git commit 2400 ms, ...`.
 A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
@@ -670,6 +670,17 @@ derivation design that replaced this:
   the history from the cursor again: with the owner 4,000 commits behind, a `set_tags`
   write cost the daemon 67 to 76 ms of CPU against 46.5 ms with nothing unread (a
   hosted runner, `scripts/bench-writes.ts --unread 4000`, board-cpu-usage).
+- A write starts two git processes: `git add` of its paths and `git commit --only` of
+  the same paths, which commits exactly them whatever else is staged, so a file staged
+  by hand stays out of the board's commit and the write goes on (before, the write
+  checked the index with `git diff --cached` and refused). The commit's summary line
+  names the new commit in full (`core.abbrev=no`), and its author time is read through
+  the long-lived `git cat-file` process the history reads use, where `git show` ran
+  before. Starting a process is what a write's git work costs the daemon: on a hosted
+  runner, with the daemon holding about 1.9 GB, the profile of a `set_tags` write gave
+  24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
+  the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
+  the store's own code around them.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
@@ -4705,7 +4716,7 @@ The owner reads the board a stop at a time with n and wants the page to answer w
 took 0.3–0.5 s, because each of its four draws rebuilt the board's rules and counted every filter again (page-n-fast). The default generated board has
 176 items and a press of n there takes about a quarter of the time, so the lane (`test/nkey/`, the CI job `nkey`, `npm run test:nkey`) runs on a board of the
 live board's weight (`test/e2e/live-board.ts`: about 1,600 items, 770 cards, 780 comments, a 15 MB snapshot and 330 unread commits). The unread commits, which
-through the store are four git processes each, are made by one `git fast-import`, the documents written as the store writes them, and the board is then
+through the store are two git processes each, are made by one `git fast-import`, the documents written as the store writes them, and the board is then
 opened again as a daemon starts. The lane runs the real page in jsdom (`DomPage`, `test/dom/page.ts`) against the real server in the same process, and no
 browser. Its first version ran in headless Chromium (`test/e2e/press-n.e2e.ts`) and took most of that job; the layout it needed was never part of the question.
 

@@ -22,6 +22,7 @@ jobs:
         files:
           - test/history.test.ts test/http.test.ts test/budget.test.ts test/board-gen.test.ts test/convert-plans.test.ts test/difficulty.test.ts test/dispatch.test.ts
           - test/derived.test.ts test/rules-reuse-guards.test.ts
+          - test/store.test.ts test/write-trace.test.ts test/owner-ops.test.ts test/startup-cache.test.ts test/maintenance.test.ts
           - test/web.test.ts
           - test/dom/page-unread.test.ts test/dom/whole.test.ts test/dom/runner-block.test.ts test/dom/page-filters-fresh.test.ts
           - test/dom/witnesses-1.test.ts test/dom/witnesses-2.test.ts test/dom/witnesses-3.test.ts

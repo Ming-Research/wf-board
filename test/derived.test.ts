@@ -84,7 +84,7 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   const initial = store.snapshot();
   // The page's copy of the activity, kept only from event deltas.
   let page = store.snapshot(), pageActivity = page.activity, pageHead = page.head;
-  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0, sectionMoves = 0, reused = 0;
+  let previous = store.snapshot(), handled = 0, smaller = 0, compared = 0, sectionMoves = 0;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const itemsOf = (s: Snapshot, group?: string) => Object.keys(s.items).filter(id => !group || s.items[id]!.group === group);
   let made = 0;
@@ -175,10 +175,10 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     // The last two are after the six-hour window of a session started in the sequence has passed.
     for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE, synthetic + 7 * 60 * MINUTE, Date.now() + 8 * 60 * MINUTE]) {
       const expected = derivedView(rules(after, at), after);
-      // The shared rules of a published state are built from those of the state before it when that write allows it, and then
-      // answer for the time those answered for, in the same minute (docs/design.md, section 4, Write cost).
+      // The shared rules of a published state may be built from those of the state before it, and then answer for the time
+      // those answered for, in the same minute (docs/design.md, section 4, Write cost). This sequence's clock runs a day behind
+      // the real one the writes' own reads use, so it seldom happens here; the next test counts it.
       const shared = store.derived.rules(after, at);
-      if (rebuiltBecause(shared) === null) reused++;
       assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answersFor(shared)!), after), `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);
       assert.deepEqual(derivedView(rules(page, at, { activity: ActivityIndex.build(page) }), page), expected, `page rules after ${change.message}`);
@@ -247,9 +247,31 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.deepEqual((await Store.open(dir)).snapshot().activity, store.snapshot().activity, "activity rebuilt from history equals the incremental one");
   assert.ok(projectMoves > 2, `the random sequence moved items to another project (${projectMoves})`);
   assert.ok(compared > 60, `enough writes compared (${compared})`);
-  assert.ok(reused > 20, `the shared rules of many published states were built from the state before (${reused})`);
   assert.ok(sectionMoves > 2, `the random sequence moved top-level items between a project's own roots and the roots other projects depend on (${sectionMoves})`);
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
+});
+
+test("the shared rules of a published state are built from the state before it, as the daemon's writes and reads come", async t => {
+  const rand = random(20261019), { store } = await synthetic(t, rand, Date.now() - 60 * MINUTE);
+  // The real clock, as in the daemon: a write's own read of the board and the reads after it fall in the same minute.
+  const op = ops(store), events: Snapshot[] = [];
+  store.onChange(() => events.push(store.snapshot()));
+  const ids = Object.keys(store.snapshot().items), pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
+  const reasons = new Map<string, number>();
+  let logs = 0, steps = 0;
+  for (let round = 0; round < 60; round++) {
+    const id = pick(ids), it = store.snapshot().items[id]!, row = it.plan.find(r => "text" in r && !r.accept) as { id: string; text: string; state: string } | undefined;
+    // A log entry changes no field a status reads; a step's state does.
+    if (round % 4 === 3 && row) { steps++; await op.setPlan({ author: it.group, id, row: { id: row.id, text: row.text, state: row.state === "doing" ? "done" : "doing" } }); }
+    else { logs++; await op.appendLog({ author: it.group, id, text: `entry ${round}` }); }
+    const after = events.at(-1)!, shared = store.derived.rules(after, Date.now()), reason = rebuiltBecause(shared) ?? "reused";
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answersFor(shared)!), after), `shared rules after round ${round}`);
+  }
+  const summary = JSON.stringify(Object.fromEntries(reasons));
+  // A minute that turns between a write's read and the next, or the first write's new active time, may rebuild one or two.
+  assert.ok((reasons.get("reused") ?? 0) >= logs - 3, `the log writes reused the rules before them: ${summary} (${logs} log writes)`);
+  assert.ok((reasons.get("document") ?? 0) >= steps - 3, `a step's state is a field a status reads, so those were rebuilt: ${summary} (${steps})`);
 });
 
 test("the affected walk reaches work that a paused root stops needing, past a rated item that shows no change", async t => {
