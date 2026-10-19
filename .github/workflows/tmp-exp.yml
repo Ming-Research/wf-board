@@ -1,0 +1,82 @@
+name: tmp-exp
+# Temporary (item ci-status-under-1min): times the set-up of a job (checkout, node, npm ci, build) in several ways, four jobs each,
+# to find what shortens the fixed part of every job of the full CI. Deleted before the last full CI.
+on:
+  push:
+    branches-ignore: [main]
+    paths: ['.github/workflows/tmp-exp.yml']
+permissions:
+  contents: read
+jobs:
+  base:
+    name: base ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { rep: [1, 2, 3, 4] }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run build:web
+  flags:
+    name: flags ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { rep: [1, 2, 3, 4] }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm }
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefer-offline
+      - run: npm run build:web
+  nocache:
+    name: nocache ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { rep: [1, 2, 3, 4] }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:web
+  modules:
+    name: modules ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { rep: [1, 2, 3, 4] }
+    steps:
+      - uses: actions/checkout@v5
+      - run: node --version
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - id: nm
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - if: ${{ steps.nm.outputs.cache-hit != 'true' }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:web
+  preinstalled:
+    name: preinstalled ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { rep: [1, 2, 3, 4] }
+    steps:
+      - uses: actions/checkout@v5
+      - run: node --version && npm --version
+      - id: nm
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: node-modules-pre-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - if: ${{ steps.nm.outputs.cache-hit != 'true' }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:web
