@@ -270,6 +270,15 @@ test("a line says the status, what the runner reports with its turn, how long, a
   assert.match(text.split("\n")[0]!, /没人管 \d+ · 等太久 0 · 在做 2 /);
 });
 
+test("an item line ends with the first sentence of its 何时 section, cut at 40 characters; an item without one has no such part", () => {
+  const text = lookText(view(fixture()));
+  assert.match(line(text, "when")!, /· 何时：等 CI 迁移完以后再做。$/);
+  assert.doesNotMatch(line(text, "dep")!, /何时/);
+  // A condition longer than the cut ends with an ellipsis after its first 40 characters.
+  const long = lookText(view(board([{ id: "r", plan: owns("long") }, { id: "long", head: `**何时**：${"甲".repeat(60)}。` }])));
+  assert.ok(line(long, "long")!.endsWith(`· 何时：${"甲".repeat(40)}…`), line(long, "long")!);
+});
+
 // ---- the marks, over the tool, on a board with a repository ----
 
 async function connected(t: { after(fn: () => void | Promise<void>): void }, credential?: Resolved) {

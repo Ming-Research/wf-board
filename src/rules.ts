@@ -389,26 +389,25 @@ export interface Progress {
   /** The row that owns this item in its owner's plan has rows before it that are not resolved. */
   behind: boolean;
 }
-/** The id of the plan step that stands for the item's review: marked in progress while a reviewer reads the pull request. */
+/** The id of the plan step that stands for the item's review in its first round: marked in progress while a reviewer reads the pull request. */
 export const REVIEW_STEP = "review";
-/** Whether a plan row is the review step. The one place that knows the convention. */
-export function isReviewStep(row: PlanRow): boolean { return "text" in row && row.id === REVIEW_STEP; }
 /** Whether a step in progress waits on a 14900K run: its `waits` names the machine. The rules keep `waits` for a wait outside the board
  * (CI or a 14900K run); a run takes hours and the engineer is idle, while one waiting for CI is still working. The one place that knows this. */
 export function waitsOnRun(row: PlanRow): boolean { return "text" in row && row.waits !== undefined && /14900K/i.test(row.waits); }
 /**
  * The big steps of an engineer's plan, in the order of the flow, with the name the left tree shows for each. The ids and names are
- * fixed by the engineer rules (The plan's stages); `review` is not one of them, since this version has no review.
+ * fixed by the engineer rules (The plan's stages). `review` is the one a plan may leave out (`REQUIRED_STAGES`): a version of the
+ * rules without a review step has none.
  */
 export const STAGES = [
-  { kind: "research", name: "研究" }, { kind: "impl", name: "实现" }, { kind: "ci", name: "完整 CI" },
+  { kind: "research", name: "研究" }, { kind: "impl", name: "实现" }, { kind: "review", name: "审查" }, { kind: "ci", name: "完整 CI" },
   { kind: "accept", name: "验收" }, { kind: "merge", name: "合入" }, { kind: "verify", name: "线上验证" },
 ] as const;
 export type StageKind = (typeof STAGES)[number]["kind"];
 /** The stages every engineer plan has: the others depend on a pull request (ci, merge) or on going live (verify). */
 const REQUIRED_STAGES: readonly StageKind[] = ["research", "impl", "accept"];
 /** A stage id, with the round that going back appends after the first: `impl`, `impl-2`, `impl-3`. */
-const STAGE_ID = /^(research|impl|ci|accept|merge|verify)(?:-([2-9]|[1-9]\d+))?$/;
+const STAGE_ID = new RegExp(`^(${STAGES.map(s => s.kind).join("|")})(?:-([2-9]|[1-9]\\d+))?$`);
 /**
  * The stage a plan row is, or undefined. Only a step without the acceptance mark can be one: `accept` is also the id older plans
  * give their acceptance step, and that step is not the stage of that name (docs/design.md, How the page shows a plan).
@@ -418,6 +417,9 @@ export function stageOf(row: PlanRow): { kind: StageKind; round: number } | unde
   const m = STAGE_ID.exec(row.id);
   return m ? { kind: m[1] as StageKind, round: m[2] ? Number(m[2]) : 1 } : undefined;
 }
+/** Whether a plan row is the review step of some round (`review`, `review-2`, ...), the stage the plan marks in progress while a reviewer
+ * reads the pull request. The one place that knows the convention. */
+export function isReviewStep(row: PlanRow): boolean { return stageOf(row)?.kind === "review"; }
 /**
  * What is wrong with the stage rows of a plan an engineer holds, in words for the check, or nothing when it is right: a stage
  * every plan has is missing, the first rows of the stages are out of the order of the flow, or the rounds of one stage do not
@@ -1282,7 +1284,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
         // An engineer's plan has the big steps the engineer rules name, in order: the board reads progress and the current step from them.
         if (isOpenWork(id) && heldByEngineer(it)) {
           const problems = stageProblems(it.plan);
-          if (problems.length) out.push(check("stage-format", `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 research、impl、ci、accept、merge、verify 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`));
+          if (problems.length) out.push(check("stage-format", `工程师领着这个条目，计划的大步骤不合规则：${problems.join("；")}。大步骤是 id 为 ${STAGES.map(s => s.kind).join("、")} 的行（回头重做的轮次写成 impl-2 这样），写法见工程师规则的「计划的大步骤」`));
         }
         // A ruling can settle how the work is done, and the head's 做法 is where the owner reads it: a card ruled after the head was last
         // revised asks for a rewrite. Paused work is asked too, as it is for the other checks of form: its head is read as well.

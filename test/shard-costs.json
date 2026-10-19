@@ -96,6 +96,7 @@
   "test/rules-reuse-guards.test.ts": 14.0,
   "test/rules-reuse-share.test.ts": 19.3,
   "test/rules.test.ts": 0.6,
+  "test/runner-heartbeat.test.ts": 1.5,
   "test/runner-report.test.ts": 3.9,
   "test/runner-rows.test.ts": 0.3,
   "test/session.test.ts": 1.8,
