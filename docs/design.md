@@ -337,10 +337,17 @@ average over the last minute (`os.loadavg`). `cpu` about the held time with litt
 code that did not return; `gc` about the held time is the collector; `cpu` far under the
 held time is a process that was not given the CPU, and `load` tells whether the machine was
 busy. The collector's helper threads count in `cpu`, so a collection can put it over the
-held time. The readings are taken in the check phase of the loop's next turn, not in the
-timer's callback: the entry of a collection that ran in a callback of that phase reaches the
-observer only there (measured on Node 24 with a collection forced inside a `setImmediate`
-callback: the timer's callback after it saw no entry). The two lines make the slow tail of
+held time. `cpu` is read when the timer fires, and `gc` adds the collections that began
+between the two firings (every `gc` entry carries its start time on the clock of
+`performance.now`), so each line has the readings of its own stretch also when the loop is
+held again before the line is told, as in a stretch of seconds in which the lines follow
+each other. The first version read all three after the timer's callback, and on the live
+board two lines 41 ms apart, 2159 and 4725 ms held, read `cpu` 89 and 7 ms: the second
+had only the 41 ms since the first line's reading. The line is told in the check phase of
+the loop's turn, not in the timer's callback, and `load` is read then: the entry of a
+collection that ran in a callback of that phase reaches the observer only there (measured
+on Node 24 with a collection forced inside a `setImmediate` callback: the timer's callback
+after it saw no entry). The two lines make the slow tail of
 the writes readable as one of: waiting in a queue, a slow git command, work in the process,
 or a held loop, which its readings tell further as code, collection or a process without CPU.
 

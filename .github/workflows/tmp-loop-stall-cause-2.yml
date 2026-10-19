@@ -1,0 +1,102 @@
+name: tmp-loop-stall-cause-2
+# Temporary quick workflow (loop-stall-cause): the type check, the tests of the held-loop line and, for each condition the
+# readings protect, a run on a source spoiled in that one place, which must turn the matching test red. Delete before the branch is ready.
+on:
+  push:
+    branches: [loop-stall-cause-2]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node --test test/loop-watch.test.ts test/write-trace.test.ts
+  spoiled:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        spoil:
+          - cpu-removed
+          - cpu-since-start
+          - cpu-read-when-told
+          - cpu-user-only
+          - gc-removed
+          - gc-whole-history
+          - gc-to-the-end
+          - gc-window-ignored
+          - gc-start-is-arrival
+          - gc-forgets-nothing
+          - gc-wrong-entries
+          - gc-read-in-timer
+          - load-removed
+          - load-five-minutes
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - env:
+          SPOIL: ${{ matrix.spoil }}
+        run: |
+          python3 -I - <<'EOF'
+          import os, subprocess, sys
+          # name: (places in src/loop-watch.ts as (text, replacement), the test that must turn red)
+          SPOILS = {
+            "cpu-removed": ([("cpu ${Math.round(cpu)} ms, ", "")], "the line tells the CPU time of the process"),
+            "cpu-since-start": ([("    this.last = now;\n    this.cpu = cpuNow;\n", "    this.last = now;\n")], "the line tells the CPU time of the process"),
+            "cpu-read-when-told": ([
+              ("    this.cpu = cpuNow;\n    if (late < this.stallMs) return;\n    this.settle(() => {\n", "    if (late < this.stallMs) { this.cpu = cpuNow; return; }\n    this.settle(() => {\n      const told = this.meters.cpuMs(), cpuAtTelling = told - this.cpu;\n      this.cpu = told;\n"),
+              ("cpu ${Math.round(cpu)} ms", "cpu ${Math.round(cpuAtTelling)} ms"),
+            ], "when the loop is held again before a stall is told"),
+            "cpu-user-only": ([("(user + system) / 1000", "user / 1000")], "the meters of the process turn"),
+            "gc-removed": ([(", gc ${Math.round(gc)} ms", "")], "the line tells the time of the collections"),
+            "gc-whole-history": ([("this.meters.gcMs(from, now)", "this.meters.gcMs(0, now)")], "the line tells the time of the collections"),
+            "gc-to-the-end": ([("this.meters.gcMs(from, now)", "this.meters.gcMs(from, Infinity)")], "when the loop is held again before a stall is told"),
+            "gc-window-ignored": ([("if (entry.start > from && entry.start <= to) total", "total")], "the garbage collection time counts the collections by the stretch"),
+            "gc-start-is-arrival": ([("start: entry.startTime", "start: performance.now()")], "the garbage collection time counts the collections by the stretch"),
+            "gc-forgets-nothing": ([("    if (old > 0) this.entries.splice(0, old);\n", "")], "the garbage collection time forgets"),
+            "gc-wrong-entries": ([('entryTypes: ["gc"]', 'entryTypes: ["function"]')], "the garbage collection time counts"),
+            "gc-read-in-timer": ([("setImmediate(read);", "read();")], "a loop held by garbage collection tells"),
+            "load-removed": ([(", load ${this.meters.load().toFixed(2)}", "")], "the line tells the load average"),
+            "load-five-minutes": ([("load()[0]!", "load()[1]!")], "the meters of the process turn"),
+          }
+          name = os.environ["SPOIL"]
+          places, expect = SPOILS[name]
+          path = "src/loop-watch.ts"
+          source = open(path).read()
+          for frm, to in places:
+              if source.count(frm) != 1:
+                  sys.exit(f"{name}: expected one place to spoil, found {source.count(frm)} for {frm!r}")
+              source = source.replace(frm, to)
+          open(path, "w").write(source)
+          run = subprocess.run(["node", "--test", "--test-reporter=tap", "test/loop-watch.test.ts"], capture_output=True, text=True)
+          out = run.stdout + run.stderr
+          print(out)
+          red = [line.strip() for line in out.splitlines() if line.lstrip().startswith("not ok") and expect in line]
+          if run.returncode == 0 or not red:
+              sys.exit(f"{name}: the test '{expect}' did not turn red")
+          print(f"{name}: red as intended: {red}")
+          EOF
