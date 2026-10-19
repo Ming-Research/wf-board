@@ -15,6 +15,7 @@ import { rules } from "../src/rules.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { Board, Decision, Item } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
+import { wholeView } from "../src/whole-view.ts";
 import { DEFAULT_ROWS, LookMemory, MEMORY_SESSIONS, MIN_ROWS, look, lookLines, lookText } from "../src/look.ts";
 import type { LookOptions, Previous } from "../src/look.ts";
 import type { Resolved } from "../src/credentials.ts";
@@ -176,8 +177,8 @@ test("what expand names that does not fit is said, and the lines stay within the
   assert.match(lookText(view(s, { expand: ["k0"] })).split("\n")[1]!, /^没有孩子可展开：k0$/);
 });
 
-test("the budget opens the subtree with something nobody holds before the one that is only being worked on", () => {
-  // Two projects of the same shape: four items under a root. In Firn all four are reported; in Whitefoot one is held by nobody.
+test("the budget opens the subtree with something nobody holds before the one whose items all wait", () => {
+  // Two projects of the same shape: four items under a root. In Firn all four are reported as waiting for CI; in Whitefoot one is held by nobody.
   // Ten lines are the header, the two project lines and seven more: both projects (2) and one root (4) fit, and a second root does not.
   const four = (group: string, root: string, first: string) => [
     { id: root, group, plan: owns(...[1, 2, 3, 4].map(i => `${first}${i}`)) },
@@ -198,21 +199,26 @@ test("the budget opens work being done before a check flag, a check flag before 
   // Five roots with two items each that differ in one thing. Their names run in the order of the walk, from the least pressing to the
   // most, so the walk alone cannot give the order. r1: both items blocked on gate (a held-up item is not one that needs a reader),
   // r2: one item paused, r3: one item with a title that is too long (a check flag), r4: one item being worked on (the runner reports
-  // it, which also flags it), r5: one item nobody holds. r0 owns gate, which nobody holds, so r0 is opened first, with r5. An item whose
-  // plan is only its acceptance step is flagged (只差验收), so the ones nobody holds or that are paused have a step to do besides.
+  // it, with the big steps an engineer's plan has, or the plan would be flagged), r5: one item nobody holds. r0 owns gate, which
+  // nobody holds, so r0 is opened first, with r5. An item whose plan is only its acceptance step is flagged (只差验收), so the ones
+  // nobody holds or that are paused have a step to do besides.
   const blocked = (id: string, more: Record<string, unknown> = {}): Spec => ({ id, plan: [{ id: "gate", item: "gate", own: false }], ...more });
   const step = [{ id: "s1", text: "做", state: "todo" }];
+  const stages = [
+    { id: "research", text: "研究", ...DONE }, { id: "impl", text: "实现", state: "doing", since: "2026-10-18T09:00:00Z" },
+    { id: "accept", text: "验收", state: "todo" }, { id: "acc", text: "验收标准", state: "todo", accept: true },
+  ];
   const s = board([
     { id: "r0", plan: owns("gate") }, { id: "gate", plan: step },
     { id: "r1", plan: owns("r1a", "r1b") }, blocked("r1a"), blocked("r1b"),
     { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", plan: step, paused: { reason: "等", at: iso(NOW - DAY) } }, blocked("r2b"),
     { id: "r3", plan: owns("r3a", "r3b") }, blocked("r3a", { title: "这是一个超过二十个字的很长很长的条目标题名字" }), blocked("r3b"),
-    { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: doing, ...report("running", 8, { turns: 2 }) }, blocked("r4b"),
+    { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: stages, ...report("running", 8, { turns: 2 }) }, blocked("r4b"),
     { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a", plan: step }, blocked("r5b"),
   ]);
   const all = lookText(view(s));
   assert.match(line(all, "r3a")!, /检查：.*需核对/, "the item with the long title carries a check flag");
-  for (const id of ["gate", "r1a", "r1b", "r2a", "r2b", "r3b", "r4b", "r5a", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
+  for (const id of ["gate", "r1a", "r1b", "r2a", "r2b", "r3b", "r4a", "r4b", "r5a", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
   assert.match(line(all, "r5a")!, /没人管/);
   assert.match(line(all, "r2a")!, /暂停/);
   // The room of 13 lines is the header, the project, its six roots, the one line of r0 and two roots opened; each more root takes two.
@@ -410,15 +416,18 @@ function memoryBoard(gen: Generated): Snapshot {
 test("on a board of the live board's size every open item is a line or in a count, within the lines asked and in time", () => {
   const s = memoryBoard(generateBoard(1, 12));
   assert.ok(Object.keys(s.items).length > 1500, `a board of ${Object.keys(s.items).length} items`);
-  // A third of the open, unpaused items get a report, so the tree has lines of several kinds.
+  // A third of the open, unpaused items get a report (the backlog's too), so the tree has lines of several kinds.
   const r0 = rules(s, NOW), states = ["running", "ci", "ask", "items", "run", "ready", "exception", "done"] as const;
   let seen = 0;
   for (const id of Object.keys(s.items)) {
-    if (!r0.isOpenWork(id) || r0.isPaused(id) || r0.isBacklog(id) || seen++ % 3 !== 0) continue;
+    if (!r0.isOpenWork(id) || r0.isPaused(id) || seen++ % 3 !== 0) continue;
     const state = states[Math.floor(seen / 3) % states.length]!, since = iso(NOW - (seen * 37 % 600) * MIN);
     s.items[id] = Item.parse({ ...s.items[id], runner: { state, since, at: since, started: since, ...(state === "ask" ? { to: "architect" } : state === "items" ? { items: ["x"] } : {}) } });
   }
   const keys = new Set(Object.keys(s.items)), r = rules(s, NOW);
+  // The oracle for the header's three numbers: the whole view's count of each kind, taken from its own pass.
+  const kinds = wholeView(s, r, NOW).projects.reduce((sum, p) => ({ unattended: sum.unattended + p.byBucket.unattended, overdue: sum.overdue + p.byBucket.overdue, working: sum.working + p.byBucket.working }), { unattended: 0, overdue: 0, working: 0 });
+  assert.ok(kinds.unattended > 0 && kinds.overdue > 0 && kinds.working > 0, `the board has every kind: ${JSON.stringify(kinds)}`);
   // The oracle: the items that are neither records nor done nor cancelled.
   const open = Object.keys(s.items).filter(id => r.isOpenWork(id)).length;
   assert.ok(open > 300, `${open} open items`);
@@ -427,6 +436,8 @@ test("on a board of the live board's size every open item is a line or in a coun
     const took = performance.now() - started, got = account(text, keys);
     console.info(`look of ${Object.keys(s.items).length} items, ${rows} rows: ${Math.round(took)} ms, ${text.length} characters, ${got.rows.length} item lines + ${got.hidden} counted`);
     assert.ok(took < 2000, `the look took ${Math.round(took)} ms`);
+    const numbers = /没人管 (\d+) · 等太久 (\d+) · 在做 (\d+)/.exec(text.split("\n")[0]!)?.slice(1).map(Number);
+    assert.deepEqual(numbers, [kinds.unattended, kinds.overdue, kinds.working], "the header counts the kinds as the whole view does");
     assert.ok(got.lines <= rows, `${got.lines} lines for ${rows}`);
     assert.equal(got.rows.length + got.hidden, open, "every open item is a line or inside a count");
     assert.equal(new Set(got.rows).size, got.rows.length);

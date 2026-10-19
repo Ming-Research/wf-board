@@ -2212,7 +2212,7 @@ instructions within the limit and free of rule text.
 | `projects()` | Which project matches this repository? | Project configuration, top items and open items by status |
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
-| `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog, in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
+| `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog (unless the runner reports on it), in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
 | `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
@@ -2327,7 +2327,8 @@ it reads the items, the live dispatches and the runner reports once, and the too
 (`wholeViewText`) without choosing or writing anything.
 
 - *Which items.* Every open work item that is not in a backlog (a record's owned items are
-  counted apart: they are not started on purpose) and that is not a container: a parent with
+  counted apart: they are not started on purpose, unless a runner report is on one: the runner is
+  working on it, so it is a row) and that is not a container: a parent with
   open sub-items is its sub-items' business, unless a runner report or a live engineer
   session is on the parent itself; a standing item is in force, not waiting for someone,
   so it is a row only when a runner report or a live engineer session is on it.
@@ -2377,8 +2378,9 @@ not call it.
 - *The tree.* The roots are each project's top items (`areas`), the projects in their configured order. A node is an open work
   item, one line, below the item that owns it, in the order of the owner's plan. A done or cancelled item has no line: the open items
   it owns hang on the node above. A record that holds work is a pool, a line of its own (`待选池`) with its items below it, counted
-  apart from the project's (`items` and `pool` of a tally), because nobody has started them on purpose; the header still counts a pool's
-  item that the runner reports on among 没人管, 等太久 and 在做, as the whole view does, and a line that counts the pool says how many
+  apart from the project's (`items` and `pool` of a tally), because nobody has started them on purpose; the header still counts what is in a pool
+  among 没人管, 等太久 and 在做 as the whole view does (a pool's item that the runner reports on, which the whole view
+  puts in a kind, and the items below it, which are no backlog items themselves), and a line that counts the pool says how many
   of those it holds (`待选池 N 件（在做 1）`); a record that holds no open work has no line. An item no root reaches (its owners form a cycle, which a check flags) is visited last and hangs on its project, marked
   `没挂在树上`. Each item is visited once, so each open work item is a line or inside a count.
 - *The budget.* `rows` lines, 80 by default, 10 at least and 400 at most. The header and a line for each project come first (so a
@@ -2407,12 +2409,12 @@ not call it.
   derived, so a change no write made is seen: an item stops waiting when what it waited on is done). The next call of the same
   session compares (the session is the credential's when the connection has one, and the one the call names when it has none; with
   both, the two together, so that a subagent on the architect's connection that names its own session neither reads nor replaces
-  the conversation's last look): a line is marked `*` when the signature differs and `+` when the item has
+  the conversation's last look; a call with neither is not remembered): a line is marked `*` when the signature differs and `+` when the item has
   no signature (new, or reopened), and the header counts those and the items that were open and no longer are (`收尾`). A look at
   some projects keeps the signatures of the others as they were (also those of items no longer open, and no signature for an item the
   session never saw), so it does not hide their changes, new items or finishes. The memory holds at most 16
   sessions, the newest last, and is lost when the daemon restarts: the first look after that, or after the session was pushed out of the 16,
-  and a call with no session, mark nothing, and the header says so. A look whose session is not given is not remembered.
+  marks nothing, and so does a call with neither a session nor a credential, which is not remembered; the header says so.
 - *Cost.* One pass over the items: the whole view's pass, the checks of each item and the tree. `test/look.test.ts` checks on a
   generated board of the live board's size (about 1,600 items) that the look takes under 2,000 milliseconds; the measured values
   go in the item's acceptance rows, from the CI log.
