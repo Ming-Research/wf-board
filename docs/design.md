@@ -2489,7 +2489,22 @@ so a live change counts again only the items it reaches (`affectedItems`) and a 
 the minute counts them all; the page keeps its copy of an item while the item is the same
 object; and the cards each head places are
 found once for each version of an item (a write makes a new object), so a write does not scan
-all the heads again. A navigation (n, a number on an
+all the heads again.
+
+What depends only on the rules' structure and on ids is kept in a third cache, the page's
+structure, and outlives a live change that reused the rules (the condition of section 4, Write
+cost, with the head of every changed item the same as before, because the head places an item's
+cards): the order of the items as the tree lists them and the first place of each, the ids of
+the items an item owns and of those that wait on it, the ancestors of open work, the counts by
+status, the comments of each target, the stops that wait on the owner (an item's pending ask and
+its open cards, in the order the item shows them, found from the open cards and the asks and not by
+walking every item) and the list of unread stops, which also reads the unread steps and is made
+again when the list is another one (the page keeps the array it had when a refresh brings the
+same list, so a write that brings no new unread step does not make it again). The caches hold ids,
+not items, so a change to an item's text, title or log leaves nothing stale in them. What is
+the view's and not the structure's stays out and is applied when the structure is read: a card whose
+choice is being sent leaves the stops, and a draft being sent shows as sent among the comments.
+Every other live change, a snapshot and the minute make the structure again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
 comments in one draw, and draws once more when the baselines it needs have loaded. The
 rows that first draw paints around the target ask for their own baselines too, and the
@@ -2499,9 +2514,11 @@ comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
 (15 MB on the live board). The page leaves a performance mark for each draw, each build
-of the rules, each build that derived them from scratch, with its reason, and each count of
-every item's filters (`board:render`, `board:rules`, `board:rules-full`,
-`board:filter-counts`) and clears it at once, so the browser test can count them
+of the rules, each build that derived them from scratch, with its reason, each count of
+every item's filters, each time the structure is made again, with its reason, and each time
+the list of stops that wait on the owner and the list of unread stops are made (`board:render`,
+`board:rules`, `board:rules-full`, `board:filter-counts`, `board:structure`, `board:stops`,
+`board:fresh-stops`) and clears it at once, so the browser test can count them
 (section 11) and a page left open for days piles up nothing.
 
 After a jump, the page holds the target at its landing position through
@@ -4463,8 +4480,10 @@ test sets that time on the virtual clock: the rows around the target answer afte
 2 s, the landing draws twice at most; on the page itself it draws twice and then the late rows on their own, every later draw of other items' rows alone;
 whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
 reported by the first and the second. While sessions write, each write builds the rules again, derives them from scratch no time except in a new minute
-(the mark `board:rules-full` names the reason), and counts every item's filters no time. After m the page asks for the unread list and does not fetch
-the board.
+(the mark `board:rules-full` names the reason), counts every item's filters no time, makes the page's structure again no time except in a new minute
+(`board:structure`) and lists the stops that wait on the owner and the unread stops no time (`board:stops`, `board:fresh-stops`); a quiet press
+makes the structure and both lists no time either. The writes of the lane only add log entries, which neither the rules' structure nor the unread
+list read. After m the page asks for the unread list and does not fetch the board.
 
 **Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
 the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that
