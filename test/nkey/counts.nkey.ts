@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Revert } from "../e2e/variant.ts";
-import { COUNT_LANDINGS, FILTERS_COUNTED_EACH_DRAW, FILTERS_COUNTED_EACH_WRITE, NAVIGATION_DRAWS_THREE_TIMES, RULES_DERIVED_FROM_SCRATCH, SCHEDULE_REBUILDS, WITNESS_LANDINGS, checkCounts, checkWrites, checkWritingCounts, lap, log, startLane, describeCounts } from "./lane.ts";
+import { COUNT_LANDINGS, FILTERS_COUNTED_EACH_DRAW, FILTERS_COUNTED_EACH_WRITE, NAVIGATION_DRAWS_THREE_TIMES, RULES_DERIVED_FROM_SCRATCH, SCHEDULE_REBUILDS, STRUCTURE_REMADE_EACH_WRITE, WITNESS_LANDINGS, checkCounts, checkWrites, checkWritingCounts, lap, log, startLane, describeCounts } from "./lane.ts";
 
 test("counts of one press of n on a board of the live board's weight, and the checks that notice their loss", { timeout: 10 * 60_000 }, async t => {
   const lane = await startLane(t, { landings: COUNT_LANDINGS, writes: true });
@@ -23,6 +23,7 @@ test("counts of one press of n on a board of the live board's weight, and the ch
   for (const [what, reverts, names] of [
     ["derives the board's rules from scratch at every write", RULES_DERIVED_FROM_SCRATCH, "from scratch"],
     ["counts every item's filters at every write", FILTERS_COUNTED_EACH_WRITE, "every item's filters"],
+    ["makes its structure and its stop lists again at every write", STRUCTURE_REMADE_EACH_WRITE, "structure again"],
   ] as const) await t.test(`the writing counts report a page that ${what}`, async () => {
     const list = await lane.walk({ label: "writing witness", reverts: [...reverts] }, WITNESS_LANDINGS, true);
     const hits = checkWritingCounts("reversed", list).filter(v => v.includes(names));

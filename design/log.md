@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-18 Keep the page's structure through a write that reused the rules
+
+Nodes: storage/write-path/page-rules-reuse, testing/press-n
+
+Summary: A write that reused the rules still made the page build its order of the items, who waits on whom, the ancestors of open work, the counts by status, the stops that wait on the owner and the unread stops from nothing at every draw, about 9 of the 31 ms a write cost the page on a hosted runner, and a write draws once, so a cache emptied when the data changes would not have saved it. The page now keeps these, as ids, through a change that reused the rules and left every changed item's head as it was, and makes the unread stops again when the unread list is another one; any other change, a snapshot and the minute make them again. The n-key lane's counts hold that a log write makes none of them again. The grounds and the refused alternatives (accounting item by item, caching whole lists by data) are in the node; the derivation is in docs/design.md, section 7, The page.
+
 ## 2026-10-18 Deal the script tests out to twenty shards
 
 Nodes: testing/ci-shards
