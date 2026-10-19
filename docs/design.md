@@ -4728,8 +4728,8 @@ holds back, so a baseline that arrives 300 ms late is 300 ms of the clock's time
 **Counts**, exact on any machine, from the page's performance marks (`countEvent` in `web/app.ts`): a press that lands on another item builds the board's rules
 no time, counts the filters no time and draws once or twice, every draw from the key until the page is quiet counting, those of the rows around the target
 included; and writes no more than the markup (characters assigned to `innerHTML`) and the elements (`createElement`) it wrote when the numbers were set, held at
-the median over the landings of the first walk (`WRITES` in `test/nkey/lane.ts`; a change to the page that moves them changes the numbers and the pull request
-says why). The draws depend on when the baselines of the rows around the target answer, because the navigation waits for them 100 ms at most, so a
+the median over the landings of the first walk (`WRITES` in `test/nkey/lane.ts`; a change to the page or to the generated board that moves them changes the
+numbers and the pull request says why). The draws depend on when the baselines of the rows around the target answer, because the navigation waits for them 100 ms at most, so a
 test sets that time on the virtual clock: the rows around the target answer after 300 ms and the others after 20 ms. On a copy of the page whose wait is
 2 s, the landing draws twice at most; on the page itself it draws twice and then the late rows on their own, every later draw of other items' rows alone;
 whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
