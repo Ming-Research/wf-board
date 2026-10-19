@@ -953,7 +953,7 @@ test("review is a stage between impl and ci, with rounds, and the plan that has 
   assert.deepEqual(rules(s).stages("a")?.current, { id: "review-2", kind: "review", round: 2, label: "审查·2" });
   // A plan without a review is complete as before: the stage is not required.
   s.items.a!.plan = [step("research", "done"), step("impl", "done"), step("ci"), tests(), step("accept"), step("merge")];
-  assert.equal(rules(s).stages("a")?.total, 4);
+  assert.equal(rules(s).stages("a")?.total, 5, "research, impl, ci, accept and merge");
   assert.equal(rules(s).stages("a")?.current?.kind, "ci");
 });
 
