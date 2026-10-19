@@ -104,8 +104,8 @@ function* history(total: number): Generator<Step & { at: number }> {
       touched = [id]; message = `report_state ${id} running`;
     } else if (roll < 0.30) {
       // set_plan: a row changes state (not the ownership), or the plan gains a row.
-      const id = pick(ids), it = touch(id, at), row = it.plan.find(r => (r as { id: string }).id === "w") as { state: string } | undefined;
-      if (row) row.state = row.state === "todo" ? "doing" : "todo";
+      const id = pick(ids), it = touch(id, at), row = it.plan.find(r => (r as { id: string }).id === "w") as { state: string; since?: string } | undefined;
+      if (row) { const doing = row.state === "todo"; row.state = doing ? "doing" : "todo"; if (doing) row.since = iso(at); else delete row.since; }
       touched = [id]; message = `set_plan ${id}`;
     } else if (roll < 0.52) {
       const id = pick(ids), it = touch(id, at); it.head = pad(2000 + ((k + it.num) * 977) % 6000);
@@ -193,7 +193,8 @@ try {
 
 // The checks.
 const problems: string[] = [];
-for (const r of results) if (r.failed) problems.push(`${r.commits} commits: the process ended (exit ${r.exitCode}, signal ${r.signal})`);
+const crashed = results.filter(r => r.failed);
+for (const r of crashed) problems.push(`${r.commits} commits: the process ended (exit ${r.exitCode}, signal ${r.signal})`);
 const replay = (r: Record<string, any>): number | undefined => r.steps?.["replay pauses"];
 const done = results.filter(r => !r.failed && replay(r) !== undefined);
 const largest = done.at(-1);
@@ -204,4 +205,5 @@ for (let i = 1; i < done.length; i++) {
   if (ratio > 2.5) problems.push(`${done[i]!.commits} commits: the replay of pauses took ${ratio.toFixed(2)} times as long as at ${done[i - 1]!.commits}, over the 2.5 times it may take for double the commits`);
 }
 console.log(problems.length ? `bench-startup ${args.label}: ${problems.length} problem(s)\n  ${problems.join("\n  ")}` : `bench-startup ${args.label}: every check passed`);
-if (problems.length && !args["report-only"]) process.exitCode = 1;
+// A run that ended is a failure of the script, not a result, so it fails the run also when only reporting.
+if (crashed.length || (problems.length && !args["report-only"])) process.exitCode = 1;
