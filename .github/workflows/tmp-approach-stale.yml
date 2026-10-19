@@ -20,3 +20,6 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       # The files that read or write checks, heads and rulings.
       - run: node --test test/rules.test.ts test/ops.test.ts test/ops-roles.test.ts test/journal.test.ts test/derived.test.ts test/rules-reuse-a-1.test.ts test/rules-reuse-b-1.test.ts test/rules-reuse-c-1.test.ts test/rules-reuse-guards.test.ts test/rules-oracle.test.ts test/query.test.ts test/mcp.test.ts
+      # The files that build the generated board, and the counts of one press of n on it.
+      - run: node --test test/board-gen.test.ts test/candidates.test.ts test/whole-view.test.ts test/nkey/stats.test.ts
+      - run: node --test --test-concurrency=1 test/nkey/counts.nkey.ts
