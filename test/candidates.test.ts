@@ -10,21 +10,29 @@ import { ops } from "../src/ops.ts";
 import { rules, isReviewStep, REVIEW_STEP } from "../src/rules.ts";
 import { brief } from "../src/query.ts";
 import { createMcpServer } from "../src/mcp.ts";
-import { candidates, candidatesText, candidatesUnder, POOLS, GROUP_OVER } from "../src/candidates.ts";
+import { candidates, candidatesText, candidatesUnder, candidatesUnderText, POOLS, GROUP_OVER } from "../src/candidates.ts";
 import type { CandidateGroup, Candidate } from "../src/candidates.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import { seedBoard } from "./e2e/seed.ts";
 import { asArchitect } from "./helpers.ts";
 
-const NOW = () => new Date().toISOString();
 const STALE = "2026-10-01T00:00Z";
+const DAY = 24 * 3600 * 1000;
+/** Time added to a read of the time since an item last changed: the commits that wrote it are stamped by the real clock, a little after the test took its `base`. */
+const SLACK = 3600 * 1000;
+const iso = (ms: number) => new Date(ms).toISOString();
+/** The month and day of a time, as a row writes it. */
+const day = (ms: number) => iso(ms).slice(5, 10);
 
 /** A board with no items, so a test sees only what it creates. Items are created in the order written: their numbers follow it. */
 async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-cand-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "Architect" }, { name: "PM" }] } });
-  const op = ops(store, NOW);
+  // The board's clock is the real one unless a write is made `at` a time: pauses are stamped with it.
+  let clock: number | undefined;
+  const op = ops(store, () => iso(clock ?? Date.now()));
+  const at = async <T>(time: number, fn: () => Promise<T>): Promise<T> => { const was = clock; clock = time; try { return await fn(); } finally { clock = was; } };
   let agents = 0;
   /** A work item of Whitefoot, rated 2 unless told otherwise; a top item nobody waits on is a root. */
   const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
@@ -38,9 +46,14 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
     return `eng-${agents}`;
   };
   const snapshot = () => store.snapshot();
-  const view = () => { const s = snapshot(); return candidates(s, rules(s)); };
+  /** The answer as read at `now`: the real present unless told. */
+  const view = (now?: number) => { const s = snapshot(); return candidates(s, rules(s), now); };
   const pool = (name: string) => view().pools.find(p => p.pool === name)!;
-  return { store, op, item, child, root, engineer, snapshot, view, pool };
+  /** A record that owns backlog work, and an item of that work. */
+  const backlog = (key: string, extra: Record<string, unknown> = {}) => item(key, { owner: "rec", ...extra });
+  const record = () => op.createItem({ ...asArchitect, key: "rec", group: "Whitefoot", title: "待选", record: true } as Parameters<typeof op.createItem>[0]);
+  const pause = (id: string, reason: string, time?: number) => at(time ?? Date.now(), () => op.setPause({ ...asArchitect, id, paused: true, reason }));
+  return { store, op, item, child, root, engineer, snapshot, view, pool, at, backlog, record, pause };
 }
 const ids = (rows: Array<Candidate | CandidateGroup>) => rows.map(x => "id" in x ? x.id : x.parent);
 
@@ -227,4 +240,131 @@ test("on a board of the live board's shape the answer stays short", async t => {
   const projects = s.board.projects.map(p => p.name);
   const briefTodo = projects.reduce((n, p) => n + JSON.stringify(brief(s, r, p).todo).length, 0);
   assert.ok(text.length < briefTodo || briefTodo === 0, `candidates ${text.length} characters, brief todo lists ${briefTodo}`);
+});
+
+/** The lines of a candidates answer that belong to the work set aside: its header and its rows. */
+const asideLines = (text: string) => text.split("\n").filter(line => line.startsWith("  另有") || line.startsWith("    "));
+
+test("paused work and work with a start condition are listed after the candidates, which are as they were", async t => {
+  const b = await empty(t), base = Date.now();
+  await b.record(); await b.root("r"); await b.child("ok", "r");
+  // A candidate whose head has a 何时 section is still a candidate: only what cannot be started is set aside.
+  await b.child("cand", "r", { head: "**何时**：下次改到它时。" });
+  const before = candidatesText(b.view());
+  // Paused on the item itself, 7 days before the read below, and through its parent, 2 days before it.
+  await b.child("own", "r"); await b.pause("own", "原则 6：先不做", base - 7 * DAY);
+  await b.child("par", "r"); await b.child("kid", "par"); await b.pause("par", "等主人定方向", base - 2 * DAY);
+  // In a backlog: with a 何时 section it is listed, without one it is not.
+  await b.backlog("later", { head: "**问题**：慢。\n\n**何时**：有程序需要它时。其余另说。" }); await b.backlog("quiet", { head: "**问题**：慢。" });
+  const now = base + 3 * DAY + SLACK, text = candidatesText(b.view(now));
+  assert.deepEqual(ids(b.pool("2+").listed), ["ok", "cand"], "the candidates are as they were");
+  assert.equal(b.pool("2+").total, 2, "and the number of candidates counts none of the work set aside");
+  assert.equal(text.split("\n").filter(line => !line.startsWith("    ") && !line.startsWith("  另有")).join("\n"), before, "the part with the candidates reads as before");
+  const num = (id: string) => b.snapshot().items[id]!.num;
+  assert.deepEqual(asideLines(text), [
+    "  另有暂停 2 件、带开工条件 1 件（Whitefoot 3）：",
+    `    own · own · 难度 2 · Whitefoot · #${num("own")} · 暂停 · Architect ${day(base - 7 * DAY)} · 停了 10 天 · 原则 6：先不做`,
+    `    kid · kid · 难度 2 · Whitefoot · #${num("kid")} · 因 par 暂停 · Architect ${day(base - 2 * DAY)} · 停了 5 天 · 等主人定方向`,
+    `    later · later · 难度 2 · Whitefoot · #${num("later")} · 何时：有程序需要它时。 · 3 天没动`,
+  ], "paused first, the longest paused first; then the item with a condition; the parent, the item without a 何时 and the candidates are not rows");
+  assert.equal(text.split("2 级以上")[0]!.includes("另有"), false, "nothing in the other pool, and its text has no part for it");
+});
+
+test("what is not an item an engineer could be started on is not listed as set aside", async t => {
+  const b = await empty(t);
+  await b.record(); await b.root("r");
+  // Held: an open engineer dispatch is on it, even a quiet one.
+  await b.child("held", "r"); await b.engineer("held", 2, STALE); await b.pause("held", "先放一放");
+  // Not rated: nobody could be started on it, whatever the pool.
+  await b.child("unrated", "r", { difficulty: undefined }); await b.pause("unrated", "先放一放");
+  // A parent with open sub-items is its sub-items' business: only the sub-item is a row.
+  await b.child("parent", "r"); await b.child("sub", "parent"); await b.pause("parent", "先放一放");
+  // Blocked on another item, with a 何时 section: the plan says what it waits on, not the condition.
+  await b.child("dep", "r"); await b.child("blocked", "r", { head: "**何时**：下次。", plan: [{ item: "dep", own: false }] });
+  // A 何时 title inside a code block is code, and the word in a sentence is no title.
+  await b.backlog("fenced", { head: "**问题**：x\n\n```\n**何时**：不是标题\n```\n" }); await b.backlog("plain", { head: "**问题**：不知道何时做。" });
+  const rows = asideLines(candidatesText(b.view())).slice(1).map(line => line.trim().split(" · ")[0]);
+  assert.deepEqual(rows, ["sub"], "only the sub-item of the paused parent");
+});
+
+test("a 何时 section is read in the forms items write it, and a row shows its first sentence cut to 60 characters", async t => {
+  const b = await empty(t);
+  await b.record(); await b.root("r");
+  const heads: Record<string, string> = {
+    colon: "**问题**：x\n\n**何时**：有程序需要时。后面的话不要。\n\n**做法**：y",
+    space: "**何时** 下次改到时。\n",
+    heading: "# 问题\n\nx\n\n## 何时\n\n等有人提需求。\n\n## 做法\n\ny",
+    alone: "**何时**\n\n第一行，\n接着第二行。别的不要。\n\n**改动**：z",
+    long: `**何时**：${"很".repeat(70)}。`,
+    inline: "**何时**：没有空行就接下一节。\n**做法**：y",
+  };
+  for (const [key, head] of Object.entries(heads)) await b.backlog(key, { head });
+  const text = candidatesUnderText(candidatesUnder(b.snapshot(), rules(b.snapshot()), "rec"));
+  const when = Object.fromEntries(text.split("\n").slice(2).map(line => [line.trim().split(" · ")[0], /何时：(.*?) · /.exec(line)?.[1]]));
+  assert.deepEqual(when, {
+    colon: "有程序需要时。", space: "下次改到时。", heading: "等有人提需求。", alone: "第一行， 接着第二行。",
+    long: `${"很".repeat(60)}…`, inline: "没有空行就接下一节。",
+  });
+});
+
+test("more than three under one pause or one parent are a row with the count, and a project with few items is not crowded out", async t => {
+  const b = await empty(t), base = Date.now();
+  await b.record(); await b.root("r");
+  // Four sub-items under one paused parent: one row. Three under another: three rows.
+  await b.child("pc", "r"); for (const k of ["a1", "a2", "a3", "a4"]) await b.child(k, "pc");
+  await b.pause("pc", "等主人定方向", base - 5 * DAY);
+  await b.child("pd", "r"); for (const k of ["d1", "d2", "d3"]) await b.child(k, "pd");
+  await b.pause("pd", "先放一放", base - 4 * DAY);
+  // Four with a condition under the record: one row.
+  for (const k of ["w1", "w2", "w3", "w4"]) await b.backlog(k, { head: "**何时**：有人要时。" });
+  const num = (id: string) => b.snapshot().items[id]!.num;
+  const text = candidatesText(b.view(base + DAY));
+  assert.deepEqual(asideLines(text), [
+    "  另有暂停 7 件、带开工条件 4 件（Whitefoot 11）：",
+    `    pc · pc · Whitefoot · #${num("pc")} · 下面 4 件暂停 · Architect ${day(base - 5 * DAY)} · 停了 6 天 · 等主人定方向 · candidates under=pc 看逐条`,
+    ...["d1", "d2", "d3"].map(k => `    ${k} · ${k} · 难度 2 · Whitefoot · #${num(k)} · 因 pd 暂停 · Architect ${day(base - 4 * DAY)} · 停了 5 天 · 先放一放`),
+    `    rec · 待选 · Whitefoot · #${num("rec")} · 下面 4 件带开工条件，candidates under=rec 看逐条`,
+  ]);
+  assert.equal(text.includes("没列出"), false, "the rows stand for all eleven items");
+});
+
+test("the rows of the set-aside part are taken a project at a time, and the rest are counted", async t => {
+  const b = await empty(t), base = Date.now();
+  await b.root("r");
+  // Twelve paused items of Whitefoot, the oldest pause first; one of Firn, paused last.
+  for (let k = 1; k <= 12; k++) { await b.child(`w${k}`, "r"); await b.pause(`w${k}`, "先放一放", base - (13 - k) * DAY); }
+  await b.root("fr", { group: "Firn" }); await b.child("f1", "fr", { group: "Firn" }); await b.pause("f1", "先放一放", base - DAY / 2);
+  const lines = asideLines(candidatesText(b.view(base)));
+  assert.equal(lines[0], "  另有暂停 13 件、带开工条件 0 件（Whitefoot 12、Firn 1）：", "counts by project, in the order of the projects");
+  assert.deepEqual(lines.slice(1, -1).map(line => line.trim().split(" · ")[0]), ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "f1"], "Firn's only item is listed though Whitefoot has more than the rows; the oldest pauses of Whitefoot fill the rest");
+  assert.equal(lines.at(-1), "    还有 3 件没列出");
+});
+
+test("under= lists the paused items whose pause is on the parent and the items with a condition directly under it", async t => {
+  const b = await empty(t), base = Date.now();
+  await b.record(); await b.root("r");
+  await b.child("pc", "r"); for (let k = 1; k <= 13; k++) await b.child(`a${k}`, "pc");
+  await b.pause("pc", "等主人定方向", base - 5 * DAY);
+  for (const k of ["w1", "w2"]) await b.backlog(k, { head: `**何时**：${k} 的条件。` });
+  const s = b.snapshot(), r = rules(s), num = (id: string) => s.items[id]!.num;
+  const under = candidatesUnder(s, r, "pc", base);
+  const text = candidatesUnderText(under);
+  assert.equal(text.split("\n").filter(line => line.startsWith("  ") && !line.startsWith("  还有")).length, 10, "13 items under the pause, 10 rows listed, none of them a candidate");
+  assert.match(text, new RegExp(`^pc · pc 下面能开工的：没有\\n暂停的 13 件\\n  a1 · a1 · 难度 2 · Whitefoot · #${num("a1")} · 因 pc 暂停 · Architect ${day(base - 5 * DAY)} · 停了 5 天 · 等主人定方向\\n  a10 `));
+  assert.match(text, /\n {2}还有 3 件没列出$/);
+  assert.equal(text.includes("带开工条件的"), false, "no part when there are none");
+  const rec = candidatesUnderText(candidatesUnder(s, r, "rec", base + 2 * DAY + SLACK));
+  assert.equal(rec, [`rec · 待选 下面能开工的：没有`, "带开工条件的 2 件", `  w1 · w1 · 难度 2 · Whitefoot · #${num("w1")} · 何时：w1 的条件。 · 2 天没动`, `  w2 · w2 · 难度 2 · Whitefoot · #${num("w2")} · 何时：w2 的条件。 · 2 天没动`].join("\n"));
+});
+
+test("the tool answers with the part for the work set aside, read at the server's clock", async t => {
+  const b = await empty(t), base = Date.now();
+  await b.root("r"); await b.child("p", "r"); await b.pause("p", "先放一放", base - 3 * DAY);
+  const server = createMcpServer({ store: b.store, ops: b.op, now: () => iso(base) });
+  const client = new Client({ name: "t", version: "1" }); const [c, sv] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(sv), client.connect(c)]); t.after(() => client.close());
+  const text = async (args: Record<string, unknown>) => ((await client.callTool({ name: "candidates", arguments: args })).content as Array<{ text: string }>)[0]!.text;
+  assert.match(await text({}), new RegExp(`\\n {2}另有暂停 1 件、带开工条件 0 件（Whitefoot 1）：\\n {4}p · p · 难度 2 · Whitefoot · #\\d+ · 暂停 · Architect ${day(base - 3 * DAY)} · 停了 3 天 · 先放一放$`));
+  assert.equal(await text({ under: "r" }), "r · r 下面能开工的：没有", "a parent that carries no pause has no paused part");
+  assert.match(await text({ under: "p" }), /^p · p 下面能开工的：没有\n暂停的 1 件\n  p · p · 难度 2 /, "the item that carries a pause lists itself");
 });

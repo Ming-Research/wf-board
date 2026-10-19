@@ -112,7 +112,7 @@ export function spanText(ms: number): string {
 }
 
 /** The time of the last change to an item: its last content write, or its own `updated`. */
-function lastChange(s: Input, id: string): number {
+export function lastChange(s: Input, id: string): number {
   const at = s.activity?.items?.[id], own = Date.parse(s.items[id]!.updated);
   return Math.max(own, at === undefined ? -Infinity : Date.parse(at));
 }
@@ -174,7 +174,7 @@ export function wholeView(s: Input, r: Rules, now: number): WholeView {
 }
 
 /** The first `max` characters of a text, then an ellipsis. */
-const cut = (text: string, max: number): string => { const chars = [...text.replace(/\s+/g, " ").trim()]; return chars.length <= max ? chars.join("") : `${chars.slice(0, max).join("")}…`; };
+export const cut = (text: string, max: number): string => { const chars = [...text.replace(/\s+/g, " ").trim()]; return chars.length <= max ? chars.join("") : `${chars.slice(0, max).join("")}…`; };
 const numText = (x: { num?: number }): string => x.num === undefined ? "" : ` · #${x.num}`;
 
 /** One row as a line of the answer. */

@@ -1,0 +1,41 @@
+name: tmp-quick
+# Temporary: delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      # The test files that read candidates, a head's sections, or the whole view's helpers.
+      - run: node --test test/candidates.test.ts test/lean.test.ts test/whole-view.test.ts test/mcp.test.ts test/wake-agents.test.ts
+  # The new tests of candidates.test.ts against the base's sources: each of them must fail, for the missing part and not for an error.
+  base-red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: git checkout origin/main -- src
+      - run: |
+          code=0
+          node --test --test-reporter=spec test/candidates.test.ts > base.log 2>&1 || code=$?
+          cat base.log
+          test "$code" -ne 0
