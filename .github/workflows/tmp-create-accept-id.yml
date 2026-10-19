@@ -1,0 +1,29 @@
+name: tmp-create-accept-id
+# Temporary quick check for create-accept-id: the type check and the script tests (the acceptance step's id reaches many test files). Removed before the full CI.
+on:
+  push:
+    branches: [create-accept-id]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+  test:
+    name: test shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test --test-timeout=120000 $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})

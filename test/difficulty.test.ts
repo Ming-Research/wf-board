@@ -131,7 +131,7 @@ test("缺难度 is raised only for work an unpaused root needs, and not for a re
   await op.createItem({ ...asArchitect, key: "rec", group: author, record: true, title: "待选池" });
   await unrated("backlog", { owner: "rec", group: undefined });
   await unrated("under", { owner: "backlog", group: undefined });
-  await unrated("done"); await op.setPlan({ author, id: "done", row: { id: "accept", accept: true, text: "通过", state: "done" } });
+  await unrated("done"); await op.setPlan({ author, id: "done", row: { id: "acc", accept: true, text: "通过", state: "done" } });
   await unrated("gone"); await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "不要了" });
   await unrated("own"); await unrated("child", { owner: "own", group: undefined });
   await op.setPause({ ...asArchitect, id: "own", paused: true, reason: "先放一放" });
@@ -213,7 +213,7 @@ test("缺难度 waits while the next step is an unfinished sub-item, and comes b
   assert.equal(missing(b, "study-root").length, 0, "an in-progress root under a study asks for none");
   assert.equal(missing(b, "study").length, 0, "the study is being done, so its rating is not the next thing");
   await op.setPlan({ author, id: "study", row: { id: "build", text: "做调研", state: "done" } });
-  await op.setPlan({ author, id: "study", row: { id: "accept", accept: true, text: "通过", state: "done" } });
+  await op.setPlan({ author, id: "study", row: { id: "acc", accept: true, text: "通过", state: "done" } });
   // The finished study is part of the root's plan, so the root is part way and nobody holds it.
   assert.equal(rules(store.snapshot()).statusOf("study-root"), "idle");
   assert.equal(missing(b, "study-root").length, 1, "once the sub-item is done, the root's own step is next and it asks");
@@ -239,7 +239,7 @@ test("缺难度 waits while the next step waits on another item, and while the n
   assert.equal(missing(b, "dep").length, 1, "dep itself asks, as an unpaused root needs it");
   // A todo step whose waits text says it waits is no next step either.
   await unrated("texty");
-  await op.setPlan({ author, id: "texty", row: { id: "accept", accept: true, text: "通过", state: "todo", waits: "等 Firn 的结果" } });
+  await op.setPlan({ author, id: "texty", row: { id: "acc", accept: true, text: "通过", state: "todo", waits: "等 Firn 的结果" } });
   assert.equal(missing(b, "texty").length, 0, "its next step's text says it waits, so the item is not startable apart from the rating");
 });
 

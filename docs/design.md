@@ -1943,9 +1943,21 @@ three manual-status checks listed under Status.
 #### Writing plans
 
 - A new work item is created with its acceptance text (`create_item`'s
-  `accept`), so every new item has a plan from birth.
+  `accept`), so every new item has a plan from birth. The step it appends has
+  the id `acc` (`acc-1`, `acc-2` when the plan already has that id), never
+  `accept`: `accept` is the id of the engineer plan's stage row of that name,
+  and a step with the acceptance mark under that id made the format check
+  report the stage missing (How the page shows a plan).
 - `set_plan` (section 6) edits rows: replace the whole plan, upsert one row,
-  or remove one. An owned row may be added only for an item that no row owns
+  or remove one. An upserted row that is new goes before the first acceptance
+  step, as every plan has its delivery rows behind the acceptance steps; when
+  its `after` names a row at or beyond that place (the online check behind the
+  merge row), it goes right behind the latest row it names, because `after`
+  names earlier rows only, and the row that then follows it, if it has no
+  `after`, keeps waiting for the row it followed before. An existing row keeps
+  its place: moving one is a write of the whole plan. A refused `after` says
+  whether the named row is missing from the plan or stands at or below the
+  row. An owned row may be added only for an item that no row owns
   (a top item of the same project, or a new item through `create_item`);
   taking an item from another owner is `move_item`, so a transfer is always a
   deliberate call logged on both sides. Removing an owned row, or turning it
@@ -2061,8 +2073,8 @@ appends (`impl-2`). `Rules.stages` gives the plan's stages only when it has
 both a `research` and an `impl` row, because older plans use `merge`, `impl`
 and `accept` for ordinary rows: the live board, read on 2026-10-18, held many
 open items with a `merge` row and no other stage id, and `accept` is the id of
-the acceptance step in nearly every item, which is why a step with the mark is
-never a stage. Without both rows the plan keeps counting every row, as above. For a plan
+the acceptance step in nearly every item (items made by `create_item` since the
+step is `acc`), which is why a step with the mark is never a stage. Without both rows the plan keeps counting every row, as above. For a plan
 read by stages, `Rules.progressShare` and the count on a tree row without a
 band count only the stage rows, with the same weights (done 1, in progress ½)
 and the dropped ones left out; detail rows, sub-item rows and cards do not move
@@ -2861,8 +2873,8 @@ authors `总管` and `PM` is refused by every tool.
 
 | Tool | Does | Checks |
 |---|---|---|
-| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, standing?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`. With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record and for a standing item (`standing: true`, the architect only, never with `record` or `difficulty`); the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the architect creates items |
-| `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
+| `create_item(key, title, head, accept, owner?, after?, plan?, children?, group?, links?, data?, record?, standing?, tags?, difficulty?)` | Adds an item with its plan: `plan` rows (steps, shared and card rows, owned rows for top items of the project) then the acceptance step from `accept`, with the id `acc` (`acc-1` … when taken). With `owner`, the owner's plan gains an owned row for it (optional `after`) in the same commit, inserted before the owner's first acceptance step, or right behind the latest row `after` names when that row stands at or beyond that place; without it, the item is a top item of `group`. `children: [id]` moves existing items of the project under the new item as owned rows, each removed from its previous owner's plan, as `move_item` does | Key new and well formed; `accept` required for a work item and refused for a record and for a standing item (`standing: true`, the architect only, never with `record` or `difficulty`); the architect, or an engineer inside its subtree (below); owner and children in the new item's project; rows' targets exist; ownership and cycle rules (section 5); no `status` argument; at least one valid tag once the vocabulary has a tag applicable to the item's project, none accepted before; `difficulty` a valid difficulty, never on a record, logged as the first rating. Written by the architect anywhere. An engineer's credential has the part `item.create` for its subtree: the new item must be owned by an item of the subtree (a top item, an owner outside it, or `children` taken from outside are refused), and from then on is inside it. Without a credential only the architect creates items |
+| `set_plan(id, rows? / row? / remove?)` | Replaces the whole plan, upserts one row by id (keeping its position, or inserting a new row before the first acceptance step, or appending when there is none, or right behind the latest row its `after` names when that row stands at or beyond that place), or removes one. Row inputs: step `{id, text, state, waits?, reason?, after?, accept?}`; item `{item, own, after?}`; card `{card, after?}` | Exactly one mode; project ownership; no caller revision; server-stamped dates; dropped needs a reason; at least one acceptance step anywhere for work, none for records; acceptance uses ordinary step state and readiness rules; `after` names earlier rows only; an owned row only for an unowned item of the same project; removing or un-owning an owned row only for a closed target, else refused pointing to `move_item`; removing a row named in a later `after` refused; ownership and cycle checks; writing the whole plan (`rows`) clears a provisional plan's mark and logs 重写了计划; one commit with concurrent-write retry; identical result writes no commit |
 | `set_targets(id, targets? / target? / remove?)` | Replaces goal numbers, upserts a complete goal by stable id, or removes one; values overwrite the previous row | Exactly one mode; project ownership; required nonempty text; no caller revision or date; server stamps date on current-value changes; one atomic commit with concurrent-write retry; identical result writes no commit |
 | `set_tags(id, tags)` | Sets the item's whole tag list | Project ownership; at least one tag, no repeats; every tag in the vocabulary and applicable to the item's project, else refused naming the allowed tags; no revision (like `set_targets`, a whole-list write that retries on concurrent writes; `update_item` would need a revision read for a field that is replaced whole); identical list writes no commit |
 | `set_tags_many(items: [{id, tags}])` | Sets the whole tag lists of many items in one commit, for backfilling the 缺标签 check | Each entry checked as `set_tags` checks it, naming the entry it refuses; one refused entry refuses the whole write; each item once; entries whose list is unchanged write nothing, and no commit is made when none changes |

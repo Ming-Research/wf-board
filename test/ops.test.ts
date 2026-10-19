@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ops, OpError } from "../src/ops.ts";
-import { rules, CARD_MISMATCH_LABEL, APPROACH_STALE_LABEL } from "../src/rules.ts";
+import { rules, stageProblems, CARD_MISMATCH_LABEL, APPROACH_STALE_LABEL } from "../src/rules.ts";
 import type { Ops, Result } from "../src/ops.ts";
 import { Store } from "../src/store.ts";
 import type { Txn } from "../src/store.ts";
@@ -33,7 +33,8 @@ test("creation, revision, dependency, status, movement and card checks name a fi
     [() => op.setPlan({ author, id: "b", remove: "choice" }), /card choice.*cannot be removed.*withdraw_card/],
     [() => op.setPlan({ author, id: "other", row: { item: "a", own: true } }), /被多个条目拥有.*current owner area.*move_item/],
     [() => op.setPlan({ author, id: "area", remove: "a" }), /a is open.*move_item or cancel/],
-    [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["accept"] } }), /after.*earlier/],
+    [() => op.setPlan({ author, id: "a", row: { id: "later", text: "Later work", state: "todo", after: ["missing"] } }), /after must name earlier rows, but "missing" is not one; the plan has no row with that id/],
+    [() => op.setPlan({ author, id: "b", row: { id: "ruled", card: "ruled", after: ["accept"] } }), /after must name earlier rows, but "accept" is not one; it stands at this row or below it; write the whole plan with rows \(row keeps an existing row where it stands\) so that it comes first/],
     [() => op.setPlan({ author, id: "a", row: { id: "drop", text: "Dropped work", state: "dropped" } }), /reason.*fix/],
     [() => op.setStatus({ ...asArchitect, id: "area", status: "done", log: "Done" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
     [() => op.setStatus({ ...asArchitect, id: "other", status: "blocked", log: "Wait" } as unknown as Parameters<Ops["setStatus"]>[0]), /status.*only cancelled or open.*derived from the plan/],
@@ -92,7 +93,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   await itemCommit(() => op.createItem({ ...asArchitect, key: "new", owner: "area", title: "New", head: "Stable", accept: "New result passes", plan: [{id:"work",text:"Deliver result",state:"todo"}], links: [], data: "4 cases" }),"create_item new",["items/new.yaml","items/area.yaml","numbers.yaml"],architect);
   assert.deepEqual(store.snapshot().items.area!.plan.find(row=>row.id === "new"),{id:"new",item:"new",own:true});
   const created=store.snapshot().items.new!; assert.equal(created.created,later); assert.equal(created.updated,later); assert.equal(rules(store.snapshot()).statusOf("new"),"blocked","its row follows the area's earlier row, which is still open");
-  assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"accept",accept:true,text:"New result passes",state:"todo"}]);
+  assert.deepEqual(created.plan,[{id:"work",text:"Deliver result",state:"todo"},{id:"acc",accept:true,text:"New result passes",state:"todo"}]);
   await itemCommit(() => op.appendLog({ author, id: "new", text: "Evidence" }),"append_log new");
   assert.deepEqual(store.snapshot().items.new!.log[0],{at:later,by:author,text:"Evidence"});
   await itemCommit(() => op.updateItem({ ...asArchitect, id: "new", rev: 2, head: "Revised", reason: "Scope settled", title: "Revised title", links: [{label:"PR",url:"https://github.com/Ming-Research/Whitefoot/pull/1"}], data: null }),"update_item new",undefined,architect);
@@ -103,9 +104,9 @@ test("each operation records its effects, author and single atomic commit", asyn
   // The card is written with its row in the item's plan, in one commit with the card.
   const writeNewCard=()=>op.writeCard({ confidence: conf,author,key:"new-card",item:"new",kind: "design", question:"Choose?",blocks:"The work stops",options:[opt("A", true),opt("B")]});
   await committed(writeNewCard,"write_card new-card",["decisions/new-card.yaml","items/new.yaml","numbers.yaml"],"decision","new-card");
-  assert.deepEqual(store.snapshot().items.new!.plan.map(row=>row.id),["work","new-card","accept"]);
+  assert.deepEqual(store.snapshot().items.new!.plan.map(row=>row.id),["work","new-card","acc"]);
   assert.deepEqual(store.snapshot().items.new!.plan[1],{id:"new-card",card:"new-card"});
-  assert.deepEqual(store.snapshot().items.new!.plan[2],{id:"accept",accept:true,text:"New result passes",state:"todo",after:["work","new-card"]},"the acceptance step waits for the card and still for the row before");
+  assert.deepEqual(store.snapshot().items.new!.plan[2],{id:"acc",accept:true,text:"New result passes",state:"todo",after:["work","new-card"]},"the acceptance step waits for the card and still for the row before");
   assert.deepEqual(store.snapshot().decisions["new-card"]!.options,[{key:"A",...opt("A",true)},{key:"B",...opt("B")}],"the board gives the option keys");
   await itemCommit(() => op.setTargets({ author, id: "new", target: goalNumbers }),"set_targets new");
   assert.deepEqual(store.snapshot().items.new!.targets,[{...goalNumbers,date:later}]);
@@ -136,7 +137,7 @@ test("each operation records its effects, author and single atomic commit", asyn
   await cardCommit(() => op.ruleCard({author,key:"new-card",choice:"B"}),"rule_card new-card");
   assert.equal(store.snapshot().decisions["new-card"]!.choice,"B"); assert.equal(store.snapshot().decisions["new-card"]!.ruledAt,later);
   await cardCommit(() => op.ruleCard({author,key:"choice",choice:"A"}),"rule_card choice","choice");
-  await itemCommit(() => op.setPlan({author,id:"new",row:{id:"accept",accept:true,text:"New result passes",state:"done"}}),"set_plan new");
+  await itemCommit(() => op.setPlan({author,id:"new",row:{id:"acc",accept:true,text:"New result passes",state:"done"}}),"set_plan new");
   assert.equal(rules(store.snapshot()).statusOf("new"),"done");
   await committed(() => op.replyNote({author,id:"note-1",reply:"Answer"}),"reply_note note-1",["notes/note-1.yaml"],"note","note-1");
   assert.deepEqual(store.snapshot().notes["note-1"],{target:"it:a",kind:"comment",text:"中文意见 Whitefoot #341",at,sentAt:at,state:"done",reply:"Answer",repliedAt:later,repliedBy:author,rev:2});
@@ -596,6 +597,37 @@ test("multiple acceptance scenarios retain ordinary waits and insert new rows be
   assert.equal(rules(store.snapshot()).statusOf("a"), "wip", "the doing acceptance scenario still supplies progress after reopening");
 });
 
+test("set_plan row puts a new row right behind the latest row its after names, also behind the acceptance steps", async t => {
+  const { store, op } = await board(t);
+  await store.commit({ author: "Fixture", message: "Seed a record", puts: [{ kind: "item", id: "rec", expectRev: null, doc: { title: "记录", group: author, record: true, plan: [], updated: at } }] });
+  const plan = () => store.snapshot().items.a!.plan, ids = () => plan().map(r => r.id), row = (id: string) => plan().find(r => r.id === id)!;
+  await op.setPlan({ author, id: "a", rows: [
+    { id: "work", text: "Work", state: "todo" }, { id: "acc", accept: true, text: "Passes", state: "todo" }, { id: "merge", text: "合入", state: "todo" },
+    // A record row is no step: `wrap` follows `merge` through it.
+    { item: "rec", own: false }, { id: "wrap", text: "Wrap up", state: "todo" },
+  ] });
+  // The row after merge is the case the merge check asks for: it stands behind the acceptance step, so the default place is not it.
+  await op.setPlan({ author, id: "a", row: { id: "verify", text: "线上验证", state: "todo", after: ["merge"] } });
+  assert.deepEqual(ids(), ["work", "acc", "merge", "verify", "rec", "wrap"]);
+  assert.deepEqual(row("verify"), { id: "verify", text: "线上验证", state: "todo", after: ["merge"] });
+  assert.deepEqual(row("wrap"), { id: "wrap", text: "Wrap up", state: "todo", after: ["merge"] }, "the row that followed merge keeps waiting for it, not for the new row");
+  assert.equal("after" in row("rec"), false, "a record row is left as it was");
+  // Of several rows named, the latest decides.
+  await op.setPlan({ author, id: "a", row: { id: "both", text: "After both", state: "todo", after: ["verify", "work"] } });
+  assert.deepEqual(ids(), ["work", "acc", "merge", "verify", "both", "rec", "wrap"]);
+  // A row at the end follows the last row.
+  await op.setPlan({ author, id: "a", row: { id: "last", text: "Last", state: "todo", after: ["wrap"] } });
+  assert.deepEqual(ids(), ["work", "acc", "merge", "verify", "both", "rec", "wrap", "last"]);
+  // Names before the acceptance step keep the default place, and so does a row that names nothing.
+  await op.setPlan({ author, id: "a", row: { id: "prep", text: "Prepare", state: "todo", after: ["work"] } });
+  await op.setPlan({ author, id: "a", row: { id: "free", text: "Free", state: "todo", after: [] } });
+  assert.deepEqual(ids().slice(0, 4), ["work", "prep", "free", "acc"]);
+  // The same rule places an owned item when create_item names the owner and the row it follows.
+  await op.createItem({ ...asArchitect, key: "behind-merge", owner: "a", after: ["merge"], title: "Behind merge", accept: "Passes" });
+  assert.deepEqual(ids().slice(ids().indexOf("merge")), ["merge", "behind-merge", "verify", "both", "rec", "wrap", "last"]);
+  assert.deepEqual(row("behind-merge"), { id: "behind-merge", item: "behind-merge", own: true, after: ["merge"] });
+});
+
 test("acceptance done writes follow ordinary step rules rather than requiring all other rows resolved", async t => {
   const { store, op } = await board(t);
   await op.setPlan({ author, id: "a", row: { id: "work", text: "Independent work", state: "todo", after: [] } });
@@ -641,7 +673,7 @@ test("plan validation refuses ambiguous modes, caller dates, invalid after and m
     [{ rows: [], row: { id: "work", text: "Work", state: "todo" } }, /exactly one/],
     [{ row: { id: "work", text: "Work", state: "doing", since: later } }, /Unrecognized/],
     [{ row: { id: "work", text: "Work", state: "dropped" } }, /reason/],
-    [{ row: { id: "work", text: "Work", state: "todo", after: ["accept"] } }, /earlier/],
+    [{ row: { id: "work", text: "Work", state: "todo", after: ["missing"] } }, /earlier/],
     [{ rows: [{ id: "same", text: "One", state: "todo" }, { id: "same", accept: true, text: "Accept", state: "todo" }] }, /unique/],
     [{ rows: [{ item: "a", own: false, after: [] }, { card: "choice", after: [] }, { card: "ruled", after: [] }] }, /accept/],
     [{ remove: "accept" }, /at least one acceptance/],
@@ -685,7 +717,7 @@ test("creation adoption uses plans and commits all structural effects together",
   const { store, op } = await board(t, { sharedProjects: true });
   await op.createItem({ ...asArchitect, key: "parent", title: "Combined", group: author, accept: "Both accepted", children: ["a", "b"] });
   const s = store.snapshot(); assert.equal(rules(s).parentOf("a"), "parent"); assert.equal(rules(s).parentOf("b"), "parent");
-  assert.deepEqual(s.items.parent!.plan!.map(row => row.id), ["a", "b", "accept"]);
+  assert.deepEqual(s.items.parent!.plan!.map(row => row.id), ["a", "b", "acc"]);
   assert.deepEqual((await store.log({ limit: 1 }))[0]!.files.sort(), ["items/a.yaml", "items/area.yaml", "items/b.yaml", "items/parent.yaml", "numbers.yaml"], "the issued number's counter enters the creating commit");
 });
 
@@ -954,11 +986,29 @@ test("reopening a child refuses a new ownership violation on its unwritten statu
 
 test("acceptance naming avoids collisions with valid ordinary rows", async t => {
   const { store, op } = await board(t);
-  await op.createItem({ ...asArchitect, key: "collision", group: author, title: "New", accept: "Pass", plan: [{ id: "accept", text: "Ordinary work", state: "todo" }] });
-  assert.deepEqual(store.snapshot().items.collision!.plan.map(row => row.id), ["accept", "accept-1"]);
-  await op.createItem({ ...asArchitect, key: "record-collision", group: author, title: "Record", record: true, plan: [{ id: "accept", text: "Ordinary record entry", state: "todo" }] });
+  await op.createItem({ ...asArchitect, key: "collision", group: author, title: "New", accept: "Pass", plan: [{ id: "acc", text: "Ordinary work", state: "todo" }] });
+  assert.deepEqual(store.snapshot().items.collision!.plan.map(row => row.id), ["acc", "acc-1"]);
+  await op.createItem({ ...asArchitect, key: "record-collision", group: author, title: "Record", record: true, plan: [{ id: "acc", text: "Ordinary record entry", state: "todo" }] });
   await op.updateItem({ author, id: "record-collision", rev: 1, record: false, accept: "Pass" });
-  assert.deepEqual(store.snapshot().items["record-collision"]!.plan.map(row => row.id), ["accept", "accept-1"]);
+  assert.deepEqual(store.snapshot().items["record-collision"]!.plan.map(row => row.id), ["acc", "acc-1"]);
+});
+
+test("the acceptance step create_item appends is not named like the plan's accept stage, so an engineer can add its stages", async t => {
+  const { store, op } = await board(t);
+  // An engineer takes the item and adds the stage rows of the engineer rules (The plan's stages), the stage `accept` among them.
+  const addStages = async (id: string) => { for (const stage of ["research", "impl", "accept"]) await op.setPlan({ author, id, row: { id: stage, text: stage, state: "todo" } }); };
+  await op.createItem({ ...asArchitect, key: "staged", group: author, title: "Staged", accept: "Pass" });
+  await addStages("staged");
+  const plan = store.snapshot().items.staged!.plan;
+  assert.deepEqual(plan.map(row => row.id), ["research", "impl", "accept", "acc"], "the stage rows come before the acceptance step");
+  assert.deepEqual(plan.map(row => "accept" in row && row.accept === true), [false, false, false, true], "only the step create_item appended carries the acceptance mark");
+  assert.deepEqual(stageProblems(plan), [], "the stages are complete");
+  // The same holds when a change from a record to work appends the step.
+  await op.createItem({ ...asArchitect, key: "staged-record", group: author, title: "Staged record", record: true });
+  await op.updateItem({ author, id: "staged-record", rev: 1, record: false, accept: "Pass" });
+  await addStages("staged-record");
+  assert.deepEqual(store.snapshot().items["staged-record"]!.plan.map(row => row.id), ["research", "impl", "accept", "acc"]);
+  assert.deepEqual(stageProblems(store.snapshot().items["staged-record"]!.plan), []);
 });
 
 test("cancelling an item withdraws its open cards in the same commit; reopening restores those, not the ones withdrawn by hand", async t => {

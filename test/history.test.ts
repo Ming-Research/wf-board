@@ -508,7 +508,7 @@ test("a merged history the cached run cannot hold is read from git and gives the
 test("done and cancelled items retain unread changes and readable endpoint diffs", async t => {
   const { store, op } = await board(t);
   await op.createItem({ ...asArchitect, key: "done-result", owner: "a", title: "Finished result", accept: "Result passes" });
-  await op.setPlan({ author, id: "done-result", row: { id: "accept", text: "Result passes", accept: true, state: "done" } });
+  await op.setPlan({ author, id: "done-result", row: { id: "acc", text: "Result passes", accept: true, state: "done" } });
   await op.createItem({ ...asArchitect, key: "cancelled-result", owner: "a", title: "Cancelled result", accept: "Result passes" });
   await op.setStatus({ ...asArchitect, id: "cancelled-result", status: "cancelled", log: "Superseded" });
   const cursor = store.snapshot().head;

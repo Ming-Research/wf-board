@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, dispatchResultProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, planProblem, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_ROLE, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, dispatchResultProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
 import type { Access, CardKind, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
@@ -533,19 +533,31 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (it.difficulty === difficulty.data) return it;
     return { ...it, difficulty: difficulty.data, updated: at, log: [...it.log, entry(author, at, difficultyLogText(it.difficulty, difficulty.data, reason.trim()))] };
   }
+  /** The id of the acceptance step a call appends: `acc`, not `accept`, which is the id of the stage row of that name (the engineer's plan stages, `STAGES`). */
   function acceptId(rows: readonly { id?: string; item?: string; card?: string }[]): string {
     const ids = new Set(rows.map(row => row.id ?? row.item ?? row.card));
-    let id = "accept", suffix = 1; while (ids.has(id)) id = `accept-${suffix++}`; return id;
+    let id = "acc", suffix = 1; while (ids.has(id)) id = `acc-${suffix++}`; return id;
   }
   function rowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
   function stamped(inputs: PlanRowInput[], previous: PlanRow[], at: string): PlanRow[] {
     const old = new Map(previous.map(row => [row.id, row]));
     return parse(PlanInput, inputs).map(row => stampPlanRow(row, old.get(rowId(row)), at));
   }
-  function insert(plan: PlanRow[], row: PlanRow): PlanRow[] {
-    const i = plan.findIndex(r => r.id === row.id), at = plan.findIndex(r => "accept" in r && r.accept);
+  /**
+   * The plan with the row in it: an existing row where it stands, a new one before the first acceptance step (at the end when there is
+   * none). A new row whose `after` names a row at or beyond that place, such as the online check behind the merge row, goes right
+   * behind the latest row it names, since `after` may name only earlier rows. The row it then comes before, when it has no `after`,
+   * keeps waiting for the row it followed.
+   */
+  function insert(plan: PlanRow[], row: PlanRow, isRecord: (row: PlanRow) => boolean): PlanRow[] {
+    const i = plan.findIndex(r => r.id === row.id), first = plan.findIndex(r => "accept" in r && r.accept);
     if (i >= 0) return plan.map((r, n) => n === i ? row : r);
-    const result = plan.slice(); result.splice(at < 0 ? result.length : at, 0, row); return result;
+    const end = first < 0 ? plan.length : first, named = Math.max(-1, ...(row.after ?? []).map(id => plan.findIndex(r => r.id === id)));
+    const result = plan.slice();
+    if (named < end) { result.splice(end, 0, row); return result; }
+    const next = result.findIndex((r, n) => n > named && !isRecord(r));
+    if (next >= 0 && result[next]!.after === undefined) result[next] = { ...result[next]!, after: followedRows(plan, next, isRecord) };
+    result.splice(named + 1, 0, row); return result;
   }
   function removeRow(plan: PlanRow[], id: string): PlanRow[] {
     const named = plan.filter(r => r.after?.includes(id)).map(r => r.id);
@@ -573,7 +585,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
   function attach(s: Snapshot, puts: Put[], at: string, by: Writer, owner: string, id: string, after?: string[]): void {
     ownedItem(s, owner, by, "owner"); const doc = docOf(s, puts, owner);
     if (requireItem(s, owner, "owner").group !== docOf(s, puts, id).group) throw new OpError("owner: ownership must stay within the same project");
-    putDoc(puts, itemPut(owner, { ...doc, plan: insert(doc.plan ?? [], { id, item: id, own: true, ...(after === undefined ? {} : { after }) }), updated: at,
+    putDoc(puts, itemPut(owner, { ...doc, plan: insert(doc.plan ?? [], { id, item: id, own: true, ...(after === undefined ? {} : { after }) }, row => isRecordRow(s.items, row)), updated: at,
       log: [...doc.log, entry(by.author, at, `计划拥有「${titleOf(s, puts, id)}」`)] }));
   }
   function transfer(s: Snapshot, puts: Put[], at: string, by: Writer, id: string, owner?: string, after?: string[]): void {
@@ -810,7 +822,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       requireAuthor(store.snapshot(), a.author);
       return `heartbeat ${heartbeat.beat()} · kept in memory and a local file, no commit`;
     },
-    setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
+    setPlan: a => edit(a, "item.plan", "set_plan", (it, s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
       const previous = it.plan ?? [];
       let plan: PlanRow[];
@@ -821,7 +833,12 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         const removed = previous.filter(row => !a.rows!.some(input => rowId(input) === row.id));
         for (const row of removed) { const named = a.rows.filter(input => input.after?.includes(row.id)); if (named.length) throw new OpError(`remove ${row.id}: later rows ${named.map(rowId).join(", ")} name it in after`); }
         plan = stamped(a.rows, previous, at);
-      } else { const row = parse(PlanRowInput, a.row); plan = insert(previous, stampPlanRow(row, previous.find(r => r.id === rowId(row)), at)); }
+      } else {
+        const row = parse(PlanRowInput, a.row);
+        plan = insert(previous, stampPlanRow(row, previous.find(r => r.id === rowId(row)), at), r => isRecordRow(s.items, r));
+        const problem = planProblem(plan, "write the whole plan with rows (row keeps an existing row where it stands) so that it comes first");
+        if (problem !== undefined) throw new OpError(`input: fix ${problem}`);
+      }
       checkCardRows(previous, plan);
       if (it.standing && plan.some(row => "accept" in row && row.accept)) throw new OpError("plan: a standing item takes no acceptance step; it is always in progress and never completes");
       if (isDeepStrictEqual(plan, previous) && !(a.rows !== undefined && it.provisional)) return it;
