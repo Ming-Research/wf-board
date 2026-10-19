@@ -1,0 +1,51 @@
+name: tmp-write-tail-3s
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The test that failed on the main line, run five times, and once with the store spoiled so that the first write says it had
+# a write ahead of it.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-write-tail-3s-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    name: check and test file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The test file, five times
+        run: |
+          for n in 1 2 3 4 5; do node --test test/write-trace.test.ts || exit 1; done
+  witness:
+    name: spoiled store queue note
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Spoil one thing
+        run: |
+          node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync("src/store.ts", "utf8");
+            const from = "trace?.lap(\"store queue\", ahead ?";
+            if (!text.includes(from)) { console.error("the line to spoil is not in src/store.ts"); process.exit(2); }
+            fs.writeFileSync("src/store.ts", text.replace(from, "trace?.lap(\"store queue\", true ?"));
+          '
+          git diff --stat
+      - name: The test must fail
+        run: |
+          if node --test test/write-trace.test.ts; then echo "the spoiled store passed test/write-trace.test.ts"; exit 1; fi
