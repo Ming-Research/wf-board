@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { rules } from "../../src/rules.ts";
 import { wholeView } from "../../src/whole-view.ts";
 import { startBoard } from "../e2e/board-server.ts";
+import { SEGMENT_TEXT } from "../../src/timeline.ts";
+import type { SegmentKind } from "../../src/timeline.ts";
 import type { Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { DomPage } from "./page.ts";
@@ -83,6 +85,31 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     assert.ok(last.classList.contains("tl-" + kinds.at(-1)), `${id}: the segment is coloured by its kind`);
     assert.match(last.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
   }
+  // The legend under the header lists each kind some row draws, once, in the order of the kinds; each swatch is coloured as its segments are.
+  const items = [...bp.$$("#agents .runner-legend-item")];
+  assert.deepEqual(items.map(c => c.textContent), ["干活", "等主人", "等条目", "要人看"], "the legend lists the kinds the rows draw, in order, and no other");
+  for (const item of items) {
+    const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
+    assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
+    assert.notEqual(kind, "none", `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
+    assert.equal(item.textContent, SEGMENT_TEXT[kind.slice(3) as SegmentKind], `the name beside a swatch is the name of its kind (${kind})`);
+    assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
+  }
+  // The kinds of a segment are told apart by colour in both themes: a probe of each kind, styled as a segment is, has a background of its own.
+  // The background is read after the cascade, so the value is the one drawn, and a paused segment's stripes count as its own background.
+  const KINDS = ["work", "ci", "owner", "architect", "items", "run", "wait", "merge", "person", "closing", "paused"];
+  for (const scheme of ["light", "dark"] as const) {
+    const look = new Styles(bp.win, { width: 1280, scheme }), doc = bp.win.document;
+    const backs = KINDS.map(kind => {
+      const probe = doc.createElement("span");
+      probe.className = "tl tl-" + kind;
+      doc.body.appendChild(probe);
+      const back = look.value(probe, "background");
+      probe.remove();
+      return back;
+    });
+    assert.equal(new Set(backs).size, KINDS.length, `${scheme}: the kinds are told apart by colour, not ${JSON.stringify(backs)}`);
+  }
   // Each segment is as long as the time it took, up to three hours; a longer one is drawn shorter with a gap marked in it, and the hover says how long it was.
   const grow = (seg: Element) => Number((seg as HTMLElement).style.flexGrow);
   const [askWork, askWait] = bp.$$(".rt-line .tl", by(asking)) as [HTMLElement, HTMLElement];
@@ -144,6 +171,26 @@ const WITNESSES: Array<{ bug: string; reverts: Revert[]; reason: RegExp }> = [
   {
     bug: "a segment of the line was not coloured by its kind",
     reverts: [app("the segment has no kind", 'const cell = el("span", "tl tl-" + seg.kind);', 'const cell = el("span", "tl");')], reason: /the segment is coloured by its kind/,
+  },
+  {
+    bug: "a swatch of the legend had no colour of its kind",
+    reverts: [app("the swatch has no kind", 'item.appendChild(el("i", "tl-swatch tl-" + kind));', 'item.appendChild(el("i", "tl-swatch"));')], reason: /the swatch of 干活 is the colour class/,
+  },
+  {
+    bug: "the legend listed every kind, not those the rows draw",
+    reverts: [app("the legend lists all kinds", "SEGMENT_KINDS.filter(kind => seen.has(kind)).forEach", "SEGMENT_KINDS.forEach")], reason: /the legend lists the kinds the rows draw/,
+  },
+  {
+    bug: "a swatch was named as another kind",
+    reverts: [app("the swatch is the colour of the next kind", 'item.appendChild(el("i", "tl-swatch tl-" + kind));', 'item.appendChild(el("i", "tl-swatch tl-" + (kind === "work" ? "ci" : kind)));')], reason: /the name beside a swatch is the name of its kind/,
+  },
+  {
+    bug: "two kinds of a segment had the same colour in the dark theme",
+    reverts: [html("dark merge has the colour of ci", "    --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #ef6fb4;", "    --tl-work: #3fcf6a; --tl-ci: #3fb8c8; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #3fb8c8;")], reason: /the kinds are told apart by colour, not/,
+  },
+  {
+    bug: "two kinds of a segment had the same colour",
+    reverts: [html("merge has the colour of ci", "--tl-merge: #d6457f;", "--tl-merge: #2bb3c0;")], reason: /the kinds are told apart by colour, not/,
   },
   {
     bug: "every segment of a line was drawn as long as the next",
