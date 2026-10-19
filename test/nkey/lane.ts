@@ -75,6 +75,9 @@ export const RULES_DERIVED_FROM_SCRATCH: Revert[] = [
 export const FILTERS_COUNTED_EACH_WRITE: Revert[] = [
   { file: "web/app.ts", edit: "every write counts every item's filters", find: "    if (!previous) filterRecount = null;\n", replace: "    filterRecount = null;\n" },
 ];
+export const STRUCTURE_REMADE_EACH_WRITE: Revert[] = [
+  { file: "web/app.ts", edit: "every write makes the page's structure again", find: "    const reused = previous !== undefined && why === null && previous.changed.every(d => d.kind === \"message\" || previous.rules.item(d.id)?.head === s.items[d.id]?.head);", replace: "    const reused = false;" },
+];
 export const SLOW_DRAW: Revert[] = [
   { file: "web/app.ts", edit: "a draw takes 15 ms more", find: '    countEvent("board:render", [...scope].join(","));\n', replace: '    countEvent("board:render", [...scope].join(","));\n    for (const began = performance.now(); performance.now() - began < 15;) {}\n' },
 ];
@@ -89,17 +92,25 @@ export function checkCounts(label: string, list: Landing[], drawsToo = true): st
     if (l.draws < 1 || drawsToo && l.draws > 2) v.push(`press-n counts (${label}): the press that landed on ${l.item} drew ${l.draws} times, not once or twice (scopes: ${l.scopes.join(" | ")})`);
     if (l.rules !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} built the board's rules ${l.rules} times, not 0`);
     if (l.filters !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} counted the filters ${l.filters} times, not 0`);
+    if (l.structure.length || l.stops !== 0 || l.freshStops !== 0) v.push(`press-n counts (${label}): the press that landed on ${l.item} made the page's structure again ${l.structure.length} times and listed the stops ${l.stops + l.freshStops} times, not 0`);
   }
   return v;
 }
 /** Violations of the counts while sessions write: each write builds the rules again, from what the rules before it derived except in a
- * new minute, and counts again only the filters of the items it reaches. */
+ * new minute, and counts again only the filters of the items it reaches; it keeps the page's structure and lists the stops again
+ * only after a new minute has made the structure again. */
 export function checkWritingCounts(label: string, list: Landing[]): string[] {
   const v: string[] = [];
   for (const l of list) {
     const scratch = l.full.filter(reason => reason !== "minute");
     if (scratch.length) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page derived the board's rules from scratch ${scratch.length} times (${scratch.join(", ")}), not 0`);
     if (l.filters !== 0) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page counted every item's filters ${l.filters} times, not 0`);
+    const remade = l.structure.filter(reason => reason !== "minute");
+    if (remade.length) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page made its structure again ${remade.length} times (${remade.join(", ")}), not 0`);
+    // A new minute makes the structure again, and the first read of each list after it lists it once.
+    const allowed = l.structure.length - remade.length;
+    if (l.stops > allowed) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the stops that wait on the owner again ${l.stops} times, not ${allowed} (the structure was made again for: ${l.structure.join(", ") || "nothing"})`);
+    if (l.freshStops > allowed) v.push(`press-n writing counts (${label}): during the press that landed on ${l.item} the page listed the unread stops again ${l.freshStops} times, not ${allowed} (the structure was made again for: ${l.structure.join(", ") || "nothing"})`);
   }
   return v;
 }
@@ -114,7 +125,7 @@ export function checkWrites(list: Landing[]): string[] {
 
 /** What the counts of a set of landings come to, for the log: the draws of a landing, the rebuilds of the rules (and those from scratch), the filter counts. */
 export function describeCounts(list: Landing[]): string {
-  return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)} over ${list.length} landings`;
+  return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)}, structure made again ${list.reduce((a, l) => a + l.structure.filter(reason => reason !== "minute").length, 0)}, stop lists ${list.reduce((a, l) => a + l.stops + l.freshStops, 0)} over ${list.length} landings`;
 }
 
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are red verdicts and witnesses that
