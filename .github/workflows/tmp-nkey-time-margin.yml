@@ -1,15 +1,17 @@
 name: tmp-nkey-time-margin
 # Temporary (nkey-time-margin): the type check and the unit test of the n-key lane's arithmetic, and the two time parts of the lane
-# run side by side with the lane as the merge base has it (`old`) and as this branch has it (`new`), set up and run as in the full CI,
-# so that the time of the job and of its test step is read from runners at the same hour. `writing-changed` compares with a commit
-# whose page differs by a harmless statement (branch nkey-time-margin-base), so that four windows press as for a pull request that
-# changes the page. Remove it before the full CI: the check `no-tmp-workflow` fails on a leftover.
+# run as in the full CI, with the time budget as it is (34 s) and cut short (20 s and 1 s, to show the cut round and the round that is
+# not begun), so that the cut round's pairs, its widened floor and its verdict are read from runs. `writing-changed` compares with a
+# commit whose page differs by a harmless statement (branch nkey-time-margin-base), so that four windows press as for a pull request
+# that changes the page. On the branch nkey-time-margin-slow, whose page takes 15 ms more per draw, the control job runs instead: both
+# time parts compare with the merge base and must be red. Remove it before the full CI: the check `no-tmp-workflow` fails on a leftover.
 on:
   push:
     branches: ["nkey-time-margin*"]
 jobs:
   unit:
     name: check and stats test
+    if: ${{ github.ref_name != 'nkey-time-margin-slow' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -18,24 +20,22 @@ jobs:
       - run: npm run check
       - run: node --test test/nkey/stats.test.ts
   nkey:
-    name: nkey ${{ matrix.variant }} ${{ matrix.code }} ${{ matrix.run }}
+    name: nkey ${{ matrix.variant }} budget ${{ matrix.budget }} ${{ matrix.run }}
+    if: ${{ github.ref_name != 'nkey-time-margin-slow' && github.ref_name != 'nkey-time-margin-base' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        code: [old, new]
         variant: [writing-same, writing-changed, quiet-same]
-        run: [1, 2, 3]
+        budget: [34, 20, 1]
+        run: [1, 2]
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: The lane as the merge base has it
-        if: ${{ matrix.code == 'old' }}
-        run: git checkout "$(git merge-base origin/main HEAD)" -- test/nkey
       - name: Base page
         env:
           PUSHED_FROM: ${{ github.event.before }}
@@ -45,3 +45,24 @@ jobs:
           echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
           echo "part=${VARIANT%%-*}" >> "$GITHUB_ENV"
       - run: node --test --test-concurrency=1 test/nkey/time-${{ env.part }}.nkey.ts
+        env:
+          NKEY_BUDGET_S: ${{ matrix.budget }}
+  control:
+    name: control ${{ matrix.part }} ${{ matrix.run }}
+    if: ${{ github.ref_name == 'nkey-time-margin-slow' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [time-writing, time-quiet]
+        run: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Base page
+        run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts

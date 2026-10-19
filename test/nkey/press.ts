@@ -368,8 +368,10 @@ export const WITNESS_PAIRS = 10;
 /** The time budget of a time phase, on the clock of `perf.now()` (milliseconds since the test process started, which the lane's `lap`
  * lines count too), and the pairs a round cut short by it still has to make for a verdict to be read. A round is cut at the budget and
  * a further round is begun only if it fits (docs/design.md, The n-key lane, The time budget): the test step of the CI job is then at
- * most the budget and the rest of the process (about 2 seconds) long. */
-export const TIME_BUDGET_MS = 34_000, MIN_PAIRS = 16;
+ * most the budget and the rest of the process (about 2 seconds) long. `NKEY_BUDGET_S` in the environment sets the budget in seconds,
+ * for a run that shows the cut. */
+export const MIN_PAIRS = 16;
+export const TIME_BUDGET_MS = Number(process.env.NKEY_BUDGET_S ?? 34) * 1000;
 
 /** `against`: the label of the window this one is judged against, for a page made from that one (the slow witness of a changed page);
  * without it, the reference. */

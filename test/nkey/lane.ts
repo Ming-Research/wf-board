@@ -173,7 +173,7 @@ export async function timeLayer(name: string, windows: readonly PhaseWindow[], f
   if (!first.red.length) return { result, violations: first.violations };
   log(`press-n time (${name}): slower than the base on the first run (${first.red.join("; ")}); the phase runs again in fresh windows to confirm`);
   lap(`time phase, first run (${result.rounds} rounds)`);
-  // The confirmation has no time budget: it runs only when the first run is red, which fails the job, and a confirmation cut short would raise the rate of false reds.
+  // The confirmation has no time budget: it runs only when the first run is red (a page the same as its base is red in a first run in about 1% of runs while writing and 9% quiet), and a confirmation cut short would raise the rate of false reds.
   const again = judgePhase(`${name}, again`, await timePhase(windows, floor, events), changed);
   const violations = [...first.violations, ...again.violations];
   if (again.red.length) violations.push(`press-n time (${name}): the page is slower than its base in both runs: ${first.red.join("; ")}; again ${again.red.join("; ")}. ${CONFIRMED}`);

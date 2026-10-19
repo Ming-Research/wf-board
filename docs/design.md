@@ -5377,8 +5377,12 @@ seconds (26–48). What the lane does:
   show the noise per pair the floor was measured at; more pairs than 30 keep the floor (pooled rounds were read against it before). The budget ends the
   test step at most about 2 seconds after it (the report, closing the windows, the process): 36 seconds. The job is that and the set-up (median 11 s,
   90th percentile 14 s). A run that ends with the twin still wider than the floor says "undecided" as after the third round, and passes.
-- *Not limited*: the second run that confirms a red (it runs only when the job is going to fail, and a confirmation cut short would raise the rate of false
-  reds), and the runs of `NKEY_FLOOR` that set the floor.
+- *Not limited*: the second run that confirms a red, and the runs of `NKEY_FLOOR` that set the floor. A confirmation cut short would have fewer pairs and so
+  confirm a real slowdown less often, and the rate of false reds the confirmation keeps low (Time, above) depends on it being a full run. It runs when the first run
+  is red: a page 5% slower or more, or a page the same as its base in about 1% of runs while writing and 9% quiet (deduced, Time). In the second case the
+  job passes after one more round, and the test step is then the first run's and one round more, about 10 to 15 seconds on the runners of the hour measured
+  (10-19, 12:00 UTC); one such run was seen in 3 of the `writing-changed` jobs below (a first run of ×1.049 against a reference on a runner whose base press took
+  89 ms, a second run of ×0.995 that passed; the test step was 47 seconds, the job 62).
 On the 57 runs, with the first round's end moved up by a quarter of its length (deduced), the first round ends at a median 29 seconds, 90th percentile 33
 and at most 35, against 32, 38 and 39 now, so the budget cuts 3 runs of 57 by fewer than a tenth of their pairs and keeps the second round only where it
 fits (a runner whose first round ends by about 21 seconds). The lane logs the pairs of each round, whether the budget cut or kept a round, and the time into the process.
