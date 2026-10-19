@@ -430,8 +430,8 @@ test("an architect's turns are listed apart in the summary: in the count, the mi
   assert.match(section(report, "按等级"), /^5 级：派活 3（进行中 1） · .* · 架构师轮次 2（共 15 分钟，不算上面四种结果） · 返工比例 - /m);
   assert.match(report, /· a · 会话 架构师轮次（号 t1） · 架构师 · 5 级 Fable max · 轮次结束 · 失败信号：无 · 用量 /);
   assert.equal(dispatchRows(store.snapshot(), { role: "架构师" }).length, 3, "the role is a filter too");
-  const t = summarize(rows).total;
-  assert.deepEqual({ n: t.n, turns: t.turns, ended: t.rework.ended, kick: t.kickbacks, rounds: t.rounds, cost: t.costMilli }, { n: 4, turns: { count: 2, ms: 15 * 60_000 }, ended: 1, kick: { sum: 2, n: 1 }, rounds: { sum: 0, n: 0 }, cost: 550 });
+  const total = summarize(rows).total;
+  assert.deepEqual({ n: total.n, turns: total.turns, ended: total.rework.ended, kick: total.kickbacks, rounds: total.rounds, cost: total.costMilli }, { n: 4, turns: { count: 2, ms: 15 * 60_000 }, ended: 1, kick: { sum: 2, n: 1 }, rounds: { sum: 0, n: 0 }, cost: 550 });
 });
 
 test("an empty selection says so instead of printing zero tables", () => {

@@ -2,7 +2,7 @@
 // this module reads them across the board, tallies them and words the log lines the two write tools append. The
 // columns and fixed options are the dispatch format's (schemas in model.ts); docs/design.md section 5 gives the reasons.
 
-import { ARCHITECT_ROLE, DISPATCH_OUTCOMES, DISPATCH_ROLES, DISPATCH_SIGNALS, PARKED_RESULT, milliDollars } from "./model.ts";
+import { ARCHITECT_ROLE, DISPATCH_OUTCOMES, DISPATCH_ROLES, DISPATCH_SIGNALS, PARKED_RESULT, TURN_RESULT, milliDollars } from "./model.ts";
 import type { Dispatch, Item, Snapshot } from "./model.ts";
 
 type Role = (typeof DISPATCH_ROLES)[number];
@@ -64,7 +64,8 @@ export function tally(label: string, rows: readonly DispatchRow[]): Tally {
     const f = d.finish;
     if (!f) { t.open++; continue; }
     t.costMilli += milliDollars(f.cost);
-    if (d.role === ARCHITECT_ROLE) { t.turns.count++; t.turns.ms += Date.parse(f.ended) - Date.parse(d.started); continue; }
+    // The architect's turn: its role has this one result and no other role may give it (`dispatchResultProblem`), so the result tells the turns.
+    if (f.result === TURN_RESULT) { t.turns.count++; t.turns.ms += Date.parse(f.ended) - Date.parse(d.started); continue; }
     if (f.result === PARKED_RESULT) { t.parked.count++; t.parked.ms += Date.parse(f.ended) - Date.parse(d.started); continue; }
     t.results[f.result]++;
     t.rework.ended++;
