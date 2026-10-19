@@ -1,0 +1,73 @@
+name: tmp-heap
+# Temporary (board-heap): the quick checks of the change, the runs that watch the new tests fail on code without the change, and the
+# heap measurements of the acceptance (tmp-heap/study.ts). Deleted before the merge.
+on:
+  push:
+    branches: [board-heap]
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      - name: Tests the change touches
+        run: node --test test/parsed-heap.test.ts test/log.test.ts test/store.test.ts test/history.test.ts test/budget.test.ts test/changes-cost.test.ts test/startup-cache.test.ts test/convert-plans.test.ts test/maintenance.test.ts test/migrate-priority.test.ts test/migrate-architect-level.test.ts test/shutdown.test.ts
+      # Each new check must fail once for each condition it protects (the engineering standards, Evidence).
+      - name: Watch the heap tests fail on a parse without the copy
+        run: |
+          sed -i 's/return structuredClone(parse(text, { version: "1.2", schema: "core" }));/return parse(text, { version: "1.2", schema: "core" }) as unknown;/' src/store.ts
+          git diff --stat
+          set +e
+          node --test test/parsed-heap.test.ts > witness-copy.log 2>&1
+          status=$?
+          set -e
+          grep -E "^not ok|^# (pass|fail)|bytes of heap for each|times: " witness-copy.log || true
+          test "$status" -ne 0
+          git checkout src/store.ts
+      - name: Watch the source test fail on a second file that imports the parse
+        run: |
+          sed -i '1i import { parse } from "yaml";' src/history.ts
+          git diff --stat
+          set +e
+          node --test test/parsed-heap.test.ts > witness-import.log 2>&1
+          status=$?
+          set -e
+          grep -E "^not ok|^# (pass|fail)" witness-import.log || true
+          test "$status" -ne 0
+          git checkout src/history.ts
+      - name: Watch the log test fail when the heap is read before the collection
+        run: |
+          sed -i 's/^  collect();$/  \/\/ collect();/' src/log.ts
+          git diff --stat
+          set +e
+          node --test test/log.test.ts > witness-log.log 2>&1
+          status=$?
+          set -e
+          grep -E "^not ok|^# (pass|fail)" witness-log.log || true
+          test "$status" -ne 0
+          git checkout src/log.ts
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      # The daemon stage serves the page files.
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The base, its twin is the same directory
+        run: |
+          base=$(git merge-base HEAD origin/main)
+          echo "base $base"
+          git worktree add --detach "$RUNNER_TEMP/heap-base" "$base"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/heap-base/node_modules"
+          cp -r web/dist "$RUNNER_TEMP/heap-base/web/dist"
+      - name: Smoke run (a few files)
+        run: node tmp-heap/study.ts --base-src "$RUNNER_TEMP/heap-base/src" --scale 0.03 --stages open,rebuild --pairs 2
+      - name: Full run (the live board's size)
+        run: node tmp-heap/study.ts --base-src "$RUNNER_TEMP/heap-base/src" --stages micro,parse,open,rebuild,daemon --pairs 15
