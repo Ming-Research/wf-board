@@ -12,12 +12,11 @@ import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
 import { createMcpServer } from "../src/mcp.ts";
 import { SlowOps, STEPS_FROM_MS } from "../src/slow-ops.ts";
-import { LoopWatch, watchLoop } from "../src/loop-watch.ts";
 import { WriteTrace, currentTrace, withTrace } from "../src/write-trace.ts";
 import { board, author } from "./helpers.ts";
 
-// Where the time of a slow write went (docs/design.md, section 4, Time limits): the steps of a write call, and the stalls of
-// the event loop that make a git command's time not git's own.
+// Where the time of a slow write went (docs/design.md, section 4, Time limits): the steps of a write call. The stalls of the
+// event loop that make a git command's time not git's own are told by the watch tested in test/loop-watch.test.ts.
 
 /** Runs `fn` with the service log captured on info and warn. */
 async function logged<T>(fn: () => Promise<T> | T): Promise<{ result: T; info: string[]; warn: string[] }> {
@@ -209,34 +208,4 @@ test("a quick write is logged as before, with no steps", async t => {
   const { info } = await logged(async () => { await client.callTool({ name: "append_log", arguments: { author, id: "a", text: "quick" } }); });
   assert.equal(info.length, 1, info.join("\n"));
   assert.match(info[0]!, /^tool append_log ok \d+ ms$/);
-});
-
-test("the event loop watch tells a timer that came late, by how late, and not one that came on time", () => {
-  const lines: string[] = [];
-  const watch = new LoopWatch({ now: 0, intervalMs: 100, stallMs: 500, log: line => lines.push(line) });
-  watch.tick(100); watch.tick(205); watch.tick(699);
-  assert.deepEqual(lines, [], "up to 399 ms late is within the 500 ms");
-  watch.tick(1299);
-  assert.deepEqual(lines, ["event loop held for 500 ms (a timer due every 100 ms came that late)"], "exactly the limit counts");
-  watch.tick(1399); watch.tick(3699);
-  assert.equal(lines.length, 2);
-  assert.match(lines[1]!, /^event loop held for 2200 ms /);
-});
-
-test("a loop that is really held is told, and a stopped watch tells nothing more", async () => {
-  const lines: string[] = [];
-  const stop = watchLoop({ intervalMs: 20, stallMs: 300, log: line => lines.push(line) });
-  await sleep(60);
-  // Hold the loop, as a long piece of synchronous work would.
-  const from = performance.now();
-  while (performance.now() - from < 450) { /* held */ }
-  await sleep(60);
-  assert.ok(lines.length >= 1, "the stall is told");
-  const held = Number(/^event loop held for (\d+) ms/.exec(lines.at(-1)!)?.[1]);
-  assert.ok(held >= 400, String(lines.at(-1)));
-  stop();
-  const told = lines.length, stopped = performance.now();
-  while (performance.now() - stopped < 450) { /* held again, unwatched */ }
-  await sleep(60);
-  assert.equal(lines.length, told);
 });

@@ -327,9 +327,22 @@ A line under 500 ms stays as it was, and the push to the architect (`slow-op`) i
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
 due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
-`event loop held for N ms`, because a git command's time that is the time of a held loop
-is not git's. The two make the slow tail of the writes readable as one of: waiting in a
-queue, a slow git command, work in the process, or a held loop.
+`event loop held for 621 ms (a timer due every 100 ms came that late); cpu 612 ms, gc 3 ms, load 1.82`,
+because a git command's time that is the time of a held loop is not git's. The three
+readings say why it was held, each over the stretch between the timer's last two firings
+(the held time and the 100 ms before it): `cpu` is the CPU the process used
+(`process.cpuUsage`, user and system, all its threads), `gc` the time its garbage
+collections took (the `gc` entries of a `PerformanceObserver`) and `load` the machine's load
+average over the last minute (`os.loadavg`). `cpu` about the held time with little `gc` is
+code that did not return; `gc` about the held time is the collector; `cpu` far under the
+held time is a process that was not given the CPU, and `load` tells whether the machine was
+busy. The collector's helper threads count in `cpu`, so a collection can put it over the
+held time. The readings are taken in the check phase of the loop's next turn, not in the
+timer's callback: the entry of a collection that ran in a callback of that phase reaches the
+observer only there (measured on Node 24 with a collection forced inside a `setImmediate`
+callback: the timer's callback after it saw no entry). The two lines make the slow tail of
+the writes readable as one of: waiting in a queue, a slow git command, work in the process,
+or a held loop, which its readings tell further as code, collection or a process without CPU.
 
 The tail they were made for had a cause that the service log of 10-16 to 10-18 and the data
 repository showed before they were deployed. The log of 10-18 holds 90 writes of 5360 over
