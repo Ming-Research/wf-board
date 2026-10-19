@@ -10,6 +10,7 @@ import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { agentSocket, board, author, later, server } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 import { Item } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -125,7 +126,7 @@ test("a request names no session, so one that carries a stale session id is answ
 test("JSON body decoding preserves Chinese codepoints split across request chunks", async t => {
   const {store,op} = await board(t);
   const http = createHttpServer({store,ops:op,ownerOps:ownerOps(store),webDir:"web",createMcp:() => createMcpServer({store,ops:op})});
-  t.after(() => { http.close(); });
+  cleanup(t, () => { http.close(); });
   // Feed a real IncomingMessage directly to the HTTP handler, so this byte
   // decoding regression can run even in a sandbox that prohibits listen().
   const socket = new Socket(); t.after(() => socket.destroy());
@@ -147,7 +148,7 @@ test("JSON body decoding preserves Chinese codepoints split across request chunk
 test("atomic draft HTTP route returns committed notes and deletions without a listener", async t => {
   const { store, op } = await board(t), owner = ownerOps(store);
   const http = createHttpServer({ store, ops: op, ownerOps: owner, webDir: "web", createMcp: () => createMcpServer({ store, ops: op }) });
-  t.after(() => { http.close(); });
+  cleanup(t, () => { http.close(); });
   async function api(data: unknown) {
     const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", { value: 7417 });
     const req = new IncomingMessage(socket); req.method = "POST"; req.url = "/api/draft"; req.headers = { host: "127.0.0.1:7417" };
@@ -183,7 +184,7 @@ test("atomic draft HTTP route returns committed notes and deletions without a li
 test("HTTP document reads leave earlier documents unread and hide read step diffs", async t => {
   const { store, op } = await board(t);
   const http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: "web", createMcp: () => createMcpServer({ store, ops: op }) });
-  t.after(() => { http.close(); });
+  cleanup(t, () => { http.close(); });
   async function api(path: string, data?: unknown) {
     const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", { value: 7417 });
     const req = new IncomingMessage(socket); req.method = data === undefined ? "GET" : "POST"; req.url = path; req.headers = { host: "127.0.0.1:7417" };
@@ -209,7 +210,7 @@ test("HTTP document reads leave earlier documents unread and hide read step diff
 test("draft text edit HTTP shape updates an exact note and reports stale or sent revisions", async t => {
   const {store, op} = await board(t), owner = ownerOps(store);
   const http = createHttpServer({store, ops: op, ownerOps: owner, webDir: "web", createMcp: () => createMcpServer({store, ops: op})});
-  t.after(() => { http.close(); });
+  cleanup(t, () => { http.close(); });
   async function api(data: unknown) {
     const socket = new Socket(); t.after(() => socket.destroy()); Object.defineProperty(socket, "localPort", {value: 7417});
     const req = new IncomingMessage(socket); req.method = "POST"; req.url = "/api/draft"; req.headers = {host: "127.0.0.1:7417"};
