@@ -1,0 +1,34 @@
+name: tmp-ci-slow-ops-flake
+# Temporary, for ci-slow-ops-flake; removed before the branch is ready.
+on:
+  push:
+    branches: [ci-slow-ops-flake]
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      # The file as changed passes, three times over.
+      - run: |
+          for i in 1 2 3; do node --test test/slow-ops.test.ts || exit 1; done
+      # The same file with the two log-line checks put back as they were (no steps after the time): both tests must fail, for that line.
+      - run: |
+          sed -i 's# ms; \\S/\.test# ms$/.test#' test/slow-ops.test.ts
+          git diff --stat
+          set +e
+          node --test test/slow-ops.test.ts > /tmp/old-checks.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/old-checks.log | tail -60
+          test "$code" -ne 0
+          grep -c '✖ a tool call that runs over its limit' /tmp/old-checks.log
+          grep -c '✖ a tool that fails is timed as an error' /tmp/old-checks.log
+          test "$(grep -c '^ℹ fail ' /tmp/old-checks.log)" = 1
+          grep '^ℹ fail ' /tmp/old-checks.log
