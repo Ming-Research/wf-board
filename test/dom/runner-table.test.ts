@@ -52,14 +52,6 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   assert.equal(rows.length, 4);
   const header = bp.$("#agents .runner-head");
   assert.deepEqual([...header!.children].map(c => c.textContent), ["标题", "状态", "在做或在等", "这个状态", "合计", "时间线"], "the columns are named");
-  // The legend under the header lists each kind some row draws, once, in the order of the kinds; each swatch is coloured as its segments are.
-  const items = [...bp.$$("#agents .runner-legend-item")];
-  assert.deepEqual(items.map(c => c.textContent), ["干活", "等主人", "等条目", "要人看"], "the legend lists the kinds the rows draw, in order, and no other");
-  for (const item of items) {
-    const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
-    assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
-    assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
-  }
   // A person's work first (the longest in its state first), then the turn running, then the waiting.
   assert.deepEqual(new Set(rows.slice(0, 2).map(r => r.dataset.agent)), new Set([failed, asking]), "an ask to the owner and an exception come first");
   assert.deepEqual(rows.slice(2).map(r => r.dataset.agent), [running, waiting], "then the turn running, then what waits");
@@ -90,6 +82,14 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
     assert.deepEqual(segments.map(x => x.dataset.kind), kinds, `${id}: the line has a segment of the work and one of the state it reports`);
     assert.ok(last.classList.contains("tl-" + kinds.at(-1)), `${id}: the segment is coloured by its kind`);
     assert.match(last.getAttribute("title") ?? "", new RegExp("^" + label + " · "), `${id}: the hover of the segment says what it is and how long`);
+  }
+  // The legend under the header lists each kind some row draws, once, in the order of the kinds; each swatch is coloured as its segments are.
+  const items = [...bp.$$("#agents .runner-legend-item")];
+  assert.deepEqual(items.map(c => c.textContent), ["干活", "等主人", "等条目", "要人看"], "the legend lists the kinds the rows draw, in order, and no other");
+  for (const item of items) {
+    const swatch = item.querySelector("i")!, kind = swatch.classList[1] ?? "none";
+    assert.ok(swatch.classList.contains("tl-swatch"), "a swatch is a coloured square");
+    assert.ok(bp.$$(`#agents .rt-line .${kind}`).length > 0, `the swatch of ${item.textContent} is the colour class of the segments of that kind`);
   }
   // Each segment is as long as the time it took, up to three hours; a longer one is drawn shorter with a gap marked in it, and the hover says how long it was.
   const grow = (seg: Element) => Number((seg as HTMLElement).style.flexGrow);
