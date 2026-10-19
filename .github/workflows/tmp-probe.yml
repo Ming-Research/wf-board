@@ -8,18 +8,17 @@ concurrency:
   cancel-in-progress: true
 jobs:
   probe:
-    name: probe ${{ matrix.phase }} ${{ matrix.job }}
+    name: probe ${{ matrix.phase }} ${{ matrix.flags }} ${{ matrix.job }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        phase: [writing]
-        job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        phase: [writing, quiet]
+        flags: ["", "--single-threaded"]
+        job: [0, 1, 2]
         include:
-          - { phase: quiet, job: 0 }
-          - { phase: quiet, job: 1 }
-          - { phase: quiet, job: 2 }
-          - { phase: quiet, job: 3 }
+          - { phase: writing, flags: "", job: 3 }
+          - { phase: writing, flags: "--single-threaded", job: 3 }
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -31,12 +30,12 @@ jobs:
       - env:
           PROBE_PHASE: ${{ matrix.phase }}
           PROBE_JOB: ${{ matrix.job }}
-          PROBE_ARMS: cyclic4,balanced5-minor,cyclic5-minor
-          PROBE_ROUNDS: 3
+          PROBE_ARMS: balanced5-minor,balanced5-minor-unique
+          PROBE_ROUNDS: 4
           PROBE_OUT: probe.json
-        run: node --test --test-concurrency=1 test/nkey/tmp-probe.nkey.ts
+        run: node ${{ matrix.flags }} test/nkey/tmp-probe.nkey.ts
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: probe-${{ matrix.phase }}-${{ matrix.job }}
+          name: probe-${{ matrix.phase }}-${{ matrix.flags == '' && 'mt' || 'st' }}-${{ matrix.job }}
           path: probe.json

@@ -8,6 +8,7 @@ import { PerformanceObserver, performance as perf } from "node:perf_hooks";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { Scope } from "./press.ts";
+import { pageHtml, pageScript } from "../dom/page.ts";
 import type { Press } from "./press.ts";
 import { SLOW_DRAW, lap, log, startLane } from "./lane.ts";
 
@@ -57,13 +58,19 @@ test("probe: bias and noise of the time layer by press order", { timeout: 30 * 6
   let roundNo = 0;
   for (const arm of schedule) {
     roundNo++;
-    const m = /^(cyclic|balanced)(\d)(?:-(minor|major))?$/.exec(arm)!;
+    const m = /^(cyclic|balanced)(\d)(?:-(minor|major))?(-unique)?$/.exec(arm)!;
+    const unique = !!m[4];
     const n = Number(m[2]), between = m[3];
     const labels = n === 5 ? ["base", "twin", "ctrl", "d2", "slow"] : n === 4 ? ["base", "twin", "ctrl", "slow"] : n === 3 ? ["base", "twin", "slow"] : ["base", "twin"];
     const scope = new Scope();
     try {
       const wins: Press[] = [];
-      for (const label of labels) wins.push(await lane.open(scope, label === "slow" ? { label, reverts: SLOW_DRAW } : label === "d2" ? { label, reverts: D2_DRAW } : { label }));
+      for (const label of labels) {
+        const reverts = label === "slow" ? SLOW_DRAW : label === "d2" ? D2_DRAW : [];
+        // unique: every window gets a source text of its own, so that no two windows share compiled code.
+        const page = unique ? { script: (await pageScript(reverts)) + `\n// window ${label} round ${roundNo}\n`, html: await pageHtml(reverts) } : undefined;
+        wins.push(await lane.open(scope, page ? { label, page } : { label, reverts }));
+      }
       const order = orders(n, m[1]!);
       const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
       const landed: Record<string, number> = Object.fromEntries(wins.map(w => [w.label, 0]));
