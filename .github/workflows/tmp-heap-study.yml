@@ -1,0 +1,32 @@
+name: tmp-heap-study
+# Temporary: the measurements of the study of the heap that parsed board documents keep (board item board-heap-study).
+# Runs on pushes to the study branch only and is deleted with it.
+on:
+  push:
+    branches: [board-heap-study]
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The other YAML parser the study compares with, installed beside the repository and never saved to it.
+      - name: Install js-yaml for the comparison
+        continue-on-error: true
+        run: |
+          mkdir "$RUNNER_TEMP/jsyaml"
+          npm install --prefix "$RUNNER_TEMP/jsyaml" --no-audit --no-fund js-yaml@4.1.0
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Smoke run (a few files)
+        run: node scripts/study-heap.ts --scale 0.03
+        env:
+          JS_YAML_DIR: ${{ runner.temp }}/jsyaml
+      - name: Full run (the live board's size)
+        run: node scripts/study-heap.ts
+        env:
+          JS_YAML_DIR: ${{ runner.temp }}/jsyaml
