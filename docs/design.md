@@ -5061,34 +5061,49 @@ status to the total is from the call (below).
 
 **Why the job waits instead of using `needs`.** A job that needs the others
 starts 2 to 3 seconds after the last of them ends, and sets itself up then
-(checkout, Node, the script, the call): in 8 runs of three dummy checks the status
-came 6 to 10 seconds after the last check; a lean job that needs them (no checkout,
-no Node, one step with `gh` and `jq`) 5 to 6 seconds; a job that started with the
-run and waited, 1 to 2 seconds (two runs of four rounds, 10-19). A waiting job
-sees only the jobs the run listed when it looked: a job with `needs` is listed
+(checkout, Node, the script, the call). Three ways of writing the status ran side
+by side after three dummy checks, in each of four rounds of two runs (10-19): the
+job that needs the others, as before, wrote it 6 to 10 seconds after the last
+check (8 samples); a lean job that needs them (no checkout, no Node, one step with
+`gh` and `jq`) 5 to 6; a job that started with the run and waited 1 to 2. A waiting
+job sees only the jobs the run listed when it looked: a job with `needs` is listed
 once the jobs it needs have ended (the first look of each waiting job showed the
-twelve checks and the four waiting jobs themselves, not the eight jobs with `needs`), so no job of the full CI may use `needs` (`test/ci-workflow.test.ts`). It
-costs one runner for the length of the run and 13 and 17 requests (two runs) of the run's
-token, of the 1,000 an hour the whole repository may make; the full CI was started
-by hand up to 20 times in an hour. A run that is cancelled ends this job too, and
-a cancelled run must write nothing, since the pending status of the newer run
-that replaced it must stand: a job found cancelled therefore makes the job wait
+twelve checks and the four waiting jobs themselves, not the eight jobs with
+`needs`), so no job of the full CI may use `needs` (`test/ci-workflow.test.ts`). It
+costs one runner for the length of the run and 13 and 17 requests (two runs) of the
+run's token, of the 1,000 an hour the whole repository may make; the full CI was
+started by hand up to 20 times in an hour. A run that is cancelled ends this job
+too, and a cancelled run must write nothing, since the pending status of the newer
+run that replaced it must stand: a job found cancelled therefore makes the job wait
 10 seconds more, and if it is still there the cancelled job had timed out, not
 been cancelled, and the result is written. A run replaced by a newer one of the
 same branch and a run cancelled by hand were each tried once on a branch: neither
 wrote a final status, and the replacing run wrote one.
 
+**Timeouts.** The job `result` has no timeout of its own, because a job that
+GitHub cancels for its timeout runs no step after it, so the status would stay
+pending (the first version had 10 minutes on the job). The jobs it waits for have
+10 minutes each and the step that runs the script 15; a step that times out
+fails, and the step after it writes the failure (`test/ci-workflow.test.ts` holds
+the numbers and that the job has none). A stuck job ends cancelled at its 10
+minutes, the script finds it, waits the 10 seconds, finds itself still running
+and writes a failure that names the job. Both paths were run once on the branch
+with the job copied as it is: TIMEOUT_RESULTS.
+
 **From the call to the status** (hosted runners, 10-19, seconds from `gh workflow
-run` to the status `full-ci`, read from the Actions API; every run here was red
-only because the branch held the temporary workflows, which the check
-`no-tmp-workflow` refuses). Before the change, 5 runs one after the other: 59 to
-65, median 61 (the run created 1 to 2 after the call, the last check ended 49 to 57
-after the run was created, the status 7 to 9 after that). After it, 15 runs in
-three batches of 5: 56, 51, 49, 54, 53; then 69, 50, 56, 52, 52; then 54, 52, 63,
-52, 52; median 52, 13 of 15 runs at 56 or less, and the status 2 to 4 after the
-last check. In the two runs over 60 one job started late on the runner pool (34
-and 27 seconds after the rest of the run, which started within 4); of 59 earlier
-runs started by hand 7 had a job that started more than 8 seconds late, up to 28.
+run` to the status `full-ci`, read from the Actions API; every run listed here was
+red only because the branch held the temporary workflows, which the check
+`no-tmp-workflow` refuses; the batches were measured one after the other and are
+not a paired comparison, and no noise floor was measured, so they say what was
+seen, not how much faster one is). The job with `needs`, before the change, 5 runs
+one after the other (39202882081, 39202980543, 39203070138, 39203166365,
+39203263653): 65, 59, 61, 60, 65; the run was created 1 to 2 after the call, the
+last check ended 49 to 57 after the run was created, the status came 7 to 9 after
+that. The job that waits, with the cache of `node_modules`, 15 runs in three
+batches of 5: BATCHES.
+In the runs over 60 one job started late on the runner pool (34 and 27 seconds
+after the rest of the run, which started within 4); of 59 runs started by hand
+before the change 7 had a job that started more than 8 seconds late, up to 28.
 That wait is in the total by design (a lane that waits for a runner is a slow
 lane), so a run on a busy pool can end red on the line, as it could before.
 
@@ -5108,12 +5123,18 @@ seconds), `Set up job` (about 1), `checkout` (about 1; 2 for the n-key parts, wh
 fetch the history for the base page), Node and the packages (8 to 9 with the cache
 of npm that `setup-node` restores in 2 to 3 seconds and `npm ci` in 5 to 6). Ways
 of doing it were timed on hosted runners (10-19, whole seconds, checkout to the
-build of the page): as it was 12.5 seconds at the median (10 to 19, 12 jobs); with
+build of the page; the ways ran side by side in the same runs, 39203703171,
+39204203424 and 39204397826, four jobs of each in a run, and nothing was paired or
+repeated enough to give an interval): with the cache of npm and `npm ci`, as it
+was, median 12.5 seconds (10 to 19, 12 jobs); with
 `npm ci --ignore-scripts --no-audit --no-fund --prefer-offline` 14.5 (12 to 19, 4
 jobs); with no cache of npm 13.5 (10 to 15, `npm ci` 7 to 9, 4 jobs); with a cache
 of `node_modules` itself (65 MB compressed) 8.5 when it was found (7 to 10, the
 restore 2 to 3, 8 jobs) and 16 to 19 when it was not (4 jobs), the `npm ci`
-included. The action `.github/actions/node-modules` does this: Node 24,
+included. The ranges of the first and the last overlap at 10, so the choice rests on the
+medians and on the steps that are saved (the restore 2 to 3 seconds where the cache
+of npm took 2 to 3 and `npm ci` 5 to 6), and it is provisional until a measurement
+with a floor of noise says more. The action `.github/actions/node-modules` does this: Node 24,
 the cache of `node_modules` with the hash of `package.json` and `package-lock.json`
 in its key (a restored directory would hide that `npm ci` refuses a disagreement
 between the two), `npm ci` on a miss, with `restore` and `save` of the cache as two steps so that a job that found the cache has no step after its tests for it. A cache is read from the branch that made it

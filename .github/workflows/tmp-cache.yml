@@ -1,0 +1,37 @@
+name: tmp-cache
+# Temporary (item ci-status-under-1min): runs the action node-modules (as it is in the repository) once with no cache to find, so that it
+# installs with npm ci and saves, and once with the cache the first job saved. Delete before the last full CI.
+on:
+  push:
+    branches: [ci-status-under-1min]
+    paths: [.github/workflows/tmp-cache.yml]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  miss:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Delete the caches of node_modules that this branch has
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh cache list --ref "refs/heads/$GITHUB_REF_NAME" --key node-modules- --json id --jq '.[].id'); do gh cache delete "$id"; done
+          echo "caches of node_modules left on the branch: $(gh cache list --ref "refs/heads/$GITHUB_REF_NAME" --key node-modules- --json id --jq length)"
+      - uses: ./.github/actions/node-modules
+      - name: node_modules is there and the cache was saved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f node_modules/.package-lock.json
+          gh cache list --ref "refs/heads/$GITHUB_REF_NAME" --key node-modules-
+          test "$(gh cache list --ref "refs/heads/$GITHUB_REF_NAME" --key node-modules- --json id --jq length)" = 1
+  hit:
+    needs: miss
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - name: node_modules is there
+        run: test -f node_modules/.package-lock.json

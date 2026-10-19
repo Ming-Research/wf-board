@@ -22,6 +22,7 @@ jobs:
   start:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       statuses: write
     steps:
@@ -35,6 +36,7 @@ jobs:
   # and the main line's own run catches one that got in anyway. It runs beside the other jobs: the run's result lists it.
   no-tmp-workflow:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -48,6 +50,7 @@ jobs:
           fi
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -58,6 +61,7 @@ jobs:
   test:
     name: test shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +86,7 @@ jobs:
   nkey:
     name: nkey ${{ matrix.part }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -107,10 +112,12 @@ jobs:
   # A run that is cancelled ends this job too and writes nothing: the pending its start wrote stands until the next run of
   # the commit. A push to the main line writes nothing; its checks are listed on the commit. The script also reads how long the run
   # took and puts the time of each job into the run's summary (docs/design.md, section 11, The time gate).
+  # This job has no timeout of its own: a job that GitHub cancels for its timeout runs no step after it, so the status would stay
+  # pending. The jobs it waits for have 10 minutes each, a stuck one ends as cancelled and the script writes a failure that names it;
+  # the step of the script has 15, and a step that times out fails, so the step after it writes the failure (test/ci-workflow.test.ts).
   result:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     permissions:
       statuses: write
       actions: read
@@ -125,16 +132,17 @@ jobs:
       # enforce: a total over 60 seconds from the start of the run to the status fails the status, the step and with them the run
       # (docs/design.md, section 11, The time gate).
       - id: result
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
           TIME_GATE: enforce
         run: node scripts/ci-time-gate.ts
       # The script writes the status whatever it finds, a failure of its own included; this step is for a script that could not
-      # run at all, so that the status does not stay pending for a run that is over.
+      # run at all or did not end in its 15 minutes, so that the status does not stay pending for a run that is over.
       - if: ${{ failure() && steps.result.outputs.written != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=failure -f context=full-ci \
-            -f description="full CI failure (the result job could not run)" \
+            -f description="full CI failure (the result job ended without a status)" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
