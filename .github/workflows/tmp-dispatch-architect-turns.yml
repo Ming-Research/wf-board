@@ -15,4 +15,4 @@ jobs:
       - uses: ./.github/actions/node-modules
       - run: npm run check
       - run: npm run build:web
-      - run: node --test test/dispatch.test.ts test/timeline.test.ts test/agents.test.ts test/credentials.test.ts test/access.test.ts test/mcp.test.ts test/messages.test.ts test/ops-roles.test.ts test/runner-rows.test.ts test/candidates.test.ts test/whole-view.test.ts
+      - run: node --test test/dispatch.test.ts test/rules.test.ts test/timeline.test.ts test/agents.test.ts test/credentials.test.ts test/access.test.ts test/mcp.test.ts test/messages.test.ts test/ops-roles.test.ts test/runner-rows.test.ts test/candidates.test.ts test/whole-view.test.ts

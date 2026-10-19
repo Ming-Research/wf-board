@@ -1,6 +1,7 @@
 // Pure snapshot-derived rules shared by the server and the owner's page.
 // The plan is the single source for ownership, status and progress.
 import { liveDispatches } from "./agents.ts";
+import { worksOnItem } from "./dispatch.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Project, Snapshot, StateStart, Status } from "./model.ts";
 import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
 
@@ -1054,7 +1055,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   function dispatchedItems(agent: string): string[] {
     const byAgent = cached("dispatched", "", () => {
       const out = new Map<string, string[]>();
-      for (const id of index().items.keys()) for (const d of (item(id)?.dispatches ?? [])) if (!d.finish) { const list = out.get(d.agent) ?? []; if (!list.includes(id)) list.push(id); out.set(d.agent, list); }
+      for (const id of index().items.keys()) for (const d of (item(id)?.dispatches ?? [])) if (!d.finish && worksOnItem(d)) { const list = out.get(d.agent) ?? []; if (!list.includes(id)) list.push(id); out.set(d.agent, list); }
       return out;
     });
     return (byAgent.get(agent) ?? []).slice();

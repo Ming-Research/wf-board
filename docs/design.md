@@ -878,7 +878,11 @@ log:
     dispatches and in the cost, with the number that ended and the minutes they ran, and in none of
     the four result counts, the rework share or the means, because a turn would otherwise sit among
     the results of the work (as a result it could only be made up) and thin the rework share the
-    levels are judged by. Rejected: counting a turn among the four results; leaving the turns out of
+    levels are judged by. A turn is no session working on the item either: `openDispatches` and
+    `openAgents` leave it out, so an open turn does not make the item `wip` (Status rule 6), holds
+    nothing, is not a recipient of a message and is no row of the agent list (the sessions of those
+    readings are the ones that work on the item, and the answer to one question about it is not
+    that); a turn that was never ended therefore holds nothing for six hours. Rejected: counting a turn among the four results; leaving the turns out of
     the summary whole, which would make a printed total different from the money spent. The line
     of a turn is drawn by the timeline like a review's, and the agent list does not list it (the
     runner's block draws the turn from the runner's reports).
@@ -1375,15 +1379,17 @@ cancelled item is a conversion mapping, not a reset performed by cancellation.
    child is waiting on the owner; a parent that is not paused can therefore be
    blocked by it, under the ordinary frontier rule.
 6. `wip` when a session is working on the item: it has an unfinished dispatch
-   record, of either role, and that session was started or wrote on the board
+   record, of an engineer or a review, and that session was started or wrote on the board
    within the agent list's window (`AGENT_WINDOW_MS`, six hours), so status and
    the agent list agree on which sessions are on an item. A session that has
    gone quiet for the window is no longer working on it. The records are read
    by `openDispatches`, the one reading of an item's unfinished dispatches.
    This is not the push's holder (The wake streams, Where a push goes): a push
    goes to the one engineer session that holds the item, whatever the window.
-   Status counts a session of either role, because a reviewer is working on the
-   item too, and only within the window.
+   Status counts a session of either of those roles, because a reviewer is working on the
+   item too, and only within the window. An architect's turn (the role `架构师`) is not
+   counted: the runner starts it to answer one question about the item, and `openDispatches`
+   leaves it out, so a turn that is open does not make the item `wip`.
 7. `idle` when nobody is working on the item and part of its own work is done: a
    step of its own is done, or an item it owns is done, or an open item it owns
    has begun in this same sense (a dropped step, a cancelled owned item and an
@@ -3332,7 +3338,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   others are one last line, 「其他 N 个」, that opens them in the same order and form
   (the choice is kept in the browser like the list's own fold). The heading
   counts the running rows. A row is running when the session has an unfinished
-  dispatch record, of either role, and is alive, meaning it started or wrote
+  dispatch record, of an engineer or a review, and is alive, meaning it started or wrote
   within the list's window (`liveDispatches`, the reading that rule 6 of Status
   uses for a session working on an item, either role and the same window, not
   the push's holder). So an engineer just started or waiting for the merge with
@@ -3613,7 +3619,7 @@ names it as `agent` and has not ended; when several have not ended, the newest
 start wins, so a takeover holds the item from its start (`holderOf` in
 `src/dispatch.ts`). This is not what status calls
 someone working on an item (Item plans, Status rule 6): that counts a session of
-either role, within a window. The dispatch record is written by the script that starts
+an engineer or a review, within a window. The dispatch record is written by the script that starts
 the engineer and ended when it is finished, so holding needs no call of the
 engineer's own and is never forgotten. Rejected: a claim and a release tool the
 engineer calls, which adds two calls an engineer can forget and a second record
@@ -4010,8 +4016,9 @@ board, where the owner and later readers find it.
 - **Sending.** `send_message(to, text, item?)` adds one message to the end of
   its day's file (section 5) under the caller's session and project, in one
   commit. The
-  recipient is the architect's session, a session with an open dispatch of any
-  role (an engineer, a review or an architect's turn; `openAgents` in `src/dispatch.ts`), or the
+  recipient is the architect's session, a session with an open dispatch of an
+  engineer or a review (`openAgents` in `src/dispatch.ts`; an architect's turn is not one, and a
+  turn that has a long-lived credential under its name is reached through that), or the
   session of a long-lived credential (the observer, the resource agent).
   Another name, the PM's included, is refused with the names that work, so a mistyped name fails at
   once instead of filling a stream nobody reads. The text is one line of at most

@@ -136,24 +136,28 @@ export function finishLogLine(d: Dispatch, corrected: boolean): string {
   return `收${corrected ? "（更正）" : ""}：会话 ${d.agent}（${d.role}），${[f.result, countsText(d)].filter(Boolean).join("，")}，${minute(d.started)}–${minute(f.ended)}${f.waited === undefined ? "" : `，等待 ${f.waited} 分钟`}，用量 ${usageText(f)}，花费 ${dollars(milliDollars(f.cost))}，失败信号：${signalsText(f)}${f.note ? `，备注：${f.note}` : ""}`;
 }
 
-/** The dispatches on an item that have not ended, newest start first: the one reading of "who is on an item", which holderOf
- * reads for the pushes (docs/design.md, The wake streams). */
+/** Whether a dispatch is a session working on its item. An architect's turn is not: the runner starts it to answer one question about
+ * the item, so it neither holds the item nor makes it be worked on, no message is meant for it and the agent list has no row for it
+ * (docs/design.md section 5, Dispatch records). */
+export const worksOnItem = (d: Pick<Dispatch, "role">): boolean => d.role !== ARCHITECT_ROLE;
+/** The dispatches of sessions working on an item that have not ended, newest start first: the one reading of "who is on an item", which
+ * holderOf reads for the pushes (docs/design.md, The wake streams) and `liveDispatches` for the item's status. */
 export function openDispatches(s: Pick<Snapshot, "items">, item: string): Dispatch[] {
   return openDispatchesOf(s.items[item]);
 }
 /** The same, read from the item itself. */
 export function openDispatchesOf(it: Pick<Item, "dispatches"> | undefined): Dispatch[] {
-  return (it?.dispatches ?? []).filter(d => !d.finish).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+  return (it?.dispatches ?? []).filter(d => !d.finish && worksOnItem(d)).sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
 }
 /** The session holding an item: the agent of the newest open engineer dispatch on it, or none. A takeover's dispatch is newer
  * than the one it replaces, so it holds the item from its start; a review holds nothing. */
 export function holderOf(s: Pick<Snapshot, "items">, item: string): string | undefined {
   return openDispatches(s, item).find(d => d.role === "工程师")?.agent;
 }
-/** Every session with an open dispatch, of any role: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
+/** Every session working on an item with an open dispatch, an engineer's or a review's: the sessions a message can reach besides the long-lived ones (docs/design.md, Messages). */
 export function openAgents(s: Pick<Snapshot, "items">): Set<string> {
   const out = new Set<string>();
-  for (const item of Object.values(s.items)) for (const d of item.dispatches ?? []) if (!d.finish) out.add(d.agent);
+  for (const item of Object.values(s.items)) for (const d of item.dispatches ?? []) if (!d.finish && worksOnItem(d)) out.add(d.agent);
   return out;
 }
 /** Every session holding an item, with the items it holds in the board's item order; `only` narrows it to the items it accepts. */

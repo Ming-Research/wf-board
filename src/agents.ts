@@ -2,8 +2,8 @@
 // touched last, and what that suggests about it. Everything here is read from the board's own data (the activity index and
 // the items), never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
-import { openDispatches } from "./dispatch.ts";
-import { AGENT_TOUCHES, ARCHITECT_ROLE, isArchitectSession } from "./model.ts";
+import { openDispatches, worksOnItem } from "./dispatch.ts";
+import { AGENT_TOUCHES, isArchitectSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
 /** How long after its last activity a session stays in the list. */
@@ -46,7 +46,7 @@ export interface AgentRow {
   /** Waiting for longer than AGENT_WAIT_LONG_MS. */
   amber: boolean;
   /** Running now, which is what the page unfolds: the session has an unfinished dispatch and is alive (`liveDispatches`,
-   * either role), whatever the state word says. The steps on the items it touched do not decide: they may be another
+   * an engineer or a review), whatever the state word says. The steps on the items it touched do not decide: they may be another
    * session's. A session whose dispatches have all ended is not running. The rest are folded into one line. */
   running: boolean;
   /** At most AGENT_TOUCHES items, newest first. */
@@ -100,7 +100,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   for (const it of items) {
     const item = it.id;
     for (const dispatch of it.dispatches ?? []) {
-      if (dispatch.role === ARCHITECT_ROLE) continue;
+      if (!worksOnItem(dispatch)) continue;
       const list = started.get(dispatch.agent);
       if (list) list.push({ item, dispatch }); else started.set(dispatch.agent, [{ item, dispatch }]);
     }
