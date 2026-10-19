@@ -195,38 +195,41 @@ test("the budget opens the subtree with something nobody holds before the one th
 });
 
 test("the budget opens work being done before a check flag, a check flag before a pause, and among equals the shallower and then the earlier", () => {
-  // Five roots with two items each, which differ in one thing; the names run in the order of the walk, from the least pressing to the
-  // most, so that the walk alone cannot give the order. r1: both reported (nothing to say), r2: one item paused, r3: one item with no
-  // rating (a check flag), r4: one item being worked on, r5: one item nobody holds.
-  const reported = (id: string) => ({ id, ...report("ci", 5) });
-  const specs: Spec[] = [
-    { id: "r1", plan: owns("r1a", "r1b") }, reported("r1a"), reported("r1b"),
-    { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", paused: { reason: "等", at: iso(NOW - DAY) } }, reported("r2b"),
-    { id: "r3", plan: owns("r3a", "r3b") }, { id: "r3a", difficulty: undefined, ...report("ci", 5) }, reported("r3b"),
-    { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: doing, ...report("running", 8, { turns: 2 }) }, reported("r4b"),
-    { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a" }, reported("r5b"),
-  ];
-  const s = board(specs);
+  // Five roots with two items each that differ in one thing. Their names run in the order of the walk, from the least pressing to the
+  // most, so the walk alone cannot give the order. r1: both items blocked on gate (a held-up item is not one that needs a reader),
+  // r2: one item paused, r3: one item with a title that is too long (a check flag), r4: one item being worked on (the runner reports
+  // it), r5: one item nobody holds. r0 owns gate, which nobody holds, so r0 is opened first, with r5.
+  const blocked = (id: string, more: Record<string, unknown> = {}): Spec => ({ id, plan: [{ id: "gate", item: "gate", own: false }], ...more });
+  const s = board([
+    { id: "r0", plan: owns("gate") }, { id: "gate" },
+    { id: "r1", plan: owns("r1a", "r1b") }, blocked("r1a"), blocked("r1b"),
+    { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", paused: { reason: "等", at: iso(NOW - DAY) } }, blocked("r2b"),
+    { id: "r3", plan: owns("r3a", "r3b") }, blocked("r3a", { title: "这是一个超过二十个字的很长很长的条目标题名字" }), blocked("r3b"),
+    { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: doing, ...report("running", 8, { turns: 2 }) }, blocked("r4b"),
+    { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a" }, blocked("r5b"),
+  ]);
   const all = lookText(view(s));
-  assert.match(line(all, "r3a")!, /检查：缺难度/, "the unrated item carries a check flag");
-  for (const id of ["r1a", "r1b", "r2b", "r4b", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
-  // The room of 11 lines is the header, the project, the five roots and two roots opened; each more root takes two lines.
+  assert.match(line(all, "r3a")!, /检查：.*需核对/, "the item with the long title carries a check flag");
+  for (const id of ["r1a", "r1b", "r2b", "r3b", "r4b", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
+  assert.match(line(all, "r5a")!, /没人管/);
+  assert.match(line(all, "r2a")!, /暂停/);
+  // The room of 13 lines is the header, the project, its six roots, the one line of r0 and two roots opened; each more root takes two.
   const opened = (rows: number) => ["r1", "r2", "r3", "r4", "r5"].filter(root => line(lookText(view(s, { rows })), `${root}a`));
-  assert.deepEqual(opened(11), ["r4", "r5"]);
-  assert.deepEqual(opened(13), ["r3", "r4", "r5"]);
-  assert.deepEqual(opened(15), ["r2", "r3", "r4", "r5"]);
-  assert.deepEqual(opened(17), ["r1", "r2", "r3", "r4", "r5"]);
-  // Equal priority and depth: the earlier in the walk. Both hold four quiet items, and the room is for one of them.
-  const four = (root: string): Spec[] => [{ id: root, plan: owns(...[1, 2, 3, 4].map(i => `${root}${i}`)) }, ...[1, 2, 3, 4].map(i => reported(`${root}${i}`))];
+  assert.deepEqual(opened(13), ["r4", "r5"]);
+  assert.deepEqual(opened(15), ["r3", "r4", "r5"]);
+  assert.deepEqual(opened(17), ["r2", "r3", "r4", "r5"]);
+  assert.deepEqual(opened(19), ["r1", "r2", "r3", "r4", "r5"]);
+  // Equal priority and depth: the earlier in the walk. Both hold four items nobody holds, and the room is for one of them.
+  const four = (root: string): Spec[] => [{ id: root, plan: owns(...[1, 2, 3, 4].map(i => `${root}${i}`)) }, ...[1, 2, 3, 4].map(i => ({ id: `${root}${i}` }))];
   const tie = lookText(view(board([...four("qa"), ...four("qb")]), { rows: MIN_ROWS }));
   assert.ok(line(tie, "qa1"), "the earlier is opened");
   assert.equal(line(tie, "qb1"), undefined, "the later is not");
-  // Equal priority, one level apart: the shallower. x opens first (it is earlier); then y, below it, and z, beside it, both hold work
-  // being done and the room is for one of them. y is earlier in the walk than z, so only the depth puts z first.
-  const running = (id: string) => ({ id, plan: doing, ...report("running", 8, { turns: 1 }) });
+  // Equal priority, one level apart: the shallower. x opens first (it is earlier); then y, below it, and z, beside it, hold the same
+  // and the room is for one of them. y is earlier in the walk than z, so only the depth puts z first.
+  const running = (id: string): Spec => ({ id, plan: doing, ...report("running", 8, { turns: 1 }) });
   const deep = board([
-    { id: "x", plan: owns("y") }, { id: "y", plan: owns("y1", "y2", "y3") }, running("y1"), reported("y2"), reported("y3"),
-    { id: "z", plan: owns("z1", "z2", "z3") }, running("z1"), reported("z2"), reported("z3"),
+    { id: "x", plan: owns("y") }, { id: "y", plan: owns("y1", "y2", "y3") }, running("y1"), { id: "y2" }, { id: "y3" },
+    { id: "z", plan: owns("z1", "z2", "z3") }, running("z1"), { id: "z2" }, { id: "z3" },
   ]);
   const shallow = lookText(view(deep, { rows: MIN_ROWS }));
   assert.ok(line(shallow, "y"), "x is open");
@@ -315,7 +318,7 @@ test("a session's second look marks what changed, what is new and what finished 
 test("a look at one project does not hide a change in another: it is marked when that project is looked at", async t => {
   const b = await connected(t);
   await b.item("w-one"); await b.item("f-one", { group: "Firn" });
-  await b.call({ session: "s1", projects: ["Whitefoot"] });
+  await b.call({ session: "s1" });
   await b.op.appendLog({ ...asArchitect, id: "f-one", text: "Firn 的改动" });
   const narrow = await b.call({ session: "s1", projects: ["Whitefoot"] });
   assert.match(narrow.text.split("\n")[0]!, /变了 0 件 · 新出现 0 件 · 收尾 0 件/, "the Firn item is not in this look");
