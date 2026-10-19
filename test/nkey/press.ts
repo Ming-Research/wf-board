@@ -116,7 +116,7 @@ export class Tape {
 // ---- change events as the server's stream carries them ----
 
 /** A reader of the real server's event stream, the only one connected: the data of each `change` event, in order. */
-class EventTap {
+export class EventTap {
   private controller = new AbortController();
   private queue: string[] = [];
   private waiting: Array<(data: string) => void> = [];

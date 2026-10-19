@@ -1,6 +1,6 @@
 name: tmp-measure
 # Temporary (board-cpu-usage): the write path's CPU on a board of the live board's size, without and with an owner who has
-# not read for 4,000 commits, and a profile of each. Removed before the branch is ready.
+# not read for 4,000 commits, the page's work per change event, and a profile of each. Removed before the branch is ready.
 on: push
 jobs:
   check:
@@ -32,3 +32,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/bench-writes.ts --label "${{ matrix.run.name }}" ${{ matrix.run.args }}
+  page:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        run:
+          - { name: page, args: "" }
+          - { name: page-profile, args: "--profile" }
+    name: bench ${{ matrix.run.name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/bench-page.ts ${{ matrix.run.args }}
