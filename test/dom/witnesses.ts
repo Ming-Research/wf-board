@@ -12,7 +12,7 @@ import { startBoard, openAll } from "../e2e/board-server.ts";
 import type { BoardServer } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { DomPage } from "./page.ts";
-import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrapCard, checkWrapCursor, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
+import { oracle, burst, checkTreeRows, checkPlanRows, checkCardBox, checkDependents, checkBadges, checkWaitPanel, checkFresh, checkWrapCard, checkWrapCursor, checkRows, checkFilters, checkSearch, checkComments, checkThreads, checkEmptyRows, checkTagText, checkDifficultyChip, checkIdleStatus, checkRefFold, checkSharedSection } from "./checks.ts";
 
 const app = (edit: string, find: string, replace: string): Revert => ({ file: "web/app.ts", edit, find, replace });
 // `fresh`: the witness writes to the board, so it gets a board of its own and the others see none of its writes.
@@ -322,6 +322,12 @@ const WITNESSES: Witness[] = [
     // Only a root that becomes depended on repaints its group; one that stops being depended on does not.
     reverts: [app("only an item moving under the line repaints its group", 'if (previous.shared !== current.shared) scope.add("group:"+current.group);', 'if (!previous.shared && current.shared) scope.add("group:"+current.group);')], family: "shared-section-under", fresh: true,
     run: async (bp, b) => checkSharedSection(bp, b),
+  },
+  {
+    bug: "a done or cancelled item that gained unread content while the page was open stayed out of the tree until the page was loaded again (live-tree-fresh-ended)",
+    // A change in the unread steps signs no item again, so no group is drawn again for a closed row that came.
+    reverts: [app("a change in the unread steps signs no item again", "    changed.forEach(signAgainForUnread);\n", "")], family: "rows-missing", fresh: true,
+    run: async (bp, b) => checkRows(bp, b),
   },
 ];
 
