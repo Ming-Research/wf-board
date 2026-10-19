@@ -1,7 +1,7 @@
 // The arithmetic and the verdict of the n-key lane's time layer (test/nkey/stats.ts), on pairs made up here whose answer is known.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, judge, randomOrder, tQuantile, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, reference, tQuantile, twinIsSound } from "./stats.ts";
 import type { Interval } from "./stats.ts";
 import { prng } from "../e2e/board-gen.ts";
 
@@ -36,7 +36,7 @@ test("the interval is the t interval of the per-pair log ratios: a known case", 
   assert.equal(compare([5], [5]).half, Infinity, "one pair says nothing");
 });
 
-test("the verdict: the twin's interval must be within the floor, and a page slower than both the base and the twin is red at any size", () => {
+test("the verdict: the twin's interval must be within the floor, and a page slower than the reference is red at any size", () => {
   const floor = 0.061;
   // A twin whose interval is within the floor: the run counts, wherever the interval lies.
   const sound = interval(0.97, 1.03);
@@ -45,12 +45,24 @@ test("the verdict: the twin's interval must be within the floor, and a page slow
   assert.equal(judge(sound, interval(1.001, 1.02), floor), "red", "a page a hair slower, wholly above 1, is red");
   assert.equal(judge(sound, interval(0.98, 1.04), floor), "ok", "an interval across 1 is no detected change");
   assert.equal(judge(sound, interval(0.8, 0.9), floor), "ok", "a page that is faster is not red");
-  // Against the twin too: slower than the base alone, by no more than the twin is, is not red.
-  assert.equal(judge(interval(1.005, 1.025), interval(1.004, 1.03), floor, interval(0.98, 1.02)), "ok", "slower than the base but not than the twin");
-  assert.equal(judge(interval(1.005, 1.025), interval(1.06, 1.09), floor, interval(1.04, 1.07)), "red", "slower than both, though the twin misses 1");
   // A twin wider than the floor: the run says nothing.
   assert.equal(judge(interval(0.9, 1.1), interval(1.3, 1.5), floor), "undecided", "the twin's interval is ±10%, over the floor");
   assert.ok(!twinIsSound(interval(0.9, 1.1), floor));
+});
+
+test("the reference is the geometric mean of base and twin: one of them 4% slow neither hides a page 6% slower nor reddens the same page", () => {
+  const floor = 0.076, n = 30;
+  // The base window read about 4% slow, as in an acceptance run where judging against the base and the twin in turn let a slower page pass.
+  const base = series(n, 80 * 1.04, 0.05, 11), twin = series(n, 80, 0.05, 12), ref = reference(base, twin);
+  const twinBase = compare(twin, base);
+  assert.ok(twinIsSound(twinBase, floor), `the twin counts the run: ${twinBase.lo}–${twinBase.hi}`);
+  const slower = compare(series(n, 80 * 1.06, 0.05, 13), ref);
+  assert.equal(judge(twinBase, slower, floor), "red", `a page 6% slower against the reference: ×${slower.ratio} [${slower.lo}, ${slower.hi}]`);
+  const same = compare(series(n, 80, 0.05, 14), ref);
+  assert.equal(judge(twinBase, same, floor), "ok", `the same page against the reference: ×${same.ratio} [${same.lo}, ${same.hi}]`);
+  // Each pair's reference lies between its base and its twin.
+  for (let k = 0; k < n; k++) assert.ok(ref[k]! >= Math.min(base[k]!, twin[k]!) && ref[k]! <= Math.max(base[k]!, twin[k]!));
+  assert.throws(() => reference([1, 2], [1]), /different lengths/);
 });
 
 test("a random order puts every window in every place and after every other window about equally often", () => {

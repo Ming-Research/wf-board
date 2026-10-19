@@ -29,7 +29,7 @@ import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { rewrite } from "../e2e/seed.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { compare, judge, randomOrder, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, reference, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
 const run = promisify(execFile);
@@ -354,23 +354,19 @@ export function samePage(a: { script: string; html: string }, b: { script: strin
 /** Pairs measured per round, the pairs thrown away at the start of a round while the page warms up, and the rounds at most. */
 export const PAIRS = 30, WARMUP = 2, ROUNDS = 3;
 
-/** `versus`: the window this one is judged against, `base` unless given (a page made slower on purpose is judged against the page it was made from). */
-export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press>; versus?: string }
+export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press> }
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
   /** Busy times of the measured pairs of all rounds, per window. */
   busy: Record<string, number[]>;
   rounds: number;
-  /** Per window other than `base`: its ratio to the window it is judged against (`base` unless it says otherwise) over the pairs; `twin` is the noise of this run. */
+  /** `twin`: the twin's ratio to the base, the noise of this run; every other window: its ratio to the reference, per pair the geometric
+   * mean of base and twin (`reference`). */
   ratios: Record<string, Interval>;
-  /** The window each ratio is against. */
-  versus: Record<string, string>;
-  /** Per window judged against `base`, other than the twin: its ratio to the twin, which a red needs to be wholly above 1 too. */
-  againstTwin: Record<string, Interval>;
   /** The twin's interval over each round's pairs alone. */
   alone: Interval[];
-  /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict. */
+  /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict against the reference. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
   misses: Record<string, number>;
@@ -378,7 +374,7 @@ export interface PhaseResult {
 
 /** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval is no
  * wider than `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
- * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against base. */
+ * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against the two. */
 export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
@@ -401,11 +397,10 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
       alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[windows[0]!.label]!.slice(WARMUP).map(l => l.busy)));
     } finally { await scope.close(); }
-    ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
+    const ref = reference(busy[windows[0]!.label]!, busy.twin!);
+    ratios = { twin: compare(busy.twin!, busy[windows[0]!.label]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, ref)])) };
     sound = twinIsSound(ratios.twin!, floor);
   }
-  const againstTwin = Object.fromEntries(windows.slice(2).filter(w => !w.versus).map(w => [w.label, compare(busy[w.label]!, busy.twin!)]));
-  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor, againstTwin[w.label])]));
-  const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, againstTwin, alone, sound, verdicts, misses };
+  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
+  return { first: first!, busy, rounds, ratios, alone, sound, verdicts, misses };
 }

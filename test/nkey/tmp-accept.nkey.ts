@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { PAIRS, WARMUP } from "./press.ts";
 import type { PhaseWindow } from "./press.ts";
 import { FLOOR, SLOW_DRAW, log, startLane, timeLayer } from "./lane.ts";
+import { show } from "./stats.ts";
 import type { Revert } from "../e2e/variant.ts";
 
 const phase = process.env.ACCEPT_PHASE === "writing" ? "writing" : "quiet", kind = process.env.ACCEPT_KIND ?? "copy";
@@ -19,11 +20,11 @@ test(`acceptance of the time layer: ${kind} ${phase}`, { timeout: 20 * 60_000 },
     { label: "base", open: s => lane.open(s, { label: "base" }) },
     { label: "twin", open: s => lane.open(s, { label: "twin" }) },
     { label: "cand", open: s => lane.open(s, kind === "slow6" ? { label: "cand", reverts: SLOW6 } : { label: "cand" }) },
-    { label: "slow", open: s => lane.open(s, { label: "slow", reverts: SLOW_DRAW }), versus: "cand" },
+    { label: "slow", open: s => lane.open(s, { label: "slow", reverts: SLOW_DRAW }) },
   ];
   const { result, violations } = await timeLayer(phase, windows, FLOOR[phase], true, phase === "writing" ? lane.events : undefined);
   const red = violations.some(v => v.includes("slower than its base in both runs"));
   const base = [...result.busy.base!].sort((a, b) => a - b)[Math.floor((result.busy.base!.length - 1) / 2)]!;
-  if (kind === "slow6") log(`accept slow6 ${phase}: ${EXTRA_MS} ms more per press, ${(EXTRA_MS / base * 100).toFixed(1)}% of the base median ${base.toFixed(0)} ms`);
+  if (kind === "slow6") log(`accept slow6 ${phase}: ${EXTRA_MS} ms more per press, ${(EXTRA_MS / base * 100).toFixed(1)}% of the base median ${base.toFixed(0)} ms; first run cand/ref ${show(result.ratios.cand!)}`);
   log(`accept ${kind} ${phase}: ${red ? "red" : "not red"}; violations: ${violations.length ? violations.join(" | ") : "none"}`);
 });
