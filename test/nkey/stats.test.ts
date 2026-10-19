@@ -36,16 +36,19 @@ test("the interval is the t interval of the per-pair log ratios: a known case", 
   assert.equal(compare([5], [5]).half, Infinity, "one pair says nothing");
 });
 
-test("the verdict: the twin must show this run's noise before the page is judged, and any size above 1 is red once it does", () => {
+test("the verdict: the twin's interval must be within the floor, and a page slower than both the base and the twin is red at any size", () => {
   const floor = 0.061;
-  // A twin whose interval holds 1 within the floor: the run counts.
+  // A twin whose interval is within the floor: the run counts, wherever the interval lies.
   const sound = interval(0.97, 1.03);
   assert.ok(twinIsSound(sound, floor));
+  assert.ok(twinIsSound(interval(1.005, 1.025), floor), "a twin that misses 1 by the residual bias still counts");
   assert.equal(judge(sound, interval(1.001, 1.02), floor), "red", "a page a hair slower, wholly above 1, is red");
   assert.equal(judge(sound, interval(0.98, 1.04), floor), "ok", "an interval across 1 is no detected change");
   assert.equal(judge(sound, interval(0.8, 0.9), floor), "ok", "a page that is faster is not red");
-  // A twin that misses 1 (the run's noise is too large or the machine drifted) or is wider than the floor: the run says nothing.
-  assert.equal(judge(interval(1.01, 1.08), interval(1.3, 1.5), floor), "undecided", "the twin's interval misses 1");
+  // Against the twin too: slower than the base alone, by no more than the twin is, is not red.
+  assert.equal(judge(interval(1.005, 1.025), interval(1.004, 1.03), floor, interval(0.98, 1.02)), "ok", "slower than the base but not than the twin");
+  assert.equal(judge(interval(1.005, 1.025), interval(1.06, 1.09), floor, interval(1.04, 1.07)), "red", "slower than both, though the twin misses 1");
+  // A twin wider than the floor: the run says nothing.
   assert.equal(judge(interval(0.9, 1.1), interval(1.3, 1.5), floor), "undecided", "the twin's interval is ±10%, over the floor");
   assert.ok(!twinIsSound(interval(0.9, 1.1), floor));
 });

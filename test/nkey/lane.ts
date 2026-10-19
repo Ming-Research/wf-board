@@ -13,10 +13,11 @@
 //   time    – the seconds the event loop was busy from the key until the page was quiet, as the page of this commit over the page of
 //             the base (the merge base, or the commit before a push to the main line), quiet and with a write in each press: pairs
 //             of presses made one after the other in a random order, the twin of the base as the control, the 95% interval of the
-//             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval holds 1 within the noise floor;
-//             then an interval wholly above 1 is red, of any size. When it does not count, 30 pairs more are made in fresh windows
-//             (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The absolute 0.2 s is not
-//             held here: jsdom's time is not Chrome's.
+//             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval is no wider than the noise
+//             floor; then a page whose intervals against the base and against the twin both lie wholly above 1 is slower, of any
+//             size, and red when a second run in fresh windows finds it slower too. When the run does not count, 30 pairs more are
+//             made in fresh windows (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The
+//             absolute 0.2 s is not held here: jsdom's time is not Chrome's.
 // Each layer also runs on the page with what it protects taken out, where it must report: the three changes one at a time, a page
 // whose draw takes 15 ms more, and for the wait itself the page without it and the page without its 100 ms limit.
 // The lane is four files, one CI job each (`*.nkey.ts`, `npm run test:nkey`; never on the owner's Mac): they share this module, and each
@@ -128,16 +129,16 @@ export function describeCounts(list: Landing[]): string {
   return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)}, structure made again ${list.reduce((a, l) => a + l.structure.filter(reason => reason !== "minute").length, 0)}, stop lists ${list.reduce((a, l) => a + l.stops + l.freshStops, 0)} over ${list.length} landings`;
 }
 
-/** What a confirmed red says. A page the same as its base is red in one run of a phase in about 2.5% of runs (the 95% interval), and
- * the residual bias measured for the lane's arrangement (docs/design.md, The n-key lane, What a press inherits) raises that a little, so
- * a first red is run again in fresh windows and the page is red only when both runs are. */
+/** What a confirmed red says. A page the same as its base is slower than the base in one run of a phase in about 2.5% of runs (the 95%
+ * interval), and the residual bias measured between identical windows (docs/design.md, The n-key lane, What a press inherits) would raise
+ * that, so a page must be slower than the twin too, and a first red is run again in fresh windows: the page is red only when both runs are. */
 const CONFIRMED = "A page the same as its base is red in both runs of a phase in well under 1% of runs; a page about 5% slower in about 96%.";
 /** What a time phase says: the numbers go to the log and the run's summary either way; violations are witnesses that were not reported
  * and reads the tape had no answer for, `red` the pages judged slower than their base, and an undecided run is a warning. */
 export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): { violations: string[]; red: string[] } {
   const v: string[] = [], red: string[] = [];
   const base = median(r.busy.base!);
-  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (not within ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
+  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (wider than ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
   log(`press-n time (${name}): orders of opening and pressing drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
   const rows = [`| ${name} | base busy median ${ms(base)} ms | twin ${show(r.ratios.twin!)} | rounds ${r.rounds} | ${r.sound ? "counts" : "does not count"} |`];
@@ -145,14 +146,15 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
   for (const [label, verdict] of Object.entries(r.verdicts)) {
     const witness = label === "slow";
     const against = `${label}/${r.versus[label]}`;
-    log(`press-n time (${name}): ${against} ${show(r.ratios[label]!)}: ${verdict}`);
-    rows.push(`| ${name} | ${against} | ${show(r.ratios[label]!)} | | ${verdict} |`);
+    const vsTwin = r.againstTwin[label] ? `, ${label}/twin ${show(r.againstTwin[label])}` : "";
+    log(`press-n time (${name}): ${against} ${show(r.ratios[label]!)}${vsTwin}: ${verdict}`);
+    rows.push(`| ${name} | ${against} | ${show(r.ratios[label]!)}${vsTwin} | | ${verdict} |`);
     if ((r.misses[label] ?? 0) > 0) v.push(`press-n time (${name}): the ${label} window asked for ${r.misses[label]} reads the tape has no answer for; the real server answered them in this process`);
     if (witness) {
       if (verdict === "ok") v.push(`press-n time (${name}): the time layer did not report a page whose draw takes 15 ms more (${show(r.ratios.slow!)})`);
       else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds, so the witness of 15 ms more per draw could not be judged");
-    } else if (verdict === "red") red.push(`${against} ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}`);
-    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base did not show this run's noise within ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
+    } else if (verdict === "red") red.push(`${against} ${show(r.ratios[label]!)}${vsTwin}, twin/base ${show(r.ratios.twin!)}`);
+    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base was wider than ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
     else if (polluted > 0) warn(`n-key time layer (${name})`, `the base page asked for ${polluted} reads the tape has no answer for, so its time carries the server's work`);
   }
   if (!changed) log(`press-n time (${name}): the page is the same as its base, so only the twin and the witness were measured`);
@@ -161,7 +163,7 @@ export function judgePhase(name: string, r: PhaseResult, floor: number, changed:
 }
 
 /** The time layer of one phase: its windows press in rounds until the twin shows the run's noise (`timePhase`), and a page judged
- * slower than its base is measured again in fresh windows; it is red only when the second run judges it slower too. Both runs' numbers
+ * slower than its base and its twin is measured again in fresh windows; it is red only when the second run judges it slower too. Both runs' numbers
  * are in the log. `result` is the first run, whose landings the counts are held on. */
 export async function timeLayer(name: string, windows: readonly PhaseWindow[], floor: number, changed: boolean, events?: readonly (string | undefined)[]): Promise<{ result: PhaseResult; violations: string[] }> {
   const result = await timePhase(windows, floor, events);

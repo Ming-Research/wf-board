@@ -17,16 +17,16 @@ jobs:
         phase: [writing, quiet]
         job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
         include:
-          - { kind: slow25, phase: quiet, job: 0 }
-          - { kind: slow25, phase: quiet, job: 1 }
-          - { kind: slow25, phase: quiet, job: 2 }
-          - { kind: slow25, phase: quiet, job: 3 }
-          - { kind: slow25, phase: quiet, job: 4 }
-          - { kind: slow25, phase: writing, job: 0 }
-          - { kind: slow25, phase: writing, job: 1 }
-          - { kind: slow25, phase: writing, job: 2 }
-          - { kind: slow25, phase: writing, job: 3 }
-          - { kind: slow25, phase: writing, job: 4 }
+          - { kind: slow6, phase: quiet, job: 0 }
+          - { kind: slow6, phase: quiet, job: 1 }
+          - { kind: slow6, phase: quiet, job: 2 }
+          - { kind: slow6, phase: quiet, job: 3 }
+          - { kind: slow6, phase: quiet, job: 4 }
+          - { kind: slow6, phase: writing, job: 0 }
+          - { kind: slow6, phase: writing, job: 1 }
+          - { kind: slow6, phase: writing, job: 2 }
+          - { kind: slow6, phase: writing, job: 3 }
+          - { kind: slow6, phase: writing, job: 4 }
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

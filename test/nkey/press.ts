@@ -366,16 +366,18 @@ export interface PhaseResult {
   ratios: Record<string, Interval>;
   /** The window each ratio is against. */
   versus: Record<string, string>;
+  /** Per window judged against `base`, other than the twin: its ratio to the twin, which a red needs to be wholly above 1 too. */
+  againstTwin: Record<string, Interval>;
   /** The twin's interval over each round's pairs alone. */
   alone: Interval[];
-  /** `sound`: the twin's interval holds 1 within `floor`; per window other than base and twin the verdict. */
+  /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
   misses: Record<string, number>;
 }
 
-/** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval shows this
- * run's noise within `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
+/** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval is no
+ * wider than `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
  * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against base. */
 export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
@@ -402,7 +404,8 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
     ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
     sound = twinIsSound(ratios.twin!, floor);
   }
-  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
+  const againstTwin = Object.fromEntries(windows.slice(2).filter(w => !w.versus).map(w => [w.label, compare(busy[w.label]!, busy.twin!)]));
+  const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor, againstTwin[w.label])]));
   const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, alone, sound, verdicts, misses };
+  return { first: first!, busy, rounds, ratios, versus, againstTwin, alone, sound, verdicts, misses };
 }

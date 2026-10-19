@@ -24,20 +24,23 @@ export function compare(a: readonly number[], b: readonly number[]): Interval {
   return { n, ratio: Math.exp(mean), lo: Math.exp(mean - h), hi: Math.exp(mean + h), half: Math.exp(h) - 1 };
 }
 
-/** Whether a page compared with its own twin shows the noise of this run: its interval holds 1 and is no wider than the noise floor
- * measured for this kind of press (the floor is the widest half width seen for pages that are the same). */
+/** Whether a page compared with its own twin shows the noise of this run: its interval is no wider than the noise floor measured for
+ * this kind of press (the floor is the widest half width seen for pages that are the same). Where the interval lies is not asked: the
+ * windows of one process keep a residual bias of 1–3% between identical pages (docs/design.md, The n-key lane), and a twin that misses 1
+ * by it would otherwise leave a page several percent slower unjudged. */
 export function twinIsSound(twin: Interval, floor: number): boolean {
-  return twin.lo <= 1 && twin.hi >= 1 && twin.half <= floor;
+  return twin.half <= floor;
 }
 
 export type Verdict = "ok" | "red" | "undecided";
 /** The verdict on a page compared with its base, read with the twin of the base compared with the base:
- * - undecided: the twin's interval is not the noise of this run (it misses 1, or is wider than the floor), so the run says nothing;
- * - red: the page's interval lies wholly on the slower side of 1, of any size;
+ * - undecided: the twin's interval is wider than the floor, so the run's noise is not the noise the floor was set from and it says nothing;
+ * - red: the page's interval against the base and, when given, its interval against the twin both lie wholly on the slower side of 1,
+ *   of any size: a page must be slower than both identical windows, so the residual bias between them does not make a red;
  * - ok: otherwise (including a page that is faster). */
-export function judge(twin: Interval, page: Interval, floor: number): Verdict {
+export function judge(twin: Interval, page: Interval, floor: number, againstTwin?: Interval): Verdict {
   if (!twinIsSound(twin, floor)) return "undecided";
-  return page.lo > 1 ? "red" : "ok";
+  return page.lo > 1 && (!againstTwin || againstTwin.lo > 1) ? "red" : "ok";
 }
 
 /** An interval as a short text: `×1.031 [0.998, 1.065] ±3.3% over 30 pairs`. */

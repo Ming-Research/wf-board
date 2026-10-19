@@ -4648,18 +4648,20 @@ commit's `web/` and `src/`; none when `web/` and `src/` are as they are there), 
 of the twin of the base (the same page again, the control) and of the page when it differs are open side by side, opened in a random order, and press n in turn, in an order drawn at
 random afresh each round, with a seed of each run's own that the log names (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
-holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
-otherwise. One round of 30 pairs estimates the ratio within about 1.2% (the standard deviation of the estimate between rounds, 1.0–1.7% by phase, measured
+is no wider than the noise floor of that kind of press, wherever it lies; the page is then slower when its intervals against the base and against the twin
+both lie wholly above 1, whatever their size, and ok otherwise. The twin's interval is not required to hold 1: identical windows keep a residual bias of
+1–3% (What a press inherits, the last point), which a twin over 90 pairs resolves, and in the acceptance run 39193876275 of `tmp-accept` such a twin
+(×1.013 [1.002, 1.024] and ×1.027 [1.016, 1.038]) left a page ×1.076 and ×1.085 slower undecided, so it passed; against both identical windows the
+bias between them is counted in instead. One round of 30 pairs estimates the ratio within about 1.2% (the standard deviation of the estimate between rounds, 1.0–1.7% by phase, measured
 with the probe of What a press inherits), so a page the same as its base is red in about 2.5% of the runs of a phase (5% of a full CI with a changed page), a
 page 5% slower in about 98% and one 2% slower in about 35%. These are the properties of the 95% interval and are not traded for a threshold. A residual
 bias the lane's arrangement still has (What a press inherits, the last point) raises the first number, so a page judged slower than its base is measured
 again in fresh windows (`timeLayer` in `test/nkey/lane.ts`) and is red only when the second run judges it slower too; both runs' numbers are in the log, and
 a first red the second run does not repeat is a warning. A page the same as its base is then red in well under 1% of the runs of a phase, one 5% slower
-in about 96%, and the phase takes one run more only when the first is red. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+in about 96%, and the phase takes one run more only when the first is red. When the twin's interval is wider than the floor, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
-against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
-twenty, so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
+against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%),, so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
 runner differs by up to a factor of two between jobs, and every fixed number made a pull request red or green by the runner.
 
 **What a press inherits.** The windows live in one process, so a press inherits what the presses before it left, those of other windows included,
@@ -4696,8 +4698,8 @@ garbage collector inside it) found three sources, and the lane removes each:
   the changed page's place read ×0.9979 [0.9898, 1.0060] writing and ×1.0073 [1.0011, 1.0135] quiet, the twin ×0.9972 and ×1.0054: in the
   quiet phase the base read about 0.6% faster than the other two. A second set of 36 rounds per phase on the same code (run 39193425761)
   read the copy ×1.0013 [0.9956, 1.0070] quiet and ×0.9967 [0.9905, 1.0030] writing, so the first may be chance or a bias of a few
-  tenths of a percent whose source was not found. It is known and not searched further; the confirmation of a red (Time, above) keeps it
-  from turning a page the same as its base red.
+  tenths of a percent whose source was not found. It is known and not searched further; judging a page against the twin as well as the base, and
+  confirming a red (Time, above), keep it from turning a page the same as its base red.
 
 With the first two and the balanced cycle (before the last two were found), over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
 (±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
