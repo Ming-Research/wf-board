@@ -39,3 +39,26 @@ jobs:
       - run: |
           sed -i 's#--max-semi-space-size=4#--max-semi-space-size=64#' ops/wf-board.plist
           if node --test test/memory-flags.test.ts; then echo "the test passed with a 64 MB half"; exit 1; fi
+  # Readings of the young generation for the probe, to choose the test's bound from (removed with this file).
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          cat > /tmp/probe.js <<'EOF'
+          const v8 = require("node:v8");
+          const keep = [];
+          let peak = 0, peakPhys = 0, peakUsed = 0;
+          for (let i = 0; i < 3_000_000; i++) {
+            keep.push({ i, text: "x" + i });
+            if (i % 50_000 === 0) {
+              const s = v8.getHeapSpaceStatistics().find(s => s.space_name === "new_space");
+              peak = Math.max(peak, s.space_size); peakPhys = Math.max(peakPhys, s.physical_space_size); peakUsed = Math.max(peakUsed, s.space_used_size);
+            }
+          }
+          console.log([peak, peakUsed, peakPhys].map(x => (x / 1048576).toFixed(1)).join(" "));
+          EOF
+          for variant in "" "--max-semi-space-size=4 --heap-growing-percent=50" "--max-semi-space-size=4" "--max-semi-space-size=8 --heap-growing-percent=50" "--max-semi-space-size=64 --heap-growing-percent=50" "--max-semi-space-size=16"; do
+            for run in 1 2 3 4 5; do echo "flags [$variant] run $run: peak used physical (MB): $(node $variant /tmp/probe.js)"; done
+          done
