@@ -144,10 +144,12 @@ test("a standing item's row for another standing item makes the target neither a
   });
   const r = rules(s), kinds = (id: string) => r.checks(id).map(c => c.id);
   assert.deepEqual(kinds("target"), []);
-  assert.deepEqual(r.refusals("target"), [], "so the write that builds the row is not refused");
+  // The checks a write is refused for are the ones of a kind marked so.
+  const refused = (id: string) => r.refusals(id).filter(c => checkKind(c.id).refused).map(c => c.id);
+  assert.deepEqual(refused("target"), [], "so the write that builds the row is not refused");
   assert.deepEqual(kinds("waiter"), []);
   assert.deepEqual(kinds("plain").sort(), ["pause-conflict", "unowned-but-awaited"], "the control raises both, so the checks are alive");
-  assert.deepEqual(r.refusals("plain").map(c => c.id), ["unowned-but-awaited"]);
+  assert.deepEqual(refused("plain"), ["unowned-but-awaited"]);
 });
 
 test("an unpaused standing item passes the need to the items it owns while it is never startable itself, and a pause takes the need away", () => {
