@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Count the agent list once and show the runner's idle slots
+
+Nodes: page/agent-list, mcp/look, daemon/runner-heartbeat
+
+Summary: The agent list's heading counted a review session of work the runner holds as another session, so the owner saw a number one higher than the rows listed, and no tool printed the list, so the architect saw the difference last. One function now gives the list (the runner's rows, the other running sessions, the rest behind the fold and the heading's number, which is the rows drawn open) and both the page and the `look` tool call it; the review session of work the runner holds is drawn with that work's row. `look` also prints the card counts the page shows on a row and ends with the agent list for the whole board, outside its budget of lines. The heartbeat may carry the runner's pools of slots, kept in the daemon's memory only and drawn as a line under the heading whether the list is open or folded; a pool with a free slot and nothing to start for an hour is told once to the owner by the route a blocking card takes (slots stood empty for more than six hours on 2026-10-19 with the owner away). The hour is provisional, and after a restart the pools are unknown until the next heartbeat, so an idle pool is told again. The refused alternatives (a tool of its own for the list, correcting only the page's number, a write tool for the pools, the board counting the slots itself, a line with no notice, the report in the data or a file) are in the nodes; the audit of the page's other numbers against the tools and the shape of the pools are in docs/design.md, section 7, Agent list, and section 8, The runner's heartbeat.
+
 ## 2026-10-19 Bound the n-key time parts by a time budget
 
 Nodes: testing/press-n

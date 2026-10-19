@@ -267,7 +267,7 @@ test("the tool over MCP answers the time kept and takes the identity of a connec
   const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
   const tool = (await client.listTools()).tools.find(x => x.name === "report_heartbeat");
   assert.ok(tool);
-  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "session"], "no other argument");
+  assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ["author", "pools", "session"], "no other argument than the writer and the optional pools (test/runner-pools.test.ts)");
   assert.match(tool.description!, /10 minutes/);
   const ok = await client.callTool({ name: "report_heartbeat", arguments: runner });
   assert.equal(ok.isError, undefined, text(ok));

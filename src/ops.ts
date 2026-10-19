@@ -11,11 +11,14 @@ import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow
 import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
+import { underText } from "./under.ts";
 import { editHead, HeadEditError } from "./head-edit.ts";
 import type { SectionEdit, Replacement } from "./head-edit.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
 import { RunnerHeartbeat } from "./runner-heartbeat.ts";
+import { RunnerPools, checkedPools } from "./runner-pools.ts";
+import type { PoolReport } from "./runner-pools.ts";
 import type { LiveRole } from "./live.ts";
 import { currentTrace } from "./write-trace.ts";
 
@@ -61,8 +64,9 @@ export interface Ops {
   /**
    * The runner's heartbeat (docs/design.md, section 8, The runner's heartbeat): the same writers as `reportState`, kept in the options'
    * `heartbeat` and nowhere else, so it makes no commit and does not wait in the write queue. Answers one line saying what it kept.
+   * With `pools` (the runner's slots, docs/design.md, section 8, The runner's heartbeat) it also keeps them in the options' `pools`.
    */
-  reportHeartbeat(a: { author: string; session?: string; access?: Access }): Promise<string>;
+  reportHeartbeat(a: { author: string; session?: string; access?: Access; pools?: PoolReport[] }): Promise<string>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
   updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; sections?: SectionEdit[]; replace?: Replacement[]; record?: boolean; standing?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
@@ -101,6 +105,8 @@ export interface OpsOptions {
   live?: LiveStore;
   /** Where `reportHeartbeat` keeps the runner's heartbeat; one that tells nobody when none is given. */
   heartbeat?: RunnerHeartbeat;
+  /** Where `reportHeartbeat` keeps the runner's pools of slots; one that tells nobody when none is given. */
+  pools?: RunnerPools;
 }
 
 // Shared across Ops instances: validation and multi-document writes are one
@@ -325,6 +331,7 @@ const REPEAT_MS = 60_000;
 export function ops(store: Store, now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), options: OpsOptions = {}): Ops {
   const live = options.live ?? new LiveStore();
   const heartbeat = options.heartbeat ?? new RunnerHeartbeat({ tell: () => {} });
+  const pools = options.pools ?? new RunnerPools({ tell: () => {} });
   /** The rules every reader of `s` shares (store.derived): one derivation per snapshot instead of one per check. */
   const rulesOf = (s: Snapshot) => store.derived.rules(s);
   /** The version of the document that carried `rev`, read back from its history; none when `rev` never existed or the history is more than a request may read. */
@@ -808,7 +815,14 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       checkWriter(a, ["item.runner"]);
       onlyProcessOrRunnerWithoutCredential(a, "report the runner's heartbeat");
       requireAuthor(store.snapshot(), a.author);
-      return `heartbeat ${heartbeat.beat()} · kept in memory and a local file, no commit`;
+      // A report of pools that does not hold is refused whole, before the beat: the runner then sends the plain beat, which counts.
+      let reported: PoolReport[] | undefined;
+      if (a.pools !== undefined) {
+        try { reported = checkedPools(a.pools); } catch (error) { throw new OpError((error as Error).message); }
+      }
+      const beat = heartbeat.beat();
+      if (reported !== undefined) pools.put(reported);
+      return `heartbeat ${beat}${reported === undefined ? "" : ` · ${reported.length} pools`} · kept in memory and a local file, no commit`;
     },
     setPlan: a => edit(a, "item.plan", "set_plan", (it, _s, at) => {
       if ([a.rows, a.row, a.remove].filter(value => value !== undefined).length !== 1) throw new OpError("set_plan: provide exactly one of rows, row or remove");
@@ -1011,7 +1025,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         delete reopened.ruledAt; delete reopened.withdrawnWithItem;
         return { kind: "decision" as const, id: key, doc: parse(Decision, reopened), expectRev: card.rev };
       });
-      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc), ...cardPuts] };
+      // Cancelling sets the item and what it owns aside: the answer lists, as they stood before this write, the cards, the open pull requests and the sessions at work on them.
+      return { id: a.id, kind: "item", message, puts: [itemPut(a.id, doc), ...cardPuts], ...(a.status === "cancelled" ? { note: underText(s, r, a.id) } : {}) };
     }),
     setPause: a => run(a, "item.pause", (s, at) => {
       onlyProcess(a, "pause or resume an item, at the owner's request");
@@ -1028,7 +1043,8 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (!unchanged) {
         if (a.paused) doc.paused = { reason: reason!, at }; else delete doc.paused;
       }
-      return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)] };
+      // A pause holds everything the item owns: the answer lists the cards, the open pull requests and the sessions at work on the item and below it.
+      return { id: a.id, kind: "item", message: `set_pause ${a.id} ${a.paused ? "paused" : "open"}`, puts: [itemPut(a.id, doc)], ...(a.paused && !unchanged ? { note: underText(s, rulesOf(s), a.id) } : {}) };
     }, false, true),
     moveItem: a => run(a, "item.move", (s, at) => {
       ownedItem(s, a.id, a);

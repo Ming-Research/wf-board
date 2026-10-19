@@ -1,0 +1,35 @@
+name: tmp-board-guard-views
+# Temporary quick check for board-guard-views: the type check and the test files the change touches. Removed before the full CI.
+on:
+  push:
+    branches: [board-guard-views]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+  test:
+    name: test ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            files: test/under.test.ts test/agent-list.test.ts test/runner-pools.test.ts test/runner-heartbeat.test.ts test/agents.test.ts test/runner-rows.test.ts test/look.test.ts test/mcp.test.ts test/lean.test.ts test/ops.test.ts test/http.test.ts test/whole-view.test.ts test/timeline.test.ts test/access.test.ts test/candidates.test.ts test/dispatch.test.ts test/query.test.ts test/wake.test.ts
+          - name: page
+            files: test/web.test.ts test/dom/agents.test.ts test/dom/runner-block.test.ts test/dom/whole.test.ts
+          - name: spoiled
+            files: test/dom/agents-spoiled-1.test.ts test/dom/agents-spoiled-2.test.ts
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test --test-timeout=120000 ${{ matrix.files }}

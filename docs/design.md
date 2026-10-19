@@ -2447,7 +2447,7 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows other than acceptance steps folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
+| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows other than acceptance steps folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); for an item that owns others, the open and ruled cards on the items below it, apart from its own (Lean replies, below); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
@@ -2461,7 +2461,7 @@ instructions within the limit and free of rule text.
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog (unless the runner reports on it), in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
-| `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look) |
+| `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look); after the tree, the agent list as the page draws it (section 7, Agent list) |
 | `timeline(id?, limit?)` | Where did the time of an agent go? | An agent is a dispatch record; its line is what the runner reported while the session lasted: segments in order (kind, start, length, what it waited for) and the totals for each kind; an engineer's line is cut from what the runner reported, a review's is one stretch of work. With `id`: the lines of the agents that item went through, oldest first (the newest 12 agents, at most 6000 characters, the earliest segments folded); without: the agents running, the agents whose line ended in the last 24 hours (up to 10) and the longest waits among the running ones, longest first, with how long each has gone on (section 7, Agent list) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
@@ -2711,6 +2711,15 @@ not call it.
   session never saw), so it does not hide their changes, new items or finishes. The memory holds at most 16
   sessions, the newest last, and is lost when the daemon restarts: the first look after that, or after the session was pushed out of the 16,
   marks nothing, and so does a call with neither a session nor a credential, which is not remembered; the header says so.
+- *The cards of a row.* A line carries `卡：挡事 N · 不挡事 M` before its check flags, the two numbers the owner's page shows on the
+  row of the item (`blockingBelow` and `nonBlockingBelow` of `src/rules.ts`: the cards waiting for the owner on the item and below it, those
+  that block work and those that block nothing), and no `卡` part when there are none. Before, the page showed these and no tool did.
+- *The agent list.* After the tree, outside its budget of lines, the answer prints the agent list as the page draws it, for the whole board
+  whatever `projects` says (the page lists every project's sessions too): the heading's number, the runner's free slots when it has reported
+  them, a line for each piece of work the runner holds and for each other session that is running, and how many sit behind the page's fold.
+  It is `agentList` of `src/agent-list.ts`, the function the page calls (section 7, Agent list, One list for the page and the tool), so the
+  two cannot count differently. The architect reads `look` as the picture of the board, and a list that only the page showed was what the
+  owner saw first and the architect saw last.
 - *Cost.* One pass over the items: the whole view's pass, the checks of each item and the tree. `test/look.test.ts` checks on a
   generated board of the live board's size (about 1,600 items) that the look takes under 2,000 milliseconds; the measured values
   go in the item's acceptance rows, from the CI log.
@@ -2810,6 +2819,19 @@ name is also given, and a name that matches none stays unknown and is refused as
 tool's parameters; so `move_item` given a `reason` (only the tools that log a reason take it) is
 told it has none and shown what it has, and the other writes are not changed to take one.
 
+**What stands under an item.** Whoever sets work aside or reads a part of it needs to see what the owned items hold, and each of these
+was found only by reading every owned item one by one (`src/under.ts`).
+
+- `context` of an item that owns others ends its own cards with the open and ruled cards on the items it owns, at any depth, apart from its
+  own, each under its item (`cards on the items it owns`); a withdrawn card holds nothing and is left out, a leaf has no such part, and a
+  card, a section or the whole head read on its own is answered as before. At most 20 cards are listed, then the number of the rest.
+- The reply of `set_pause` (a pause that changes something; a resume sets nothing aside) and of a `set_status` that cancels carries a `note`
+  with the same cards, the pull requests named in the 改动 section of the item and its open owned items whose merge row is not done, and the
+  sessions at work (the unfinished dispatches of an engineer or a review; an architect's turn is no session at work). The cancel's note
+  describes the state before the write, the cards it is about to withdraw included, since that is what the caller must see.
+- The pull requests are read from the board and not from GitHub, so a merged one the board has not yet ticked is still listed, which errs
+  towards telling more.
+
 **Measured** (a copy of the live board's snapshot on 17 October 2026, computed once by the
 engineer outside the repository; "whole" is the answer before this change, "default" the
 answer now):
@@ -2876,11 +2898,11 @@ authors `总管` and `PM` is refused by every tool.
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept; none for the role `架构师`, which is a record only) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse, an architect neither; `result` (the four results or `放下等待`, and `轮次结束` for an architect dispatch alone) and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
-| `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes no other argument |
+| `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes one argument besides, `pools` (optional): the runner's pools of slots, kept in memory only (section 8, The runner's heartbeat) |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
-| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
+| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required; a cancel's reply lists what stood under the item before it (Lean replies, below) |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared; a pause's reply lists what stands under the item (Lean replies, below) |
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, inserted before its first acceptance step; a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
 | `move_item_project(id, project)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); work leaving a paused chain is allowed, because the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
@@ -3444,7 +3466,11 @@ level, and whether that someone is working, waiting or has gone quiet.
   dispatch alive within six hours, which would fold a job that waits for the
   owner overnight, and a job waiting for CI, a card or the architect is what the
   owner opens the list to see. The older rows leave out the sessions the runner
-  holds, so no session is drawn twice. The whole view is not changed: it answers
+  holds, so no session is drawn twice. The review session of work the runner holds is one of them: the
+  runner starts it with the job and the record stays open until the item ends (`runnerHoldsReview`,
+  `src/agents.ts`: an unfinished review dispatch on an item that has an unfinished engineer dispatch the
+  runner holds), so it is drawn with the job's row and is not counted as another session; counted apart it made the
+  heading one more than the rows listed. The whole view is not changed: it answers
   what is left and who has nobody, by item, and the architect reads it too; the
   two repeat a job on purpose. Rejected: folding the runner's rows by the older
   six-hour rule; dropping the whole view's rows that the block repeats, which two
@@ -3535,7 +3561,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   running ones were hard to find. Only running rows are drawn in full; the
   others are one last line, 「其他 N 个」, that opens them in the same order and form
   (the choice is kept in the browser like the list's own fold). The heading
-  counts the running rows. A row is running when the session has an unfinished
+  counts the rows drawn open: the runner's rows and the running rows (`AgentList.count`). A row is running when the session has an unfinished
   dispatch record, of an engineer or a review, and is alive, meaning it started or wrote
   within the list's window (`liveDispatches`, the reading that rule 6 of Status
   uses for a session working on an item, either role and the same window, not
@@ -3666,6 +3692,31 @@ level, and whether that someone is working, waiting or has gone quiet.
   leaves the day's work a pixel wide; drawing every segment the same width,
   because the longest wait would not look longest; a block of lines apart from
   the table, because the title and its line would stand in two places.
+
+**One list for the page and the tool.** `agentList` (`src/agent-list.ts`) gives the list as one value:
+the runner's rows, the other sessions that are running, the rest behind the fold, and the heading's number
+(`count`, the rows drawn open, a test checks it equals them). The page and the `look` tool (section 6, The look)
+both call it, and `agentListLines` prints it for the tool, so the number the owner reads and the number the
+architect reads are one. The page did the counting in its own code before, and the first time the numbers
+differed (a review session counted as another session) the owner saw it before the architect.
+Every other number on the page was audited against the tools on the same occasion. The agent list's counts are now in
+`look`; the whole view is the same function in the page and `whole_view`; the status bar's open items and
+project counts are `projects` and `overview`; the blocking and decision card counts are in `brief`, and the card
+counts of a row are in each line of `look`; the comments count is `notes`. What is left is the owner's own read position (the
+unread, new and read-all counts of the lists and of messages), which exists only for the person who reads and which
+no agent needs. Rejected: a tool of its own for the agent list, because the architect has to remember to call it and the lesson was
+what the architect does not look at; changing only the page's number, because two algorithms stay, and the next difference is again
+found by the owner first; keeping the review session listed and counting only the runner's rows in the heading, because a
+session alive would then be missing from the number that is meant to count them.
+
+**The runner's free slots.** The line `名额：…` stands under the heading, whether the list is open or folded and also when
+no session has a row, one part for each pool the runner reported (`1 级 空着 8 个（共 10），派活队列里没有能开工的活已 10 分钟`, or
+`满 10/10`). It is `poolsLine` of `src/agent-list.ts`, drawn from the last report in the board's memory
+(section 8, The runner's heartbeat), marked amber when a pool has had a free slot and nothing to start for an hour (the
+time the owner is told) and greyed with the report's age when the runner has not repeated it for three minutes
+(`POOLS_FRESH_MS`). The page gets the last report when its event stream opens and with each report (the event
+`pools`), and counts the idle time forward from the report's arrival, so the figure moves without a new report.
+Rejected: a line shown only when the list is open, because the case it is for is the owner not opening anything.
 
 ### The live view of a turn
 
@@ -4443,7 +4494,7 @@ item stops with it and nothing on the board says so: its reports on the items st
 beats of the turns running (section 7, The live view of a turn) stop, which the agent list shows as
 silence on each turn separately. The board therefore watches the runner itself, by one call.
 
-- *The call.* `report_heartbeat` takes no argument besides the writer. The runner calls it at every round of its
+- *The call.* `report_heartbeat` takes no argument besides the writer, except the optional `pools` below. The runner calls it at every round of its
   loop, whether or not a turn is running, at least once a minute. The writers are those of `report_state`
   (the part `item.runner`, section 9, The runner): the runner from its own session, and the architect.
   It makes no commit and does not wait in the write queue (`RunnerHeartbeat` in `src/runner-heartbeat.ts`).
@@ -4462,6 +4513,22 @@ silence on each turn separately. The board therefore watches the runner itself, 
   heartbeat), and the next heartbeat ends the silence, so a later one is told again. A restart in the same
   silence tells nothing, since the file says it was told; the push is made before the mark is written, so a
   stop between the two repeats the push and does not lose it.
+- *The pools.* The heartbeat may carry `pools`, a list of at most 8 objects `{pool, label, slots, running, dryForSeconds?}`:
+  a pool's key and short name (at most 20 characters each, keys distinct), its slots, how many are taken, and how long the dispatch
+  queue has had nothing to start for it, in seconds, when it has been so (the runner knows its own start check; the board does not
+  copy it). A report that does not hold is refused whole, with the beat, so a runner that only ever sent bad pools is missed. The
+  board keeps the last report with its arrival time in the daemon's memory only (`RunnerPools`, `src/runner-pools.ts`): not in a
+  commit, and not in the heartbeat's file, because a figure that is a minute old after a restart is no loss and a restart before the
+  next beat is the only time it is unknown. A heartbeat without `pools` leaves the last report as it was. The page and `look` draw it
+  (section 7, Agent list, The runner's free slots).
+- *The notice.* A pool with a free slot and `dryForSeconds` counted forward from the arrival of at least one hour
+  (`IDLE_TELL_MS`) is told once to the owner, with the title `名额空着 · <label>`, through `Wake.tell`, the route a blocking card
+  takes, which reaches the pages open with notification permission. The mark that it was told clears when the pool has no free
+  slot, when the queue has something to start for it, or when a report does not name it, so the next such stretch tells again;
+  a notice that fails is logged and costs the report nothing. After a restart the board knows no pools until the next heartbeat,
+  which comes within a minute, and a pool still idle then is told again. The hour is a starting value, set from the more than six hours
+  during which slots stood empty on 2026-10-19 and not measured; reopen it if an hour proves too often or too late. An owner
+  with no page open is not told, as with a blocking card.
 - *Only after a first heartbeat.* Nothing is told until a heartbeat has been kept, here or in the run before, so a board
   deployed before the runner calls the tool does not tell of a runner that never promised it.
 - *The limit.* 10 minutes (`RUNNER_SILENT_MS`) is a starting value: the runner's loop was not measured, and the
@@ -4482,6 +4549,13 @@ The decision is the node `design/daemon/runner-heartbeat.md`. Rejected:
   at one in 10 minutes only to record a time that the board may lose with a restart at the cost of one
   interval.
 - The board reading the runner's process or answering to its port: rejected for the reason above.
+- A separate write tool for the pools: rejected because the beat and the pools could then arrive one without the other, and the runner
+  would make another call every round for what the heartbeat already carries.
+- The board counting the free slots itself from `candidates` and the engineers working: rejected because the slots are in the
+  runner's configuration, which the board does not have, and a candidate is not the same as something the runner's start check lets
+  start, so the two would disagree, the kind of difference this change removes.
+- The line on the page without a notice: rejected because on 2026-10-19 slots stood empty for more than six hours with the owner away from the page,
+  and a line nobody reads is no line.
 
 ### The PM is retired
 
