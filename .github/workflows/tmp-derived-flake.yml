@@ -1,52 +1,65 @@
 name: tmp-derived-flake
-# Temporary (ci-gate-margin): the rewritten collection test of the derived cache. `diag`: 30 attempts at 50 and at 200 writes in one
-# process, with the indices that stay reachable. `witness`: the test against a cache that keeps every state it was given (it must
-# fail), and `control`: the same file unchanged (it must pass). Delete before the last full CI.
+# Temporary (ci-gate-margin): the rewritten collection test of the derived cache. `control`: test/derived.test.ts unchanged, three runs
+# a job. `leak-1`, `leak-20`: the same file against a cache that keeps every state it was given, or one in every twenty (the test must
+# fail, for the intended reason, and the other tests must pass). Delete before the last full CI.
 on:
   push:
     branches-ignore: [main]
 jobs:
-  diag:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: run
-        run: |
-          timeout 250 node test/tmp-derived-diag.test.ts > out.txt 2>&1 || true
-          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE ${{ matrix.rep }} /' || true
-          echo "DIAGEND ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt)"
   witness:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        kind: [control, leak-all]
+        include:
+          - { kind: leak-1, every: 1, rep: 1 }
+          - { kind: leak-20, every: 20, rep: 1 }
+          - { kind: control, every: 0, rep: 1 }
+          - { kind: control, every: 0, rep: 2 }
+          - { kind: control, every: 0, rep: 3 }
+          - { kind: control, every: 0, rep: 4 }
+          - { kind: control, every: 0, rep: 5 }
+          - { kind: control, every: 0, rep: 6 }
+          - { kind: control, every: 0, rep: 7 }
+          - { kind: control, every: 0, rep: 8 }
+          - { kind: control, every: 0, rep: 9 }
+          - { kind: control, every: 0, rep: 10 }
+          - { kind: control, every: 0, rep: 11 }
+          - { kind: control, every: 0, rep: 12 }
+          - { kind: control, every: 0, rep: 13 }
+          - { kind: control, every: 0, rep: 14 }
+          - { kind: control, every: 0, rep: 15 }
+          - { kind: control, every: 0, rep: 16 }
+          - { kind: control, every: 0, rep: 17 }
+          - { kind: control, every: 0, rep: 18 }
+          - { kind: control, every: 0, rep: 19 }
+          - { kind: control, every: 0, rep: 20 }
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: patch
-        if: matrix.kind == 'leak-all'
+        if: matrix.every != 0
         run: |
           python3 -I - <<'PY'
           p = "src/rules.ts"
           s = open(p).read()
           old = "    this.step = { after, before, changed, ...(activity ? { activity } : {}) };"
           assert s.count(old) == 1
-          leak = "    (this as unknown as { kept?: object[] }).kept = [...((this as unknown as { kept?: object[] }).kept ?? []), before];\n"
+          leak = ("    const self = this as unknown as { n?: number; kept?: object[] };\n"
+                  "    self.n = (self.n ?? 0) + 1;\n"
+                  "    if (self.n % ${{ matrix.every }} === 0) (self.kept ??= []).push(before);\n")
           open(p, "w").write(s.replace(old, leak + old))
           PY
           git diff --stat
       - name: run
         run: |
-          timeout 200 node --test --test-reporter=spec test/derived.test.ts > out.txt 2>&1; code=$?
-          echo "WITNESS ${{ matrix.kind }} exit=$code"
-          grep -a "still reachable after a collection" out.txt | head -3 | sed 's/^/WITNESS ${{ matrix.kind }} /'
-          grep -a -E "^ℹ (pass|fail) " out.txt | sed 's/^/WITNESS ${{ matrix.kind }} /'
+          set +e
+          for k in 1 2 3; do
+            timeout 200 node --test --test-reporter=spec test/derived.test.ts > out-$k.txt 2>&1
+            echo "WITNESS ${{ matrix.kind }} rep ${{ matrix.rep }} run $k exit=$?"
+            grep -a -E "are still reachable after a collection" out-$k.txt | sort -u | head -3 | sed 's/^/WITNESS message /'
+            grep -a -E "^ℹ (pass|fail) " out-$k.txt | tr '\n' ' ' | sed 's/^/WITNESS counts /'; echo
+            grep -a -E "^\s*(✖|✔) " out-$k.txt | grep -a -c "✖" | sed 's/^/WITNESS failing-tests /'
+          done
+          exit 0

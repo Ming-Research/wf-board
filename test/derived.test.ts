@@ -335,10 +335,11 @@ function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: num
   }
   return { states, rules: made, last: state };
 }
-/** The most Rules objects, and the most states, of a chain that may stay reachable after a full collection. The cache holds two: the newest
- * state and the one before it. Up to three more have been seen reachable on hosted runners, always at fixed places of the chain (its first
- * state and its tenth, in 3 of 52 runs of 40 chains each; 4 of 51 after three collections, 5 of 51 after one), not at the newest
- * states and not more of them with more writes, so they are not the cache's. A cache that kept a step per state keeps all of them. */
+/** The most Rules objects, and the most states, of a chain that may stay reachable after full collections. The cache holds two: the newest
+ * state and the one before it. On hosted runners one or two more were seen reachable besides, at no fixed place of the chain (4 of 51 after
+ * three collections in 3 of 1,200 chains of 50 writes, at most 3 of 201 in 1,200 chains of 200), and not more of them with more writes.
+ * The bound is the two plus three. A cache that keeps a step per state, or one state in every twenty, is stopped by the chain of 200
+ * writes below if not by the one of 50. */
 const REACHABLE = 5;
 /** A cache of its own over a chain of `writes` states, collected up to three times (a WeakRef keeps its target until the current job
  * ends, so each collection runs in a job of its own), then how many of the chain's Rules objects and states are still reachable. */
