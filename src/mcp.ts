@@ -28,17 +28,15 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 export function formatRow(it: Pick<q.Row, "id" | "status" | "title"> & Partial<q.Row>): string {
   return `${it.id} · ${label(it.status)} · ${oneLine(it.title)}${it.tags?.length ? ` · [${it.tags.join(" ")}]` : ""}${it.difficulty === undefined ? "" : ` · ${difficultyText(it.difficulty)}`}${it.group || it.areaId ? ` · ${[it.group, it.areaId].filter(Boolean).join(" › ")}` : ""}${it.num === undefined ? "" : ` · #${it.num}`}`;
 }
-/** At most `limit` characters of a text, then how long it is in all. */
-const cut = (text: string, limit: number): string => {
-  const chars = [...text];
-  return chars.length <= limit ? text : `${chars.slice(0, limit).join("")} … (${chars.length} characters in all)`;
-};
+const { cut } = q;
 /** What the default answer of `context` cuts to (docs/design.md, section 6, Lean replies). */
 const LOG_CUT = 240, NOTE_CUT = 160, REASON_CUT = 160, PR_REFS = 5;
 /** `limit` cuts the text and the reply and leaves out the original action: a note that is handled, in a list that is not about it. */
-function formatNote(n: Note & { id: string; title?: string }, limit?: number): string {
+function formatNote(n: Note & { id: string; title?: string; follows?: q.Follows }, limit?: number): string {
   const part = (text: string) => limit === undefined ? text : cut(text, limit);
-  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${part(n.text)}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined && limit === undefined ? `\n  original action: ${n.answerText}` : ""}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${part(n.reply)}` : ""}`;
+  // The note it follows is shown already cut (q.notes), whatever the limit: the note itself is read with its id.
+  const follows = n.follows ? `\n  follows note ${n.follows.id}: ${n.follows.text}${n.follows.reply === undefined ? "" : `\n  its reply: ${n.follows.reply}`}` : "";
+  return `${n.id} · ${n.state.toUpperCase()} ${n.kind} · ${n.target} · ${n.sentAt ?? n.at}: ${part(n.text)}${n.choice ? ` (choice ${n.choice})` : ""}${n.answerText !== undefined && limit === undefined ? `\n  original action: ${n.answerText}` : ""}${follows}${n.reply ? `\n  reply ${n.repliedAt ?? ""} ${n.repliedBy ?? ""}: ${part(n.reply)}` : ""}`;
 }
 function formatCard(key: string, card: Partial<Decision> & Pick<Decision, "question" | "status"> & { choiceText?: string }, lean = false): string {
   const lines = [`${key} · ${label(card.status)} · ${card.question}${card.rev ? ` · rev ${card.rev}` : ""}${card.num === undefined ? "" : ` · #${card.num}`}`];

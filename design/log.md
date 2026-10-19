@@ -8,6 +8,12 @@ Nodes: storage/write-path/page-rules-reuse, testing/press-n
 
 Summary: A write that reused the rules still made the page build its order of the items, who waits on whom, the ancestors of open work, the counts by status, the stops that wait on the owner and the unread stops from nothing at every draw, about 9 of the 31 ms a write cost the page on a hosted runner, and a write draws once, so a cache emptied when the data changes would not have saved it. The page now keeps these, as ids, through a change that reused the rules and left every changed item's head as it was, and makes the unread stops again when the unread list is another one; any other change, a snapshot and the minute make them again. The n-key lane's counts hold that a log write makes none of them again. The grounds and the refused alternatives (accounting item by item, caching whole lists by data) are in the node; the derivation is in docs/design.md, section 7, The page.
 
+## 2026-10-18 Deploy a main-line commit only when its checks passed
+
+Nodes: deploy
+
+Summary: The deploy job moved the checkout to the main line's head as soon as it saw it, so a merge whose checks went red afterwards (the main line's `nkey time-writing` check on a merge of 10-18) was live within a minute, while the main line's CI takes 2 to 13 minutes. The job now asks GitHub for the checks on the head it fetched, by the commit's id and with the reading the board's look at the main line uses, and deploys only when all of them passed: a head whose checks are running or have not appeared is waited for at the next run, one with a red check is held until a newer commit passes or the check passes on a rerun, and checks that cannot be read hold the deploy and are pushed once. The head alone decides, so a batch of merges is still one deploy and one restart. The grounds and the refused alternatives (deploying at once, the newest green commit among those not yet live, a branch pointer the CI moves) are in the node; the derivation is in docs/design.md, section 4, Deploying.
+
 ## 2026-10-18 Give every session name that starts with the architect's the architect's rights
 
 Nodes: responsibility/identities, wake/architect-stream

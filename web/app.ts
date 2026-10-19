@@ -13,6 +13,7 @@ import { drawMermaid, watchMermaid } from "./mermaid.ts";
 import { compareAt, stopIndex } from "./fresh.ts";
 import { findTargets, refQuery, refToken, refsIn, replaceRefs } from "./find.ts";
 import { showNotice } from "./notice.ts";
+import { threadOrder, threadEnd, stepClass } from "./threads.ts";
 import { pageUpdater } from "./update.ts";
 import type { OwnerNotice, NoticeEnv } from "./notice.ts";
 import { isRefTitle, refSplit } from "./refs.ts";
@@ -1525,12 +1526,20 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const n = state.notes.find(x => x.id === a.id);
     return n ? "回复（" + day(n.repliedAt || n.at) + "）" : "一条回复";
   }
+  // What the composer says it is for: the log entry or reply it is about, or the start of the comment it follows.
+  function anchorHint(a: NonNullable<Note["anchor"]>) {
+    const followed = a.kind === "note" ? state.notes.find(x => x.id === a.id) : undefined;
+    if (!followed) return anchorLabel(a);
+    const words = [...followed.text.replace(/\s+/g, " ").trim()];
+    return "接着“" + words.slice(0, 16).join("") + (words.length > 16 ? "…" : "") + "”";
+  }
   const NOTE_STATE: Record<Note["state"], string> = { draft: "未发送", sent: "已发送，等处理", done: "已处理" };
-  function noteThread(n: Note, fresh = false, replyFresh = false) {
+  // `threaded`: the comment is listed under the comment it follows, so it does not name it.
+  function noteThread(n: Note, fresh = false, replyFresh = false, threaded = false) {
     const box = el("div", "note" + (n.state === "draft" ? " draft" : "") + (fresh ? " newbar" : ""));
     const terms = itemTerms(n.target.startsWith("it:") ? n.target.slice(3) : snapshot.decisions[n.target.slice(2)]?.item || "");
     box.appendChild(el("div", "who", esc(day(n.at)) + " · " + NOTE_STATE[n.state]));
-    if (n.anchor) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
+    if (n.anchor && !threaded) box.appendChild(el("div", "anchor", "关于" + esc(anchorLabel(n.anchor))));
     const label = n.kind === "explain" ? "请求：详细解释" : n.kind === "approve" ? "同意" : n.kind === "choice" ? "选择：" + (n.choice || "") : undefined;
     const canonical = n.kind === "explain" ? n.text === EXPLAIN : n.kind === "choice" ? isPlainPick(n) : n.kind === "approve" ? n.answerText === undefined || n.text === n.answerText : false;
     box.appendChild(el("div", "txt", label === undefined ? linkTerms(blocks(n.text),terms) : esc(label) + (canonical || !n.text ? "" : '<div class="rich">' + linkTerms(blocks(n.text),terms) + "</div>")));
@@ -1553,42 +1562,13 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       t.addEventListener("click", () => { notesOpen[key] = !shown; try { localStorage.setItem("board-notes", JSON.stringify(notesOpen)); } catch (e) {} renderNow("notes:"+key); });
       wrap.appendChild(t);
     }
-    (shown ? mine : []).forEach(n => {
-      const replyFresh = fon("reply") && freshReplies.includes(n);
-      // The owner wrote the comment, so only what a session added carries the line: a new reply marks the reply alone.
-      const box = noteThread(n, !replyFresh && fon("other") && freshNotes.includes(n), replyFresh);
-      box.id = noteId(n);
-      box.dataset.sel = "note:" + n.id;
-      if (current === "note:" + n.id) box.classList.add("cur");
-      const who = box.firstElementChild!;
-      if (draftEditable(n)) {
-        const activeEdit = draftEdits.get(n.id), busy = pendingEdits.has(n.id);
-        {
-          const edit = el("button", "linkbtn", "编辑"); edit.type = "button"; edit.disabled = busy || !!activeEdit || !connected;
-          edit.addEventListener("click", () => {
-            if (!draftEditable(snapshot.notes[n.id])) return;
-            draftEdits.set(n.id, { text: n.text, rev: n.rev }); renderNow("notes:" + key);
-            get<HTMLTextAreaElement>("edit-draft-" + n.id)?.focus();
-          });
-          who.appendChild(edit);
-        }
-        const del = el("button", "linkbtn", "删除"); del.type = "button"; del.disabled = busy || !connected;
-        del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
-        who.appendChild(del);
-        if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
-        // Sends this comment alone, below its text; the editor stays as it is.
-        const send = el("button", "cardsend", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected;
-        send.addEventListener("click", () => sendDrafts(note => note.id === n.id));
-        box.appendChild(send);
-      }
-      wrap.appendChild(box);
-    });
-    if (editing === key) {
-      const ed = el("div", "editor"), row = el("div", "row");
+    // The comment field, indented with `steps` (the classes of web/threads.ts) when it is a follow-up listed in a thread.
+    function composer(steps: string) {
+      const ed = el("div", "editor" + (steps ? " " + steps : "")), row = el("div", "row");
       const ta = document.createElement("textarea");
       ta.id = "ed-" + key.replace(/[^A-Za-z0-9_-]/g, "_");
       ta.maxLength = 4000;
-      ta.placeholder = "写给 Claude 的意见或问题（关于：" + title + (editingAnchor ? "，" + anchorLabel(editingAnchor) : "") + "）。回车保存，Shift+回车换行，Esc 取消";
+      ta.placeholder = "写给 Claude 的意见或问题（关于：" + title + (editingAnchor ? "，" + anchorHint(editingAnchor) : "") + "）。回车保存，Shift+回车换行，Esc 取消";
       ta.value = drafts[key] || "";
       const picker = refPicker(ta, ed, row, () => { drafts[key] = ta.value; });
       ta.addEventListener("input", () => { drafts[key] = ta.value; picker.update(); });
@@ -1618,8 +1598,45 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       cancel.addEventListener("click", () => { editing = null; editingAnchor = null; renderNow("notes:"+key); });
       row.appendChild(save); row.appendChild(cancel);
       ed.appendChild(row);
-      wrap.appendChild(ed);
+      return ed;
     }
+    // A comment that follows another is listed under it (web/threads.ts); a follow-up being written opens its composer there.
+    const listing = threadOrder(mine), anchored = editing === key && editingAnchor?.kind === "note" ? editingAnchor.id : undefined;
+    const composerAfter = anchored === undefined ? undefined : threadEnd(listing, anchored);
+    let composerShown = false;
+    (shown ? listing : []).forEach(({ note: n, depth }) => {
+      const replyFresh = fon("reply") && freshReplies.includes(n);
+      // The owner wrote the comment, so only what a session added carries the line: a new reply marks the reply alone.
+      const box = noteThread(n, !replyFresh && fon("other") && freshNotes.includes(n), replyFresh, depth > 0);
+      if (depth > 0) box.className += " " + stepClass(depth);
+      box.id = noteId(n);
+      box.dataset.sel = "note:" + n.id;
+      if (current === "note:" + n.id) box.classList.add("cur");
+      const who = box.firstElementChild!;
+      if (draftEditable(n)) {
+        const activeEdit = draftEdits.get(n.id), busy = pendingEdits.has(n.id);
+        {
+          const edit = el("button", "linkbtn", "编辑"); edit.type = "button"; edit.disabled = busy || !!activeEdit || !connected;
+          edit.addEventListener("click", () => {
+            if (!draftEditable(snapshot.notes[n.id])) return;
+            draftEdits.set(n.id, { text: n.text, rev: n.rev }); renderNow("notes:" + key);
+            get<HTMLTextAreaElement>("edit-draft-" + n.id)?.focus();
+          });
+          who.appendChild(edit);
+        }
+        const del = el("button", "linkbtn", "删除"); del.type = "button"; del.disabled = busy || !connected;
+        del.addEventListener("click", async () => { del.disabled = true; try { await deleteNote(n.id); } catch(e) { showError(e); } finally { del.disabled = false; } });
+        who.appendChild(del);
+        if (activeEdit) box.querySelector(".txt")!.replaceWith(draftEditor(n, activeEdit));
+        // Sends this comment alone, below its text; the editor stays as it is.
+        const send = el("button", "cardsend", "发送"); send.type = "button"; send.disabled = busy || !!activeEdit || !connected;
+        send.addEventListener("click", () => sendDrafts(note => note.id === n.id));
+        box.appendChild(send);
+      }
+      wrap.appendChild(box);
+      if (composerAfter === n.id) { wrap.appendChild(composer(stepClass(listing.find(x => x.note.id === anchored)!.depth + 1))); composerShown = true; }
+    });
+    if (editing === key && !composerShown) wrap.appendChild(composer(""));
     return wrap;
   }
 

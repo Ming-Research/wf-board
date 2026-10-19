@@ -507,6 +507,12 @@ details.refsec > .refbody p { margin: 0; }
 .grp-filters { margin-top: 8px; }
 .log-entry.cur, .note.cur, .deprow.cur { background: var(--cur); }
 .note .anchor { font-size: 12px; color: var(--muted); }
+/* A comment that follows another is listed under it, one step in for each comment it follows in turn, three steps at most
+   (web/threads.ts); a thin rule on its left ties it to the comments above. */
+.notes > .follow { border-left: 2px solid var(--rule); border-radius: 0 6px 6px 0; }
+.notes > .d1 { margin-left: 1.2em; }
+.notes > .d2 { margin-left: 2.4em; }
+.notes > .d3 { margin-left: 3.6em; }
 .item.line > .item-row .item-title { font-size: 14.5px; }
 .tree.lines { margin-top: 8px; }
 .pendtag { font-size: 12px; padding: 0 7px; border-radius: 4px; border: 1px solid var(--fresh); color: var(--fresh); white-space: nowrap; }
@@ -531,6 +537,9 @@ details.refsec > .refbody p { margin: 0; }
   h1 { font-size: 23px; }
   .tree .tree { padding-left: 10px; margin-left: 4px; }
   .body { padding-left: .4em; }
+  .notes > .d1 { margin-left: .8em; }
+  .notes > .d2 { margin-left: 1.6em; }
+  .notes > .d3 { margin-left: 2.4em; }
   .plan-row.own .plan-meta { display: flex; margin-left: 0; }
   .plan-group { border-left-width: 1px; padding-left: 3px; }
   .targets-table, .targets-table tbody { display: block; }

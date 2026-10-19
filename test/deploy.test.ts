@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { NO_RESTART, PushRefused, deployOnce, refusesRequest } from "../src/deploy.ts";
 import type { DeployDeps, DeployOutcome, DeployState, Push } from "../src/deploy.ts";
+import type { Checks } from "../src/github.ts";
 import { Store } from "../src/store.ts";
 import { ops } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
@@ -52,6 +53,8 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
     builds: [] as Array<{ args: string[]; head: string }>, posts: [] as Push[], notices: [] as string[][], restarts: 0, clock: 0, failBuilds: 0,
     // npm ci fails; the next probes of /health fail; something to do once a build has run.
     failCi: false, flaky: 0, afterBuild: undefined as (() => void) | undefined,
+    // What GitHub says of a commit's checks (green unless a test says otherwise; a thrown error is a GitHub that cannot be read), and the commits asked.
+    verdict: (() => ({ state: "success", failed: [] })) as (commit: string) => Checks, asked: [] as Array<[string, string]>,
     daemon: { pid: 100 as number | undefined, ok: true, flap: false, takes: true },
     saved: { outbox: [] } as DeployState,
   };
@@ -77,6 +80,7 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
       w.restarts++; w.daemon.pid = (w.daemon.pid ?? 100) + 1000; w.daemon.ok = !code.includes("BROKEN"); w.daemon.flap = code.includes("CRASH LOOP");
     },
     healthy: async () => { if (w.flaky > 0) { w.flaky--; return false; } return w.daemon.ok && w.daemon.pid !== undefined; },
+    checks: async (repo, commit) => { w.asked.push([repo, commit]); return w.verdict(commit); },
     post: async push => { if (!w.daemon.takes) throw new Error("the daemon is down"); w.posts.push(push); },
     notify: (title, message) => { w.notices.push([title, message]); },
     load: () => structuredClone(w.saved), save: state => { w.saved = structuredClone(state); },
@@ -88,10 +92,27 @@ function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<DeployDep
 
 const BUILD = ["npm", "run", "-s", "build:web"];
 
+/** A stand-in for `gh` in `bin` for scripts/deploy.ts: it logs its arguments and prints a file, which `answer` fills in the shape of
+ * `gh api graphql` for the checks of one commit. The commit is green until a test says otherwise. */
+async function stubGh(dir: string, bin: string) {
+  const calls = join(dir, "gh.log"), answerFile = join(dir, "gh-answer.json");
+  writeFileSync(calls, "");
+  await writeFile(join(bin, "gh"), `#!/bin/sh
+echo "$@" >> "$STUB_GH_CALLS"
+cat "$STUB_GH_ANSWER"
+`);
+  await chmod(join(bin, "gh"), 0o755);
+  const check = (name: string, status: string, conclusion: string | null) => ({ __typename: "CheckRun", name, status, conclusion, startedAt: "2026-10-18T00:00:00Z", checkSuite: { id: "s1" } });
+  const answer = (...nodes: object[]) => writeFileSync(answerFile, JSON.stringify({ data: { repository: { object: { oid: "x", statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes } } } } } }));
+  answer(check("test", "COMPLETED", "SUCCESS"));
+  return { env: { STUB_GH_CALLS: calls, STUB_GH_ANSWER: answerFile }, calls, answerFile, check, answer };
+}
+
 test("with nothing new on the main line the job does nothing and says nothing", async t => {
   const r = await repos(t), { w, deploy } = world(r);
   assert.equal(await deploy(), "current");
   assert.deepEqual({ builds: w.builds, posts: w.posts, restarts: w.restarts }, { builds: [], posts: [], restarts: 0 });
+  assert.deepEqual(w.asked, [], "a main line that has not moved is not asked about");
 });
 
 test("a merged change is moved to, built, the daemon restarted once it is healthy, and the push names the version and the changes", async t => {
@@ -99,6 +120,7 @@ test("a merged change is moved to, built, the daemon restarted once it is health
   const sha = r.land({ "src/ops.ts": "more" }, "Add more (#1)");
   assert.equal(await deploy(), "deployed");
   assert.equal(r.head(), sha);
+  assert.deepEqual(w.asked, [[r.repo, sha]], "the checks asked for are those of the commit the job fetched");
   assert.deepEqual(w.builds, [{ args: BUILD, head: sha }], "built after the checkout moved");
   assert.equal(w.restarts, 1);
   assert.deepEqual(w.posts, [{ event: "deployed", version: sha, previous: r.first, changes: [`${r.short(sha)} Add more (#1)`], restarted: true, repo: r.repo }]);
@@ -107,6 +129,135 @@ test("a merged change is moved to, built, the daemon restarted once it is health
   // The next run finds nothing to do.
   assert.equal(await deploy(), "current");
   assert.equal(w.restarts, 1); assert.equal(w.posts.length, 1);
+});
+
+// --- The checks of the commit decide whether it goes live (docs/design.md, Deploying) -----------------------------------------------
+
+const GREEN: Checks = { state: "success", failed: [] }, RUNNING: Checks = { state: "pending", failed: [] }, NONE: Checks = { state: "none", failed: [] };
+const RED = (...failed: string[]): Checks => ({ state: "failure", failed });
+/** Nothing was moved, built, restarted or pushed. */
+const untouched = (r: Awaited<ReturnType<typeof repos>>, w: ReturnType<typeof world>["w"]) =>
+  assert.deepEqual({ head: r.head(), builds: w.builds, restarts: w.restarts, posts: w.posts }, { head: r.first, builds: [], restarts: 0, posts: [] });
+
+test("a commit whose checks are still running is not deployed; the next run asks again and deploys it once they passed", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => RUNNING;
+  assert.equal(await deploy(), "waiting");
+  untouched(r, w);
+  assert.equal(await deploy(), "waiting", "and again");
+  untouched(r, w);
+  w.verdict = () => GREEN;
+  assert.equal(await deploy(), "deployed");
+  assert.equal(r.head(), sha);
+  assert.deepEqual(w.posts.map(p => p.event), ["deployed"]);
+  assert.equal(w.saved.waiting, undefined, "the wait is forgotten once it is over");
+});
+
+test("a commit with no checks yet (GitHub has not registered the run) is waited for as well, not taken for green", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => NONE;
+  assert.equal(await deploy(), "waiting");
+  untouched(r, w);
+});
+
+test("a commit with a red check is not deployed and not pushed: the board's look at the main line already tells who holds it", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => RED("nkey time-writing");
+  assert.equal(await deploy(), "held");
+  untouched(r, w);
+  assert.equal(await deploy(), "held", "every run asks again, so a rerun that turned green is found");
+  assert.equal(w.asked.length, 2);
+  // The failed check is run again and passes: the same commit goes live.
+  w.verdict = () => GREEN;
+  assert.equal(await deploy(), "deployed");
+  assert.equal(r.head(), sha);
+});
+
+test("a red commit is passed over by a newer green one, which brings both live in one deploy and one push", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const red = r.land({ "src/a.ts": "broken" }, "Break (#1)");
+  w.verdict = () => RED("test shard 3");
+  assert.equal(await deploy(), "held");
+  untouched(r, w);
+  const fix = r.land({ "src/a.ts": "fixed" }, "Fix (#2)");
+  w.verdict = commit => commit === fix ? GREEN : RED("test shard 3");
+  assert.equal(await deploy(), "deployed");
+  assert.equal(r.head(), fix);
+  assert.deepEqual(w.asked.map(([, commit]) => commit), [red, fix], "each run asks about the main line's head and nothing older");
+  assert.deepEqual(w.posts, [{ event: "deployed", version: fix, previous: r.first, changes: [`${r.short(fix)} Fix (#2)`, `${r.short(red)} Break (#1)`], restarted: true, repo: r.repo }]);
+});
+
+test("checks that cannot be read are not green: nothing is deployed and one push says so, however many runs fail the same way", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => { throw new Error("gh failed: not logged in"); };
+  assert.equal(await deploy(), "unchecked");
+  assert.equal(r.head(), r.first); assert.equal(w.builds.length, 0);
+  assert.deepEqual(w.posts.map(p => [p.event, p.version, p.running]), [["deployFailed", sha, r.first]]);
+  assert.match(String(w.posts[0]!.reason), /could not be read.*gh failed: not logged in/);
+  assert.equal(await deploy(), "unchecked");
+  assert.equal(w.posts.length, 1, "the same trouble is not pushed twice");
+  // Readable again: the commit goes live, and the trouble is forgotten, so a later one is news again.
+  w.verdict = () => GREEN;
+  assert.equal(await deploy(), "deployed");
+  assert.equal(w.saved.told, undefined);
+  const next = r.land({ "src/b.ts": "b" }, "B (#2)");
+  w.verdict = () => { throw new Error("gh failed: not logged in"); };
+  assert.equal(await deploy(), "unchecked");
+  assert.deepEqual(w.posts.map(p => p.event), ["deployFailed", "deployed", "deployFailed"]);
+  assert.equal(w.posts[2]!.version, next);
+});
+
+test("a remote address that names no repository leaves the checks unreadable, so nothing is deployed", async t => {
+  const r = await repos(t), plain = world(r).deps.git;
+  const { w, deploy } = world(r, { git: args => args[0] === "remote" ? Promise.resolve("nonsense\n") : plain(args) });
+  r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => { throw new Error("must not be asked"); };
+  assert.equal(await deploy(), "unchecked");
+  assert.deepEqual(w.asked, []);
+});
+
+test("checks still unfinished an hour after the job first saw the commit are pushed once; they are not given up on", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => RUNNING;
+  assert.equal(await deploy(), "waiting");
+  w.clock += 59 * 60_000;
+  assert.equal(await deploy(), "waiting");
+  assert.equal(w.posts.length, 0, "not yet an hour");
+  w.clock += 2 * 60_000;
+  assert.equal(await deploy(), "waiting");
+  assert.deepEqual(w.posts.map(p => [p.event, p.version]), [["deployFailed", sha]]);
+  assert.match(String(w.posts[0]!.reason), /not finished after 61 minutes.*still running/);
+  w.clock += 60_000;
+  assert.equal(await deploy(), "waiting");
+  assert.equal(w.posts.length, 1, "once per commit");
+  // When they do pass the commit goes live.
+  w.verdict = () => GREEN;
+  assert.equal(await deploy(), "deployed");
+});
+
+test("the hour counts from the newest commit: a commit that arrives while the old one waits starts its own time", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  r.land({ "src/a.ts": "a" }, "A (#1)");
+  w.verdict = () => RUNNING;
+  assert.equal(await deploy(), "waiting");
+  w.clock += 50 * 60_000;
+  r.land({ "src/b.ts": "b" }, "B (#2)");
+  w.clock += 20 * 60_000;
+  assert.equal(await deploy(), "waiting");
+  assert.equal(w.posts.length, 0, "B has waited 0 minutes, A's 70 do not count against it");
+});
+
+test("a checkout the job may not move is refused before anything is asked of GitHub", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  writeFileSync(join(r.checkout, "README.md"), "someone's edit");
+  r.land({ "src/a.ts": "a" }, "A");
+  assert.equal(await deploy(), "refused");
+  assert.deepEqual(w.asked, []);
 });
 
 test("changes merged between two runs are one deploy: one restart, one push listing both, newest first", async t => {
@@ -711,6 +862,7 @@ test("scripts/deploy.ts end to end: real git, the health check, launchd's pid an
   const star = await agentSocket(t, url, "a-worker");
   const bin = join(r.dir, "bin"), calls = join(r.dir, "calls.log"), pidFile = join(r.dir, "pid"), stateFile = join(r.dir, "state/deploy.json");
   mkdirSync(bin); writeFileSync(pidFile, "100"); writeFileSync(calls, "");
+  const gh = await stubGh(r.dir, bin);
   // A state file that does not parse must not stop every run: the job sets it aside and starts empty.
   mkdirSync(dirname(stateFile)); writeFileSync(stateFile, "{not json");
   // launchctl list prints a property list with "PID" = n; and kickstart -k starts a new process: the format is the Mac's own.
@@ -725,7 +877,7 @@ esac
   await chmod(join(bin, "launchctl"), 0o755); await chmod(join(bin, "npm"), 0o755);
   const run = async () => {
     const { stdout } = await promisify(execFile)(process.execPath, [join(import.meta.dirname, "../scripts/deploy.ts")], { env: {
-      ...process.env, ...identity, PATH: `${bin}:${process.env.PATH}`, STUB_CALLS: calls, STUB_PID: pidFile,
+      ...process.env, ...identity, ...gh.env, PATH: `${bin}:${process.env.PATH}`, STUB_CALLS: calls, STUB_PID: pidFile,
       WF_BOARD_REPO: r.checkout, WF_BOARD_PORT: String(port), WF_BOARD_LABEL: "test.label", WF_BOARD_DEPLOY_STATE: stateFile,
       WF_BOARD_DEPLOY_WAIT_MS: "20000", WF_BOARD_DEPLOY_STABLE_MS: "0",
     } });
@@ -793,4 +945,51 @@ test("scripts/deploy.ts: a fetch that never answers is killed at its cap with it
   const [frame] = star.events();
   assert.equal(frame!.event, "deployFailed");
   assert.match(String(frame!.reason), /could not fetch origin\/main: .*killed by the cap after 1 s/);
+});
+
+test("scripts/deploy.ts: the checks are read through gh for the commit about to be deployed: running waits, red holds, green deploys", async t => {
+  const r = await repos(t);
+  const { port } = await server(t);
+  const bin = join(r.dir, "bin"), pidFile = join(r.dir, "pid"), stateFile = join(r.dir, "state/deploy.json");
+  mkdirSync(bin); writeFileSync(pidFile, "100");
+  const { env, calls, answerFile, check, answer } = await stubGh(r.dir, bin);
+  await writeFile(join(bin, "launchctl"), `#!/bin/sh
+case "$1" in
+  list) printf '{\\n\\t"PID" = %s;\\n};\\n' "$(cat "$STUB_PID")" ;;
+  kickstart) echo $(( $(cat "$STUB_PID") + 1 )) > "$STUB_PID" ;;
+esac
+`);
+  await writeFile(join(bin, "npm"), "#!/bin/sh\n");
+  for (const name of ["launchctl", "npm"]) await chmod(join(bin, name), 0o755);
+  const run = async () => {
+    const { stdout } = await promisify(execFile)(process.execPath, [join(import.meta.dirname, "../scripts/deploy.ts")], { env: {
+      ...process.env, ...identity, ...env, PATH: `${bin}:${process.env.PATH}`, STUB_PID: pidFile,
+      WF_BOARD_REPO: r.checkout, WF_BOARD_PORT: String(port), WF_BOARD_LABEL: "test.label", WF_BOARD_DEPLOY_STATE: stateFile,
+      WF_BOARD_DEPLOY_WAIT_MS: "20000", WF_BOARD_DEPLOY_STABLE_MS: "0",
+    } });
+    return stdout.trim().split("\n").at(-1)!.replace(/^\S+ /, "");
+  };
+
+  const sha = r.land({ "src/a.ts": "a" }, "Add a (#1)");
+  answer(check("test shard 1", "COMPLETED", "SUCCESS"), check("e2e", "IN_PROGRESS", null));
+  assert.equal(await run(), "waiting");
+  assert.equal(r.head(), r.first);
+  // gh is asked as the daemon's look at GitHub asks it: the repository by owner and name, as strings, and now the commit's id.
+  const [call] = readFileSync(calls, "utf8").trim().split("\n");
+  assert.match(call!, /^api graphql -f owner=Ming-Research -f name=Whitefoot -f oid=[0-9a-f]{40} -f query=/);
+  assert.ok(call!.includes(`oid=${sha} `), "the commit asked about is the one fetched");
+
+  answer(check("test shard 1", "COMPLETED", "SUCCESS"), check("e2e", "COMPLETED", "FAILURE"));
+  assert.equal(await run(), "held");
+  assert.equal(r.head(), r.first, "a red check keeps the commit off the live board");
+
+  // An answer that is not JSON is not green either.
+  writeFileSync(answerFile, "");
+  assert.equal(await run(), "unchecked");
+  assert.equal(r.head(), r.first);
+
+  answer(check("test shard 1", "COMPLETED", "SUCCESS"), check("e2e", "COMPLETED", "SUCCESS"));
+  assert.equal(await run(), "deployed");
+  assert.equal(r.head(), sha);
+  assert.equal(JSON.parse(await readFile(stateFile, "utf8")).healthy, sha);
 });
