@@ -149,8 +149,12 @@ matches what the artifact board offered.
   and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 20
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
-  summary, and the time gate in the run's last job (design section 11, Sharding the
-  script tests, The time gate).
+  summary, and the job `result`, which starts with the run, waits for the other jobs, reads the time gate and writes
+  the status `full-ci` (design section 11, Sharding the script tests, The time gate; no job of `ci.yml` may use
+  `needs`, `test/ci-workflow.test.ts`).
+- `.github/actions/node-modules/action.yml`: Node 24 and `node_modules` restored from a cache keyed by
+  `package.json` and `package-lock.json`, `npm ci` on a miss; the jobs of `ci.yml` use it (design section 11, The
+  set-up of a job).
 
 ## Checks
 
