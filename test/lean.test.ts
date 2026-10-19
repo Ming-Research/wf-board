@@ -269,6 +269,33 @@ test("a head that is context's summary is refused when it is written back, and t
   assert.equal(ok.isError, undefined, text(ok)); assert.ok(store.snapshot().items.a!.head!.endsWith("追加一行"));
 });
 
+test("update_item changes parts of a head: the answer shows the lines that changed, and a call with an edit that does not fit is refused with that edit named and nothing written", async t => {
+  const { client, text, store } = await richItem(t);
+  const call = (args: Record<string, unknown>) => client.callTool({ name: "update_item", arguments: { author, id: "a", rev: store.snapshot().items.a!.rev, reason: "Reword parts", ...args } });
+  // A sentence found by its text and a section found by its title, in one call.
+  const ok = await call({ replace: [{ old: "平均 3.7k", new: "平均 3.8k" }], sections: [{ title: "改动", text: "**改动**\n\n- wf-board#77：改了。" }] });
+  assert.equal(ok.isError, undefined, text(ok));
+  assert.match(text(ok), /^update_item a · rev \d+ · commit /m); assert.match(text(ok), /^head changed in 2 places; /m);
+  assert.ok(text(ok).includes("  - - `context` 调了 433 次，返回 159 万字符，平均 3.7k。\n  + - `context` 调了 433 次，返回 159 万字符，平均 3.8k。"), text(ok));
+  assert.equal(store.snapshot().items.a!.head, STUDY_HEAD.replace("平均 3.7k", "平均 3.8k").replace("- wf-board#76：草稿。", "- wf-board#77：改了。"));
+  // An empty new text deletes.
+  const deleted = await call({ replace: [{ old: "第二行还属于这一段。\n", new: "" }] });
+  assert.equal(deleted.isError, undefined, text(deleted)); assert.ok(!store.snapshot().items.a!.head!.includes("第二行还属于这一段。"));
+  // A text that is not in the head is named, and nothing is written.
+  const before = store.snapshot();
+  const missing = await call({ replace: [{ old: "平均 3.8k", new: "平均 3.9k" }, { old: "不在正文里", new: "x" }] });
+  assert.equal(missing.isError, true); assert.match(text(missing), /^replace\[1\]\.old: "不在正文里" occurs 0 times in the head/);
+  assert.deepEqual(store.snapshot(), before);
+  // A call whose shape is wrong is answered with the table, which has the new parameters.
+  for (const args of [{ replace: [] }, { replace: [{ old: "a" }] }, { replace: [{ from: "a", to: "b" }] }, { sections: [{ title: "改动" }] }]) {
+    const wrong = await call(args);
+    assert.equal(wrong.isError, true); assert.match(text(wrong), /arguments not accepted/);
+    assert.match(text(wrong), /^ {2}sections \(/m); assert.match(text(wrong), /^ {2}replace \(/m);
+  }
+  assert.match(text(await call({ replace: [{ old: "a" }] })), /missing required parameter "replace\[0\]\.new"/);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test("a summary whose cut section has a quoted title is refused too", async t => {
   const { client, text, store } = await richItem(t);
   const head = `**问题**：短\n\n## 为什么用 "section"\n\n${"这一节很长，需要被截掉一部分才行。".repeat(20)}\n\n第二段，也很长。${"再写一些字。".repeat(30)}\n`;

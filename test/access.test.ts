@@ -68,6 +68,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
     { parts: ["item.links"], args: { id: "a", rev: 1, links: [] } },
     { parts: ["item.data"], args: { id: "a", rev: 1, data: "d" } }, { parts: ["item.order"], args: { id: "a", rev: 1, order: 1 } },
     { parts: ["item.record"], args: { id: "a", rev: 1, record: true } }, { parts: ["item.head", "item.links"], args: { id: "a", rev: 1, head: "h", reason: "r", links: [] } },
+    { parts: ["item.head"], args: { id: "a", rev: 1, sections: [{ title: "开头", text: "h" }], reason: "r" } }, { parts: ["item.head"], args: { id: "a", rev: 1, replace: [{ old: "o", new: "n" }], reason: "r" } },
   ],
   setStatus: [{ parts: ["item.cancel", "card.write"], args: { id: "a", status: "cancelled", log: "l" } }],
   setTags: [{ parts: ["item.tags"], args: { id: "a", tags: ["t"] } }],

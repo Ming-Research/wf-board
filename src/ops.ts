@@ -11,6 +11,8 @@ import { rules, stampPlanRow, stampItemTarget, projectOrderAfter, withoutCardRow
 import type { CheckId } from "./rules.ts";
 import { describeChanges, mergeRowPulls, prKey } from "./query.ts";
 import { summaryMark } from "./head-sections.ts";
+import { editHead, HeadEditError } from "./head-edit.ts";
+import type { SectionEdit, Replacement } from "./head-edit.ts";
 import { normalizeTime, startLogLine, finishLogLine, openAgents } from "./dispatch.ts";
 import { LiveStore, LIVE_ACTION_MAX, LIVE_ROLES } from "./live.ts";
 import type { LiveRole } from "./live.ts";
@@ -32,7 +34,7 @@ function refuseSummary(head: string | undefined): void {
   if (mark) throw new OpError(`head: it holds the line "${mark}", which context writes where it cut a section short, so it is a summary and not the head. Read the whole head with context section: "all", change that, and write it back`);
 }
 /** `credential`: the token a new dispatch writes with, shown once (only the hash is kept). `repeated`: the write was already made a moment ago, by the same session with the same text; nothing was written again. */
-export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true; /** What the writer should know about how the write was made: a revision that was behind and why the write stood. */ note?: string }
+export interface Result { commit: string; id: string; rev?: number; summary: string; credential?: string; repeated?: true; /** What the writer should know about how the write was made: a revision that was behind and why the write stood. */ note?: string; /** What the write changed, shown for the writer to check without reading it back: the lines before and after each change of a head written in parts. */ changes?: string }
 export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
@@ -56,7 +58,7 @@ export interface Ops {
   reportLive(a: { author: string; session?: string; access?: Access; id: string; role: LiveRole; turn: number; turnSeconds: number; idleSeconds?: number; action?: string }): Promise<string>;
   setPlan(a: { author: string; session?: string; access?: Access; id: string; rows?: PlanRowInput[]; row?: PlanRowInput; remove?: string }): Promise<Result>;
   setTargets(a: { author: string; session?: string; access?: Access; id: string; targets?: ItemTargetInput[]; target?: ItemTargetInput; remove?: string }): Promise<Result>;
-  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
+  updateItem(a: { author: string; session?: string; access?: Access; id: string; rev: number; title?: string; head?: string; sections?: SectionEdit[]; replace?: Replacement[]; record?: boolean; accept?: string; reason?: string; links?: Link[]; data?: string | null; order?: number }): Promise<Result>;
   setStatus(a: { author: string; session?: string; access?: Access; id: string; status: "cancelled" | "open"; log: string }): Promise<Result>;
   setTags(a: { author: string; session?: string; access?: Access; id: string; tags: string[] }): Promise<Result>;
   /** set_tags for many items in one commit: the same checks per item, all or nothing. */
@@ -91,8 +93,10 @@ export interface OpsOptions { sessions?: () => Iterable<string>; /** Where `repo
 // Shared across Ops instances: validation and multi-document writes are one
 // operation. Store.commit still checks revisions against other store callers.
 const queues = new WeakMap<Store, Promise<unknown>>();
+/** The one text a call may leave empty: what a replacement of a head puts where the text it deletes was (`update_item`'s `replace`). */
+const MAY_BE_EMPTY = /^input\.replace\.\d+\.new$/;
 function nonempty(value: unknown, path = "input"): void {
-  if (typeof value === "string" && !value.trim()) throw new OpError(`${path}: provide nonempty text after trimming`);
+  if (typeof value === "string" && !value.trim() && !MAY_BE_EMPTY.test(path)) throw new OpError(`${path}: provide nonempty text after trimming`);
   if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) nonempty(child, `${path}.${key}`);
 }
 function parse<T>(schema: z.ZodType<T>, doc: unknown): T {
@@ -187,7 +191,7 @@ function newKey(s: Snapshot, key: string): void {
 }
 
 /** `kind` names the document whose revision the result reports; "board" and "items" (a write over many items) report none. */
-interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
+interface Work { /** Passed on to the answer (`Result.note`). */ note?: string; /** Passed on to the answer (`Result.changes`). */ changes?: string; moved?: string[]; /** The earlier write this one repeats: nothing is written, this is the answer. */ replayed?: Result; id: string; kind: Put["kind"] | "board" | "items"; message: string; puts: Put[]; board?: Board }
 /** The answer's line for an owned row the write made or changed that starts behind rows of its owner's plan not done yet: the item
  * stays blocked until they are done, and `after: []` on its row starts it at once. Nothing when every such row has come up. */
 function behindNote(before: Snapshot, after: Snapshot, newRules: ReturnType<typeof rules>, written: ReadonlySet<string>): string | undefined {
@@ -291,10 +295,10 @@ function ownedNote(s: Snapshot, id: string, who: Writer): { note: Note; item: st
 }
 
 /** The parts an update_item changes, by the fields it gives. */
-function updateParts(a: { title?: string; head?: string; links?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
+function updateParts(a: { title?: string; head?: string; sections?: unknown; replace?: unknown; links?: unknown; data?: string | null; order?: number; record?: boolean; accept?: string }): Part[] {
   const parts: Part[] = [];
   if (a.title !== undefined) parts.push("item.title");
-  if (a.head !== undefined) parts.push("item.head");
+  if (a.head !== undefined || a.sections !== undefined || a.replace !== undefined) parts.push("item.head");
   if (a.links !== undefined) parts.push("item.links");
   if (a.data !== undefined) parts.push("item.data");
   if (a.order !== undefined) parts.push("item.order");
@@ -474,7 +478,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         try {
           const result = await store.commit({ author: a.author, ...(a.session === undefined ? {} : { session: a.session.trim() }), message: work.message, puts: work.puts, board: work.board });
           const note = [work.note, behind].filter((line): line is string => line !== undefined).join("; ");
-          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(note === "" ? {} : { note }) };
+          return { commit: result.commit, id: work.id, ...(work.kind === "board" || work.kind === "items" ? {} : { rev: result.revs[`${work.kind}:${work.id}`]! }), summary: work.message, ...(note === "" ? {} : { note }), ...(work.changes === undefined ? {} : { changes: work.changes }) };
         } catch (error) {
           if (error instanceof ConflictError) {
             if (!overwrite) continue;
@@ -898,17 +902,28 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     updateItem: a => run(a, updateParts(a), async (s, at) => {
       if (a.title !== undefined && a.title !== requireItem(s, a.id).title) onlyProcess(a, "change an item's title");
       const it = ownedItem(s, a.id, a);
+      const inParts = a.sections !== undefined || a.replace !== undefined;
+      if (inParts && a.head !== undefined) throw new OpError("head: give either the whole head, or sections and replace to change parts of it, not both");
       // Turning an item into a record, or back, also rewrites its plan's acceptance rows, so it needs the revision to be the current one.
-      const replaced = (["title", "head", "links", "data", "order"] as const).filter(key => a[key] !== undefined);
+      // Parts of the head are a replacement of the head as far as the revision is concerned: they stand on a behind revision when the head did not change since.
+      const replaced = (["title", "head", "links", "data", "order"] as const).filter(key => a[key] !== undefined || (key === "head" && inParts));
       let note: string | undefined;
       if (a.record !== undefined || a.accept !== undefined || !replaced.length) await revision("item", a.id, a.rev, it);
       else note = await fieldsRevision(a.id, a.rev, it, replaced);
-      const changedHead = a.head !== undefined && a.head !== it.head;
-      if (changedHead) refuseSummary(a.head);
+      // The head the edits make of the head the item has now, and the lines that show them.
+      let head = a.head, changes: string | undefined;
+      if (inParts) {
+        for (const text of [...(a.sections ?? []).map(edit => edit.text), ...(a.replace ?? []).map(edit => edit.new)]) refuseSummary(text);
+        try { ({ head, shown: changes } = editHead(it.head ?? "", { sections: a.sections, replace: a.replace })); }
+        catch (error) { throw error instanceof HeadEditError ? new OpError(error.message) : error; }
+      }
+      const changedHead = head !== undefined && head !== it.head;
+      if (changedHead && !inParts) refuseSummary(head);
       if (changedHead && !a.reason?.trim()) throw new OpError("reason: explain why head changed");
       if (a.order !== undefined && rulesOf(s).parentOf(a.id)) throw new OpError("order: only top items carry order; order owned items in the plan");
       const doc = { ...it, updated: at, log: [...it.log] };
-      for (const key of ["title", "head", "links", "data", "order", "record"] as const) { const value = a[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
+      const given = { title: a.title, head, links: a.links, data: a.data, order: a.order, record: a.record };
+      for (const key of ["title", "head", "links", "data", "order", "record"] as const) { const value = given[key]; if (value === null) delete doc[key]; else if (value !== undefined) Object.assign(doc, { [key]: value }); }
       if (a.record === true && !it.record) {
         // Cancelled work turned into a record and back to work would be reopened without set_status.
         if (it.status === "cancelled") onlyProcess(a, "turn a cancelled item into a record");
@@ -923,7 +938,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         doc.log.push(entry(a.author, at, "改为工作条目：状态由计划推导"));
       } else if (a.accept !== undefined) throw new OpError("accept: only with a change from record to work; edit acceptance with set_plan");
       if (changedHead) doc.log.push(entry(a.author, at, `改了 head：${a.reason}`));
-      return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)], ...(note === undefined ? {} : { note }) };
+      return { id: a.id, kind: "item", message: `update_item ${a.id}`, puts: [itemPut(a.id, doc)], ...(note === undefined ? {} : { note }), ...(changes === undefined ? {} : { changes }) };
     }, true),
     setStatus: a => run(a, ["item.cancel", "card.write"], async (s, at) => {
       onlyProcess(a, "cancel or reopen an item");
