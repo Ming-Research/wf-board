@@ -25,10 +25,8 @@ export async function runnerTable(t: Hooks, reverts: Revert[] = []) {
   // Titles of plain text whose key does not occur in them, so that the key's place in a row is told by where it stands.
   const plainTitle = (id: string) => !/[*`[\]]|级|Sonnet|xhigh/.test(s.items[id]!.title) && !s.items[id]!.title.includes(id);
   const free = wholeView(s, rules(s, now), now).rows.filter(x => x.bucket === "unattended" && plainTitle(x.id)).map(x => x.id);
-  const [running, failed, waiting, asking] = free;
-  assert.ok(asking, "the generated board has four items nobody holds");
-  const waitedFor = free.find(id => id !== running && id !== failed && id !== waiting && id !== asking);
-  assert.ok(waitedFor, "and a fifth, for the work to wait for");
+  const [running, failed, waiting, asking, waitedFor] = free;
+  if (!running || !failed || !waiting || !asking || !waitedFor) throw new Error("the generated board has fewer than five items nobody holds (four jobs and the item one of them waits for)");
   const card = Object.keys(s.decisions).find(id => !/[*`[\]]/.test(s.decisions[id]!.question));
   assert.ok(card, "and a card with a plain question");
   const bp = await DomPage.open(t, board, { reverts }), runner = (id: string) => ({ author: s.items[id]!.group, session: "执行程序" });
