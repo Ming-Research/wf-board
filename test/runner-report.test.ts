@@ -128,7 +128,7 @@ test("a wait that does not say what it waits for, and a field that is not a wait
     [{ ...asArchitect, id: "a", state: "wait", what: "重启", until: "tomorrow" }, /until: give a UTC time/],
     [{ ...asArchitect, id: "a", state: "ci", what: "重启" }, /what, until: only a report of state wait carries them/],
     [{ ...asArchitect, id: "a", state: "ask", to: "architect", until: "2026-10-19T23:55Z" }, /what, until: only a report of state wait carries them/],
-    [{ ...asArchitect, id: "a", state: "items", items: ["b"], what: " " }, /what, until: only a report of state wait carries them/],
+    [{ ...asArchitect, id: "a", state: "items", items: ["b"], what: "重启" }, /what, until: only a report of state wait carries them/],
     [{ ...asArchitect, id: "a", state: "wait", what: "重启", items: ["b"] }, /items: only a report of state items carries them/],
     [{ ...asArchitect, id: "a", state: "wait", what: "重启", to: "architect" }, /to, cards: only a report of state ask carries them/],
   ];
