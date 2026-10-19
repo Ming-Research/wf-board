@@ -1,0 +1,19 @@
+name: tmp-quick
+# Temporary (ci-gate-margin): the type check and the tests of the files this change touches. Delete before the last full CI.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      - run: |
+          node --test test/dom/runner-table.test.ts test/dom/runner-table-spoiled-1.test.ts test/dom/runner-table-spoiled-2.test.ts test/dom/runner-table-spoiled-3.test.ts test/dom/runner-block.test.ts test/timeline.test.ts test/test-shard.test.ts test/ci-workflow.test.ts test/ci-time-gate.test.ts
