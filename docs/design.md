@@ -5033,7 +5033,23 @@ by hand up to 20 times in an hour. A run that is cancelled ends this job too, an
 a cancelled run must write nothing, since the pending status of the newer run
 that replaced it must stand: a job found cancelled therefore makes the job wait
 10 seconds more, and if it is still there the cancelled job had timed out, not
-been cancelled, and the result is written.
+been cancelled, and the result is written. A run replaced by a newer one of the
+same branch and a run cancelled by hand were each tried once on a branch: neither
+wrote a final status, and the replacing run wrote one.
+
+**From the call to the status** (hosted runners, 10-19, seconds from `gh workflow
+run` to the status `full-ci`, read from the Actions API; every run here was red
+only because the branch held the temporary workflows, which the check
+`no-tmp-workflow` refuses). Before the change, 5 runs one after the other: 59 to
+65, median 61 (the run created 1 to 2 after the call, the last check ended 49 to 57
+after the run was created, the status 7 to 9 after that). After it, 15 runs in
+three batches of 5: 56, 51, 49, 54, 53; then 69, 50, 56, 52, 52; then 54, 52, 63,
+52, 52; median 52, 13 of 15 runs at 56 or less, and the status 2 to 4 after the
+last check. In the two runs over 60 one job started late on the runner pool (34
+and 27 seconds after the rest of the run, which started within 4); of 59 earlier
+runs started by hand 7 had a job that started more than 8 seconds late, up to 28.
+That wait is in the total by design (a lane that waits for a runner is a slow
+lane), so a run on a busy pool can end red on the line, as it could before.
 
 The gate is set to `TIME_GATE=enforce` in `ci.yml`: a total over the line fails
 the status and the job, so the run ends red. It only reported while the browser
