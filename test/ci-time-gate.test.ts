@@ -1,14 +1,21 @@
 // The time gate of the full CI and the status it writes (scripts/ci-time-gate.ts; docs/design.md, section 11, The time gate).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CANCEL_GRACE_MS, FEW_OPEN, LIMIT_SECONDS, LOOK_MS, SHARD_RATIO, evaluate, shardTable, statusOf, verdictOf, waitForJobs } from "../scripts/ci-time-gate.ts";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CANCEL_GRACE_MS, FEW_OPEN, LIMIT_SECONDS, LOOK_MS, SHARD_RATIO, evaluate, quickestWait, shardTable, statusOf, verdictOf, waitForJobs } from "../scripts/ci-time-gate.ts";
 import type { Job } from "../scripts/ci-time-gate.ts";
 
 const started = "2026-10-17T10:00:00Z";
 /** An ISO time `s` seconds after the run started. */
 const at = (s: number) => new Date(Date.parse(started) + s * 1000).toISOString().replace(".000Z", "Z");
-/** A job that started `from` and ended `to` seconds after the run started. */
-const job = (name: string, from: number, to: number, steps: Job["steps"] = []): Job => ({ name, conclusion: "success", started_at: at(from), completed_at: at(to), steps });
+/** A job that started `from` and ended `to` seconds after the run started, having waited `wait` seconds for a runner. */
+const job = (name: string, from: number, to: number, steps: Job["steps"] = [], wait = 3): Job => ({ name, conclusion: "success", created_at: at(from - wait), started_at: at(from), completed_at: at(to), steps });
 /** A test shard whose `tests` step took `s` seconds, after 12 seconds of setup. */
 const shard = (n: number, s: number) => job(`test shard ${n}`, 3, 15 + s, [{ name: "tests", started_at: at(15), completed_at: at(15 + s) }]);
 const evenShards = (s: number) => Array.from({ length: 8 }, (_, i) => shard(i + 1, s));
@@ -22,25 +29,26 @@ test("the total is red above 60 seconds and yellow above 50, and exactly on a li
 
 test("the total runs from the start of the run to the moment of the status, not the sum of the jobs, and the last job's end is named", () => {
   const jobs = [job("check", 2, 20), job("no-tmp-workflow", 2, 8), job("test shard 1", 3, 31), job("e2e", 4, 71)];
-  const result = evaluate(started, jobs, { enforce: true, now: at(73) });
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(73) });
   assert.equal(result.total, 73);
   assert.equal(result.verdict, "red");
-  assert.match(result.markdown, /\*\*73 s\*\* from the start of the run to the status \(the last job, e2e, ended at 71 s\): over the limit/);
-  assert.match(result.markdown, /\| e2e \| 4 \| 67 \| 71 \|/);
-  assert.match(result.markdown, /\| check \| 2 \| 18 \| 20 \|/);
+  assert.match(result.markdown, /\*\*73 s\*\* from the start of the run to the status, without the wait for a runner: over the limit/);
+  assert.match(result.markdown, /The run took 73 s in all \(the last job, e2e, ended at 71 s\)/);
+  assert.match(result.markdown, /\| e2e \| 3 \| 0 \| 67 \| 71 \|/);
+  assert.match(result.markdown, /\| check \| 3 \| 0 \| 18 \| 20 \|/);
 });
 
 test("the wait for the status counts: a run whose last job ended inside the limit is over it when the status comes late", () => {
   const jobs = [job("test shard 1", 3, 58)];
-  assert.equal(evaluate(started, jobs, { enforce: true, now: at(59) }).verdict, "yellow");
-  assert.equal(evaluate(started, jobs, { enforce: true, now: at(61) }).verdict, "red");
+  assert.equal(evaluate(started, jobs, { mode: "enforce", now: at(59) }).verdict, "yellow");
+  assert.equal(evaluate(started, jobs, { mode: "enforce", now: at(61) }).verdict, "red");
   // A clock that is behind the jobs' does not take seconds off the total.
-  assert.equal(evaluate(started, jobs, { enforce: true, now: at(40) }).total, 58);
+  assert.equal(evaluate(started, jobs, { mode: "enforce", now: at(40) }).total, 58);
 });
 
 test("the job that is reading does not count, and neither does a job that never started", () => {
-  const jobs = [job("check", 2, 20), { ...job("result", 80, 90) }, { name: "start", conclusion: "skipped", started_at: null, completed_at: null }, { name: "e2e", conclusion: null, started_at: at(5), completed_at: null }];
-  const result = evaluate(started, jobs, { enforce: true, now: at(22) });
+  const jobs = [job("check", 2, 20), { ...job("result", 3, 90) }, { name: "start", conclusion: "skipped", created_at: at(0), started_at: null, completed_at: null }, { name: "e2e", conclusion: null, created_at: at(2), started_at: at(5), completed_at: null }];
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(22) });
   assert.equal(result.total, 22);
   assert.equal(result.verdict, "ok");
   assert.doesNotMatch(result.markdown, /\| result \|/);
@@ -49,12 +57,88 @@ test("the job that is reading does not count, and neither does a job that never 
 test("a red total fails the step only when the gate is enforced, a yellow one never", () => {
   const red = [job("test shard 1", 3, 75)];
   const yellow = [job("test shard 1", 3, 55)];
-  assert.equal(evaluate(started, red, { enforce: false, now: at(76) }).fail, false);
-  assert.equal(evaluate(started, red, { enforce: true, now: at(76) }).fail, true);
-  assert.equal(evaluate(started, yellow, { enforce: true, now: at(56) }).fail, false);
-  assert.equal(evaluate(started, yellow, { enforce: true, now: at(56) }).verdict, "yellow");
-  assert.match(evaluate(started, red, { enforce: false, now: at(76) }).markdown, /over the limit .*Report only, not enforced/);
-  assert.match(evaluate(started, red, { enforce: true, now: at(76) }).markdown, /over the limit .*Enforced\./);
+  assert.equal(evaluate(started, red, { mode: "record", now: at(76) }).fail, false);
+  assert.equal(evaluate(started, red, { mode: "enforce", now: at(76) }).fail, true);
+  assert.equal(evaluate(started, yellow, { mode: "enforce", now: at(56) }).fail, false);
+  assert.equal(evaluate(started, yellow, { mode: "enforce", now: at(56) }).verdict, "yellow");
+  assert.match(evaluate(started, red, { mode: "record", now: at(76) }).markdown, /over the limit .*Recorded only: no status is written/);
+  assert.match(evaluate(started, red, { mode: "enforce", now: at(76) }).markdown, /over the limit .*Enforced\./);
+});
+
+// ---- the wait for a runner ----
+
+/** The jobs of a run in which every job but `late` was served within 3 seconds and ended by 51 s, and `late` waited `wait` seconds and ended at `end`. */
+const runWithLateJob = (wait: number, end: number): Job[] => [
+  job("check", 3, 12), job("no-tmp-workflow", 3, 8), job("nkey counts", 3, 51), job("test shard 2", 3, 40), job("test shard 1", 3 + wait, end, [], wait),
+];
+
+test("one job that waited a long time for a runner is counted without the wait beyond the quickest job's, and the total and the wait are both shown", () => {
+  const result = evaluate(started, runWithLateJob(45, 81), { mode: "enforce", now: at(83) });
+  // The other jobs ended by 51 s; the late job's end less its 42 s beyond the quickest wait of 3 s is 39 s; the status came 2 s after the last job.
+  assert.deepEqual([result.total, result.counted, result.waited, result.verdict, result.fail], [83, 53, 30, "yellow", false]);
+  assert.match(result.markdown, /\*\*53 s\*\* from the start of the run to the status, without the wait for a runner: close to the limit/);
+  assert.match(result.markdown, /The run took 83 s in all \(the last job, test shard 1, ended at 81 s\)\. 30 s of that is waiting for a runner beyond the 3 s that the quickest job of the run waited; test shard 1 waited 45 s\./);
+  assert.match(result.markdown, /\| test shard 1 \| 45 \| 42 \| 33 \| 81 \|/);
+});
+
+test("a job that is itself slow stays red whatever the others waited, and a long wait does not hide it", () => {
+  // Served as quickly as the rest, but it ran for 70 s.
+  assert.deepEqual(evaluate(started, [...runWithLateJob(3, 12), job("nkey time-writing", 3, 73)], { mode: "enforce", now: at(75) }).counted, 75);
+  // Waited 30 s and then ran for 50 s: its end less the 27 s beyond the quickest wait is 56 s, and the status came 2 s after it.
+  const slowAfterWaiting = evaluate(started, [...runWithLateJob(3, 12), job("nkey time-writing", 33, 83, [], 30)], { mode: "enforce", now: at(85) });
+  assert.deepEqual([slowAfterWaiting.total, slowAfterWaiting.counted, slowAfterWaiting.waited], [85, 58, 27]);
+  const slower = evaluate(started, [...runWithLateJob(3, 12), job("nkey time-writing", 33, 93, [], 30)], { mode: "enforce", now: at(95) });
+  assert.deepEqual([slower.counted, slower.verdict, slower.fail], [68, "red", true]);
+});
+
+test("when many jobs wait together, as at the limit of jobs an organization may run at once, each one's wait beyond the quickest job's comes off", () => {
+  const jobs = [job("start", 3, 7), ...Array.from({ length: 26 }, (_, i) => job(`test shard ${i + 1}`, 21, 60, [], 20)), job("check", 3, 12)];
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(62) });
+  assert.deepEqual([result.total, result.counted, result.waited, result.verdict], [62, 45, 17, "ok"]);
+});
+
+test("a run in which every job waited alike has nothing quicker to compare with, so that wait stays in the time", () => {
+  const jobs = Array.from({ length: 5 }, (_, i) => job(`test shard ${i + 1}`, 33, 70, [], 30));
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(72) });
+  assert.deepEqual([result.total, result.counted, result.waited, result.verdict], [72, 72, 0, "red"]);
+  assert.equal(quickestWait(jobs), 30);
+});
+
+test("the job that reads is counted without its own extra wait, so a status that came late because it started late does not turn the run red", () => {
+  // The other jobs waited 3 s and ended by 55 s; this job waited 66 s and started at 70 s, so the status came at 72 s.
+  const jobs = [job("check", 3, 12), job("test shard 1", 3, 55), job("result", 70, 90, [], 66)];
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(72) });
+  assert.deepEqual([result.total, result.counted, result.waited, result.verdict], [72, 57, 15, "yellow"]);
+  // Had it started with the others, the same ends would give the total as it is.
+  assert.deepEqual(evaluate(started, [jobs[0]!, jobs[1]!, job("result", 3, 90)], { mode: "enforce", now: at(57) }).counted, 57);
+});
+
+test("a run whose jobs waited for a runner no longer than the quickest one has its whole total counted", () => {
+  const result = evaluate(started, [job("check", 3, 20), job("test shard 1", 3, 52)], { mode: "enforce", now: at(55) });
+  assert.deepEqual([result.total, result.counted, result.waited], [55, 55, 0]);
+  assert.equal(quickestWait([]), 0);
+});
+
+// The jobs of the full CI run 39211762302 on 10-19 (hosted runners), the one that was red for 83 s because test shard 1 waited 45 s for a runner while
+// the other 27 jobs started within 3 s: [name, seconds after the run started that the job was created, started and ended]; the status came at 83 s.
+const REAL_RUN: [string, number, number, number][] = [
+  ["check", 1, 5, 12], ["test shard 5", 1, 4, 37], ["nkey witnesses", 1, 4, 49], ["test shard 12", 1, 4, 37], ["no-tmp-workflow", 1, 5, 8], ["test shard 7", 1, 4, 39],
+  ["test shard 1", 2, 47, 81], ["nkey time-writing", 2, 5, 50], ["test shard 3", 2, 5, 40], ["start", 2, 5, 9], ["test shard 14", 2, 5, 39], ["test shard 11", 2, 5, 47],
+  ["test shard 9", 2, 5, 44], ["nkey time-quiet", 2, 5, 42], ["test shard 8", 2, 5, 42], ["test shard 17", 2, 5, 41], ["test shard 2", 2, 5, 40], ["test shard 18", 2, 5, 34],
+  ["test shard 10", 2, 5, 39], ["test shard 13", 2, 5, 35], ["test shard 16", 2, 5, 46], ["test shard 4", 2, 5, 37], ["test shard 19", 2, 5, 34], ["test shard 6", 2, 5, 36],
+  ["nkey counts", 2, 5, 51], ["test shard 15", 2, 5, 36], ["test shard 20", 2, 5, 36],
+];
+
+test("the run that was red for 83 s because one shard waited for a runner is within the limit and says how long it waited", () => {
+  const jobs: Job[] = [
+    ...REAL_RUN.map(([name, created, from, to]): Job => ({ name, conclusion: "success", created_at: at(created), started_at: at(from), completed_at: at(to) })),
+    { name: "result", status: "in_progress", conclusion: null, created_at: at(1), started_at: at(4), completed_at: null },
+  ];
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(83) });
+  assert.deepEqual([result.total, result.counted, result.waited, result.verdict, result.fail], [83, 53, 30, "yellow", false]);
+  assert.deepEqual(statusOf(jobs, "result", result), { state: "success", description: "full CI success (27 jobs, 83 s, 30 s of it waiting for a runner)" });
+  // The same run judged by its total, as before, was red.
+  assert.equal(verdictOf(result.total), "red");
 });
 
 test("shards of one size name no slow shard, and one shard over 1.5 times the mean of the others is named", () => {
@@ -63,7 +147,7 @@ test("shards of one size name no slow shard, and one shard over 1.5 times the me
   jobs[2] = shard(3, 31);
   const slow = shardTable(jobs).filter(s => s.slow);
   assert.deepEqual(slow.map(s => [s.name, s.step, s.others]), [["test shard 3", 31, 20]]);
-  const text = evaluate(started, jobs, { enforce: false, now: at(50) }).markdown;
+  const text = evaluate(started, jobs, { mode: "record", now: at(50) }).markdown;
   assert.match(text, /test shard 3 took 31 s, over 1\.5 times the mean of the other shards \(20\.0 s\)/);
   assert.match(text, /\| test shard 3 \| 31 \| 20\.0 \|/);
   assert.equal(SHARD_RATIO, 1.5);
@@ -93,15 +177,15 @@ test("shards are listed in numeric order and a lone shard has no others to be co
 });
 
 test("the summary says so when no shard job is found, so a renamed job does not drop the table unnoticed", () => {
-  const text = evaluate(started, [job("check", 2, 20)], { enforce: false, now: at(22) }).markdown;
+  const text = evaluate(started, [job("check", 2, 20)], { mode: "record", now: at(22) }).markdown;
   assert.match(text, /No test shard found/);
-  assert.doesNotMatch(evaluate(started, evenShards(20), { enforce: false, now: at(40) }).markdown, /No test shard found/);
+  assert.doesNotMatch(evaluate(started, evenShards(20), { mode: "record", now: at(40) }).markdown, /No test shard found/);
 });
 
 // ---- the wait for the other jobs and the status ----
 
-const open = (name: string): Job => ({ name, status: "in_progress", conclusion: null, started_at: at(3), completed_at: null });
-const ended = (name: string, conclusion = "success"): Job => ({ name, status: "completed", conclusion, started_at: at(3), completed_at: at(30) });
+const open = (name: string): Job => ({ name, status: "in_progress", conclusion: null, created_at: at(0), started_at: at(3), completed_at: null });
+const ended = (name: string, conclusion = "success"): Job => ({ name, status: "completed", conclusion, created_at: at(0), started_at: at(3), completed_at: at(30) });
 /** A `look` that answers the lists in turn (the last one again after that) and a `sleep` that only records how long it was asked to wait. */
 function script(lists: Job[][]) {
   const waits: number[] = [];
@@ -150,25 +234,111 @@ test("a cancelled job is given a grace before the result stands, once, so a canc
   assert.deepEqual(plain.waits, []);
 });
 
-test("the status is success when every other job succeeded or was skipped, and says how many jobs and how long", () => {
+test("the status is success when every other job succeeded or was skipped, and says how many jobs, how long and how much of it was waiting for a runner", () => {
   const jobs = [open("result"), ended("check"), ended("start", "skipped"), ended("test shard 1")];
-  assert.deepEqual(statusOf(jobs, "result", { total: 48, fail: false }), { state: "success", description: "full CI success (3 jobs, 48 s)" });
+  assert.deepEqual(statusOf(jobs, "result", { total: 48, waited: 0, fail: false }), { state: "success", description: "full CI success (3 jobs, 48 s, 0 s of it waiting for a runner)" });
+  assert.equal(statusOf(jobs, "result", { total: 71, waited: 14, fail: false }).description, "full CI success (3 jobs, 71 s, 14 s of it waiting for a runner)");
 });
 
 test("the status is failure when a job did not succeed, naming up to four of them, whatever the gate says", () => {
   const jobs = [open("result"), ended("check", "failure"), ended("no-tmp-workflow", "cancelled"), ended("nkey counts", "failure"), ended("test shard 1")];
-  const status = statusOf(jobs, "result", { total: 70, fail: true });
+  const status = statusOf(jobs, "result", { total: 70, waited: 0, fail: true });
   assert.equal(status.state, "failure");
   assert.equal(status.description, "full CI failure (check, no-tmp-workflow, nkey counts not green)");
   const many = [open("result"), ...Array.from({ length: 6 }, (_, i) => ended(`test shard ${i + 1}`, "failure"))];
-  assert.equal(statusOf(many, "result", { total: 40, fail: false }).description, "full CI failure (test shard 1, test shard 2, test shard 3, test shard 4 and 2 more not green)");
+  assert.equal(statusOf(many, "result", { total: 40, waited: 0, fail: false }).description, "full CI failure (test shard 1, test shard 2, test shard 3, test shard 4 and 2 more not green)");
   // A job with no conclusion has not succeeded.
-  assert.equal(statusOf([open("result"), { ...ended("check"), conclusion: null }], "result", { total: 40, fail: false }).state, "failure");
+  assert.equal(statusOf([open("result"), { ...ended("check"), conclusion: null }], "result", { total: 40, waited: 0, fail: false }).state, "failure");
 });
 
-test("a red gate makes the status failure with the time in its description, and a description is cut at 140 characters", () => {
+test("a red gate makes the status failure with the time and the wait in its description, and a description is cut at 140 characters", () => {
   const jobs = [open("result"), ended("check"), ended("test shard 1")];
-  assert.deepEqual(statusOf(jobs, "result", { total: 63, fail: true }), { state: "failure", description: "full CI failure (time gate: 63 s)" });
+  assert.deepEqual(statusOf(jobs, "result", { total: 75, waited: 10, fail: true }), { state: "failure", description: "full CI failure (time gate: 75 s, 10 s of it waiting for a runner)" });
   const long = [open("result"), ended("a".repeat(80), "failure"), ended("b".repeat(80), "failure")];
-  assert.equal(statusOf(long, "result", { total: 40, fail: false }).description.length, 140);
+  assert.equal(statusOf(long, "result", { total: 40, waited: 0, fail: false }).description.length, 140);
+});
+
+// ---- the whole script against a stand-in for the Actions API ----
+
+const SCRIPT = fileURLToPath(new URL("../scripts/ci-time-gate.ts", import.meta.url));
+
+/** Runs scripts/ci-time-gate.ts as a runner would, against a local server that answers as the API does for a run that started 50 s ago whose jobs have all
+ * ended: `check` ended at 40 s after a wait of 3 s, `test shard 1` waited 33 s and ended at 48 s, and the job that reads has just started. The server
+ * keeps the statuses it is sent. `broken` makes it answer the list of jobs with an error. */
+async function runScript(options: { mode: string; checkConclusion?: string; broken?: boolean }) {
+  const t0 = Math.floor(Date.now() / 1000) * 1000 - 50_000;
+  const iso = (s: number) => new Date(t0 + s * 1000).toISOString().replace(".000Z", "Z");
+  const apiJob = (name: string, from: number, to: number | null, conclusion: string | null): Job => ({ name, status: to === null ? "in_progress" : "completed", conclusion, created_at: iso(0), started_at: iso(from), completed_at: to === null ? null : iso(to) });
+  const jobs = [apiJob("check", 3, 40, options.checkConclusion ?? "success"), apiJob("test shard 1", 33, 48, "success"), apiJob("result", 3, null, null)];
+  const statuses: { path: string; body: { state: string; context: string; description: string; target_url: string } }[] = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", chunk => (body += chunk));
+    request.on("end", () => {
+      const path = request.url ?? "";
+      if (request.method === "POST") statuses.push({ path, body: JSON.parse(body) });
+      if (options.broken && path.includes("/jobs")) { response.statusCode = 500; response.end("down"); return; }
+      response.setHeader("Content-Type", "application/json");
+      response.end(path.includes("/jobs") ? JSON.stringify({ jobs }) : JSON.stringify({ created_at: iso(0), run_started_at: iso(0) }));
+    });
+  });
+  const directory = await mkdtemp(join(tmpdir(), "time-gate-"));
+  try {
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const env = {
+      PATH: process.env.PATH ?? "", TIME_GATE: options.mode, GH_TOKEN: "token", GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "7", GITHUB_SHA: "abc123", GITHUB_JOB: "result",
+      GITHUB_API_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, GITHUB_OUTPUT: join(directory, "output"),
+    };
+    const code = await new Promise<number>(resolve => execFile(process.execPath, [SCRIPT], { env, timeout: 30_000 }, error => resolve(error === null ? 0 : typeof error.code === "number" ? error.code : -1)));
+    const output = await readFile(env.GITHUB_OUTPUT, "utf8").catch(() => "");
+    return { code, statuses, output };
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("enforced, the script writes the status with the total and the wait for a runner, and succeeds", async () => {
+  const { code, statuses, output } = await runScript({ mode: "enforce" });
+  assert.equal(code, 0);
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0]!.path, "/repos/owner/repo/statuses/abc123");
+  assert.equal(statuses[0]!.body.state, "success");
+  assert.equal(statuses[0]!.body.context, "full-ci");
+  // The status comes a moment after the 50 s of the run. Served as soon as the quickest job, test shard 1 would have ended at 18 s and check, at 40 s, would have
+  // ended last: 8 s before the 48 s at which the last job did.
+  assert.match(statuses[0]!.body.description, /^full CI success \(2 jobs, (5\d) s, 8 s of it waiting for a runner\)$/);
+  assert.match(statuses[0]!.body.target_url, /\/owner\/repo\/actions\/runs\/7$/);
+  assert.match(output, /written=true\n/);
+  assert.match(output, /verdict=ok\ntotal=5\d\nwaited=8\n/);
+});
+
+test("enforced, a job that did not succeed makes the status failure and the script fail", async () => {
+  const { code, statuses } = await runScript({ mode: "enforce", checkConclusion: "failure" });
+  assert.equal(code, 1);
+  assert.deepEqual(statuses.map(s => [s.body.state, s.body.description]), [["failure", "full CI failure (check not green)"]]);
+});
+
+test("recorded, the script writes no status and succeeds whatever the jobs did, but gives the same numbers", async () => {
+  const { code, statuses, output } = await runScript({ mode: "record", checkConclusion: "failure" });
+  assert.equal(code, 0);
+  assert.deepEqual(statuses, []);
+  assert.match(output, /verdict=ok\ntotal=5\d\nwaited=8\n/);
+  assert.doesNotMatch(output, /written/);
+});
+
+test("when the API cannot be read, an enforced script writes a failure and fails, and a recorded one writes nothing and does not fail", async () => {
+  const [enforced, recorded] = await Promise.all([runScript({ mode: "enforce", broken: true }), runScript({ mode: "record", broken: true })]);
+  assert.equal(enforced.code, 1);
+  assert.equal(enforced.statuses.length, 1);
+  assert.match(enforced.statuses[0]!.body.description, /^full CI failure \(the result job failed: GET .*500/);
+  assert.equal(recorded.code, 0);
+  assert.deepEqual(recorded.statuses, []);
+});
+
+test("a mode that is neither enforce nor record is refused before the API is asked", async () => {
+  const { code, statuses } = await runScript({ mode: "report" });
+  assert.equal(code, 2);
+  assert.deepEqual(statuses, []);
 });
