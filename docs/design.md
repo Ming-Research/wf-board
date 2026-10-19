@@ -5236,7 +5236,7 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
    the board rules, the file format, writes and their checks, the HTTP and
    MCP surfaces, each against synthetic fixtures.
-2. **The page in a fake DOM** (`test/web.test.ts`): the bundled page runs
+2. **The page in a fake DOM** (`test/web-cases.ts`): the bundled page runs
    against a hand-written DOM with modeled geometry and a small synthetic
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
@@ -5350,7 +5350,7 @@ own and short enough to be dealt out to the shards (the longest of the layer's
 run side by side.
 
 Diagrams are checked in two places. The page's own doing runs in the DOM layer
-(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`, `mermaid-toolbar.test.ts`) against the stand-in library:
+(`test/dom/mermaid-page.test.ts`, `mermaid-redraw.test.ts`, `mermaid-view.test.ts`, `mermaid-toolbar.test.ts`) against the stand-in library:
 a block in a head and one in a log are drawn; a block that does not parse shows its code
 and the error while the blocks after it are drawn; the library is asked for when a block is
 shown and only once, and with the strict security level and the diagram's text whole; the
@@ -5408,7 +5408,7 @@ so no test reads the repository's history. In the DOM layer `test/dom/witnesses.
 (run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
 (agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
 naming the reason it must fail for; the fixes of the page's update run in the
-fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+fake-DOM layer (`test/web-cases.ts`, whose `page` takes the fixes to reverse),
 because a window has no page reload. A witness whose edit no longer matches
 the current file fails and is updated or retired on purpose. The browser file
 keeps no witness: a test of a fact that needs a box is shown to fail once, when
@@ -5843,7 +5843,8 @@ page in jsdom, 12% in the oracle of the `rules-reuse` files and 87 seconds in st
 parent's memory (2.7, 3.6 and 5.9 ms a start at 73, 330 and 903 MB resident; Write cost, section 4). Thirty shards alone made the mean
 step 17 seconds against 22.7 but left the longest at 26, the floor of one file (`deploy.test.ts`), and the run at 46. What brought it
 under: the files over about 15 seconds split as before (`deploy`, the `rules-reuse` seeds in three parts each, the page witnesses in
-eight, the agent list, the diagrams, the project filters), Node's compile cache for the test processes (`NODE_COMPILE_CACHE`, about 8%
+ten, the agent list, the diagrams, the project filters, the badges apart from the waits, and the fake DOM's tests in two parts that
+each take every other test of `test/web-cases.ts` through `test/deal.ts`), Node's compile cache for the test processes (`NODE_COMPILE_CACHE`, about 8%
 less CPU on a warm run of the same files, 55 against 50 seconds), the store's write starting one git process where it started two, and
 three test files that held their process 10 seconds after their last test (a deadline raced against a daemon's exit whose timer stayed
 referenced: `shutdown`, `push` and `stateless`, 12 to 20 seconds as files for 2 to 10 of tests). A probe that logged, for each of the

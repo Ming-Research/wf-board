@@ -204,7 +204,7 @@ matches what the artifact board offered.
   in the full CI. They need a Playwright browser and are never run on the owner's Mac.
 - Four test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
-  (`test/web.test.ts`), fast but without CSS or layout; the page in jsdom against
+  (`test/web-cases.ts`, run in two parts by `test/web-1.test.ts` and `web-2.test.ts`), fast but without CSS or layout; the page in jsdom against
   the real server on a generated board (`test/dom`, run by `npm test`), for every
   check that needs no layout; the page in a real browser on the same board
   (`test/e2e`), for what needs a layout. A page bug gets its test in the lowest
@@ -212,7 +212,7 @@ matches what the artifact board offered.
 - Every page fix gets a witness in the lowest layer that can see its bug: a run
   on the page with the fix reversed (a literal text edit, `test/e2e/variant.ts`)
   that reports the bug (`test/dom/witnesses.ts` and the scenario files, or
-  `test/web.test.ts` for the page's update). A fact only a real browser shows goes
+  `test/web-cases.ts` for the page's update). A fact only a real browser shows goes
   into the browser file (`test/e2e/browser.e2e.ts`: at most 15 tests, no
   reversed-fix variants of its own); a test added or changed there is shown to
   fail once on a page with the thing it guards spoiled, and its pull request
@@ -235,7 +235,7 @@ The shared rules' design-tree section applies; this is how it maps here.
   data a node's reason cites, which a node links to the heading that holds them
   (a bold lead-in such as "Storage" has no anchor, so the link goes to its
   section). Tests slice `docs/design.md` by heading (`test/wake.test.ts`,
-  `test/web.test.ts`): renaming or moving a heading they name breaks them.
+  `test/web-cases.ts`): renaming or moving a heading they name breaks them.
   Deferred work is an item on the board, never a file here.
 - A node records only what is in force on `main`. A change to a decision changes
   its node in the same pull request, with a new entry in `design/log.md`; a
