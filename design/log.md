@@ -2,17 +2,17 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
-## 2026-10-18 Keep the page's structure through a write that reused the rules
-
-Nodes: storage/write-path/page-rules-reuse, testing/press-n
-
-Summary: A write that reused the rules still made the page build its order of the items, who waits on whom, the ancestors of open work, the counts by status, the stops that wait on the owner and the unread stops from nothing at every draw, about 9 of the 31 ms a write cost the page on a hosted runner, and a write draws once, so a cache emptied when the data changes would not have saved it. The page now keeps these, as ids, through a change that reused the rules and left every changed item's head as it was, and makes the unread stops again when the unread list is another one; any other change, a snapshot and the minute make them again. The n-key lane's counts hold that a log write makes none of them again. The grounds and the refused alternatives (accounting item by item, caching whole lists by data) are in the node; the derivation is in docs/design.md, section 7, The page.
-
 ## 2026-10-18 Deal the script tests out to twenty shards
 
 Nodes: testing/ci-shards
 
 Summary: With the test files of 25 seconds and more split in two or more, the largest file no longer sets the time of a shard: its step takes about the sum of its files' seconds divided by three plus a second, so the number of shards does. Sixteen shards left the shard that ended last 49 to 56 seconds after the start of the run in four runs on hosted runners (median 53), over the 50 seconds a typical run aims at; twenty shards left it 46 to 51 seconds in five runs (median 50), and twenty-four shards, tried in one run, shortened the longest job by only a second. The full CI now deals the tests out to twenty shards. The splitting raised the sum of the files' seconds from about 920 to about 1,090, since every page file builds its own board, so the count stays provisional. The grounds and the refused counts are in the node; the measurements are in docs/design.md, section 11, Sharding the script tests.
+
+## 2026-10-18 Keep the page's structure through a write that reused the rules
+
+Nodes: storage/write-path/page-rules-reuse, testing/press-n
+
+Summary: A write that reused the rules still made the page build its order of the items, who waits on whom, the ancestors of open work, the counts by status, the stops that wait on the owner and the unread stops from nothing at every draw, about 9 of the 31 ms a write cost the page on a hosted runner, and a write draws once, so a cache emptied when the data changes would not have saved it. The page now keeps these, as ids, through a change that reused the rules and left every changed item's head as it was, and makes the unread stops again when the unread list is another one; any other change, a snapshot and the minute make them again. The n-key lane's counts hold that a log write makes none of them again. The grounds and the refused alternatives (accounting item by item, caching whole lists by data) are in the node; the derivation is in docs/design.md, section 7, The page.
 
 ## 2026-10-18 Deploy a main-line commit only when its checks passed
 
