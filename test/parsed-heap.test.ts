@@ -48,27 +48,27 @@ function heapPerChar(source: string): { chars: number; perChar: number } {
   return { chars, perChar: used / (300 * chars) };
 }
 
-// Without the copy (docs/design.md, section 4, Parsed documents) the one-line double-quoted style keeps 41 bytes for each character, which is what
-// this limit catches; the block scalar keeps 4.3 and the plain and single-quoted ones 2.0, within the limit, and the block scalar is caught by the
-// live-shape board below. The scalars are of Chinese text, which a flat string holds in 2 bytes a character, so a reading far under that
-// counted nothing, and the test fails on it.
-test("a parsed scalar keeps between 1.5 and 8 bytes of heap for each character, in each style of scalar", t => {
+// The scalars are of Chinese text, which a flat string holds in 2 bytes a character, so a reading under 1.5 counted nothing, and the test fails on it.
+// With the copy the four styles keep 2.0 to 2.4; without it (CI, docs/design.md, section 4, Parsed documents) the one-line double-quoted style
+// keeps 41.4 and the block scalar 4.3, which their limits catch, while the plain and single-quoted ones keep 2.0 and 2.1 either way (the source
+// that a slice pins costs what the flat copy does), so for those two the limit shows the cost and cannot fail on a missing copy.
+test("a parsed scalar keeps its own flat string's heap for each character, in each style of scalar", t => {
   const text = quoted(6000, 3).trim(), multi = lines(6000, 3);
-  // The same text in each style the library reads.
-  const styles: Record<string, string> = {
-    "double-quoted, one line": `k: "${text} "\n`,
-    "plain, one line": `k: ${text}\n`,
-    "single-quoted, one line": `k: '${text}'\n`,
-    "block literal": `k: |-\n${multi.map(line => (line ? "  " + line : "")).join("\n")}\n`,
-  };
+  // The same text in each style the library reads, with the most heap for each character that the style may keep.
+  const styles: Array<{ name: string; source: string; limit: number }> = [
+    { name: "double-quoted, one line", source: `k: "${text} "\n`, limit: 8 },
+    { name: "plain, one line", source: `k: ${text}\n`, limit: 8 },
+    { name: "single-quoted, one line", source: `k: '${text}'\n`, limit: 8 },
+    { name: "block literal", source: `k: |-\n${multi.map(line => (line ? "  " + line : "")).join("\n")}\n`, limit: 3.2 },
+  ];
   const outside: string[] = [];
-  for (const [name, source] of Object.entries(styles)) {
+  for (const { name, source, limit } of styles) {
     const { chars, perChar } = heapPerChar(source);
-    const said = `${name}: ${perChar.toFixed(1)} bytes of heap for each of ${chars} characters`;
+    const said = `${name}: ${perChar.toFixed(1)} bytes of heap for each of ${chars} characters, limit ${limit}`;
     t.diagnostic(said);
-    if (chars < 2000 || perChar < 1.5 || perChar > 8) outside.push(said);
+    if (chars < 2000 || perChar < 1.5 || perChar > limit) outside.push(said);
   }
-  assert.deepEqual(outside, [], "every style keeps between 1.5 and 8 bytes of heap for each character, and a scalar of 2000 characters or more");
+  assert.deepEqual(outside, [], "every style keeps between 1.5 bytes and its limit of heap for each character, and a scalar of 2000 characters or more");
 });
 
 test("the copy changes nothing a document says: values, shared nodes and their order", () => {
