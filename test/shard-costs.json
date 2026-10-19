@@ -15,7 +15,7 @@
   "test/convert.test.ts": 2.8,
   "test/credentials.test.ts": 3.3,
   "test/data-dir.test.ts": 0.5,
-  "test/deploy.test.ts": 23.4,
+  "test/deploy.test.ts": 32.9,
   "test/derived.test.ts": 14.2,
   "test/difficulty.test.ts": 7.3,
   "test/dispatch.test.ts": 7.9,

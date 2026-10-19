@@ -1,3 +1,4 @@
+import type { Checks } from "./github.ts";
 import type { Notify } from "./notify.ts";
 
 /** The paths whose change needs no restart, the one place this is defined. The daemon loads src/ and the packages at its start and
@@ -33,8 +34,8 @@ export interface Pending {
 }
 
 /** The kinds of standing problem that are pushed once: the fetch fails, a refusal to move the checkout, a rollback that did not
- * finish, the job itself failing. */
-export type ToldKind = "fetch" | "refuse" | "stuck" | "error";
+ * finish, the job itself failing, the checks of the commit that cannot be read or that stay unfinished. */
+export type ToldKind = "fetch" | "refuse" | "stuck" | "error" | "checks";
 
 /** What the job keeps between runs, in a file beside no board data. */
 export interface DeployState {
@@ -43,6 +44,8 @@ export interface DeployState {
   /** The commit whose deploy failed; it is not tried again until the remote moves on. */
   failed?: string;
   pending?: Pending;
+  /** The commit whose checks have not finished (or have not appeared), and when the job first found it so. */
+  waiting?: { commit: string; since: number };
   /** The standing problems already pushed, one entry per kind, so that each is pushed once even when two kinds of problem
    * come and go in turn; a run that ends with nothing wrong forgets them. */
   told?: Partial<Record<ToldKind, string>>;
@@ -66,6 +69,9 @@ export interface DeployDeps {
   restart(): Promise<void>;
   /** Whether /health answers. */
   healthy(): Promise<boolean>;
+  /** The checks GitHub holds on a commit of the repository (`Owner/Name`), read as the board's look at the main line reads them
+   * (src/github.ts); rejects when they cannot be read. */
+  checks(repo: string, commit: string): Promise<Checks>;
   /** Hand a push to the daemon; rejects when it does not take it. */
   post(push: Push): Promise<void>;
   /** Tell the owner on the Mac (src/notify.ts): used only when the board is not answering and could not be brought back, so no daemon can push. */
@@ -82,13 +88,16 @@ export interface DeployDeps {
   fetchRetryMs: number;
 }
 
-/** `stuck`: going back did not finish but the daemon answers; `down`: it does not answer either; `error`: the job itself failed. */
-export type DeployOutcome = "current" | "deployed" | "rolledBack" | "stuck" | "down" | "refused" | "skipped" | "unreachable" | "error";
+/** `stuck`: going back did not finish but the daemon answers; `down`: it does not answer either; `error`: the job itself failed;
+ * `waiting`: the checks of the main line's head have not finished; `held`: one of them failed; `unchecked`: they could not be read. */
+export type DeployOutcome = "current" | "deployed" | "rolledBack" | "stuck" | "down" | "refused" | "skipped" | "unreachable" | "waiting" | "held" | "unchecked" | "error";
 
 /** The most commits one deploy push lists; the rest are counted. */
 const MAX_CHANGES = 20;
 /** How long a probe of /health keeps trying before it says the daemon does not answer: one probe can miss a daemon that is busy or just starting. */
 const SETTLE_MS = 15_000;
+/** A commit whose checks have not finished after this long is pushed once: they may never finish, and nothing else says why the board is not deployed. */
+const CHECKS_LATE_MS = 60 * 60_000;
 /** A fetch is tried this often, this far apart, before the remote counts as unreachable: a network that has just come back needs a moment. */
 const FETCH_TRIES = 3;
 
@@ -216,6 +225,35 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     return wentBack(pending, `${reason}; the checkout is back on ${pending.to}`);
   }
 
+  /** Whether the checks on `target` let it go live: undefined when they all passed, else the outcome that ends the run. A commit goes
+   * live only on green: one that is still running or has no checks yet is waited for, one with a red check is held (the board's own
+   * look at the main line tells the session holding the item, so the job does not), and checks that cannot be read count as not green. */
+  async function gate(target: string, head: string, running: string | null): Promise<DeployOutcome | undefined> {
+    let checks: Checks;
+    try {
+      const repo = await repoName();
+      if (!repo) throw new Error(`the address of ${d.remote} names no repository`);
+      checks = await d.checks(repo, target);
+    } catch (error) {
+      d.log(`not deploying ${target}: its checks could not be read: ${reasonOf(error)}`);
+      await tellOnce("checks", `read@${target}`, () => failedPush(target, running, `the checks of ${target} could not be read, so it was not deployed: ${reasonOf(error)}`, head));
+      return "unchecked";
+    }
+    if (checks.state === "success") { if (state.waiting) { delete state.waiting; save(); } return undefined; }
+    if (checks.state === "failure") {
+      if (state.waiting) { delete state.waiting; save(); }
+      d.log(`not deploying ${target}: its checks failed (${checks.failed.join(", ")}); it is looked at again on the next run`);
+      return "held";
+    }
+    if (state.waiting?.commit !== target) { state.waiting = { commit: target, since: d.now() }; save(); }
+    const minutes = Math.floor((d.now() - state.waiting.since) / 60_000);
+    d.log(`waiting for the checks on ${target}: ${checks.state === "none" ? "none yet" : "not finished"}, ${minutes} min so far`);
+    if (d.now() - state.waiting.since >= CHECKS_LATE_MS) {
+      await tellOnce("checks", `late@${target}`, () => failedPush(target, running, `the checks of ${target} have not finished after ${minutes} minutes (${checks.state === "none" ? "none appeared" : "still running"}), so it is not deployed yet`, head));
+    }
+    return "waiting";
+  }
+
   async function run(): Promise<DeployOutcome> {
     await flush();
     // A deploy or rollback left unfinished is finished first: nothing below may build on a checkout in an unknown state. When
@@ -265,6 +303,9 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     if (dirty) return refuse("dirty", `the checkout has local changes to tracked files (${dirty.split("\n").slice(0, 5).join("; ")})`);
     const behind = await d.git(["merge-base", "--is-ancestor", head, target]).then(() => true, (error: { code?: number }) => { if (error.code === 1) return false; throw error; });
     if (!behind) return refuse("ahead", `the checkout's ${head} is not an ancestor of ${target}: it has commits the main line lacks`);
+
+    const held = await gate(target, head, running);
+    if (held) return held;
 
     const changed = (await d.git(["diff", "--no-renames", "--name-only", head, target])).split("\n").filter(Boolean);
     const restart = !up || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
