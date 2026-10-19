@@ -1,6 +1,6 @@
 name: tmp-derived-flake
-# Temporary (ci-gate-margin): many attempts of the collection test of the derived cache, with the indices that stay reachable.
-# Delete before the last full CI.
+# Temporary (ci-gate-margin): the collection test of the derived cache, 40 attempts in one process, under V8 flags that change when
+# code is compiled. Delete before the last full CI.
 on:
   push:
     branches-ignore: [main]
@@ -10,8 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        load: [loaded, alone]
-        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        flags: ["--stack-size=984", "--no-concurrent-recompilation", "--no-opt", "--no-opt --no-maglev", "--jitless"]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -19,10 +19,6 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: run
         run: |
-          case "${{ matrix.load }}" in
-            loaded) files="test/tmp-derived-diag.test.ts test/dom/page-plan-after.test.ts test/dom/page-chips.test.ts test/backup-push.test.ts test/session.test.ts test/threads.test.ts" ;;
-            alone) files="test/tmp-derived-diag.test.ts" ;;
-          esac
-          timeout 150 node --test --test-timeout=100000 --test-reporter=spec $files > out.txt 2>&1 || true
-          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE ${{ matrix.load }} ${{ matrix.rep }} /' || true
-          echo "DIAGEND ${{ matrix.load }} ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt) fails=$(grep -ac 'DIAG attempt.*FAIL' out.txt)"
+          timeout 200 node ${{ matrix.flags }} test/tmp-derived-diag.test.ts > out.txt 2>&1 || true
+          grep -a "DIAG attempt" out.txt | sed 's/^/DIAGLINE "${{ matrix.flags }}" ${{ matrix.rep }} /' || true
+          echo "DIAGEND \"${{ matrix.flags }}\" ${{ matrix.rep }} attempts=$(grep -ac 'DIAG attempt' out.txt) fails=$(grep -ac 'DIAG attempt.*FAIL' out.txt)"
