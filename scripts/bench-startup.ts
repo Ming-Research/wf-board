@@ -74,7 +74,8 @@ function* history(total: number): Generator<Step & { at: number }> {
   // Created over the history evenly, a quarter of them in the seed (the live board's import).
   const seedItems = Math.round(finalItems / 4);
   const seed: Array<[string, string]> = [];
-  for (let k = 0; k < seedItems; k++) for (const id of create(start, k < 24 ? undefined : ownerCandidate())) seed.push(put(id));
+  const roots = Math.min(24, Math.ceil(seedItems / 4));
+  for (let k = 0; k < seedItems; k++) for (const id of create(start, k < roots ? undefined : ownerCandidate())) seed.push(put(id));
   yield { message: "Seed synthetic board", puts: [["board.yaml", yaml({ title: "Synthetic board", projects: PROJECTS.map(name => ({ name })) })], ["numbers.yaml", yaml({ next: finalItems + 1 })], ...new Map(seed).entries()], at: start };
   const paused: string[] = [];
   for (let k = 1; k < total; k++) {
