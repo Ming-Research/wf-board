@@ -76,7 +76,7 @@ test("a message to a name the board cannot reach, or one that is too long, not o
   assert.deepEqual([kept.text, kept.to], [full, "架构师"]);
 });
 
-test("a message goes to the architect, to a session with an open dispatch of any role, or to a long-lived credential's session", async t => {
+test("a message goes to the architect, to a session with an open dispatch of an engineer or a review, or to a long-lived credential's session, and not to an architect's turn", async t => {
   const { store } = await board(t);
   const op = ops(store, () => later, { sessions: () => ["观察者", "资源管理"] });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "审查", level: 2, model: "Sonnet", agent: "b-review", agentId: "agent-r" });
@@ -85,6 +85,9 @@ test("a message goes to the architect, to a session with an open dispatch of any
   await op.dispatchFinish({ ...asArchitect, id: "b", agentId: "agent-r", result: "一次通过", usage, cost: 1, rounds: 1 });
   await assert.rejects(op.sendMessage({ ...eng, to: "b-review", text: "看 b" }), refusedWith(/^to b-review: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "a dispatch that ended reaches no one");
   await assert.rejects(op.sendMessage({ ...eng, to: "PM", text: "看 b" }), refusedWith(/^to PM: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "the retired PM is reached no more");
+  // An architect's turn, open on the item, is no session that works on it and reads no stream of its own: the list of names that work leaves it out.
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "架构师", level: 5, model: "Fable", agent: "架构师轮次", agentId: "turn-1" });
+  await assert.rejects(op.sendMessage({ ...eng, to: "架构师轮次", text: "看 b" }), refusedWith(/^to 架构师轮次: no session the board can reach has that name; send to one of: 架构师, 观察者, 资源管理$/), "an open turn is reached no more than an ended review");
 });
 
 test("a message waits in its recipient's stream until a board call or its socket takes it, once; one to the architect goes to the architect's own stream", async t => {

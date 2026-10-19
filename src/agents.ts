@@ -2,7 +2,7 @@
 // touched last, and what that suggests about it. Everything here is read from the board's own data (the activity index and
 // the items), never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
-import { openDispatches } from "./dispatch.ts";
+import { openDispatches, worksOnItem } from "./dispatch.ts";
 import { AGENT_TOUCHES, isArchitectSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
@@ -46,7 +46,7 @@ export interface AgentRow {
   /** Waiting for longer than AGENT_WAIT_LONG_MS. */
   amber: boolean;
   /** Running now, which is what the page unfolds: the session has an unfinished dispatch and is alive (`liveDispatches`,
-   * either role), whatever the state word says. The steps on the items it touched do not decide: they may be another
+   * an engineer or a review), whatever the state word says. The steps on the items it touched do not decide: they may be another
    * session's. A session whose dispatches have all ended is not running. The rest are folded into one line. */
   running: boolean;
   /** At most AGENT_TOUCHES items, newest first. */
@@ -87,8 +87,9 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
  * The rows of the list at `now`, newest activity first. A session is listed when a dispatch record names it and it wrote to the
  * board or was started by that record within AGENT_WINDOW_MS, except the architect's, and except one whose newest
  * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
- * A session no dispatch record names is no programmer the board sent out (the runner, the architect's turns, the board itself, a hand-started
- * session, a name written by mistake) and is not listed. The items come as a list with their keys, as the page holds them, not as the
+ * A session no dispatch record names is no programmer the board sent out (the runner, the board itself, a hand-started session, a name
+ * written by mistake) and is not listed; the architect's turns have records (they draw the architect's line, src/timeline.ts) but are the
+ * runner's, drawn from its reports, so a record of that role names no row. The items come as a list with their keys, as the page holds them, not as the
  * snapshot's keyed object: the page redraws the list on every write, and listing the keys of a board this size again costs more than the
  * pass over the items.
  */
@@ -99,6 +100,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   for (const it of items) {
     const item = it.id;
     for (const dispatch of it.dispatches ?? []) {
+      if (!worksOnItem(dispatch)) continue;
       const list = started.get(dispatch.agent);
       if (list) list.push({ item, dispatch }); else started.set(dispatch.agent, [{ item, dispatch }]);
     }
@@ -106,7 +108,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
   }
   const rows: AgentRow[] = [];
   for (const [name, dispatches] of started) {
-    // The architect is not a row. The programs (the runner, the architect's turns it starts, the board itself) have no dispatch record, so they are not either: the runner's work and the architect's turns are drawn from its reports.
+    // The architect is not a row. The programs (the runner, the board itself) have no dispatch record, so they are not either; the architect's turns it starts have one, which `agentRows` does not read: the runner's work and the architect's turns are drawn from its reports.
     if (isArchitectSession(name)) continue;
     const wrote = s.activity?.agents?.[name] ?? [];
     const newest = dispatches.reduce((a, b) => Date.parse(b.dispatch.started) > Date.parse(a.dispatch.started) ? b : a);

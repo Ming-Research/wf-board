@@ -7,7 +7,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { dispatchRows, dispatchReport, summarize } from "../src/dispatch.ts";
 import type { Tally } from "../src/dispatch.ts";
-import { Item, Dispatch, DISPATCH_OUTCOMES, DISPATCH_RESULTS, DISPATCH_SIGNALS, PARKED_RESULT } from "../src/model.ts";
+import { Item, Dispatch, DISPATCH_OUTCOMES, DISPATCH_RESULTS, DISPATCH_SIGNALS, PARKED_RESULT, TURN_RESULT } from "../src/model.ts";
 import { hashToken } from "../src/credentials.ts";
 import { board, author, asArchitect, retiredPM } from "./helpers.ts";
 
@@ -54,7 +54,7 @@ test("dispatch_start refuses what the format does not allow, naming the reason, 
   const cases: Array<[string, Parameters<typeof op.dispatchStart>[0], RegExp]> = [
     ["an agentId already on this item", { ...start, agent: "other" }, /agentId agent-0001: already recorded on a for session a-worker/],
     ["an agentId already on another item", { ...start, id: "b" }, /agentId agent-0001: already recorded on a/],
-    ["a role the format lacks", { ...start, agentId: "x1", role: "架构师" as never }, /role: fix/],
+    ["a role the format lacks", { ...start, agentId: "x1", role: "观察者" as never }, /role: fix/],
     ["a level beyond 5", { ...start, agentId: "x2", level: 6 }, /level: fix/],
     ["a fractional level", { ...start, agentId: "x3", level: 2.5 }, /level: fix/],
     ["a blank model", { ...start, agentId: "x4", model: "  " }, /provide nonempty text after trimming/],
@@ -210,7 +210,7 @@ test("dispatch records and their log lines are never news to the owner, while a 
 
 /** How many minutes every generated dispatch that ended ran: the board has no other duration to compare. */
 const RAN_MIN = 5;
-interface Plain { item: string; level: number; role: "工程师" | "审查"; ended: boolean; result: (typeof DISPATCH_RESULTS)[number]; counts: number; signals: string[]; milli: number; startedMin: number }
+interface Plain { item: string; level: number; role: "工程师" | "审查" | "架构师"; ended: boolean; result: (typeof DISPATCH_RESULTS)[number]; counts: number; signals: string[]; milli: number; startedMin: number }
 
 // A fixed generator so a failure replays; the sequence is irrelevant to the properties checked.
 function prng(seed: number): () => number { let x = seed; return () => (x = (x * 1664525 + 1013904223) % 4294967296) / 4294967296; }
@@ -226,32 +226,32 @@ async function manyDispatches(t: Parameters<typeof board>[0], count = 60) {
   await op.setTags({ author: "Firn", id: "other", tags: ["协作流程"] });
   const plain: Plain[] = [];
   for (let i = 0; i < count; i++) {
-    const item = pick(Object.keys(owners)), role = pick(["工程师", "审查"] as const), level = 1 + Math.floor(rnd() * 5), startedMin = i;
+    const item = pick(Object.keys(owners)), role = pick(["工程师", "审查", "架构师"] as const), level = 1 + Math.floor(rnd() * 5), startedMin = i;
     const started = new Date(Date.UTC(2026, 9, 16, 8, 0) + startedMin * 60000).toISOString().slice(0, 16) + "Z";
     await op.dispatchStart({ author: owners[item]!, id: item, role, level, model: "M", agent: `s${i}`, agentId: `g${i}`, startedAt: started });
     const ended = rnd() < 0.75, milli = Math.floor(rnd() * 20000), counts = Math.floor(rnd() * 5);
-    const signals = DISPATCH_SIGNALS.filter(() => rnd() < 0.3), result = pick(DISPATCH_RESULTS);
-    if (ended) await op.dispatchFinish({ author: owners[item]!, id: item, agentId: `g${i}`, result, usage, cost: milli / 1000, ...(role === "工程师" ? { reports: counts + 1, kickbacks: counts } : { rounds: counts }), signals: signals.map(kind => ({ kind })), endedAt: new Date(Date.parse(started) + RAN_MIN * 60000).toISOString() });
+    const signals = DISPATCH_SIGNALS.filter(() => rnd() < 0.3), drawn = pick(DISPATCH_RESULTS.filter(r => r !== TURN_RESULT)), result = role === "架构师" ? TURN_RESULT : drawn;
+    if (ended) await op.dispatchFinish({ author: owners[item]!, id: item, agentId: `g${i}`, result, usage, cost: milli / 1000, ...(role === "工程师" ? { reports: counts + 1, kickbacks: counts } : role === "审查" ? { rounds: counts } : {}), signals: signals.map(kind => ({ kind })), endedAt: new Date(Date.parse(started) + RAN_MIN * 60000).toISOString() });
     plain.push({ item, level, role, ended, result, counts, signals: ended ? signals : [], milli: ended ? milli : 0, startedMin });
   }
   return { ...fixture, plain, tagsOf: (item: string) => store.snapshot().items[item]!.tags ?? [] };
 }
 
-// What a group's figures must be, added up by plain loops over the generated records. A dispatch put down to wait is in the count and
-// the cost and in no figure read from the results.
+// What a group's figures must be, added up by plain loops over the generated records. A dispatch put down to wait and a turn of the
+// architect are in the count and the cost and in no figure read from the results.
 function expected(rows: Plain[]) {
-  const ended = rows.filter(r => r.ended), parked = ended.filter(e => e.result === PARKED_RESULT), settled = ended.filter(e => e.result !== PARKED_RESULT);
+  const ended = rows.filter(r => r.ended), parked = ended.filter(e => e.result === PARKED_RESULT), turns = ended.filter(e => e.role === "架构师"), settled = ended.filter(e => e.result !== PARKED_RESULT && e.role !== "架构师");
   const count = (r: (typeof DISPATCH_OUTCOMES)[number]) => settled.filter(e => e.result === r).length;
   const eng = settled.filter(e => e.role === "工程师"), rev = settled.filter(e => e.role === "审查");
-  return { n: rows.length, open: rows.length - ended.length, results: DISPATCH_OUTCOMES.map(count), parked: parked.length, parkedMin: parked.length * RAN_MIN, rework: count("返工后通过") + count("换人"), ended: settled.length, kick: eng.reduce((n, e) => n + e.counts, 0), engN: eng.length, rnd: rev.reduce((n, e) => n + e.counts, 0), revN: rev.length, milli: ended.reduce((n, e) => n + e.milli, 0) };
+  return { n: rows.length, open: rows.length - ended.length, results: DISPATCH_OUTCOMES.map(count), parked: parked.length, parkedMin: parked.length * RAN_MIN, turns: turns.length, turnsMin: turns.length * RAN_MIN, rework: count("返工后通过") + count("换人"), ended: settled.length, kick: eng.reduce((n, e) => n + e.counts, 0), engN: eng.length, rnd: rev.reduce((n, e) => n + e.counts, 0), revN: rev.length, milli: ended.reduce((n, e) => n + e.milli, 0) };
 }
-const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 放下等待 (\d+)（共 (\d+) 分钟，不算上面四种结果） · 返工比例 (.+?) · 平均打回 (\S+) · 平均轮数 (\S+) · 花费 \$(\d+\.\d{3})$/;
+const LINE = /^(.+?)：派活 (\d+)（进行中 (\d+)） · 一次通过 (\d+) · 返工后通过 (\d+) · 换人 (\d+) · 放弃 (\d+) · 放下等待 (\d+)（共 (\d+) 分钟，不算上面四种结果） · 架构师轮次 (\d+)（共 (\d+) 分钟，不算上面四种结果） · 返工比例 (.+?) · 平均打回 (\S+) · 平均轮数 (\S+) · 花费 \$(\d+\.\d{3})$/;
 function parsed(report: string, label: string) {
   const line = report.split("\n").find(l => l.startsWith(`${label}：派活`));
   assert.ok(line, `a line for ${label}`);
   const m = LINE.exec(line)!;
   assert.ok(m, `the line for ${label} has the expected shape: ${line}`);
-  return { n: Number(m[2]), open: Number(m[3]), results: [4, 5, 6, 7].map(i => Number(m[i])), parked: Number(m[8]), parkedMin: Number(m[9]), ratio: m[10]!, kick: m[11]!, rounds: m[12]!, milli: Math.round(Number(m[13]) * 1000) };
+  return { n: Number(m[2]), open: Number(m[3]), results: [4, 5, 6, 7].map(i => Number(m[i])), parked: Number(m[8]), parkedMin: Number(m[9]), turns: Number(m[10]), turnsMin: Number(m[11]), ratio: m[12]!, kick: m[13]!, rounds: m[14]!, milli: Math.round(Number(m[15]) * 1000) };
 }
 const section = (report: string, title: string) => {
   const lines = report.split("\n"), from = lines.findIndex(l => l.startsWith(title)), to = lines.findIndex((l, i) => i > from && l === "");
@@ -272,15 +272,15 @@ describe("the tallies", () => {
 
     const check = (label: string, group: Plain[], shown: string) => {
       const want = expected(group), got = parsed(shown, label);
-      assert.deepEqual({ n: got.n, open: got.open, results: got.results, parked: got.parked, parkedMin: got.parkedMin, milli: got.milli }, { n: want.n, open: want.open, results: want.results, parked: want.parked, parkedMin: want.parkedMin, milli: want.milli }, label);
+      assert.deepEqual({ n: got.n, open: got.open, results: got.results, parked: got.parked, parkedMin: got.parkedMin, turns: got.turns, turnsMin: got.turnsMin, milli: got.milli }, { n: want.n, open: want.open, results: want.results, parked: want.parked, parkedMin: want.parkedMin, turns: want.turns, turnsMin: want.turnsMin, milli: want.milli }, label);
       assert.equal(got.ratio, want.ended ? `${Math.round(want.rework / want.ended * 100)}%（${want.rework}/${want.ended}）` : "-", `${label} rework share`);
       assert.equal(got.kick, want.engN ? (want.kick / want.engN).toFixed(2) : "-", `${label} mean kickbacks`);
       assert.equal(got.rounds, want.revN ? (want.rnd / want.revN).toFixed(2) : "-", `${label} mean rounds`);
     };
-    assert.ok(plain.some(r => r.ended && r.result === PARKED_RESULT) && plain.some(r => r.ended && r.result !== PARKED_RESULT), "the generated board has dispatches put down to wait and dispatches that came to a result");
+    assert.ok(plain.some(r => r.ended && r.result === PARKED_RESULT) && plain.some(r => r.ended && r.result !== PARKED_RESULT && r.role !== "架构师") && plain.some(r => r.ended && r.role === "架构师"), "the generated board has dispatches put down to wait, turns of the architect and dispatches that came to a result");
     check("合计", plain, report);
     for (const level of [1, 2, 3, 4, 5]) check(`${level} 级`, plain.filter(r => r.level === level), section(report, "按等级"));
-    for (const role of ["工程师", "审查"]) check(role, plain.filter(r => r.role === role), section(report, "按角色"));
+    for (const role of ["工程师", "审查", "架构师"]) check(role, plain.filter(r => r.role === role), section(report, "按角色"));
     const byTag = section(report, "按条目的标签");
     for (const tag of ["看板", "协作流程"]) check(tag, plain.filter(r => tagsOf(r.item).includes(tag)), byTag);
     check("（无标签）", plain.filter(r => !tagsOf(r.item).length), byTag);
@@ -294,7 +294,7 @@ describe("the tallies", () => {
     const { store, plain, tagsOf } = fx;
     const s = summarize(dispatchRows(store.snapshot()));
     const sum = (tallies: Tally[], pick: (t: Tally) => number) => tallies.reduce((n, x) => n + pick(x), 0);
-    const picks: Array<(x: Tally) => number> = [x => x.n, x => x.open, x => x.costMilli, x => x.results["放弃"], x => x.parked.count, x => x.parked.ms, x => x.rework.count, x => x.rework.ended];
+    const picks: Array<(x: Tally) => number> = [x => x.n, x => x.open, x => x.costMilli, x => x.results["放弃"], x => x.parked.count, x => x.parked.ms, x => x.turns.count, x => x.turns.ms, x => x.rework.count, x => x.rework.ended];
     for (const pick of picks) {
       assert.equal(sum(s.byLevel, pick), pick(s.total));
       assert.equal(sum(s.byRole, pick), pick(s.total));
@@ -344,17 +344,94 @@ test("a session put down while its work waits is listed apart: in the count, the
   const report = dispatchReport(dispatchRows(store.snapshot()));
   // Two dispatches and $0.750 are counted; the one result is the second session's, so the rework share is 1 of 1 and the means are its own,
   // not the parked session's 2 reports and 3 kickbacks.
-  assert.match(report, /^合计：派活 2（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 1（共 40 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.750/);
+  assert.match(report, /^合计：派活 2（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 1（共 40 分钟，不算上面四种结果） · 架构师轮次 0（共 0 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.750/);
   const t1 = summarize(dispatchRows(store.snapshot())).total;
   assert.deepEqual({ n: t1.n, parked: t1.parked, ended: t1.rework.ended, kick: t1.kickbacks }, { n: 2, parked: { count: 1, ms: 40 * 60_000 }, ended: 1, kick: { sum: 1, n: 1 } });
   // Only parked sessions: no result, so no share and no mean, and a review may be put down too.
   const only = summarize(dispatchRows(store.snapshot(), { id: "a" }).slice(0, 1)).total;
   assert.deepEqual({ n: only.n, ended: only.rework.ended, kick: only.kickbacks.n, cost: only.costMilli }, { n: 1, ended: 0, kick: 0, cost: 500 });
-  assert.match(dispatchReport(dispatchRows(store.snapshot()).slice(0, 1)), /放下等待 1（共 40 分钟，不算上面四种结果） · 返工比例 - · 平均打回 - · 平均轮数 - · 花费 \$0\.500/);
+  assert.match(dispatchReport(dispatchRows(store.snapshot()).slice(0, 1)), /放下等待 1（共 40 分钟，不算上面四种结果） · 架构师轮次 0（共 0 分钟，不算上面四种结果） · 返工比例 - · 平均打回 - · 平均轮数 - · 花费 \$0\.500/);
   await op.dispatchStart({ author, id: "b", role: "审查", level: 1, model: "Haiku", agent: "r1", agentId: "r1", startedAt: "2026-10-16T09:00Z" });
   await op.dispatchFinish({ author, id: "b", agentId: "r1", result: PARKED_RESULT, usage, cost: 0.1, rounds: 1, endedAt: "2026-10-16T09:10Z" });
   assert.equal(store.snapshot().items.b!.dispatches![0]!.finish!.result, "放下等待");
-  assert.deepEqual(DISPATCH_RESULTS, [...DISPATCH_OUTCOMES, "放下等待"], "the five results, the parked one last");
+  assert.deepEqual(DISPATCH_RESULTS, [...DISPATCH_OUTCOMES, "放下等待", "轮次结束"], "the six results, the parked one and the architect's turn last");
+});
+
+// ---- the architect's turns ----
+
+const turnStart = { author, session: architect, id: "a", role: "架构师" as const, level: 5, model: "Fable", effort: "max", agent: "架构师轮次", agentId: "turn-1", startedAt: "2026-10-16T09:00Z", did: "答工程师的问题" };
+const turnEnd = { author, session: architect, id: "a", agentId: "turn-1", result: "轮次结束" as const, usage, cost: 0.2, endedAt: "2026-10-16T09:10Z", signals: [] };
+
+test("an architect's turn is a record only: it gets no credential, may carry the architect's session names, and ends with its one result and no counts", async t => {
+  const { store, op } = await clocked(t);
+  const started = await op.dispatchStart(turnStart);
+  assert.equal(started.credential, undefined, "no credential is issued, and none is answered");
+  const [d] = store.snapshot().items.a!.dispatches!;
+  assert.deepEqual(d, { agentId: "turn-1", agent: "架构师轮次", role: "架构师", level: 5, model: "Fable", effort: "max", started: "2026-10-16T09:00:00Z", did: "答工程师的问题" }, "the record keeps no hash of one either");
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "起：会话 架构师轮次（号 turn-1），架构师，5 级 Fable，推理强度 max，2026-10-16T09:00Z，做：答工程师的问题");
+  // The conversation's own name is allowed for the role too, since nothing writes under a credential here; the runner's name never is.
+  await op.dispatchStart({ ...turnStart, agent: "架构师", agentId: "turn-2" });
+  await assert.rejects(() => op.dispatchStart({ ...turnStart, agent: "执行程序", agentId: "turn-3" }), refused(/the runner's session name/));
+  // The roles that do get a credential still refuse the architect's names.
+  await assert.rejects(() => op.dispatchStart({ ...start, agent: "架构师轮次", agentId: "w-1" }), refused(/that is the architect's session name/));
+
+  // Its end: the one result, and none of the counts of the other roles.
+  const wrong: Array<[string, Parameters<typeof op.dispatchFinish>[0], RegExp]> = [
+    ["a result of the work", { ...turnEnd, result: "一次通过" }, /result: an architect dispatch ends with 轮次结束/],
+    ["put down to wait", { ...turnEnd, result: PARKED_RESULT }, /result: an architect dispatch ends with 轮次结束/],
+    ["reports", { ...turnEnd, reports: 1 }, /reports: an architect dispatch carries no counts/],
+    ["kickbacks", { ...turnEnd, kickbacks: 1 }, /kickbacks: an architect dispatch carries no counts/],
+    ["rounds", { ...turnEnd, rounds: 1 }, /rounds: an architect dispatch carries no counts/],
+  ];
+  for (const [what, args, pattern] of wrong) await assert.rejects(() => op.dispatchFinish(args), refused(pattern), what);
+  // And the result belongs to the role: no other role may give it.
+  await op.dispatchStart({ ...start, agentId: "w-2", agent: "w-2" });
+  await assert.rejects(() => op.dispatchFinish({ ...finish, agentId: "w-2", result: TURN_RESULT }), refused(/result: 轮次结束 is the result of an architect dispatch only/));
+  assert.equal(store.snapshot().items.a!.dispatches!.find(x => x.agentId === "w-2")!.finish, undefined, "no refused call wrote");
+
+  await op.dispatchFinish(turnEnd);
+  assert.deepEqual(store.snapshot().items.a!.dispatches![0]!.finish, { ended: "2026-10-16T09:10:00Z", result: "轮次结束", signals: [], usage, cost: 0.2 });
+  assert.equal(store.snapshot().items.a!.log.at(-1)!.text, "收：会话 架构师轮次（架构师），轮次结束，2026-10-16T09:00Z–2026-10-16T09:10Z，用量 输入 120，写缓存 90000，读缓存 5000000，输出 20000，花费 $0.200，失败信号：无");
+  const committed = await store.show("item", "a", store.snapshot().head) as Item;
+  assert.deepEqual(committed.dispatches, store.snapshot().items.a!.dispatches);
+
+  // The schema holds the same rules for a record edited by hand: a credential on the role, a result of the work, a count.
+  const ended = store.snapshot().items.a!.dispatches![0]!;
+  const broken: Array<[string, unknown, RegExp]> = [
+    ["a credential", { ...ended, credential: "0".repeat(64) }, /credential: an architect dispatch is a record only/],
+    ["a result of the work", { ...ended, finish: { ...ended.finish!, result: "一次通过" } }, /result: an architect dispatch ends with 轮次结束/],
+    ["a count", { ...ended, finish: { ...ended.finish!, rounds: 1 } }, /rounds: an architect dispatch carries no counts/],
+  ];
+  assert.equal(Dispatch.safeParse(ended).success, true);
+  for (const [what, record, pattern] of broken) {
+    const parsed = Dispatch.safeParse(record);
+    assert.ok(!parsed.success, what);
+    assert.match(parsed.error.issues.map(issue => issue.message).join("; "), pattern, what);
+  }
+});
+
+test("an architect's turns are listed apart in the summary: in the count, the minutes and the cost, in no result, rework share or mean", async t => {
+  const { store, op } = await clocked(t);
+  await op.dispatchStart({ ...start, agentId: "w1", agent: "w1", startedAt: "2026-10-16T08:00Z" });
+  await op.dispatchFinish({ ...finish, agentId: "w1", result: "返工后通过", cost: 0.25, reports: 1, kickbacks: 2, endedAt: "2026-10-16T08:30Z", signals: [] });
+  // Two turns of 10 and 5 minutes, and one still running.
+  await op.dispatchStart({ ...turnStart, agentId: "t1", startedAt: "2026-10-16T08:10Z" });
+  await op.dispatchFinish({ ...turnEnd, agentId: "t1", cost: 0.2, endedAt: "2026-10-16T08:20Z" });
+  await op.dispatchStart({ ...turnStart, agentId: "t2", startedAt: "2026-10-16T08:40Z" });
+  await op.dispatchFinish({ ...turnEnd, agentId: "t2", cost: 0.1, endedAt: "2026-10-16T08:45Z" });
+  await op.dispatchStart({ ...turnStart, agentId: "t3", startedAt: "2026-10-16T09:00Z" });
+  const rows = dispatchRows(store.snapshot()), report = dispatchReport(rows, true);
+  // Four dispatches (one running) and $0.550 are counted; the one result is the engineer's, so the share is 1 of 1 and the mean is its own 2 kickbacks.
+  assert.match(report, /^合计：派活 4（进行中 1） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 0（共 0 分钟，不算上面四种结果） · 架构师轮次 2（共 15 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 2\.00 · 平均轮数 - · 花费 \$0\.550/);
+  const byRole = section(report, "按角色");
+  assert.match(byRole, /^工程师：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · .* · 架构师轮次 0（共 0 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 2\.00 · 平均轮数 - · 花费 \$0\.250$/m);
+  assert.match(byRole, /^架构师：派活 3（进行中 1） · 一次通过 0 · 返工后通过 0 · 换人 0 · 放弃 0 · 放下等待 0（共 0 分钟，不算上面四种结果） · 架构师轮次 2（共 15 分钟，不算上面四种结果） · 返工比例 - · 平均打回 - · 平均轮数 - · 花费 \$0\.300$/m);
+  // The level tally has them too (all three turns were level 5), and the rows line each turn with its one result and no counts.
+  assert.match(section(report, "按等级"), /^5 级：派活 3（进行中 1） · .* · 架构师轮次 2（共 15 分钟，不算上面四种结果） · 返工比例 - /m);
+  assert.match(report, /· a · 会话 架构师轮次（号 t1） · 架构师 · 5 级 Fable max · 轮次结束 · 失败信号：无 · 用量 /);
+  assert.equal(dispatchRows(store.snapshot(), { role: "架构师" }).length, 3, "the role is a filter too");
+  const total = summarize(rows).total;
+  assert.deepEqual({ n: total.n, turns: total.turns, ended: total.rework.ended, kick: total.kickbacks, rounds: total.rounds, cost: total.costMilli }, { n: 4, turns: { count: 2, ms: 15 * 60_000 }, ended: 1, kick: { sum: 2, n: 1 }, rounds: { sum: 0, n: 0 }, cost: 550 });
 });
 
 test("an empty selection says so instead of printing zero tables", () => {
@@ -392,7 +469,7 @@ test("the three tools round-trip over MCP, with the refusal text reaching the ca
   const ended = await call("dispatch_finish", finish);
   assert.equal(ended.isError, undefined, text(ended));
   const report = text(await call("dispatches", { rows: true }));
-  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 0（共 0 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.365/);
+  assert.match(report, /^合计：派活 1（进行中 0） · 一次通过 0 · 返工后通过 1 · 换人 0 · 放弃 0 · 放下等待 0（共 0 分钟，不算上面四种结果） · 架构师轮次 0（共 0 分钟，不算上面四种结果） · 返工比例 100%（1\/1） · 平均打回 1\.00 · 平均轮数 - · 花费 \$0\.365/);
   assert.match(report, /2026-10-16T09:02Z–2026-10-16T09:50Z · a · 会话 a-worker（号 agent-0001） · 工程师 · 2 级 Sonnet xhigh · 报告 3 次，打回 1 次 · 返工后通过/);
   assert.match(text(await call("dispatches", { filters: { id: "b" } })), /No dispatches\./);
   const unknown = await call("dispatches", { filters: { id: "nope" } });

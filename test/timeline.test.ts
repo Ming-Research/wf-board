@@ -374,3 +374,45 @@ test("the tool answers for one item with the line of each agent it went through,
   assert.match(bad.text, /choose an existing item/);
   assert.equal((await call({ limit: 0 })).error, true, "a limit under 1 is refused");
 });
+
+test("an architect's turn recorded as a dispatch has its own line of work next to the engineer's, which stays as it was", async t => {
+  const { store, op, setClock } = await clocked(t);
+  const at = "2026-10-19T12:00:00Z";
+  const server = createMcpServer({ store, ops: op, now: () => at });
+  const client = new Client({ name: "t", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  t.after(async () => { await client.close(); await server.close(); });
+  const call = async (args: Record<string, unknown>) => ((await client.callTool({ name: "timeline", arguments: args })).content as Array<{ text: string }>)[0]!.text;
+  const report = (id: string, state: RunnerState, when: string, extra: object = {}) => { setClock(when); return op.reportState({ ...asArchitect, id, state, ...extra } as Parameters<typeof op.reportState>[0]); };
+  // The engineer works from 09:00, waits for CI from 09:30 and for the architect from 10:00. The architect answers in a turn from 10:10 to 10:30,
+  // and a second turn begins at 11:00 and is still going: the runner records each with the role 架构师.
+  setClock("2026-10-19T09:00:00Z");
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "工程师", level: 2, model: "Sonnet", agent: "eng-a", agentId: "eng-a-id", startedAt: "2026-10-19T09:00:00Z" });
+  await report("a", "running", "2026-10-19T09:00:00Z", { startedAt: "2026-10-19T09:00:00Z" });
+  await report("a", "ci", "2026-10-19T09:30:00Z");
+  await report("a", "ask", "2026-10-19T10:00:00Z", { to: "architect" });
+  setClock("2026-10-19T10:10:00Z");
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "架构师", level: 5, model: "Fable", agent: "架构师轮次", agentId: "turn-1", startedAt: "2026-10-19T10:10:00Z" });
+  setClock("2026-10-19T10:30:00Z");
+  await op.dispatchFinish({ ...asArchitect, id: "a", agentId: "turn-1", result: "轮次结束", usage: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, cost: 0.2, endedAt: "2026-10-19T10:30:00Z" });
+  setClock("2026-10-19T11:00:00Z");
+  await op.dispatchStart({ ...asArchitect, id: "a", role: "架构师", level: 5, model: "Fable", agent: "架构师轮次", agentId: "turn-2", startedAt: "2026-10-19T11:00:00Z" });
+
+  assert.equal(await call({ id: "a" }), [
+    "a · 中文检查 · 经过 3 个代理",
+    "eng-a（工程师，难度 2） · 共 3 小时（10-19 09:00Z 起，还在跑）",
+    "合计：干活 30 分钟 · 等 CI 30 分钟 · 等架构师 2 小时",
+    "  10-19 09:00Z · 干活 · 30 分钟",
+    "  10-19 09:30Z · 等 CI · 30 分钟",
+    "  10-19 10:00Z · 等架构师 · 2 小时 · 还在这里",
+    "架构师轮次（架构师，难度 5） · 共 20 分钟（10-19 10:10Z 起，结束于 10-19 10:30Z，轮次结束）",
+    "合计：干活 20 分钟",
+    "  10-19 10:10Z · 干活 · 20 分钟",
+    "架构师轮次（架构师，难度 5） · 共 1 小时（10-19 11:00Z 起，还在跑）",
+    "合计：干活 1 小时",
+    "  10-19 11:00Z · 干活 · 1 小时 · 还在这里",
+  ].join("\n"), "the engineer's line is the same with turns beside it; each turn is one stretch of work, the finished one to its end, the open one to now");
+  const all = (await call({})).split("\n");
+  assert.ok(all.some(row => /^ {2}a · .* · 架构师轮次（架构师，难度 5） · 现在干活 1 小时 · 共 1 小时（干活 1 小时）$/.test(row)), "the turn still going is among the agents running");
+  assert.ok(all.some(row => /^ {2}a · .* · 架构师轮次（架构师，难度 5） · 结束于 10-19 10:30Z，轮次结束 · 共 20 分钟（干活 20 分钟）$/.test(row)), "the finished one among those that ended lately");
+});

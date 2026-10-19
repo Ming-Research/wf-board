@@ -88,6 +88,13 @@ test("a session no dispatch record names is not listed, whatever it wrote: the p
   assert.deepEqual(rowsOf(snap({ a: item() }, { observer: wrote(["a", 2]) })), [], "with no dispatch record at all the list is empty");
 });
 
+test("a record of an architect's turn names no row, whatever the session name and whatever it wrote; the engineer on the same item keeps its own", () => {
+  const turn = (agent: string) => dispatch(agent, minutesAgo(5), { role: "架构师", level: 5 });
+  const asked = snap({ a: item([], { dispatches: [dispatch("eng", minutesAgo(30)), turn("架构师轮次")] } as Partial<Item>) }, { eng: wrote(["a", 5]), "架构师轮次": wrote(["a", 1]) });
+  assert.deepEqual(rowsOf(asked).map(r => r.name), ["eng"], "the turn drew a record for its line, not a row");
+  assert.deepEqual(rowsOf(snap({ b: item([], { dispatches: [turn("odd-name")] } as Partial<Item>) }, { "odd-name": wrote(["b", 1]) })), [], "the role decides, not the name");
+});
+
 test("a step in progress decides the state word: waiting with its text, working, maybe stopped, or none", () => {
   const doing = (waits?: string) => item([{ id: "w", text: "work", state: "doing", ...(waits ? { waits } : {}) }, { id: "accept", text: "ok", state: "todo" }]);
   const s = snap({ idle: item([{ id: "w", text: "work", state: "done" }]), run: doing(), wait: doing("PR 草稿 CI"), named: dispatched("fresh", "stale", "nothing", "quick", "long", "longer") }, {
