@@ -1,0 +1,58 @@
+name: noise-14900k
+# The noise floor of a small fixed job on the 14900K (scripts/bench-noise.ts): pairs of the same pinned command timed against its
+# own twin, in rounds. It runs only when started by hand (`gh workflow run noise-14900k.yml --ref main`), never on a push or a
+# pull request: a timing job needs the machine to itself. Run it again whenever the machine, its settings or the toolchain change.
+on:
+  workflow_dispatch:
+    inputs:
+      pairs:
+        description: Pairs timed in each round (2 more are timed first and dropped)
+        default: "30"
+      rounds:
+        description: Rounds; the noise floor is the widest interval of the rounds
+        default: "5"
+      cpu:
+        description: The P core the job is pinned to (never 0)
+        default: "2"
+concurrency:
+  # One run at a time on the machine, and none is cut off: a timing run that is replaced says nothing.
+  group: noise-14900k
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  noise:
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # What the run is read against: a floor measured with the governor, the turbo setting or another load on the machine
+      # different from the usual one is not the machine's floor. A file the kernel does not offer reads "unavailable".
+      - name: Machine state
+        run: |
+          read_or() { cat "$1" 2>/dev/null || echo unavailable; }
+          echo "cpu: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+          echo "kernel: $(uname -sr)"
+          echo "uptime: $(uptime -p)"
+          echo "load: $(read_or /proc/loadavg)"
+          echo "no_turbo: $(read_or /sys/devices/system/cpu/intel_pstate/no_turbo)"
+          for n in $(seq 0 15); do
+            d=/sys/devices/system/cpu/cpu$n/cpufreq
+            echo "cpu$n: governor $(read_or $d/scaling_governor), $(read_or $d/scaling_cur_freq) kHz now, $(read_or $d/cpuinfo_max_freq) kHz at most"
+          done
+          echo "node: $(node --version)"
+      - name: Measure the noise floor
+        env:
+          PAIRS: ${{ inputs.pairs }}
+          ROUNDS: ${{ inputs.rounds }}
+          CPU: ${{ inputs.cpu }}
+        run: |
+          out="$RUNNER_TEMP/noise.txt"
+          status=0
+          node scripts/bench-noise.ts --pairs "$PAIRS" --rounds "$ROUNDS" --cpu "$CPU" > "$out" || status=$?
+          cat "$out"
+          { echo "### Noise floor (pairs $PAIRS, rounds $ROUNDS, cpu $CPU)"; echo '```'; cat "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
