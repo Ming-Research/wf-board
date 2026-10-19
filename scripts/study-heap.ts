@@ -222,7 +222,8 @@ const stages: Record<string, (c: Ctx) => Promise<Record<string, unknown>>> = {
     for (const [name, text] of Object.entries(styles)) {
       const value = parse(text, OPTS) as { k: string };
       const chars = value.k.length;
-      const r = await retained(() => Array.from({ length: 300 }, () => parse(text, OPTS)));
+      // Each copy has a source of its own (a comment line makes it differ), as every file of the board does.
+      const r = await retained(() => Array.from({ length: 300 }, (_, i) => parse(`${text}# ${i}\n`, OPTS)));
       const before = r.retainedMB;
       r.value.forEach(v => JSON.stringify(v));
       const after = sinceBase(r.base);
