@@ -318,33 +318,37 @@ test("the affected walk reaches what an owner's status moves for, though the pau
   assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
 });
 
-/** Six writes on a copy of `start`, each state's Rules built from the one before, in the same minute, as the daemon's are: the
- * path a chain of states would take. A plain function, so that no temporary of its own outlives it: a suspended async function
- * keeps its registers, which may still hold a value the code no longer names. */
-function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: number): { first: WeakRef<Snapshot>; firstRules: WeakRef<Rules>; last: Snapshot } {
+/** `writes` writes on a copy of `start`, each state's Rules built from the one before in the same minute, as the daemon's are:
+ * the path a chain of states would take. A plain function, so that no temporary of its own outlives it (a suspended async
+ * function keeps its registers). Every state and Rules object is returned only weakly, with the newest state. */
+function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: number, writes: number): { states: WeakRef<Snapshot>[]; rules: WeakRef<Rules>[]; last: Snapshot } {
   // Each state is a new object, as each published snapshot is (a copy, since the store holds its own).
   let state: Snapshot = { ...start, items: { ...start.items } };
-  const first = new WeakRef(state), firstRules = new WeakRef(cache.rules(state, at));
-  for (let k = 0; k < 6; k++) {
+  const states = [new WeakRef(state)], made = [new WeakRef(cache.rules(state, at))];
+  for (let k = 1; k <= writes; k++) {
     const next: Snapshot = { ...state, items: { ...state.items } };
     cache.follows(next, state, [{ kind: "item", id }]);
-    assert.equal(rebuiltBecause(cache.rules(next, at)), null, `state ${k + 1} reused the rules before it`);
+    const r = cache.rules(next, at);
+    assert.equal(rebuiltBecause(r), null, `state ${k} reused the rules before it`);
+    states.push(new WeakRef(next)); made.push(new WeakRef(r));
     state = next;
   }
-  return { first, firstRules, last: state };
+  return { states, rules: made, last: state };
 }
 test("the shared cache holds the state before the newest one and none older, however many writes follow", async t => {
   setFlagsFromString("--expose-gc");
   const collect = runInNewContext("gc") as () => void;
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
-  const cache = new DerivedCache();
-  // Only the newest state is held here; the first state and its Rules only weakly.
-  const { first, firstRules, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now());
+  const cache = new DerivedCache(), writes = 50;
+  const { states, rules: made, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now(), writes);
   // A WeakRef keeps its target until the current job ends.
   await new Promise(resolve => setImmediate(resolve));
   collect();
-  assert.equal(firstRules.deref(), undefined, "the first state's Rules object was collected: no later one holds it");
-  assert.equal(first.deref(), undefined, "the first state was collected: neither the cache's step nor a later Rules object leads back to it");
+  // A chain keeps every earlier state and Rules object; the cache holds the newest and the one before it. A stray reference
+  // outside the cache (the test's own frames) may keep one more, so three are allowed of the 51.
+  const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
+  assert.ok(alive(made) <= 3, `${alive(made)} of ${writes + 1} Rules objects are still reachable after a collection`);
+  assert.ok(alive(states) <= 3, `${alive(states)} of ${writes + 1} states are still reachable after a collection`);
   assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
 });
 
