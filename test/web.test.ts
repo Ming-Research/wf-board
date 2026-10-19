@@ -1609,6 +1609,8 @@ async function structureScenario(reverts: Revert[] = []) {
     {what:"a log entry and the unread list emptied",docs:[{kind:"item",id:"p2",after:{...it("p2"),log:[{at,text:"more"}]}}],keeps:true,steps:[]},
   ];
   const differences:string[]=[], wrong:string[]=[];
+  // The comparison would see nothing if the view held no stop buttons: these are what the order of the stops shows in.
+  if (!/下一条（\d\/\d）/.test(seen(p)) || !/去发送/.test(seen(p))) differences.push("setup: the open item shows no 下一条 and 去发送 buttons");
   for (const [k,{what,docs,keeps,steps}] of changes.entries()) {
     const was={structure:p.marks.get("board:structure") ?? 0,stops:p.marks.get("board:stops") ?? 0};
     const items={...s.items}, decisions={...s.decisions};
@@ -1618,7 +1620,9 @@ async function structureScenario(reverts: Revert[] = []) {
     }
     s={...s,items,decisions};
     if (steps) list=steps;
-    await p.change(String(k+1).repeat(40),docs.map(doc=>({...doc,after:doc.after && (doc.kind === "item" ? items : decisions as Record<string,unknown>)[doc.id]}))); await p.flush();
+    // A page that kept what it should not can fail on the stale ids; that is a difference too.
+    try { await p.change(String(k+1).repeat(40),docs.map(doc=>({...doc,after:doc.after && (doc.kind === "item" ? items : decisions as Record<string,unknown>)[doc.id]}))); await p.flush(); }
+    catch { differences.push(what); continue; }
     const fresh=await opened();
     if (seen(p) !== seen(fresh)) differences.push(what);
     const rebuilt=(p.marks.get("board:structure") ?? 0)-was.structure, stops=(p.marks.get("board:stops") ?? 0)-was.stops;
