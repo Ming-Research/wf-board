@@ -1553,7 +1553,9 @@ of a rule added to each.
   验收步骤待补, 缺难度 (its status is never todo or idle, so `canStart` is false).
   Raised as before:
   无人推进 when it has a step in progress and nothing moved for an hour, 在等文字,
-  依赖成环, 依赖的条目已取消, 缺标签, 标题超长, 暂停冲突. New, refused when
+  依赖成环, 依赖的条目已取消, 缺标签, 标题超长. 暂停冲突 stays for a standing item
+  that waits for a paused ordinary item (reported on that ordinary item); a row between two standing
+  items raises none (Rows, above). New, refused when
   introduced (`waits-on-standing`): a row of an ordinary item that owns or shares a standing item,
   because the other never completes and the row can never be resolved. The test of a
   dependency (could the row finish if the other never did?) says the row is not a
