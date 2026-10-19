@@ -290,7 +290,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     const owner = r.parentOf(id)!;
     queued.set(owner, (queued.get(owner) ?? 0) + 1);
   }
-  const progress = listed.map(id => ({ id, ...numOf(s.items[id]!), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
+  const progress = listed.map(id => ({ id, ...numOf(s.items[id]!), ...(s.items[id]!.standing ? { standing: true } : {}), ...tagsOf(s.items[id]!), ...difficultyOf(s.items[id]), title: s.items[id]!.title, ...progressLines(id) }));
   return { ...result, progress, queued: [...queued].map(([owner, count]) => ({ owner, ...numOf(s.items[owner]!), title: s.items[owner]!.title, count })) };
 }
 /** Glossaries in board project order: one project's, or every project's that holds a term. */

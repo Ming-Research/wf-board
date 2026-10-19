@@ -10,7 +10,7 @@ import { rules, checkKey } from "../src/rules.ts";
 import { boardTags, tagApplies } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
-import { seedBoard } from "./e2e/seed.ts";
+import { seedBoard, addArchitectProject } from "./e2e/seed.ts";
 import { asArchitect } from "./helpers.ts";
 
 /** What a reader of the board sees of every item that the mark must not change: its status, whether it is needed and startable, its checks and what it waits on. */
@@ -28,6 +28,7 @@ test("marking the rule items standing changes nothing about any other item of a 
   const gen = generateBoard(1);
   const { store } = await seedBoard(dir, gen);
   const op = ops(store, () => new Date().toISOString());
+  await addArchitectProject(op, store);
   const s0 = store.snapshot(), group = s0.items[gen.witness.unpaused]!.group;
   // Tags are required of a new item when the vocabulary offers its project one.
   const tag = boardTags(s0.board).find(x => tagApplies(x, group)), tags = tag ? { tags: [tag.name] } : {};

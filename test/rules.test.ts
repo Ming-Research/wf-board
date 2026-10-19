@@ -1006,6 +1006,8 @@ test("every kind of check is registered once under a fixed id, and a board that 
     pausedTarget: { paused: { reason: "Owner deferred", at: T1 } }, pauseWaiter: { plan: workPlan([shared("pausedTarget")]) },
     engineer: held({ plan: workPlan([step("work")]) }),
     quiet: { plan: workPlan([step("work", "doing")]) },
+    // An ordinary item that waits for a standing one, and one that owns a standing one.
+    promise: { standing: true, plan: [] }, waitsForPromise: { plan: workPlan([shared("promise")]) },
   }, { "loose-card": { item: "cards" } });
   s.items.noPlan!.plan = [];
   s.board.tags = [{ name: "标签", meaning: "For the second project", projects: ["Second"] }];
@@ -1024,7 +1026,7 @@ test("check ids are words in lower case, labels are never shared, and the kinds 
   assert.equal(new Set(labels).size, labels.length, "one label names one kind");
   assert.ok(!labels.includes(CHECK_LABEL), "the label of a check with none is not any kind's");
   const refused = Object.entries(CHECK_KINDS).filter(([, kind]) => "refused" in kind).map(([id]) => id).sort();
-  assert.deepEqual(refused, ["dep-card-missing", "dep-cycle", "dep-item-missing", "no-acceptance", "owned-across-projects", "owned-by-many", "unowned-but-awaited"]);
+  assert.deepEqual(refused, ["dep-card-missing", "dep-cycle", "dep-item-missing", "no-acceptance", "owned-across-projects", "owned-by-many", "unowned-but-awaited", "waits-on-standing"]);
 });
 
 test("a check is the same check by its id and what it points at, whatever its text says", () => {

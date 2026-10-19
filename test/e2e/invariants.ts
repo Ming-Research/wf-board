@@ -8,6 +8,7 @@ import { rules } from "../../src/rules.ts";
 import type { Rules } from "../../src/rules.ts";
 import { unreadSteps } from "../../src/history.ts";
 import { boardTags, tagApplies } from "../../src/model.ts";
+import { addArchitectProject } from "./seed.ts";
 import type { Snapshot } from "../../src/model.ts";
 import type { Store } from "../../src/store.ts";
 import type { BoardPage, BoardServer } from "./harness.ts";
@@ -339,6 +340,7 @@ export async function checkProgressBands(bp: BoardPage, o: Oracle): Promise<stri
 export async function seedStanding(board: BoardServer): Promise<void> {
   const s = board.store.snapshot();
   if (s.items["standing-probe"]) return;
+  await addArchitectProject(board.ops, board.store);
   const group = s.items[board.gen.witness.unpaused]!.group;
   // Tags are required of a new item when the vocabulary offers its project one.
   const tag = boardTags(s.board).find(x => tagApplies(x, group));

@@ -83,7 +83,8 @@ test("update_item marks an item standing and ordinary again, logging what it tak
   assert.match(back.log.at(-1)!.text, /改为普通条目：状态由计划推导/);
   const r = rules(store.snapshot());
   assert.equal(r.statusOf("perf"), "todo");
-  assert.deepEqual(r.checks("perf").map(c => c.id), ["difficulty-missing"]);
+  // Ordinary again: only its acceptance row is left, and it has no rating.
+  assert.deepEqual(r.checks("perf").map(c => c.id).sort(), ["difficulty-missing", "only-acceptance-left"]);
   assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 

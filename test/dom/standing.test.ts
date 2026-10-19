@@ -6,12 +6,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { boardTags, tagApplies } from "../../src/model.ts";
 import { startBoard } from "../e2e/board-server.ts";
+import { addArchitectProject } from "../e2e/seed.ts";
 import { DomPage } from "./page.ts";
 
 const architect = { author: "Architect", session: "架构师" };
 
 test("a standing item shows the 常设 tag in the tree and the detail and no count of rows done, and the standing item under it a ∞ row", async t => {
-  const board = await startBoard(t), bp = await DomPage.open(t, board);
+  const board = await startBoard(t);
+  await addArchitectProject(board.ops, board.store);
+  const bp = await DomPage.open(t, board);
   const s = board.store.snapshot(), group = s.items[board.gen.witness.unpaused]!.group;
   // Tags are required of a new item when the vocabulary offers its project one.
   const tag = boardTags(s.board).find(x => tagApplies(x, group)), tags = tag ? { tags: [tag.name] } : {};
