@@ -52,11 +52,22 @@ export function changesSection(head: string | undefined): string {
   }
   return out.join("\n");
 }
-/** The word that makes a plan step a merge row, together with a PR it names (src/query.ts mergeRowPulls). */
+/** The word a merge row of a plan with no `merge` stage row starts with (isMergeRow). */
 export const MERGE_WORD = "合入";
-/** A plan step that may be a merge row: not done, not dropped, not an acceptance step, and it says 合入. */
-export function isOpenMergeStep(row: PlanRow): row is PlanStep {
-  return "text" in row && !row.accept && (row.state === "todo" || row.state === "doing") && row.text.includes(MERGE_WORD);
+/**
+ * Whether a plan step is a merge row of its plan, the row the board marks done when the pull request it names merges: the stage row
+ * `merge` (`merge-2` and up for the rounds that going back appends, `stageOf`), or, in a plan that has no such row, a step whose
+ * text starts with 合入. An acceptance step is never one, and a step that only mentions a merge is not: the online check ("合入后……")
+ * and a step that waits for another pull request both name pull requests and say 合入 (docs/design.md, Watching GitHub, Merge rows).
+ */
+export function isMergeRow(row: PlanRow, plan: readonly PlanRow[]): row is PlanStep {
+  if (!("text" in row) || row.accept) return false;
+  if (stageOf(row)?.kind === "merge") return true;
+  return !plan.some(other => stageOf(other)?.kind === "merge") && row.text.trimStart().startsWith(MERGE_WORD);
+}
+/** A merge row that is not done and not dropped. */
+export function isOpenMergeStep(row: PlanRow, plan: readonly PlanRow[]): row is PlanStep {
+  return isMergeRow(row, plan) && (row.state === "todo" || row.state === "doing");
 }
 /** Of the PRs a merge row names, those that count: the ones the item's 改动 section names as well. A line that waits for another PR to merge names it too, and that PR is not its own. */
 export function countedPulls(inRow: readonly string[], inChanges: readonly string[]): string[] {

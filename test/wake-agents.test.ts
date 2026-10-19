@@ -383,33 +383,49 @@ test("a merge row turning done tells the architect of an open waiter nobody hold
   assert.deepEqual(architect.events().map(f => f.event), ["dep-merged"], "and the architect's socket was sent it");
 });
 
-test("what is not a merge row turning done tells nobody: a row naming no PR its 改动 section names, a dropped row, a waiter that is done or paused", async t => {
+test("what is not a merge row turning done tells nobody: a row naming no PR its 改动 section names, a step that only says 合入, a dropped row, a waiter that is done or paused", async t => {
   const wake = new Wake({ now: () => T0 });
   const { url, op, store } = await server(t, { wake });
   await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
   const architect = await agentSocket(t, url, ARCHITECT_SESSION);
-  // A PR the 改动 section does not name, and a row that does not say 合入.
+  // A PR the 改动 section does not name.
   await openMergeRow(op, store, "合入 Ming-Research/Whitefoot#8");
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge", text: "合入 Ming-Research/Whitefoot#8", state: "done" } });
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "check", text: "确认 Ming-Research/Whitefoot#7 没问题", state: "doing" } });
   await op.setPlan({ ...asArchitect, id: "a", row: { id: "check", text: "确认 Ming-Research/Whitefoot#7 没问题", state: "done" } });
+  // A step that says 合入 and names the PR but is not the merge row: a plan that has one, an online check and a step that waits for another merge.
+  for (const [id, text] of [["verify", "合入后线上验证 Ming-Research/Whitefoot#7"], ["ship", "合入 Ming-Research/Whitefoot#7"], ["wait", "前半已验：Ming-Research/Whitefoot#7 合入，等 Ming-Research/Whitefoot#9 合入"]] as const) {
+    await op.setPlan({ ...asArchitect, id: "a", row: { id, text, state: "doing" } });
+    await op.setPlan({ ...asArchitect, id: "a", row: { id, text, state: "done" } });
+  }
   // A dropped row did not merge.
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "later", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "later", text: "合入 Ming-Research/Whitefoot#7", state: "dropped", reason: "不做了" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-2", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-2", text: "合入 Ming-Research/Whitefoot#7", state: "dropped", reason: "不做了" } });
   await architect.sync();
   assert.equal(had(wake, "b-worker"), 0, "none of these told the holder of b");
   // A waiter that is paused is not waiting on anyone: nothing is told for it, held or not.
   await op.setPause({ ...asArchitect, id: "b", paused: true, reason: "waits for the owner" });
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge2", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-3", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-3", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
   await architect.sync();
   assert.equal(had(wake, "b-worker"), 0, "b is paused");
   assert.equal(had(wake, ARCHITECT_SESSION), 0, "and it is not the architect's to hear of either");
   // The same row shape once b is open again is told, so the silences above are the conditions' and not a push that never works.
   await op.setPause({ ...asArchitect, id: "b", paused: false });
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
-  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge3", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-4", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "merge-4", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
   await until(() => had(wake, "b-worker") === 1, "the push once b is open");
+});
+
+test("a row of an old plan that starts with 合入 and names the PR is a merge row when the plan has no merge stage row", async t => {
+  const wake = new Wake({ now: () => T0 });
+  const { op, store } = await server(t, { wake });
+  await op.dispatchStart({ ...asArchitect, id: "b", role: "工程师", level: 2, model: "Sonnet", agent: "b-worker", agentId: "agent-1" });
+  await op.updateItem({ author: "Whitefoot", id: "a", rev: store.snapshot().items.a!.rev, head: "背景\n\n## 改动\n\nMing-Research/Whitefoot#7", reason: "name the PR" });
+  // The row's id is not a stage's: only its text makes it the merge row.
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "ship", text: "合入 Ming-Research/Whitefoot#7", state: "doing" } });
+  await op.setPlan({ ...asArchitect, id: "a", row: { id: "ship", text: "合入 Ming-Research/Whitefoot#7", state: "done" } });
+  await until(() => had(wake, "b-worker") === 1, "the dep-merged push");
 });
 
 test("the pools count the candidates a group stands for and those past the rows listed, as the independent count does", async t => {
