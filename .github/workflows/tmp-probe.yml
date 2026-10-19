@@ -31,8 +31,8 @@ jobs:
       - env:
           PROBE_PHASE: ${{ matrix.phase }}
           PROBE_JOB: ${{ matrix.job }}
-          PROBE_ARMS: cyclic4,balanced4,cyclic3,balanced3,cyclic4-minor,cyclic4-major
-          PROBE_ROUNDS: 2
+          PROBE_ARMS: cyclic4,balanced5-minor,cyclic5-minor
+          PROBE_ROUNDS: 3
           PROBE_OUT: probe.json
         run: node --test --test-concurrency=1 test/nkey/tmp-probe.nkey.ts
       - if: ${{ !cancelled() }}

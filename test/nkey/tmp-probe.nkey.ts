@@ -12,31 +12,36 @@ import type { Press } from "./press.ts";
 import { SLOW_DRAW, lap, log, startLane } from "./lane.ts";
 
 setFlagsFromString("--expose-gc");
+// A page meant to be about 2% slower: each draw takes PROBE_D2_MS more.
+const D2_MS = Number(process.env.PROBE_D2_MS ?? 1.5);
+const D2_DRAW = SLOW_DRAW.map(r => ({ ...r, edit: `a draw takes ${D2_MS} ms more`, replace: r.replace.replace("< 15", `< ${D2_MS}`) }));
 const gc = runInNewContext("gc") as (o?: { type: "minor" | "major"; execution?: "sync" }) => void;
 
 type Gc = { at: number; dur: number; kind: number };
 const gcs: Gc[] = [];
 new PerformanceObserver(list => { for (const e of list.getEntries()) gcs.push({ at: e.startTime, dur: e.duration, kind: (e as any).detail?.kind ?? 0 }); }).observe({ entryTypes: ["gc"] });
 
-/** Round orders that repeat with a period: cyclic rotation (the lane's), or a cycle in which each window follows each other once. */
+/** Round orders that repeat with a period: cyclic rotation (the lane's), or a cycle of n-1 rounds in which each window follows
+ * each other window exactly once, the boundaries between rounds and the wrap from the last round to the first included. */
 function orders(n: number, kind: string): number[][] {
   const ids = [...Array(n).keys()];
   if (kind === "cyclic") return ids.map(r => [...ids.slice(r), ...ids.slice(0, r)]);
-  // balanced: search a cycle of n-1 permutations whose transitions (with the boundaries, cyclically) cover each ordered pair once.
-  const perms: number[][] = [];
-  const permute = (a: number[], k: number) => { if (k === a.length) { perms.push([...a]); return; } for (let i = k; i < a.length; i++) { [a[k], a[i]] = [a[i]!, a[k]!]; permute(a, k + 1); [a[k], a[i]] = [a[i]!, a[k]!]; } };
-  permute([...ids], 0);
-  const len = n - 1;
-  const search = (chosen: number[][]): number[][] | undefined => {
-    if (chosen.length === len) {
-      const seq = chosen.flat(), seen = new Set<string>();
-      for (let i = 0; i < seq.length; i++) { const key = `${seq[(i - 1 + seq.length) % seq.length]}>${seq[i]}`; if (seen.has(key)) return undefined; seen.add(key); }
-      return chosen;
+  const seq: number[] = [], used = new Set<string>(), total = n * (n - 1);
+  const step = (): boolean => {
+    if (seq.length === total) return seq[total - 1] !== seq[0] && !used.has(`${seq[total - 1]}>${seq[0]}`);
+    const inRound = seq.slice(seq.length - (seq.length % n));
+    for (const x of ids) {
+      if (inRound.includes(x)) continue;
+      const key = seq.length ? `${seq[seq.length - 1]}>${x}` : "";
+      if (key && (used.has(key) || seq[seq.length - 1] === x)) continue;
+      seq.push(x); if (key) used.add(key);
+      if (step()) return true;
+      seq.pop(); if (key) used.delete(key);
     }
-    for (const p of perms) { const found = search([...chosen, p]); if (found) return found; }
-    return undefined;
+    return false;
   };
-  return search([])!;
+  if (!step()) throw new Error(`no balanced order for ${n} windows`);
+  return Array.from({ length: n - 1 }, (_, r) => seq.slice(r * n, r * n + n));
 }
 
 test("probe: bias and noise of the time layer by press order", { timeout: 30 * 60_000 }, async t => {
@@ -54,11 +59,11 @@ test("probe: bias and noise of the time layer by press order", { timeout: 30 * 6
     roundNo++;
     const m = /^(cyclic|balanced)(\d)(?:-(minor|major))?$/.exec(arm)!;
     const n = Number(m[2]), between = m[3];
-    const labels = n === 4 ? ["base", "twin", "ctrl", "slow"] : n === 3 ? ["base", "twin", "slow"] : ["base", "twin"];
+    const labels = n === 5 ? ["base", "twin", "ctrl", "d2", "slow"] : n === 4 ? ["base", "twin", "ctrl", "slow"] : n === 3 ? ["base", "twin", "slow"] : ["base", "twin"];
     const scope = new Scope();
     try {
       const wins: Press[] = [];
-      for (const label of labels) wins.push(await lane.open(scope, label === "slow" ? { label, reverts: SLOW_DRAW } : { label }));
+      for (const label of labels) wins.push(await lane.open(scope, label === "slow" ? { label, reverts: SLOW_DRAW } : label === "d2" ? { label, reverts: D2_DRAW } : { label }));
       const order = orders(n, m[1]!);
       const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
       const landed: Record<string, number> = Object.fromEntries(wins.map(w => [w.label, 0]));
@@ -68,10 +73,10 @@ test("probe: bias and noise of the time layer by press order", { timeout: 30 * 6
         for (const i of order[p % order.length]!) {
           const win = wins[i]!;
           if (between) { const g0 = perf.now(); gc({ type: between, execution: "sync" }); gcCost += perf.now() - g0; }
-          const t0 = perf.now();
+          const c0 = process.threadCpuUsage(), t0 = perf.now();
           const r = await win.press(writing ? lane.events[win.presses] : undefined);
-          const t1 = perf.now();
-          got.push({ arm, job, round: roundNo, press: p, window: win.label, prev, busy: r.busy, t0, t1, landed: r.item !== null && r.item !== was[win.label] });
+          const t1 = perf.now(), c1 = process.threadCpuUsage(c0);
+          got.push({ arm, job, round: roundNo, press: p, window: win.label, prev, busy: r.busy, cpu: (c1.user + c1.system) / 1000, t0, t1, landed: r.item !== null && r.item !== was[win.label] });
           was[win.label] = r.item; prev = win.label;
         }
         if (got.every(g => g.landed)) { for (const g of got) { g.landing = landed.base; rows.push(g); } for (const w of wins) landed[w.label]!++; }
