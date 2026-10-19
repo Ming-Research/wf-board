@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stamped, startupLogger, stopwatch, timestampLogs } from "../src/log.ts";
+import { stamped, startupLogger, startupMemory, stopwatch, timestampLogs } from "../src/log.ts";
 
 const at = new Date("2026-10-16T18:30:00.123Z");
 
@@ -41,4 +41,22 @@ test("a stopwatch reports the time since its previous call under each step", asy
   assert.ok(seen[0]![1] >= 25 && seen[0]![1] < 1000, `the first step waited about 30 ms: ${seen[0]![1]}`);
   assert.ok(seen[1]![1] < seen[0]![1], "the second step started when the first ended");
   assert.doesNotThrow(() => stopwatch()("nobody listens"));
+});
+
+test("the startup memory line gives the time of a full collection, then the heap after it and the resident set", () => {
+  const seen: Array<[string, number, string | undefined]> = [];
+  let collections = 0;
+  startupMemory((step, ms, detail) => seen.push([step, ms, detail]), { collect: () => { collections++; }, heapUsed: () => 55.75 * 1024 * 1024, rss: () => 275.04 * 1024 * 1024 });
+  assert.equal(collections, 1, "the heap is read after a collection, not before");
+  assert.equal(seen.length, 1);
+  assert.deepEqual([seen[0]![0], seen[0]![2]], ["memory", "heap 55.8 MB in use after a full collection, rss 275.0 MB"]);
+  const lines: string[] = [];
+  startupLogger(line => lines.push(line))(...seen[0]!);
+  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap 55\.8 MB in use after a full collection, rss 275\.0 MB\)$/);
+});
+
+test("the startup memory line is a real reading: the process's own heap and resident set, after a collection that runs", () => {
+  const lines: string[] = [];
+  startupMemory(startupLogger(line => lines.push(line)));
+  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap [1-9]\d*\.\d MB in use after a full collection, rss [1-9]\d*\.\d MB\)$/);
 });

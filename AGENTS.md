@@ -22,7 +22,9 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git against them; its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
+  runs git against them, and the one place that parses a YAML document
+  (`parseDocument`, which flattens the strings of its result; design section 4,
+  Parsed documents); its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
 - `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
@@ -35,7 +37,8 @@ matches what the artifact board offered.
   Request budgets.
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
-  line and the start-up step timings.
+  line, the start-up step timings and the start-up memory line (the heap in use
+  after a full collection and the resident set).
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner

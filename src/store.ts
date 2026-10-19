@@ -91,13 +91,23 @@ export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list
 /** Start of the message of the one-time commit that cleared the retired level 「架构师做」; the message goes on with the item count. */
 const CLEAR_LEVEL_MESSAGE = "clear_architect_level";
 
+/** Parses one YAML document the board reads (YAML 1.2, core schema) and returns it with every string a flat copy of its own. The
+ * library's strings are slices of the whole source text, which V8 keeps in full while one slice lives (two bytes a character
+ * for Chinese), or joined one character at a time, each character a node of about 32 bytes until something reads the string; the
+ * documents the store holds are not read as strings, so both stay. `structuredClone` writes each string out flat for 3 to 5% of
+ * the parse's time. Every YAML document the daemon or a CLI reads goes through here, and a test checks that no other source file
+ * imports the library's `parse` (docs/design.md, section 4, Parsed documents). */
+export function parseDocument(text: string): unknown {
+  return structuredClone(parse(text, { version: "1.2", schema: "core" }));
+}
+
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
-// holds and not by how many entries there are: a parsed document takes about 16 times the bytes of its file (a board of
-// 32.7 MB of files is 510 MB of heap once parsed, measured in CI). The count bounds are for reads still pending, whose
-// size is not known yet. Normalization is needed at format boundaries, not for every old commit, so one whole old board
-// is kept.
+// holds and not by how many entries there are: a parsed document takes about 1.4 times the bytes of its file (a board of
+// 21.8 MB of files in the live board's shape is 27 MB of heap once parsed, measured in CI), and the estimate is 2 to leave room
+// for small files, whose objects are a larger part. The count bounds are for reads still pending, whose size is not known yet.
+// Normalization is needed at format boundaries, not for every old commit, so one whole old board is kept.
 const MB = 1024 * 1024;
-const HEAP_PER_FILE_BYTE = 16;
+const HEAP_PER_FILE_BYTE = 2;
 const historicalDocumentBytes = 64 * MB;
 const historicalDocumentEntries = 4096;
 const historicalDiffBytes = 16 * MB;
@@ -470,7 +480,7 @@ export class Store {
     const clearingPriority: Array<{ id: string; priority: unknown }> = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
-        const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
+        const raw = parseDocument(await readFile(join(dir, path), "utf8"));
         if (retiredShape(path, raw)) retired = true;
         if (path.startsWith("items/") && holdsRetiredLevel(raw)) {
           if (!opts.clearArchitectLevel) throw new ValidationError([{ path, issues: RETIRED_LEVEL_REFUSAL }]);
@@ -1359,7 +1369,7 @@ export class Store {
       const blob = await this.blobs.read(key);
       if (blob === null) return { doc: null, size: 0 };
       budget?.readBytes(blob.length);
-      try { return { doc: frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })), size: blob.length }; }
+      try { return { doc: frozen(parseDocument(blob.toString("utf8"))), size: blob.length }; }
       catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
     });
     return doc;
@@ -1383,9 +1393,9 @@ export class Store {
 
   private readonly compared = new ReadCache<Snapshot>(Infinity, comparedSnapshotLimit, () => 0);
   private readonly comparisonAt = new Date().toISOString();
-  /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board costs 2.7 to 3.1
-   * seconds and about 510 MB of heap (measured in CI on a board of the live one's size), so a request may do it once
-   * (`REQUEST_LIMITS.boards`) and one board is kept. */
+  /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board takes seconds (2.7 to 3.1
+   * on a synthetic board of the live one's size, measured in CI) and keeps about 26 MB of heap in the live board's shape, so a request
+   * may do it once (`REQUEST_LIMITS.boards`) and one board is kept. */
   async comparisonSnapshot(commit: string): Promise<Snapshot> {
     const budget = this.budget();
     const hash = await this.resolveCommit(commit);
@@ -1492,7 +1502,7 @@ function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numb
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
-    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? without(withoutRetiredLevel(doc), ["priority"]) : doc; }
+    try { const doc = parseDocument(await readFile(join(dir,path),"utf8")); raw[path] = path.startsWith("items/") ? without(withoutRetiredLevel(doc), ["priority"]) : doc; }
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");

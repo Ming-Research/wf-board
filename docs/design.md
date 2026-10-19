@@ -381,7 +381,10 @@ document hung on: one rebuild took 2.7 to 3.1 s and kept about 510 MB of heap, a
 them stayed until the request ended, and a range with 10 deleted notes ran the heap
 into its 4 GB limit and killed the process, with every session's connection and the
 owner's page (measured in CI on a synthetic board of the live one's size, 18,000
-commits; `scripts/bench-changes.ts`). Three rules follow.
+commits; `scripts/bench-changes.ts`). That board's long texts were single-line quoted
+scalars, which the library parses into the heap-heaviest strings; on a board shaped like
+the live one the same rebuild kept 56 MB, and 26 MB once documents are parsed flat
+(Parsed documents, below). Three rules follow.
 
 1. *Reads follow the range.* The commits of a query are listed from the range
    alone (`store.log({since, at})`), and a time given to `diff` is resolved by git going
@@ -429,8 +432,8 @@ commits; `scripts/bench-changes.ts`). Three rules follow.
    rare and the failure is only a retry.
 
 The history caches are bounded by the heap they are estimated to hold: parsed
-documents 64 MB (16 bytes of heap per byte of file, as the whole-board figures
-measured) and 4096 entries, diffs 16 MB, and one whole old board.
+documents 64 MB (2 bytes of heap per byte of file, as the flat whole-board figures
+measured, Parsed documents below) and 4096 entries, diffs 16 MB, and one whole old board.
 
 *Rejected.* Running history queries in a worker thread with a memory limit works (a
 256 MB limit stopped a runaway allocation in 3.4 to 6.4 s and left the main thread
@@ -440,6 +443,73 @@ no reader stays on the main thread, which is the same test as for budgets. A chi
 process costs more than a thread and isolates more than is needed. A budget costs
 a few counters and stops what actually grew: reading history. A runaway allocation that
 reads no history is not stopped by it.
+
+**Parsed documents.** The daemon keeps every document of the board parsed in memory, and parsed
+documents also fill the history caches. The YAML library's result keeps more heap than the data,
+and the larger part of it is waste (CI, GitHub-hosted runner, Node 24, yaml 2.9.1; every figure is one
+run of one child process with two collections before the heap is read, so it shows an order of
+magnitude, and two runs of the same stage differed by a few percent). Two synthetic boards:
+the live shape, 3,992 files and 21.8 MB, long texts as multi-line `|-` block scalars, about 66% non-ASCII
+bytes (sizes and proportions counted from the live data, none of its content), and the shape of the
+first study, 3,235 files and 19.7 MB, every long text one line ending in a space, which the
+library writes and reads as a double-quoted scalar.
+
+Where the heap stays after a parse, by subtracting stages (strings rebuilt flat; strings replaced
+by empty ones; the files read as strings):
+
+| | live shape | quoted-scalar shape |
+|---|---|---|
+| skeleton of objects and arrays | 5.0 MB | 2.0 MB |
+| string data, flat | about 24.6 MB | about 25.7 MB |
+| source texts pinned by sliced strings | about 28.1 MB | about 26.3 MB |
+| string nodes left by joining character by character | 0 | about 447.9 MB |
+| kept after the parse | 57.7 MB | 501.9 MB |
+
+The library's strings are mostly slices of the source text, and V8 keeps the whole source (two
+bytes a character for Chinese) while one slice lives; a double-quoted scalar on one line is built
+by `res += ch` for each character (read in the library's source), which V8 keeps as a node of about
+32 bytes until something reads the string. A document nobody reads as a string, which is every
+document in the history caches and in a rebuilt board, keeps both. Per character, 300 copies each
+with a source of its own: a one-line double-quoted scalar 41.4 bytes, a block scalar 4.3, a plain
+or single-quoted one 2.0 (the source pinned by slices); flat, 2.5. Objects and the schema check
+are not the cause: the check builds objects and shares the strings, and dropping the history
+cache released 1.2 MB.
+
+`parseDocument` (`src/store.ts`) parses and then runs `structuredClone`, which writes each string out
+flat. On the whole live-shape board it takes 83 ms against a parse of about 2.5 s; the quoted-scalar board 123 ms.
+Rebuilding each string in place took 129 to 545 ms and a JSON round trip 102 to 151 ms. It is
+the one entry for every parse: the start, the history caches, the one-time conversion's reader and the
+conversion command. The copy is safe for every value the core schema yields (strings, numbers,
+booleans, null, arrays and plain objects; read from the code, and a test compares a clone with
+the parse). Kept heap after the copy, with the real code:
+
+| | before | with the copy |
+|---|---|---|
+| `Store.open`, live shape | 62.3 and 66.9 MB | 27.0 MB |
+| `Store.open`, quoted-scalar shape | 604.9 MB | 29.2 MB |
+| whole old board rebuilt, live shape | 56.0 MB | 26.1 MB |
+| the daemon after five page loads, live shape | 83.4 MB | 55.7 MB |
+
+Flat documents measured 1.2 to 1.5 times the bytes of their files, so the history cache weighs a
+document at 2 bytes of heap for each byte of file. The 64 MB bound stays and lets the cache
+hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
+resident memory is mostly not documents: on the live-shape board the process held 309 MB (peak
+438 MB), of which the heap in use was 83.4 MB; a small board of about 100 documents held 153 to 163 MB,
+the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
+has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
+of a full collection and, in the detail, the heap in use after it and the resident set; the live check of
+the heap reads it.
+
+*Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
+checked again in 95 ms on the live shape, JSON 21.3 MB) would cut the 2.6 s the start spends reading
+documents to about 0.2 s, but it is a second copy of the board and a cache that can differ from the
+working tree, and a start of 3.3 s already meets the 5 s the restart item set; the copy does not
+exclude it. js-yaml 4.1.0 parsed the live shape in 465 ms against 2,508 ms and gave the same
+documents (0 differences over 3,992), but kept 54.5 MB against 57.7 MB, so the copy is needed
+with it, and the library would be replaced for the reader while the writer stays. Changing only
+the weight of the cache releases nothing. A cache of source bytes as Buffers (0.7 MB of heap, 48.7 MB
+outside it) parses again on each hit (2,286 ms for the whole board) and does not reach the store's
+own documents.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts

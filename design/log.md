@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Copy each parsed document so that its strings are flat
+
+Nodes: storage, storage/history-reads
+
+Summary: The daemon's parsed documents kept more heap than their data: opening the real store on a synthetic board in the live board's shape (21.8 MB of files) kept 62.3 and 66.9 MB in two CI runs, about half of it the source texts that the library's sliced strings keep alive, and on a board whose long texts are single-line double-quoted scalars 604.9 MB, which the library builds a character at a time (about 32 bytes each until read). The first figure the history cache was weighed by, 16 bytes of heap for each byte of file, was measured on that second shape; the live shape keeps about 2.9. Every YAML document the board reads now goes through one function that copies the parse with `structuredClone`, which writes every string out flat: the same real store keeps 27.0 MB and 29.2 MB, for 83 to 123 ms more on a parse of about 2.5 seconds, and the history cache weighs a parsed document at 2 bytes for each byte of file (flat documents measured 1.2 to 1.5). The node `storage` records the decision with the refused alternatives (rebuilding each string in place or a JSON round trip, a JSON startup cache, js-yaml, and changing only the cache's weight); `storage/history-reads` now says that its half-gigabyte rebuild was the quoted-scalar board's figure. The numbers are in docs/design.md, section 4, Parsed documents.
+
 ## 2026-10-19 Continue the unread list and the daemon's rules from the state before
 
 Nodes: storage, storage/write-path, storage/write-path/rules-reuse, storage/write-path/page-rules-reuse
