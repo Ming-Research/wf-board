@@ -7,11 +7,14 @@
 //   being timed.
 // - A window's press is counted (draws, rebuilds of the board's rules, counts of the filters, markup written, elements made) and
 //   timed (the seconds the event loop was busy from the key until the page was quiet).
-// - Pages that are compared press in turn, in a rotating order, so landing k of every page is one pair.
+// - Pages that are compared open in a random order and press in turn in a random order, both drawn afresh each round, so landing k of
+//   every page is one pair; each window evaluates a source text of its own, and each press starts from an emptied young generation of the heap.
 // - A virtual clock stands in for the page's timers longer than a frame and for the answers a test holds back, so a baseline that
 //   arrives 300 ms late is 300 ms of the clock's time and no real waiting.
 
 import { performance as perf } from "node:perf_hooks";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -26,10 +29,20 @@ import { ROOT } from "../e2e/board-server.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { rewrite } from "../e2e/seed.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { compare, judge, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, reference, twinIsSound } from "./stats.ts";
 import type { Interval, Verdict } from "./stats.ts";
 
 const run = promisify(execFile);
+// The minor collection made before each press. All windows live in one process and share its heap: whichever press fills the young
+// generation pays the collection, so a press would carry the cost of the presses before it, of other windows (docs/design.md, The
+// n-key lane). Emptied before the key, the young generation holds only what the press itself allocates.
+setFlagsFromString("--expose-gc");
+const collect = runInNewContext("gc") as (options: { type: "minor" | "major"; execution: "sync" }) => void;
+/** Windows opened in this process, for a source text of each window's own. */
+let opened = 0;
+/** The seed of the press orders of this run: `NKEY_SEED` to repeat a run, else a new one; the lane logs it. */
+export const ORDER_SEED = Number(process.env.NKEY_SEED ?? Math.floor(Math.random() * 2 ** 31));
+const orderRnd = prng(ORDER_SEED);
 type Fetcher = NonNullable<PageOptions["fetch"]>;
 type Loose = Record<string, any>;
 
@@ -228,7 +241,9 @@ export class Press {
         const every = win.setInterval.bind(win);
         win.setInterval = (fn: unknown, delay: number, ...rest: unknown[]) => delay >= 30_000 ? 0 : every(fn, delay, ...rest);
       },
-      ...(how.page ? { page: how.page } : { reverts: how.reverts ?? [] }),
+      // Each window evaluates a source text of its own. Two windows with the same text share the code V8 compiled for it, and the
+      // one that reaches a function first pays its compilation for both, while a page of other text pays all its own.
+      page: ownSource(how.page ?? { script: await pageScript(how.reverts ?? []), html: await pageHtml(how.reverts ?? []) }),
       ...(how.clock ? { clock: how.clock } : {}),
     };
     const page = await DomPage.open(scope, board, options);
@@ -261,6 +276,7 @@ export class Press {
     this.presses++;
     const live = this.counts;
     Object.assign(live, noCounts());
+    collect({ type: "minor", execution: "sync" });
     const before = perf.eventLoopUtilization();
     this.page.key("n");
     if (event !== undefined) this.page.deliver("change", event);
@@ -268,6 +284,11 @@ export class Press {
     const busy = perf.eventLoopUtilization(before).active;
     return { busy, item: this.selected(), counted: { ...live, full: [...live.full], scopes: [...live.scopes] } };
   }
+}
+
+/** The page with a last line that no other window's text has. */
+function ownSource(page: { script: string; html: string }): { script: string; html: string } {
+  return { script: `${page.script}\n// window ${++opened}\n`, html: page.html };
 }
 
 /** Presses n in `win` until it has landed on `wanted` other items (a press inside the item shown does not count). `events` gives press
@@ -284,14 +305,14 @@ export async function landings(win: Press, wanted: number, events?: readonly (st
   return out;
 }
 
-/** Presses n in each window in turn, the order rotating press by press, until every window has landed `wanted` other items on the same
- * presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
+/** Presses n in each window in turn, in a random order drawn afresh each round (`randomOrder`), until every window has landed `wanted`
+ * other items on the same presses; landing k of every window is then a pair. Windows walk the same list, so they land together. */
 export async function pairedLandings(wins: readonly Press[], wanted: number, events?: readonly (string | undefined)[]): Promise<Record<string, Landing[]>> {
   const out: Record<string, Landing[]> = Object.fromEntries(wins.map(w => [w.label, []]));
   const was: Record<string, string | null> = Object.fromEntries(wins.map(w => [w.label, w.selected()]));
   for (let presses = 0; out[wins[0]!.label]!.length < wanted && presses < 8 * wanted; presses++) {
     if (events && wins[0]!.presses >= events.length) throw new Error(`the walk made ${wins[0]!.presses} presses and there are only ${events.length} change events for them`);
-    const rot = presses % wins.length, order = [...wins.slice(rot), ...wins.slice(0, rot)];
+    const order = randomOrder(wins.length, orderRnd.next).map(k => wins[k]!);
     const got: Array<[string, Landing | null]> = [];
     for (const win of order) {
       const r = await win.press(events?.[win.presses]);
@@ -333,29 +354,27 @@ export function samePage(a: { script: string; html: string }, b: { script: strin
 /** Pairs measured per round, the pairs thrown away at the start of a round while the page warms up, and the rounds at most. */
 export const PAIRS = 30, WARMUP = 2, ROUNDS = 3;
 
-/** `versus`: the window this one is judged against, `base` unless given (a page made slower on purpose is judged against the page it was made from). */
-export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press>; versus?: string }
+export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press> }
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
   /** Busy times of the measured pairs of all rounds, per window. */
   busy: Record<string, number[]>;
   rounds: number;
-  /** Per window other than `base`: its ratio to the window it is judged against (`base` unless it says otherwise) over the pairs; `twin` is the noise of this run. */
+  /** `twin`: the twin's ratio to the base, the noise of this run; every other window: its ratio to the reference, per pair the geometric
+   * mean of base and twin (`reference`). */
   ratios: Record<string, Interval>;
-  /** The window each ratio is against. */
-  versus: Record<string, string>;
   /** The twin's interval over each round's pairs alone. */
   alone: Interval[];
-  /** `sound`: the twin's interval holds 1 within `floor`; per window other than base and twin the verdict. */
+  /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict against the reference. */
   sound: boolean;
   verdicts: Record<string, Verdict>;
   misses: Record<string, number>;
 }
 
-/** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval shows this
- * run's noise within `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
- * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against base. */
+/** Presses the windows in turn over `PAIRS` landings plus the warm-up, in fresh windows each round, until the twin's interval is no
+ * wider than `floor` or `ROUNDS` rounds were made. A round replays the same landings from the same tape; the windows of a round
+ * are closed before the next opens. Windows: `base` first, `twin` its twin, then the pages that are judged against the two. */
 export async function timePhase(windows: readonly PhaseWindow[], floor: number, events?: readonly (string | undefined)[]): Promise<PhaseResult> {
   const busy: Record<string, number[]> = Object.fromEntries(windows.map(w => [w.label, []]));
   const misses: Record<string, number> = Object.fromEntries(windows.map(w => [w.label, 0]));
@@ -367,17 +386,21 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
     rounds++;
     const scope = new Scope();
     try {
-      const open: Press[] = [];
-      for (const w of windows) open.push(await w.open(scope));
+      // The windows open in a random order, and one full collection after the last leaves the objects of all of them in the same
+      // state, so that no window is the one whose page was built first.
+      const opening = randomOrder(windows.length, orderRnd.next), opened: Press[] = [];
+      for (const k of opening) opened[k] = await windows[k]!.open(scope);
+      const open = opened as Press[];
+      collect({ type: "major", execution: "sync" });
       const lands = await pairedLandings(open, WARMUP + PAIRS, events);
       first ??= lands;
       for (const w of open) { misses[w.label]! += w.misses; busy[w.label]!.push(...lands[w.label]!.slice(WARMUP).map(l => l.busy)); }
       alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[windows[0]!.label]!.slice(WARMUP).map(l => l.busy)));
     } finally { await scope.close(); }
-    ratios = Object.fromEntries(windows.slice(1).map(w => [w.label, compare(busy[w.label]!, busy[w.versus ?? windows[0]!.label]!)]));
+    const ref = reference(busy[windows[0]!.label]!, busy.twin!);
+    ratios = { twin: compare(busy.twin!, busy[windows[0]!.label]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, ref)])) };
     sound = twinIsSound(ratios.twin!, floor);
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
-  const versus = Object.fromEntries(windows.slice(1).map(w => [w.label, w.versus ?? windows[0]!.label]));
-  return { first: first!, busy, rounds, ratios, versus, alone, sound, verdicts, misses };
+  return { first: first!, busy, rounds, ratios, alone, sound, verdicts, misses };
 }

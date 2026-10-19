@@ -12,11 +12,12 @@
 //             rules again but derives them from scratch no time except in a new minute and counts the filters of every item no time.
 //   time    – the seconds the event loop was busy from the key until the page was quiet, as the page of this commit over the page of
 //             the base (the merge base, or the commit before a push to the main line), quiet and with a write in each press: pairs
-//             of presses made one after the other in a rotating order, the twin of the base as the control, the 95% interval of the
-//             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval holds 1 within the noise floor;
-//             then an interval wholly above 1 is red, of any size. When it does not count, 30 pairs more are made in fresh windows
-//             (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The absolute 0.2 s is not
-//             held here: jsdom's time is not Chrome's.
+//             of presses made one after the other in a random order, the twin of the base as the control, the 95% interval of the
+//             ratio of the paired logs (test/nkey/stats.ts). The run counts when the twin's interval is no wider than the noise
+//             floor; then a page whose interval against the reference (per pair the geometric mean of base and twin) lies wholly
+//             above 1 is slower, of any size, and red when a second run in fresh windows finds it slower too. When the run does not count, 30 pairs more are
+//             made in fresh windows (twice at most); still not counting, the layer says "undecided" in a warning, and passes. The
+//             absolute 0.2 s is not held here: jsdom's time is not Chrome's.
 // Each layer also runs on the page with what it protects taken out, where it must report: the three changes one at a time, a page
 // whose draw takes 15 ms more, and for the wait itself the page without it and the page without its 100 ms limit.
 // The lane is four files, one CI job each (`*.nkey.ts`, `npm run test:nkey`; never on the owner's Mac): they share this module, and each
@@ -28,7 +29,7 @@ import { performance as perf } from "node:perf_hooks";
 import { startLiveBoard } from "../e2e/live-board.ts";
 import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import type { Revert } from "../e2e/variant.ts";
-import { Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, writeEvents } from "./press.ts";
+import { ORDER_SEED, Press, Scope, Tape, currentPage, landings, pageAt, sameSourceAs, samePage, timePhase, writeEvents } from "./press.ts";
 import type { Landing, OpenHow, PhaseResult, PhaseWindow } from "./press.ts";
 import { show } from "./stats.ts";
 
@@ -128,31 +129,52 @@ export function describeCounts(list: Landing[]): string {
   return `draws of a landing ${[...new Set(list.map(l => l.draws))].sort().join("/")}, rules builds ${list.reduce((a, l) => a + l.rules, 0)}, from scratch ${list.reduce((a, l) => a + l.full.filter(reason => reason !== "minute").length, 0)}, filter counts ${list.reduce((a, l) => a + l.filters, 0)}, structure made again ${list.reduce((a, l) => a + l.structure.filter(reason => reason !== "minute").length, 0)}, stop lists ${list.reduce((a, l) => a + l.stops + l.freshStops, 0)} over ${list.length} landings`;
 }
 
-/** What a time phase says: the numbers go to the log and the run's summary either way; violations are red verdicts and witnesses that
- * were not reported, and an undecided run is a warning. */
-export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): string[] {
-  const v: string[] = [];
+/** What a confirmed red says. A page the same as its base is slower than the reference in one run of a phase in about 2.5% of runs (the
+ * 95% interval), and the residual bias measured between identical windows (docs/design.md, The n-key lane, What a press inherits) raises
+ * that, so a first red is run again in fresh windows, where the bias is drawn afresh: the page is red only when both runs are. */
+const CONFIRMED = "A page the same as its base is red in both runs of a phase in about 1% of runs or fewer; a page 5% slower in about 88-94%.";
+/** What a time phase says: the numbers go to the log and the run's summary either way; violations are witnesses that were not reported
+ * and reads the tape had no answer for, `red` the pages judged slower than their base, and an undecided run is a warning. */
+export function judgePhase(name: string, r: PhaseResult, floor: number, changed: boolean): { violations: string[]; red: string[] } {
+  const v: string[] = [], red: string[] = [];
   const base = median(r.busy.base!);
-  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (not within ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
+  log(`press-n time (${name}): ${r.rounds} round${r.rounds > 1 ? "s" : ""}, ${r.busy.base!.length} pairs; base busy median ${ms(base)} ms (the absolute limit of 200 ms is not held here: jsdom is not Chrome); twin/base ${show(r.ratios.twin!)}${r.sound ? "" : ` (wider than ±${(floor * 100).toFixed(1)}%: the run does not count)`}`);
   r.alone.forEach((twin, k) => log(`press-n twin (${name}): round ${k + 1} alone: ${show(twin)}`));
+  log(`press-n time (${name}): orders of opening and pressing drawn with seed ${ORDER_SEED} (NKEY_SEED repeats them)`);
   const rows = [`| ${name} | base busy median ${ms(base)} ms | twin ${show(r.ratios.twin!)} | rounds ${r.rounds} | ${r.sound ? "counts" : "does not count"} |`];
   const polluted = (r.misses.base ?? 0) + (r.misses.twin ?? 0);
   for (const [label, verdict] of Object.entries(r.verdicts)) {
     const witness = label === "slow";
-    const against = `${label}/${r.versus[label]}`;
+    const against = `${label}/ref`;
     log(`press-n time (${name}): ${against} ${show(r.ratios[label]!)}: ${verdict}`);
     rows.push(`| ${name} | ${against} | ${show(r.ratios[label]!)} | | ${verdict} |`);
     if ((r.misses[label] ?? 0) > 0) v.push(`press-n time (${name}): the ${label} window asked for ${r.misses[label]} reads the tape has no answer for; the real server answered them in this process`);
     if (witness) {
       if (verdict === "ok") v.push(`press-n time (${name}): the time layer did not report a page whose draw takes 15 ms more (${show(r.ratios.slow!)})`);
       else if (verdict === "undecided") warn(`n-key time layer (${name})`, "the twin's interval did not show this run's noise in " + r.rounds + " rounds, so the witness of 15 ms more per draw could not be judged");
-    } else if (verdict === "red") v.push(`press-n time (${name}): the page is slower than its base: ${show(r.ratios[label]!)}, twin ${show(r.ratios.twin!)}`);
-    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base did not show this run's noise within ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
+    } else if (verdict === "red") red.push(`${against} ${show(r.ratios[label]!)}, twin/base ${show(r.ratios.twin!)}`);
+    else if (verdict === "undecided") warn(`n-key time layer (${name})`, `undecided: the twin of the base was wider than ±${(floor * 100).toFixed(1)}% in ${r.rounds} rounds (twin/base ${show(r.ratios.twin!)}), so the page's ${show(r.ratios[label]!)} against its base was not judged`);
     else if (polluted > 0) warn(`n-key time layer (${name})`, `the base page asked for ${polluted} reads the tape has no answer for, so its time carries the server's work`);
   }
   if (!changed) log(`press-n time (${name}): the page is the same as its base, so only the twin and the witness were measured`);
   summary(rows.join("\n"));
-  return v;
+  return { violations: v, red };
+}
+
+/** The time layer of one phase: its windows press in rounds until the twin shows the run's noise (`timePhase`), and a page judged
+ * slower than its base and its twin is measured again in fresh windows; it is red only when the second run judges it slower too. Both runs' numbers
+ * are in the log. `result` is the first run, whose landings the counts are held on. */
+export async function timeLayer(name: string, windows: readonly PhaseWindow[], floor: number, changed: boolean, events?: readonly (string | undefined)[]): Promise<{ result: PhaseResult; violations: string[] }> {
+  const result = await timePhase(windows, floor, events);
+  const first = judgePhase(name, result, floor, changed);
+  if (!first.red.length) return { result, violations: first.violations };
+  log(`press-n time (${name}): slower than the base on the first run (${first.red.join("; ")}); the phase runs again in fresh windows to confirm`);
+  lap(`time phase, first run (${result.rounds} rounds)`);
+  const again = judgePhase(`${name}, again`, await timePhase(windows, floor, events), floor, changed);
+  const violations = [...first.violations, ...again.violations];
+  if (again.red.length) violations.push(`press-n time (${name}): the page is slower than its base in both runs: ${first.red.join("; ")}; again ${again.red.join("; ")}. ${CONFIRMED}`);
+  else warn(`n-key time layer (${name})`, `slower than the base on the first run (${first.red.join("; ")}) and not on the second, so taken as the noise of one run`);
+  return { result, violations };
 }
 
 
@@ -230,7 +252,7 @@ export async function startLane(t: { after(fn: () => unknown): void }, want: { l
       { label: "base", open: s => open(s, { label: "base", ...basePage }) },
       { label: "twin", open: s => open(s, { label: "twin", ...basePage }) },
       ...(changed ? [{ label: "cand", open: (s: Hooks) => open(s, { label: "cand" }) }] : []),
-      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }), versus: currentLabel },
+      { label: "slow", open: s => open(s, { label: "slow", reverts: SLOW_DRAW }) },
     ],
     walk: async (how, wanted, withEvents = false) => {
       const scope = new Scope();

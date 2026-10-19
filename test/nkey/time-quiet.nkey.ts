@@ -4,15 +4,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PAIRS, WARMUP, timePhase } from "./press.ts";
-import { FLOOR, checkCounts, judgePhase, lap, log, startLane, describeCounts } from "./lane.ts";
+import { PAIRS, WARMUP } from "./press.ts";
+import { FLOOR, checkCounts, lap, log, startLane, describeCounts, timeLayer } from "./lane.ts";
 
 test("time of one press of n on a quiet board of the live board's weight: the current page against its base", { timeout: 10 * 60_000 }, async t => {
   const lane = await startLane(t, { landings: WARMUP + PAIRS, base: true });
-  const r = await timePhase(lane.windows(), FLOOR.quiet);
+  const { result: r, violations } = await timeLayer("quiet", lane.windows(), FLOOR.quiet, lane.changed);
   lap(`time phase (${r.rounds} rounds)`);
   const list = r.first[lane.currentLabel]!;
   log(`press-n counts: ${describeCounts(list)}`);
   // Both layers are run before either is asserted, so a failure of one still shows the other's numbers.
-  assert.deepEqual([...checkCounts("quiet", list), ...judgePhase("quiet", r, FLOOR.quiet, lane.changed)], []);
+  assert.deepEqual([...checkCounts("quiet", list), ...violations], []);
 });

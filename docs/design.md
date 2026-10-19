@@ -4685,21 +4685,79 @@ list read. After m the page asks for the unread list and does not fetch the boar
 **Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
 the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that
 commit's `web/` and `src/`; none when `web/` and `src/` are as they are there), with the board quiet and with a write in each press. Windows of the base,
-of the twin of the base (the same page again, the control) and of the page when it differs are open side by side and press n in turn, the order rotating press by press, so
-that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of a window to the base is the geometric mean of
+of the twin of the base (the same page again, the control) and of the page when it differs are open side by side, opened in a random order, and press n in turn, in an order drawn at
+random afresh each round, with a seed of each run's own that the log names (What a press inherits, below), so that landing k of every window is one pair. 30 pairs are measured after 2 that are thrown away. The ratio of one window to another is the geometric mean of
 its per-pair ratios, with the Student-t 95% interval of the logs (`test/nkey/stats.ts`). The twin shows this run's noise: the run counts when the twin's interval
-holds 1 and is no wider than the noise floor of that kind of press; the page is then red when its interval lies wholly above 1, whatever its size, and ok
-otherwise. When the twin does not show the noise, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
+against the base is no wider than the noise floor of that kind of press, wherever it lies. The page and the witness are then judged against a reference
+that is, per pair, the geometric mean of the base and the twin, two samples of the same page (`reference`): slower when the interval lies wholly above 1,
+whatever its size, and ok otherwise. The twin's interval is not required to hold 1: identical windows keep a residual bias of 1–3% (What a press inherits,
+the last point), which a twin over 90 pairs resolves, and in the acceptance run 39193876275 of `tmp-accept` such a twin (×1.013 [1.002, 1.024] and ×1.027
+[1.016, 1.038]) left a page ×1.076 and ×1.085 slower undecided, so it passed. Judging the page against the base and the twin in turn, and slower only when
+slower than both, lost the power instead: in run 39194638605 a page with 6 ms more per press was confirmed slower in 4 of 5 writing runs, and the fifth
+passed because in its second run the base window itself read about 4% slow (twin/base ×0.959 [0.918, 1.003]), leaving the page ×1.037 [0.991, 1.086]
+against the base while it read ×1.081 [1.061, 1.101] against the twin. Against the mean of the two, a slow press of either falls half into the reference,
+and the bias between them is averaged; the second run of a red draws it afresh. A residual bias the lane's arrangement still has (What a press inherits, the last point)
+would make a single run red too often, so a page judged slower is measured again in fresh windows (`timeLayer` in `test/nkey/lane.ts`) and is red only
+when the second run judges it slower too; both runs' numbers are in the log, and a first red the second run does not repeat is a warning. The phase takes
+one run more only when the first is red. Measured in the acceptance run 39195304717 of `tmp-accept`, 10 runs per phase on hosted runners: a copy of the
+base in the changed page's place was never judged slower, not even in a first run (copy/ref ×0.965–1.015 quiet, ×0.974–1.020 writing), and a page with
+a fixed 5 ms (quiet) or 6 ms (writing) more per press, 5.8–10.6% of the base's median press, was red in all 10, both runs slower each time (first runs
+×1.061–1.111). The copies' estimates spread with a standard deviation of 1.5% quiet and 1.3% writing between runs, against a median half width of 2.0%
+and 2.9%; with these (deduced, assuming a normal spread) a page the same as its base is slower in one run in about 9% (quiet) and 1% (writing) of runs
+and red in both in about 0.9% and under 0.1%, a page 5% slower is red in about 94% and 88%, and one 2% slower in about 24% and 6%. These are the
+properties of the 95% interval and are not traded for a threshold. When the twin's interval is wider than the floor, 30 pairs more are made in fresh windows (replaying the same tape), twice at most; still not, the layer says
 "undecided" in a warning and passes. The floor is the widest half width the twin showed in 15 comparisons of a page with itself, over 30 pairs each (5 hosted
 runners, 3 rounds each): 6.9% quiet and 7.6% while writing. The first round of a run is the noisier one (while writing 3.8–7.6%
-against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), and a twin interval that misses 1 by chance is one run in
-twenty, so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
+against 1.6–2.4% in the rounds after it, quiet 3.1–5.8% against 2.3–6.9%), so a run that makes a second round is expected. A run with `NKEY_FLOOR=3` in the environment makes 3 rounds whatever the twin shows and prints each round's twin interval alone: that is how the floors are measured again when the runner image or Node changes. The absolute 0.2 s is not held here: jsdom's time is not a browser's, the speed of a hosted
 runner differs by up to a factor of two between jobs, and every fixed number made a pull request red or green by the runner.
+
+**What a press inherits.** The windows live in one process, so a press inherits what the presses before it left, those of other windows included,
+and an order that always puts the same window before another carries its effect into the comparison. Over the 60 main-line and hand-started runs
+before this was changed, the twin of the base read 0.77% slower than the base in the writing phase (standard error 0.20%, one round of 30 pairs
+each) and 0.22% quiet (0.18%), while its own interval missed 1 in only 1 of 60 rounds per phase: the interval was right about the noise and the
+bias was beside it. A probe on 14 hosted runners (each press recorded with its window, the window before it, its busy time and the pauses of the
+garbage collector inside it) found three sources, and the lane removes each:
+- *The young generation of the shared heap.* Whichever press fills it pays the collection, for the allocations of other windows too: the
+  per-pair log ratio of twin and base follows the difference of their collection pauses (correlation 0.69–0.87), and in the order the lane
+  used (a rotation, in which the base comes right after the slow witness in three presses of four and the changed page never) the twin read
+  +0.57% (±0.34%) and a third copy of the base in the changed page's place +1.02% (±0.54%), over 20 rounds. A minor collection before each
+  key, outside the time, leaves the young generation empty, so a press pays only for what it allocates itself; it costs about 4 ms a press
+  (0.6 s a round). A full collection instead cost 250 ms a press (30 s a round), and subtracting the measured pauses from the busy time left
+  differences of up to 1% between identical windows and would drop the page's own collections from its cost.
+- *Compiled code shared by equal source texts.* V8 compiles a source text once for the process, so the base and its twin shared their
+  compiled code and the one that reached a function first paid for both, while a page of other text (the changed page, the witnesses) paid
+  all its own. With the minor collection alone a copy of the base in the changed page's place still read +1.5% (±0.5%) quiet; with a last
+  line of its own for every window's text it read +0.0% (±0.3%), and the page with 1.5 ms more per draw read +3.0% instead of +3.7%.
+- *The windows before.* The rotation balanced only the place in the round. A cycle of n−1 rounds in which each window comes right after
+  each other one exactly once (tried next) left the base two presses after the slow witness in two rounds of three, and over 30 single
+  rounds per phase on 12 hosted runners the twin then read 0.82% (±0.26%) quiet and 1.13% (±0.21%) writing faster than the base, a copy
+  of the base in the changed page's place 0.44% (±0.25%) and 0.66% (±0.32%): what a press leaves reaches further than the next press.
+  The order of each round is therefore drawn at random (`randomOrder` in `test/nkey/stats.ts`), with a new seed each run (`NKEY_SEED`
+  repeats one): whatever the windows before leave falls on every window alike on average and widens the spread of the pairs, which
+  the interval measures, instead of standing beside it as a bias.
+- *The window opened first.* With the order of the presses random, the base still read 0.9% slower than its twin and the copy while
+  writing (80.7 ms against 80.0 ms a press, every count of the page's work the same in all three), and the base was the window each
+  round opened first. With the windows opened in a random order as well, over 32 single rounds per phase on 8 hosted runners, the window
+  opened first read 0.98% above the mean of the three same pages while writing; one full collection once the windows are open, outside
+  the time (about a quarter of a second a round), brought that to 0.27%, within the noise of the estimate (about 0.3%). Each round now
+  opens its windows in a random order and then collects fully, so no window is always the one whose page was built first.
+- *What is left.* Measured with all of the above, over 32 single rounds per phase (run 39192981801 of `tmp-accept`), a copy of the base in
+  the changed page's place read ×0.9979 [0.9898, 1.0060] writing and ×1.0073 [1.0011, 1.0135] quiet, the twin ×0.9972 and ×1.0054: in the
+  quiet phase the base read about 0.6% faster than the other two. A second set of 36 rounds per phase on the same code (run 39193425761)
+  read the copy ×1.0013 [0.9956, 1.0070] quiet and ×0.9967 [0.9905, 1.0030] writing, so the first may be chance or a bias of a few
+  tenths of a percent whose source was not found. It is known and not searched further; judging a page against the mean of the base and the twin, and
+  confirming a red (Time, above), keep it from turning a page the same as its base red.
+
+With the first two and the balanced cycle (before the last two were found), over 16 rounds writing and 12 quiet of five windows, the twin read +0.37% (±0.27%) and −0.26% (±0.50%), and the copy of the base −0.12%
+(±0.30%) and +0.03% (±0.34%). A single-threaded V8 (`--single-threaded`) doubled the noise per pair and made the windows differ by 1–4%. The
+probe's data are in the artifacts of the runs of the temporary workflow `tmp-probe` on the branch of item nkey-lane-false-red (runs 39189114067, 39189922884,
+39190549744), those of the balanced cycle with four windows and of the random orders in runs 39191754978, 39192249677, 39192671312 and 39192981801 of the
+temporary workflow `tmp-accept`, which also holds the acceptance runs of the confirmation.
 
 **Witnesses.** Each layer also runs on the page with what it protects taken out, where it must report: the three changes of the counts one at a time and all
 three together, the rules from scratch at every write and the filters of every item counted at every write, the navigation that does not wait and the one that
-waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (judged against the
-page it was made from; ×1.5 of the base in a quiet phase on an unchanged page, ×1.3 against the changed page).
+waits without a limit, a page that fetches the board after m, and for the time layer a page whose draw takes 15 ms more, in every time phase (the current page with that edit,
+judged against the reference like the page; ×1.5 of the base in a quiet phase on an unchanged page).
 
 **Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
 (the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two

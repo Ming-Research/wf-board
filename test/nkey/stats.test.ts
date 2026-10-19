@@ -1,7 +1,7 @@
 // The arithmetic and the verdict of the n-key lane's time layer (test/nkey/stats.ts), on pairs made up here whose answer is known.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compare, judge, tQuantile, twinIsSound } from "./stats.ts";
+import { compare, judge, randomOrder, reference, tQuantile, twinIsSound } from "./stats.ts";
 import type { Interval } from "./stats.ts";
 import { prng } from "../e2e/board-gen.ts";
 
@@ -36,16 +36,57 @@ test("the interval is the t interval of the per-pair log ratios: a known case", 
   assert.equal(compare([5], [5]).half, Infinity, "one pair says nothing");
 });
 
-test("the verdict: the twin must show this run's noise before the page is judged, and any size above 1 is red once it does", () => {
+test("the verdict: the twin's interval must be within the floor, and a page slower than the reference is red at any size", () => {
   const floor = 0.061;
-  // A twin whose interval holds 1 within the floor: the run counts.
+  // A twin whose interval is within the floor: the run counts, wherever the interval lies.
   const sound = interval(0.97, 1.03);
   assert.ok(twinIsSound(sound, floor));
+  assert.ok(twinIsSound(interval(1.005, 1.025), floor), "a twin that misses 1 by the residual bias still counts");
   assert.equal(judge(sound, interval(1.001, 1.02), floor), "red", "a page a hair slower, wholly above 1, is red");
   assert.equal(judge(sound, interval(0.98, 1.04), floor), "ok", "an interval across 1 is no detected change");
   assert.equal(judge(sound, interval(0.8, 0.9), floor), "ok", "a page that is faster is not red");
-  // A twin that misses 1 (the run's noise is too large or the machine drifted) or is wider than the floor: the run says nothing.
-  assert.equal(judge(interval(1.01, 1.08), interval(1.3, 1.5), floor), "undecided", "the twin's interval misses 1");
+  // A twin wider than the floor: the run says nothing.
   assert.equal(judge(interval(0.9, 1.1), interval(1.3, 1.5), floor), "undecided", "the twin's interval is ±10%, over the floor");
   assert.ok(!twinIsSound(interval(0.9, 1.1), floor));
+});
+
+test("the reference is the geometric mean of base and twin: one of them 4% slow neither hides a page 6% slower nor reddens the same page", () => {
+  const floor = 0.076, n = 30;
+  // The base window read about 4% slow, as in an acceptance run where judging against the base and the twin in turn let a slower page pass.
+  const base = series(n, 80 * 1.04, 0.05, 11), twin = series(n, 80, 0.05, 12), ref = reference(base, twin);
+  const twinBase = compare(twin, base);
+  assert.ok(twinIsSound(twinBase, floor), `the twin counts the run: ${twinBase.lo}–${twinBase.hi}`);
+  const slower = compare(series(n, 80 * 1.06, 0.05, 13), ref);
+  assert.equal(judge(twinBase, slower, floor), "red", `a page 6% slower against the reference: ×${slower.ratio} [${slower.lo}, ${slower.hi}]`);
+  const same = compare(series(n, 80, 0.05, 14), ref);
+  assert.equal(judge(twinBase, same, floor), "ok", `the same page against the reference: ×${same.ratio} [${same.lo}, ${same.hi}]`);
+  // Each pair's reference lies between its base and its twin.
+  for (let k = 0; k < n; k++) assert.ok(ref[k]! >= Math.min(base[k]!, twin[k]!) && ref[k]! <= Math.max(base[k]!, twin[k]!));
+  assert.throws(() => reference([1, 2], [1]), /different lengths/);
+});
+
+test("a random order puts every window in every place and after every other window about equally often", () => {
+  const rnd = prng(41), n = 4, rounds = 6000;
+  const place = Array.from({ length: n }, () => Array(n).fill(0)), after = new Map<string, number>();
+  let last: number | undefined;
+  for (let r = 0; r < rounds; r++) {
+    const order = randomOrder(n, rnd.next);
+    assert.deepEqual([...order].sort(), [0, 1, 2, 3], "each round is every window once");
+    order.forEach((w, k) => { place[w]![k]++; if (last !== undefined) after.set(`${last}>${w}`, (after.get(`${last}>${w}`) ?? 0) + 1); last = w; });
+  }
+  // Each window in each place in a quarter of the rounds, within 4 standard deviations (one is about 34 of 1500).
+  for (const row of place) for (const c of row) assert.ok(Math.abs(c - rounds / n) < 4 * Math.sqrt(rounds * (1 / n) * (1 - 1 / n)), `a place held ${c} times of ${rounds}`);
+  // After another window: each of the 12 ordered pairs, and a window after itself across a round's end, near their expected shares.
+  const steps = rounds * n - 1, others = [...after].filter(([k]) => k[0] !== k[2]).map(([, c]) => c);
+  assert.equal(others.length, n * (n - 1));
+  const mean = others.reduce((a, c) => a + c, 0) / others.length;
+  for (const c of others) assert.ok(Math.abs(c - mean) < 0.1 * mean, `an ordered pair followed ${c} times against ${mean.toFixed(0)} (${steps} steps)`);
+});
+
+test("a fixed rotation is not balanced, which the random order replaces", () => {
+  // With 4 windows the first (the base) follows the last (the slow witness) in three rounds of four, and the third never.
+  const rotation = [0, 1, 2, 3].map(r => [0, 1, 2, 3].map(k => (k + r) % 4)), seq = rotation.flat(), count = new Map<string, number>();
+  seq.forEach((x, k) => { const key = `${seq[(k - 1 + seq.length) % seq.length]}>${x}`; count.set(key, (count.get(key) ?? 0) + 1); });
+  assert.equal(count.get("3>0"), 3);
+  assert.equal(count.get("3>2"), undefined);
 });

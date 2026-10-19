@@ -24,16 +24,26 @@ export function compare(a: readonly number[], b: readonly number[]): Interval {
   return { n, ratio: Math.exp(mean), lo: Math.exp(mean - h), hi: Math.exp(mean + h), half: Math.exp(h) - 1 };
 }
 
-/** Whether a page compared with its own twin shows the noise of this run: its interval holds 1 and is no wider than the noise floor
- * measured for this kind of press (the floor is the widest half width seen for pages that are the same). */
+/** The reference a page is judged against: per pair, the geometric mean of the base and its twin, two samples of the same page. A
+ * slow press of either falls half into the reference, where judging against each in turn would let whichever happened to be slower
+ * decide, and the residual bias between identical windows is averaged (docs/design.md, The n-key lane). */
+export function reference(base: readonly number[], twin: readonly number[]): number[] {
+  if (base.length !== twin.length) throw new Error(`pairs of different lengths: ${base.length} and ${twin.length}`);
+  return base.map((b, k) => Math.sqrt(b * twin[k]!));
+}
+
+/** Whether a page compared with its own twin shows the noise of this run: its interval is no wider than the noise floor measured for
+ * this kind of press (the floor is the widest half width seen for pages that are the same). Where the interval lies is not asked: the
+ * windows of one process keep a residual bias of 1–3% between identical pages (docs/design.md, The n-key lane), and a twin that misses 1
+ * by it would otherwise leave a page several percent slower unjudged. */
 export function twinIsSound(twin: Interval, floor: number): boolean {
-  return twin.lo <= 1 && twin.hi >= 1 && twin.half <= floor;
+  return twin.half <= floor;
 }
 
 export type Verdict = "ok" | "red" | "undecided";
-/** The verdict on a page compared with its base, read with the twin of the base compared with the base:
- * - undecided: the twin's interval is not the noise of this run (it misses 1, or is wider than the floor), so the run says nothing;
- * - red: the page's interval lies wholly on the slower side of 1, of any size;
+/** The verdict on a page compared with the reference (`reference`), read with the twin of the base compared with the base:
+ * - undecided: the twin's interval is wider than the floor, so the run's noise is not the noise the floor was set from and it says nothing;
+ * - red: the page's interval against the reference lies wholly on the slower side of 1, of any size;
  * - ok: otherwise (including a page that is faster). */
 export function judge(twin: Interval, page: Interval, floor: number): Verdict {
   if (!twinIsSound(twin, floor)) return "undecided";
@@ -44,4 +54,16 @@ export function judge(twin: Interval, page: Interval, floor: number): Verdict {
 export function show(i: Interval): string {
   const f = (x: number) => x.toFixed(3);
   return `×${f(i.ratio)} [${f(i.lo)}, ${f(i.hi)}] ±${(i.half * 100).toFixed(1)}% over ${i.n} pairs`;
+}
+
+/** The order in which `n` windows press in one round: a random permutation drawn with `next` (uniform in [0, 1)), a new one each
+ * round. A press leaves the process in a state the next presses inherit, so any fixed order lets a window carry the effect of the
+ * windows before it into the comparison as a bias the interval does not see: the rotation balanced only the place in the round, and a
+ * cycle in which each window follows each other once still left the base two presses after the slow witness in two rounds of three.
+ * Drawn afresh each round with a seed of each run's own, the effect falls on every window alike on average and adds to the spread of
+ * the pairs, which the interval measures (docs/design.md, The n-key lane). */
+export function randomOrder(n: number, next: () => number): number[] {
+  const order = [...Array(n).keys()];
+  for (let k = n - 1; k > 0; k--) { const j = Math.floor(next() * (k + 1)); [order[k], order[j]] = [order[j]!, order[k]!]; }
+  return order;
 }
