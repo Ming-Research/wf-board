@@ -909,6 +909,36 @@ test("pause replay skips an item file whose blob git does not have, says so, and
   assert.match(skipped[0]!, new RegExp(`item ${resume.commit}:items/root\\.yaml`));
 });
 
+test("pause replay reads the version after one it could not read, whatever the lines of the two are", async t => {
+  const pausedAt = "2026-10-11T04:00:00.125Z", resumedAt = "2026-10-11T04:10:00.250Z", loggedAt = "2026-10-11T04:20:00.375Z";
+  t.mock.method(console, "warn", () => {});
+  // A version that only appends a log entry has the lines of the one before it. The unreadable version is the resume in the first
+  // history (the next version shows the item resumed), and the first pause itself in the second (the next shows it paused).
+  const histories = [
+    { broken: "Resume", order: ["Pause", "Resume", "Log"], expected: { root: [{ start: pausedAt, end: loggedAt }], child: [{ start: pausedAt, end: loggedAt }] } },
+    { broken: "Pause", order: ["Pause", "Log", "Resume"], expected: { root: [{ start: pausedAt, end: resumedAt }], child: [{ start: pausedAt, end: resumedAt }] } },
+  ];
+  for (const { broken, order, expected } of histories) {
+    const { dir, store } = await setup(t);
+    await store.commit({ author: "Fixture", message: "Ownership", puts: [put("root", { ...item(), plan: [{ id: "child", item: "child", own: true }, ...item().plan] }), put("child", item())] });
+    for (const step of order) {
+      const root = store.snapshot().items.root!, next = structuredClone(root);
+      if (step === "Pause") { next.paused = { reason: "Deferred", at: pausedAt }; next.updated = pausedAt; }
+      else if (step === "Resume") { delete next.paused; next.updated = resumedAt; }
+      else { next.log = [...root.log, { at, text: "Entry" }]; next.updated = loggedAt; }
+      await store.commit({ author: "总管", message: step, puts: [put("root", next, root.rev)] });
+    }
+    const brokenCommit = (await store.log()).find(commit => commit.message === broken)!.commit;
+    const internals = store as unknown as { parsePauseDocument(text: Buffer, path: string, commit: string): unknown };
+    const original = internals.parsePauseDocument.bind(store);
+    t.mock.method(internals, "parsePauseDocument", (text: Buffer, path: string, commit: string) => {
+      if (commit === brokenCommit && path === "items/root.yaml") throw new Error("Malformed historical YAML");
+      return original(text, path, commit);
+    });
+    assert.deepEqual(await scanPauses(dir, store), expected, `${broken} could not be read`);
+  }
+});
+
 test("pause replay tracks historical ownership targets even when a row ID is reused", async t => {
   const { store } = await setup(t);
   const pausedAt = "2026-10-11T10:00:00.125Z", movedAt = "2026-10-11T10:10:00.250Z";

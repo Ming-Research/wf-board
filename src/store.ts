@@ -833,7 +833,7 @@ export class Store {
         if (!graph) {
           // The first commit that adds or removes a `paused:` line sets the pause history's start; the board as of this commit is its first state.
           if (!first) continue;
-          graph = await this.firstPauseGraph(activity, commit, tally);
+          graph = await this.firstPauseGraph(activity, commit, tally, seen);
           this.pauseStarted = true;
           continue;
         }
@@ -841,7 +841,11 @@ export class Store {
         for (const { item, text } of changed) {
           const projected = await tally.time("parse", () => this.pauseItem(text, `items/${item.id}.yaml`, commit.commit, item.id, commit.at));
           tally.parsed++;
-          if (projected === undefined) continue; // An unreadable revision supplies no new evidence.
+          if (projected === undefined) {
+            // An unreadable revision supplies no new evidence, and the next one must be read whatever its lines are.
+            seen.set(item.id, { blob: item.after, signature: null });
+            continue;
+          }
           changes.push({ id: item.id, before: graph.shape(item.id), after: pauseShape(projected), updated: projected?.updated ?? commit.at });
         }
         this.applyPauses(activity, graph, changes);
@@ -851,8 +855,9 @@ export class Store {
   }
 
   /** The graph of the board as `commit` left it, for the replay to continue from; the items that are paused or sit under a
-   * paused item begin their spans at once. */
-  private async firstPauseGraph(activity: NonNullable<Snapshot["activity"]>, commit: CommitInfo, tally: PauseTally): Promise<PauseGraph> {
+   * paused item begin their spans at once. A file that cannot be read is left out, and `seen` is told, so that the next
+   * version of it is read whatever its signature. */
+  private async firstPauseGraph(activity: NonNullable<Snapshot["activity"]>, commit: CommitInfo, tally: PauseTally, seen: Map<string, { blob: string | null; signature: PauseSignature | null }>): Promise<PauseGraph> {
     const listed = (await this.gitRead(["ls-tree", "-r", commit.commit, "--", "items"])).trim().split("\n");
     const files = listed.flatMap(line => { const match = /^\d+ blob ([0-9a-f]{40})\titems\/(.+)\.yaml$/.exec(line); return match ? [{ blob: match[1]!, id: match[2]! }] : []; });
     const shapes: Array<[string, PauseShape]> = [];
@@ -860,8 +865,12 @@ export class Store {
       const chunk = files.slice(from, from + PAUSE_READ_COMMITS);
       const texts = await tally.time("read", () => this.blobTexts(chunk.map(file => file.blob)));
       for (const { blob, id } of chunk) {
-        const shape = pauseShape(await tally.time("parse", () => this.pauseItem(texts.get(blob) ?? null, `items/${id}.yaml`, commit.commit, id, commit.at)) ?? null);
-        tally.parsed++;
+        const text = texts.get(blob);
+        if (text === undefined) console.warn(`Skipping unreadable pause history item ${commit.commit}:items/${id}.yaml`, "its blob is missing");
+        const projected = text === undefined ? undefined : await tally.time("parse", () => this.pauseItem(text, `items/${id}.yaml`, commit.commit, id, commit.at));
+        if (text !== undefined) tally.parsed++;
+        if (projected === undefined) { seen.set(id, { blob, signature: null }); continue; }
+        const shape = pauseShape(projected);
         if (shape) shapes.push([id, shape]);
       }
     }

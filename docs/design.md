@@ -1001,10 +1001,13 @@ log:
   changed, which costs git no more than the names. The replay asks the one
   `git cat-file --batch` for the files of 256 commits at once and takes from
   each its signature (`pauseSignature`, `src/pauses.ts`): the lines that name
-  a field the spans read (project, record mark, pause, owned rows), in any way
-  a file may write them. Only a file whose signature differs from the one the
-  item had before is parsed, and an in-place graph (`PauseGraph`) takes the
-  change; the first commit that adds or removes a `paused:` line at the left
+  a field the spans read (project, record mark, pause with its time and
+  reason, owned rows), in any way a file may write them, so that two versions
+  with the same signature have the same shape. Only a file whose signature
+  differs from the one the item had before is parsed, and an in-place graph
+  (`PauseGraph`) takes the change; a version that cannot be read is left out
+  with a warning, and the next version of that item is parsed whatever its
+  lines are; the first commit that adds or removes a `paused:` line at the left
   margin starts the pause history, and the board as of that commit (`ls-tree`
   and its blobs) is its first state. A write made while the daemon runs goes
   through the same graph. Measured in CI on a synthetic history of the live

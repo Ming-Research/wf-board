@@ -155,7 +155,12 @@ test("the signature of an item file changes with each field the pause spans read
   assert.equal(original.paused, false);
   for (const [name, body] of Object.entries(changes)) assert.notEqual(pauseSignature(body).key, original.key, `${name}: the signature changes`);
   for (const [name, body] of Object.entries(ordinary)) assert.equal(pauseSignature(body).key, original.key, `${name}: the signature stays`);
-  // The reason of a pause is not a field the spans read, and `subgroup:` is not `group:`.
+  // The time and the reason of a pause stand on the lines under `paused:`, and a pause's shape holds them.
+  const paused = changes.pause!;
+  assert.notEqual(pauseSignature(paused.replace("04:00:00.125Z", "05:00:00.250Z")).key, pauseSignature(paused).key, "the time of a pause");
+  assert.notEqual(pauseSignature(paused.replace("Deferred", "Other")).key, pauseSignature(paused).key, "the reason of a pause");
+  assert.equal(pauseSignature(paused.replace("head: text", "head: other text")).key, pauseSignature(paused).key, "a head edit of a paused item");
+  // `subgroup:` is not `group:`.
   assert.equal(pauseSignature("title: A\nsubgroup: P\nxrecord: true\n").key, "");
 });
 

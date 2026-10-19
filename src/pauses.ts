@@ -21,14 +21,15 @@ export interface PauseEvent {
 
 /**
  * What the pause replay needs to tell about an item file without parsing it: the lines that name a field it reads (its project
- * `group`, `record`, `paused`, and an owned plan row's `item` and `own`), from the key to the end of the line, and whether the file
- * has a `paused:` line at the left margin. The fields may be written in block or flow style, with the key quoted or after `- ` or
- * `{`, so a key counts when the character before it is not a letter, digit or underscore. A line of free text that happens to look
- * like one only costs a parse. If two versions of a file have the same `key`, they have the same shape.
+ * `group`, `record`, `paused` with the lines under it, and an owned plan row's `item` and `own`), from the key to the end of
+ * the line, and whether the file has a `paused:` line at the left margin. The fields may be written in block or flow style, with
+ * the key quoted or after `- ` or `{`, so a key counts when the character before it is not a letter, digit or underscore. A line
+ * of free text that happens to look like one only costs a parse. Every value a `PauseShape` holds stands on these lines, so two
+ * versions of a file with the same `key` have the same shape.
  */
 export interface PauseSignature { readonly key: string; readonly paused: boolean }
 
-const FIELD_LINE = /(?:group|record|paused|item|own)["']?[ \t]*:[^\n]*/g;
+const FIELD_LINE = /(?:group|record|item|own)["']?[ \t]*:[^\n]*|paused["']?[ \t]*:[^\n]*(?:\n[ \t]+[^\n]*)*/g;
 const WORD_CHARACTER = /[A-Za-z0-9_]/;
 
 /** The signature of an item file's text. The text may be read in any single-byte encoding: only equality of lines matters. */
