@@ -2,5 +2,5 @@ Decision: A bar or line chart is a `xychart` in the ordinary diagram fence, draw
 
 Rejected:
 - A chart library (a Vega-Lite class one) with a fence of its own: rejected because it draws more kinds of chart than any example needs, adds a dependency of several MB unpacked, its spec can read data from addresses and run expressions in text that agents write, and the viewer, theme, cache and repaint would be written again.
-- A renderer of our own for a small spec in a fence of its own: rejected for now because the three charts are drawn without it, and it brings a format agents must learn and a renderer to maintain; it is the way to draw what `xychart` cannot (scatter, side-by-side or stacked bars, error bars), and it does not conflict with this decision.
+- A renderer of our own for a small spec in a fence of its own: rejected because the three charts are drawn without it, and it brings a format agents must learn and a renderer to maintain; it remains the way to draw what `xychart` cannot (scatter, side-by-side or stacked bars, error bars), and it does not conflict with this decision.
 - Images of charts: rejected because the board stores text only and an agent cannot draw an image in its session.

@@ -207,7 +207,7 @@ function fail(block: HTMLElement, message: string) {
 }
 
 function draw(block: HTMLElement) {
-  const source = block.querySelector("code")?.textContent ?? "", theme = dark() ? "dark" as const : "default" as const, key = theme + "\n" + source;
+  const source = block.querySelector("code")?.textContent ?? "", theme = dark() ? "dark" : "default", key = theme + "\n" + source;
   const known = drawn.get(key);
   // The copy gets ids of its own: the first copy of the same diagram may be hidden (a folded section), and the markers a line points at
   // are found by id.
