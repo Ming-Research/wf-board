@@ -7,7 +7,7 @@
 // the daemon's pieces as main.ts does (store, ops, MCP server, HTTP server with one page connected to /api/events),
 // then replays set_tags writes through MCP, the path agent sessions use. It prints CPU milliseconds per write
 // (process.cpuUsage, this process only; git children excluded), garbage-collection milliseconds per write, the bytes
-// of each change event the page receives, and peak RSS. It also prints the characters of each project's brief on that board.
+// of each change event the page receives, peak RSS, and how much the heap after a full collection grew per write. It also prints the characters of each project's brief on that board.
 //
 // Usage: node scripts/bench-writes.ts [--src <dir>] [--label <text>] [--items N] [--writes N] [--history N]
 //          [--messages N] [--write set_tags|send_message|report_state]
@@ -29,6 +29,8 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { PerformanceObserver } from "node:perf_hooks";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { writeFile, mkdir } from "node:fs/promises";
 import { profiled } from "./profile-summary.ts";
 import http from "node:http";
@@ -196,6 +198,12 @@ try {
   for (let n = 0; n < WARMUP; n++) await write(n);
   await new Promise(ok => setTimeout(ok, 200));
   const bytesBefore = bytes, eventsBefore = events;
+  // The heap after a full collection, before the replay and after it: what the writes left reachable, in this one process, so
+  // memory that grows with the writes shows apart from the machine (peak RSS differs by about 100 MB between runners).
+  setFlagsFromString("--expose-gc");
+  const collect = runInNewContext("gc") as () => void;
+  collect();
+  const heapBefore = process.memoryUsage().heapUsed;
   let gc = 0;
   const observer = new PerformanceObserver(list => { for (const entry of list.getEntries()) gc += entry.duration; });
   observer.observe({ entryTypes: ["gc"] });
@@ -207,12 +215,14 @@ try {
   if (profile) console.log(await profile.stop(WRITES, "write"));
   for (let wait = 0; events - eventsBefore < WRITES && wait < 100; wait++) await new Promise(ok => setTimeout(ok, 100));
   observer.disconnect();
+  collect();
+  const heapGrowth = process.memoryUsage().heapUsed - heapBefore;
   const result = {
     label: args.label, items: data.ids.length, decisions: DECISIONS, notes: NOTES, history: HISTORY, activityWrites: store.snapshot().activity?.writes.length ?? 0, writes: WRITES,
     cpuMsPerWrite: +((used.user + used.system) / 1000 / WRITES).toFixed(1), userMsPerWrite: +(used.user / 1000 / WRITES).toFixed(1), systemMsPerWrite: +(used.system / 1000 / WRITES).toFixed(1),
     gcMsPerWrite: +(gc / WRITES).toFixed(1), wallMsPerWrite: +(wall / WRITES).toFixed(1),
     eventBytesPerChange: Math.round((bytes - bytesBefore) / Math.max(1, events - eventsBefore)), changeEvents: events - eventsBefore,
-    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened, briefChars,
+    peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), heapGrowthKBPerWrite: +(heapGrowth / 1024 / WRITES).toFixed(1), buildMs: built, openMs: opened, briefChars,
     ...(UNREAD === undefined ? {} : { unread: UNREAD, unreadStops: unreadSteps, unreadBytes }),
     messages: Object.values(store.snapshot().messages ?? {}).reduce((n: number, day) => n + (day as { messages: unknown[] }).messages.length, 0), write: WRITE,
     snapshotBytes: JSON.stringify(store.snapshot()).length,
@@ -221,7 +231,7 @@ try {
   };
   console.log(`bench-writes ${result.label}: ${result.items} items, ${result.decisions} cards, ${result.notes} notes, ${result.messages} messages, ${result.activityWrites} activity writes, ${WRITES} ${WRITE} writes`);
   console.log(`  CPU ms/write ${result.cpuMsPerWrite} (user ${result.userMsPerWrite}, system ${result.systemMsPerWrite}); GC ms/write ${result.gcMsPerWrite}; wall ms/write ${result.wallMsPerWrite}`);
-  console.log(`  event bytes/change ${result.eventBytesPerChange} over ${result.changeEvents} events; peak RSS ${result.peakRssMB} MB; build ${built} ms, open ${opened} ms`);
+  console.log(`  event bytes/change ${result.eventBytesPerChange} over ${result.changeEvents} events; peak RSS ${result.peakRssMB} MB; heap after collection grew ${result.heapGrowthKBPerWrite} KB/write; build ${built} ms, open ${opened} ms`);
   if (UNREAD !== undefined) console.log(`  unread list after the replay: ${unreadSteps} stops, ${unreadBytes} bytes`);
   console.log(`  snapshot ${result.snapshotBytes} bytes, as the page gets it ${result.pageSnapshotBytes} bytes`);
   console.log(`  brief characters per project: ${Object.entries(briefChars).map(([name, n]) => `${name} ${n}`).join(", ")}; total ${Object.values(briefChars).reduce((a, b) => a + b, 0)}`);
