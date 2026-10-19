@@ -37,7 +37,7 @@ const block = (bytes: number, seed: number): string => lines(bytes, seed).join("
 /** One line ending in a space, which the library writes as a double-quoted scalar. */
 const quoted = (bytes: number, seed: number): string => lines(bytes, seed).filter(Boolean).join(" ") + " ";
 
-test("a parsed scalar keeps at most 8 bytes of heap for each character, in every style of scalar", () => {
+test("a parsed scalar keeps at most 8 bytes of heap for each character, in every style of scalar", t => {
   const text = quoted(6000, 3).trim(), multi = lines(6000, 3);
   // The same text in each style the library reads. A comment line after it gives each copy a source of its own, as every file of a board has.
   const styles: Record<string, string> = {
@@ -53,6 +53,7 @@ test("a parsed scalar keeps at most 8 bytes of heap for each character, in every
     const kept = Array.from({ length: 300 }, (_, i) => parseDocument(`${source}# ${i}\n`));
     const perChar = (heap() - base) / (300 * chars);
     assert.equal(kept.length, 300);
+    t.diagnostic(`${name}: ${perChar.toFixed(1)} bytes of heap for each character`);
     assert.ok(perChar <= 8, `${name}: ${perChar.toFixed(1)} bytes of heap for each character`);
   }
 });
@@ -105,7 +106,9 @@ for (const shape of shapes) {
     const { dir, bytes } = await seeded(t, shape.count, shape.text);
     const { kept, store } = await opened(dir);
     assert.equal(Object.keys(store.snapshot().items).length, shape.count);
-    assert.ok(kept <= shape.limit * bytes, `${(kept / bytes).toFixed(2)} times: ${(kept / 1048576).toFixed(1)} MB of heap for ${(bytes / 1048576).toFixed(1)} MB of files`);
+    const said = `${(kept / bytes).toFixed(2)} times: ${(kept / 1048576).toFixed(1)} MB of heap for ${(bytes / 1048576).toFixed(1)} MB of files`;
+    t.diagnostic(said);
+    assert.ok(kept <= shape.limit * bytes, said);
   });
 }
 

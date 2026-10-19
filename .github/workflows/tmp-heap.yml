@@ -24,7 +24,7 @@ jobs:
           node --test test/parsed-heap.test.ts > witness-copy.log 2>&1
           status=$?
           set -e
-          grep -E "^not ok|^# (pass|fail)|bytes of heap for each|times: " witness-copy.log || true
+          grep -E "^✖|AssertionError|^ℹ (pass|fail)" witness-copy.log || true
           test "$status" -ne 0
           git checkout src/store.ts
       - name: Watch the source test fail on a second file that imports the parse
@@ -35,7 +35,7 @@ jobs:
           node --test test/parsed-heap.test.ts > witness-import.log 2>&1
           status=$?
           set -e
-          grep -E "^not ok|^# (pass|fail)" witness-import.log || true
+          grep -E "^✖|AssertionError|^ℹ (pass|fail)" witness-import.log || true
           test "$status" -ne 0
           git checkout src/history.ts
       - name: Watch the log test fail when the heap is read before the collection
@@ -46,10 +46,12 @@ jobs:
           node --test test/log.test.ts > witness-log.log 2>&1
           status=$?
           set -e
-          grep -E "^not ok|^# (pass|fail)" witness-log.log || true
+          grep -E "^✖|AssertionError|^ℹ (pass|fail)" witness-log.log || true
           test "$status" -ne 0
           git checkout src/log.ts
+  # Runs only for a commit whose message says [measure]: the heap and time figures are of a commit with the final code.
   measure:
+    if: ${{ contains(github.event.head_commit.message, '[measure]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

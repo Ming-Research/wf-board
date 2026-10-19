@@ -383,7 +383,7 @@ into its 4 GB limit and killed the process, with every session's connection and 
 owner's page (measured in CI on a synthetic board of the live one's size, 18,000
 commits; `scripts/bench-changes.ts`). That board's long texts were single-line quoted
 scalars, which the library parses into the heap-heaviest strings; on a board shaped like
-the live one the same rebuild kept 56 MB, and 26 MB once documents are parsed flat
+the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed flat
 (Parsed documents, below). Three rules follow.
 
 1. *Reads follow the range.* The commits of a query are listed from the range
@@ -446,16 +446,17 @@ reads no history is not stopped by it.
 
 **Parsed documents.** The daemon keeps every document of the board parsed in memory, and parsed
 documents also fill the history caches. The YAML library's result keeps more heap than the data,
-and the larger part of it is waste (CI, GitHub-hosted runner, Node 24, yaml 2.9.1; every figure is one
-run of one child process with two collections before the heap is read, so it shows an order of
-magnitude, and two runs of the same stage differed by a few percent). Two synthetic boards:
-the live shape, 3,992 files and 21.8 MB, long texts as multi-line `|-` block scalars, about 66% non-ASCII
-bytes (sizes and proportions counted from the live data, none of its content), and the shape of the
-first study, 3,235 files and 19.7 MB, every long text one line ending in a space, which the
-library writes and reads as a double-quoted scalar.
+and a large part of it is waste. Measured in CI (GitHub-hosted runner, 4 vCPUs of an AMD EPYC 7763,
+16 GB, Node 24.21, yaml 2.9.1) on two synthetic boards: the live shape, 3,992 files and 21.8 MB, long
+texts as multi-line `|-` block scalars, about 66% non-ASCII bytes (sizes and proportions counted from the
+live data, none of its content); and the shape of the first study, 3,235 files and 19.7 MB, every long
+text one line ending in a space, which the library writes and reads as a double-quoted scalar. Each stage
+ran in a child process of its own, with the heap read after two collections; a figure said to be a mean is
+of 15 rounds, each running the base commit, a twin of it (the same commit again, the control) and this tree in an order
+drawn afresh every round, with the 95% interval of the mean.
 
 Where the heap stays after a parse, by subtracting stages (strings rebuilt flat; strings replaced
-by empty ones; the files read as strings):
+by empty ones; the files read as strings; one run each):
 
 | | live shape | quoted-scalar shape |
 |---|---|---|
@@ -471,34 +472,51 @@ by `res += ch` for each character (read in the library's source), which V8 keeps
 32 bytes until something reads the string. A document nobody reads as a string, which is every
 document in the history caches and in a rebuilt board, keeps both. Per character, 300 copies each
 with a source of its own: a one-line double-quoted scalar 41.4 bytes, a block scalar 4.3, a plain
-or single-quoted one 2.0 (the source pinned by slices); flat, 2.5. Objects and the schema check
+or single-quoted one 2.0 (the source pinned by slices); a double-quoted scalar flattened, 2.5. Objects and the schema check
 are not the cause: the check builds objects and shares the strings, and dropping the history
 cache released 1.2 MB.
 
 `parseDocument` (`src/store.ts`) parses and then runs `structuredClone`, which writes each string out
-flat. On the whole live-shape board it takes 83 ms against a parse of about 2.5 s; the quoted-scalar board 123 ms.
-Rebuilding each string in place took 129 to 545 ms and a JSON round trip 102 to 151 ms. It is
+flat. Run alone on the whole live-shape board it takes 83 ms against a parse of about 2.5 s (123 ms on the quoted-scalar board);
+rebuilding each string in place took 129 to 545 ms and a JSON round trip 102 to 151 ms. It is
 the one entry for every parse: the start, the history caches, the one-time conversion's reader and the
 conversion command. The copy is safe for every value the core schema yields (strings, numbers,
-booleans, null, arrays and plain objects; read from the code, and a test compares a clone with
-the parse). Kept heap after the copy, with the real code:
+booleans, null, arrays and plain objects; read from the code), and a test compares a copy with
+the parse. Heap the real code kept (`Store.open`, `comparisonSnapshot`, and the real daemon `src/main.ts` after five loads of
+the page):
 
-| | before | with the copy |
-|---|---|---|
-| `Store.open`, live shape | 62.3 and 66.9 MB | 27.0 MB |
-| `Store.open`, quoted-scalar shape | 604.9 MB | 29.2 MB |
-| whole old board rebuilt, live shape | 56.0 MB | 26.1 MB |
-| the daemon after five page loads, live shape | 83.4 MB | 55.7 MB |
+| | live shape, before | live shape, with the copy | quoted-scalar shape, before | quoted-scalar shape, with the copy |
+|---|---|---|---|---|
+| `Store.open` (mean of 15 pairs, start with the startup cache) | 55.7 MB [54.7, 56.7] | 30.7 MB [29.7, 31.7] | 503.3 MB | 29.2 MB |
+| `Store.open`, first start without the cache (one run) | | 37.4 MB | | 39.4 MB |
+| whole old board rebuilt (one run) | 55.9 MB | 29.5 MB | 501.8 MB | 29.0 MB |
+| the daemon after five page loads, heap in use (one run) | 83.7 MB | 56.1 MB | 79.6 MB | 53.4 MB |
+| the daemon, resident memory after a collection / peak | 310.8 / 439.9 MB | 275.8 / 377.5 MB | 799.5 / 881.5 MB | 289.9 / 370.8 MB |
+
+A start without the startup cache replays the history, which keeps 7 to 10 MB more; the study that
+chose the copy measured its "before" on such a start and its "after" with the cache, so its
+62.3 and 66.9 MB against 27.0 MB overstated the saving: start against start it is 25.0 MB [23.7, 26.3] on
+the live shape. The live daemon runs with the cache except on the first start after the cache's format changes.
+
+The time of the start step "read documents", which reads, parses, checks and freezes every document
+(mean of 15 pairs; the same start with the cache): live shape, 3,616.0 ms [3,602.6, 3,629.4] before the change, 3,622.0 ms for its
+twin and 3,660.9 ms [3,651.1, 3,670.8] with the copy; the twin is 6.0 ms [-15.3, 27.3] from the base (x1.002, 0.6% half width, the
+noise of this run) and this tree is 42.0 ms [26.9, 57.1] above the reference (the geometric mean of the base and
+the twin, x1.012 [1.007, 1.016]), so a slowdown is detected and it is smaller than the copy's own time, as the collector has less to do (inferred, not separated). On the
+quoted-scalar shape the step is faster, 1,798.7 ms [1,785.2, 1,812.1] against 2,662.7 ms [2,557.3, 2,768.1], 859.7 ms [776.9, 942.6]
+less than the reference (the string nodes made the collector's work heavy; inferred). No floor of noise is on record for this kind of start, and the twin's
+half width, 0.6% on the live shape and 4.2% on the other, is the noise of this run.
 
 Flat documents measured 1.2 to 1.5 times the bytes of their files, so the history cache weighs a
 document at 2 bytes of heap for each byte of file. The 64 MB bound stays and lets the cache
 hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
-resident memory is mostly not documents: on the live-shape board the process held 309 MB (peak
-438 MB), of which the heap in use was 83.4 MB; a small board of about 100 documents held 153 to 163 MB,
+resident memory is mostly not documents: on the live-shape board the process held 310.8 MB
+after a collection (peak 439.9 MB) before the change, of which 83.7 MB was heap; a small board of about 100 documents held 153 to 163 MB (the study),
 the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
 has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
-of a full collection and, in the detail, the heap in use after it and the resident set; the live check of
-the heap reads it.
+of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 16 ms (heap 56.6 MB in use after a
+full collection, rss 276.8 MB)`); the live check of the heap reads it. The live board's heap also holds what its
+33,000 commits of history add to the startup cache's contents, which the synthetic boards (one commit) do not.
 
 *Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
 checked again in 95 ms on the live shape, JSON 21.3 MB) would cut the 2.6 s the start spends reading

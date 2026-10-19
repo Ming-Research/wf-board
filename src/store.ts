@@ -102,8 +102,8 @@ export function parseDocument(text: string): unknown {
 }
 
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
-// holds and not by how many entries there are: a parsed document takes about 1.4 times the bytes of its file (a board of
-// 21.8 MB of files in the live board's shape is 27 MB of heap once parsed, measured in CI), and the estimate is 2 to leave room
+// holds and not by how many entries there are: a parsed document takes about 1.4 times the bytes of its file (opening a board of
+// 21.8 MB of files in the live board's shape keeps 30.7 MB of heap, measured in CI), and the estimate is 2 to leave room
 // for small files, whose objects are a larger part. The count bounds are for reads still pending, whose size is not known yet.
 // Normalization is needed at format boundaries, not for every old commit, so one whole old board is kept.
 const MB = 1024 * 1024;
@@ -1394,7 +1394,7 @@ export class Store {
   private readonly compared = new ReadCache<Snapshot>(Infinity, comparedSnapshotLimit, () => 0);
   private readonly comparisonAt = new Date().toISOString();
   /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board takes seconds (2.7 to 3.1
-   * on a synthetic board of the live one's size, measured in CI) and keeps about 26 MB of heap in the live board's shape, so a request
+   * on a synthetic board of the live one's size, measured in CI) and keeps about 30 MB of heap in the live board's shape, so a request
    * may do it once (`REQUEST_LIMITS.boards`) and one board is kept. */
   async comparisonSnapshot(commit: string): Promise<Snapshot> {
     const budget = this.budget();
