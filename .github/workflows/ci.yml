@@ -108,10 +108,14 @@ jobs:
   # waits in scripts/ci-time-gate.ts until every other job of the run has ended: a job that waits for the others (`needs`) starts
   # 2 to 3 seconds after the last of them ends and has its own set-up to do then, which was 6 to 9 seconds of a run. So no job of
   # this run may use `needs`: the jobs the run lists before they can start are all it waits for (test/ci-workflow.test.ts holds this).
-  # The script writes the status itself: success when every job succeeded or was skipped and the total is not red, else failure.
+  # The script writes the status itself: success when every job succeeded or was skipped and the time is not red, else failure. The time
+  # it judges leaves out what a job waited for a runner beyond the quickest job of the run, and the status says the total and that wait.
   # A run that is cancelled ends this job too and writes nothing: the pending its start wrote stands until the next run of
-  # the commit. A push to the main line writes nothing; its checks are listed on the commit. The script also reads how long the run
-  # took and puts the time of each job into the run's summary (docs/design.md, section 11, The time gate).
+  # the commit. The script also reads how long the run took and puts the time of each job into the run's summary (docs/design.md,
+  # section 11, The time gate).
+  # A push to the main line runs this job too, in the mode `record`: the same summary, so that the main line shows how long its runs waited
+  # for runners, and no status (the checks of a push are listed on the commit). A report must not turn the main line red, so the script
+  # step cannot fail the job there.
   # This job has no timeout of its own: a job that GitHub cancels for its timeout runs no step after it, so the status would stay
   # pending. Each of its steps has one instead (5 minutes, the script's 15): a step that times out fails, and the step after it writes
   # the failure. The jobs it waits for have 10 minutes each, counted from when they start to run, not from the queue: a job that hangs
@@ -119,7 +123,6 @@ jobs:
   # then the failure is written without its name. test/ci-workflow.test.ts holds that the timeouts are there and that a job's is
   # shorter than the script's, not the numbers.
   result:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       statuses: write
@@ -134,17 +137,18 @@ jobs:
         timeout-minutes: 5
         with:
           node-version: 24
-      # enforce: a total over 60 seconds from the start of the run to the status fails the status, the step and with them the run
-      # (docs/design.md, section 11, The time gate).
+      # enforce: a time over 60 seconds from the start of the run to the status, without the wait for a runner, fails the status, the step
+      # and with them the run (docs/design.md, section 11, The time gate). record: on a push, as above.
       - id: result
         timeout-minutes: 15
+        continue-on-error: ${{ github.event_name == 'push' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TIME_GATE: enforce
+          TIME_GATE: ${{ github.event_name == 'push' && 'record' || 'enforce' }}
         run: node scripts/ci-time-gate.ts
       # The script writes the status whatever it finds, a failure of its own included; this step is for a script that could not
       # run at all, did not end in its 15 minutes or came after a set-up step that timed out, so that the status does not stay pending for a run that is over.
-      - if: ${{ failure() && steps.result.outputs.written != 'true' }}
+      - if: ${{ github.event_name == 'workflow_dispatch' && failure() && steps.result.outputs.written != 'true' }}
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
