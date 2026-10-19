@@ -17,6 +17,7 @@ import { Board, Decision, Item } from "../src/model.ts";
 import type { Snapshot } from "../src/model.ts";
 import { DEFAULT_ROWS, LookMemory, MEMORY_SESSIONS, MIN_ROWS, look, lookLines, lookText } from "../src/look.ts";
 import type { LookOptions, Previous } from "../src/look.ts";
+import type { Resolved } from "../src/credentials.ts";
 import { generateBoard } from "./e2e/board-gen.ts";
 import type { Generated } from "./e2e/board-gen.ts";
 import { asArchitect } from "./helpers.ts";
@@ -129,7 +130,7 @@ test("the items the tree cannot reach are not lost: done and cancelled items are
   // The pool is a line of its own with its items below it, counted apart from the project's, and the project says so.
   assert.match(text, /^ {2}待选池 · bk · bk · 共 2 件：/m);
   assert.match(line(text, "bk-1")!, /^ {4}bk-1 /);
-  assert.match(text, /^ Whitefoot · 共 \d+ 件：.*；待选池另 2 件$/m);
+  assert.match(text, /^ Whitefoot · 共 \d+ 件：.*；待选池另 2 件（在做 1）$/m);
   assert.match(text.split("\n")[0]!, /没做完 21 件（待选池 2 件在内）/);
   assert.equal(account(text, new Set(Object.keys(s.items))).rows.includes("bk"), false, "a record is not an item");
 });
@@ -193,6 +194,46 @@ test("the budget opens the subtree with something nobody holds before the one th
   assert.ok(line(roomy, "q1") && line(roomy, "l1"));
 });
 
+test("the budget opens work being done before a check flag, a check flag before a pause, and among equals the shallower and then the earlier", () => {
+  // Five roots with two items each, which differ in one thing; the names run in the order of the walk, from the least pressing to the
+  // most, so that the walk alone cannot give the order. r1: both reported (nothing to say), r2: one item paused, r3: one item with no
+  // rating (a check flag), r4: one item being worked on, r5: one item nobody holds.
+  const reported = (id: string) => ({ id, ...report("ci", 5) });
+  const specs: Spec[] = [
+    { id: "r1", plan: owns("r1a", "r1b") }, reported("r1a"), reported("r1b"),
+    { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", paused: { reason: "等", at: iso(NOW - DAY) } }, reported("r2b"),
+    { id: "r3", plan: owns("r3a", "r3b") }, { id: "r3a", difficulty: undefined, ...report("ci", 5) }, reported("r3b"),
+    { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: doing, ...report("running", 8, { turns: 2 }) }, reported("r4b"),
+    { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a" }, reported("r5b"),
+  ];
+  const s = board(specs);
+  const all = lookText(view(s));
+  assert.match(line(all, "r3a")!, /检查：缺难度/, "the unrated item carries a check flag");
+  for (const id of ["r1a", "r1b", "r2b", "r4b", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
+  // The room of 11 lines is the header, the project, the five roots and two roots opened; each more root takes two lines.
+  const opened = (rows: number) => ["r1", "r2", "r3", "r4", "r5"].filter(root => line(lookText(view(s, { rows })), `${root}a`));
+  assert.deepEqual(opened(11), ["r4", "r5"]);
+  assert.deepEqual(opened(13), ["r3", "r4", "r5"]);
+  assert.deepEqual(opened(15), ["r2", "r3", "r4", "r5"]);
+  assert.deepEqual(opened(17), ["r1", "r2", "r3", "r4", "r5"]);
+  // Equal priority and depth: the earlier in the walk. Both hold four quiet items, and the room is for one of them.
+  const four = (root: string): Spec[] => [{ id: root, plan: owns(...[1, 2, 3, 4].map(i => `${root}${i}`)) }, ...[1, 2, 3, 4].map(i => reported(`${root}${i}`))];
+  const tie = lookText(view(board([...four("qa"), ...four("qb")]), { rows: MIN_ROWS }));
+  assert.ok(line(tie, "qa1"), "the earlier is opened");
+  assert.equal(line(tie, "qb1"), undefined, "the later is not");
+  // Equal priority, one level apart: the shallower. x opens first (it is earlier); then y, below it, and z, beside it, both hold work
+  // being done and the room is for one of them. y is earlier in the walk than z, so only the depth puts z first.
+  const running = (id: string) => ({ id, plan: doing, ...report("running", 8, { turns: 1 }) });
+  const deep = board([
+    { id: "x", plan: owns("y") }, { id: "y", plan: owns("y1", "y2", "y3") }, running("y1"), reported("y2"), reported("y3"),
+    { id: "z", plan: owns("z1", "z2", "z3") }, running("z1"), reported("z2"), reported("z3"),
+  ]);
+  const shallow = lookText(view(deep, { rows: MIN_ROWS }));
+  assert.ok(line(shallow, "y"), "x is open");
+  assert.ok(line(shallow, "z1"), "z, the shallower, is opened");
+  assert.equal(line(shallow, "y1"), undefined, "y, one level lower, is not");
+});
+
 test("a project left out of projects is not shown or counted, and a name that is not a project is refused", () => {
   const s = fixture(), keys = new Set(Object.keys(s.items));
   const firn = lookText(view(s, { projects: ["Firn"] })), got = account(firn, keys);
@@ -203,7 +244,7 @@ test("a project left out of projects is not shown or counted, and a name that is
   assert.throws(() => view(s, { expand: ["fin"] }), /expand fin: not an open work item/);
   assert.throws(() => view(s, { expand: ["nothing"] }), /expand nothing: not an open work item/);
   assert.throws(() => view(s, { projects: ["Firn"], expand: ["root"] }), /expand root: it is in project Whitefoot, which projects leaves out/);
-  assert.equal(lookText(view(s, { projects: ["Architect"] })), "看 · Architect · 没有没做完的工作。");
+  assert.equal(lookText(view(s, { projects: ["Architect"] })), "看 · Architect · 没有没做完的工作 · 没带 session，不标上次看以后的变化");
 });
 
 test("a line says the status, what the runner reports with its turn, how long, and what nobody holds", () => {
@@ -214,19 +255,20 @@ test("a line says the status, what the runner reports with its turn, how long, a
   assert.match(line(text, "d")!, /^ {4}d · d · 停滞 · 没人管（做了一半：1\/3 行）/);
   assert.match(line(text, "f2")!, /^ {4}f2 · f2 · 未开始 · 问架构师 · 30 分钟/);
   assert.match(line(text, "bk-1")!, /跑一轮，第 1 轮 · 20 分钟/);
-  // The first line sums what needs a reader: nobody holds c, d, dep, p1, p2 and the rest, and one item is being worked on.
-  assert.match(text.split("\n")[0]!, /没人管 \d+ · 等太久 0 · 在做 1 /);
+  // The first line sums what needs a reader: nobody holds c, d, dep, p1, p2 and the rest, and two items are being worked on, as in the
+  // whole view: a, and bk-1 in the pool, which the runner reports on.
+  assert.match(text.split("\n")[0]!, /没人管 \d+ · 等太久 0 · 在做 2 /);
 });
 
 // ---- the marks, over the tool, on a board with a repository ----
 
-async function connected(t: { after(fn: () => void | Promise<void>): void }) {
+async function connected(t: { after(fn: () => void | Promise<void>): void }, credential?: Resolved) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-look-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "Architect" }] } });
   const op = ops(store, () => iso(Date.now()));
   const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
-  const server = createMcpServer({ store, ops: op, looks: new LookMemory() });
+  const server = createMcpServer({ store, ops: op, looks: new LookMemory(), ...(credential ? { credential } : {}) });
   const client = new Client({ name: "t", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(st), client.connect(ct)]);
   t.after(async () => { await client.close(); await server.close(); });
@@ -243,7 +285,7 @@ test("a session's second look marks what changed, what is new and what finished 
   await b.item("waiter", { plan: [{ item: "dep", own: false }] });
   const first = await b.call({ session: "s1" });
   assert.equal(first.error, false);
-  assert.match(first.text.split("\n")[0]!, /这个会话头一次看（看板重启后也一样），不标变化/);
+  assert.match(first.text.split("\n")[0]!, /这个会话头一次看（看板重启后，或上次看被挤出记忆后，也一样），不标变化/);
   assert.doesNotMatch(first.text, /^[*+]/m, "the first look marks nothing");
   assert.match(line(first.text, "waiter")!, /卡住/);
   // alpha is written, beta is cancelled, gamma is new, and dep is done, which moves waiter out of blocked without writing it
@@ -280,6 +322,48 @@ test("a look at one project does not hide a change in another: it is marked when
   const all = await b.call({ session: "s1" });
   assert.match(all.text.split("\n")[0]!, /变了 1 件 · 新出现 0 件/);
   assert.match(line(all.text, "f-one")!, /^\*/);
+});
+
+const header = (answer: { text: string }): string => answer.text.split("\n")[0]!;
+
+test("a look at some projects keeps the others as they were: what became new or finished there is marked when they are looked at", async t => {
+  const b = await connected(t);
+  await b.item("w-one"); await b.item("f-one", { group: "Firn" }); await b.item("f-gone", { group: "Firn" });
+  await b.call({ session: "s1" });
+  await b.item("f-new", { group: "Firn" });
+  await b.op.setStatus({ ...asArchitect, id: "f-gone", status: "cancelled", log: "不做了" });
+  // A look at Whitefoot alone says nothing of Firn, and leaves what the session saw of Firn as it was...
+  assert.match(header(await b.call({ session: "s1", projects: ["Whitefoot"] })), /变了 0 件 · 新出现 0 件 · 收尾 0 件/);
+  // ...so the look at everything finds the new item and the finished one.
+  const all = await b.call({ session: "s1" });
+  assert.match(header(all), /变了 0 件 · 新出现 1 件 · 收尾 1 件/);
+  assert.match(line(all.text, "f-new")!, /^\+/);
+  // A session that has looked at Whitefoot alone has not seen Firn: its two open items are new to it.
+  await b.call({ session: "s2", projects: ["Whitefoot"] });
+  assert.match(header(await b.call({ session: "s2" })), /新出现 2 件/);
+});
+
+test("when nothing is open any more the first line still says how much finished since the last look", async t => {
+  const b = await connected(t);
+  await b.item("only");
+  await b.call({ session: "s1" });
+  await b.op.setStatus({ ...asArchitect, id: "only", status: "cancelled", log: "不做了" });
+  assert.match((await b.call({ session: "s1" })).text, /^看 · 全部项目 · 没有没做完的工作 · 上次看在 .*前：变了 0 件 · 新出现 0 件 · 收尾 1 件/);
+});
+
+test("on a connection with a credential the last look is kept under the credential's session, and a session the call names besides has its own", async t => {
+  const credential: Resolved = { ok: true, who: { author: "Whitefoot", session: "cred-eng", access: { role: "工程师", project: "Whitefoot", roots: ["alpha"] } } };
+  const b = await connected(t, credential);
+  await b.item("alpha");
+  // The conversation looks, then a subagent on the same connection looks under a name of its own: that is its first look, not the conversation's second.
+  await b.call({});
+  assert.match(header(await b.call({ session: "patrol" })), /头一次看/);
+  await b.op.appendLog({ ...asArchitect, id: "alpha", text: "写了一条" });
+  assert.match(header(await b.call({ session: "patrol" })), /变了 1 件/, "the subagent is told what changed since its own look");
+  // The subagent's looks did not replace the conversation's, which was before the write.
+  assert.match(header(await b.call({})), /变了 1 件/);
+  // The credential's own session name is the credential's.
+  assert.match(header(await b.call({ session: "cred-eng" })), /变了 0 件/);
 });
 
 test("the memory keeps the last looks of a bounded number of sessions, the newest last", () => {

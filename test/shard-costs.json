@@ -62,7 +62,7 @@
   "test/live.test.ts": 1.7,
   "test/liveness.test.ts": 3.0,
   "test/log.test.ts": 0.2,
-  "test/look.test.ts": 2.5,
+  "test/look.test.ts": 3.6,
   "test/loop-watch.test.ts": 3.0,
   "test/maintenance.test.ts": 3.3,
   "test/mcp.test.ts": 5.4,

@@ -36,13 +36,23 @@ export interface Tally {
   /** Items changed or new since the session's last look. */
   changed: number;
   added: number;
-  /** Open items in a pool (a record's items) below, which `items` does not hold. */
+  /**
+   * Open items in a pool (a record's items) below, which `items` does not hold, and how many of them the whole view puts in a kind
+   * (the runner reports on them): they count in the header as they do there, but do not raise the priority of the nodes above.
+   */
   pool: number;
+  poolUnattended: number;
+  poolOverdue: number;
+  poolWorking: number;
 }
-const zero = (): Tally => ({ items: 0, by: { wip: 0, blocked: 0, idle: 0, todo: 0, paused: 0 }, unattended: 0, overdue: 0, working: 0, checked: 0, folds: 0, changed: 0, added: 0, pool: 0 });
+const zero = (): Tally => ({
+  items: 0, by: { wip: 0, blocked: 0, idle: 0, todo: 0, paused: 0 }, unattended: 0, overdue: 0, working: 0, checked: 0, folds: 0, changed: 0, added: 0,
+  pool: 0, poolUnattended: 0, poolOverdue: 0, poolWorking: 0,
+});
 function addInto(to: Tally, from: Tally): void {
   to.items += from.items; to.unattended += from.unattended; to.overdue += from.overdue; to.working += from.working; to.checked += from.checked;
   to.folds += from.folds; to.changed += from.changed; to.added += from.added; to.pool += from.pool;
+  to.poolUnattended += from.poolUnattended; to.poolOverdue += from.poolOverdue; to.poolWorking += from.poolWorking;
   for (const status of OPEN_STATUSES) to.by[status] += from.by[status];
 }
 
@@ -174,7 +184,10 @@ function build(s: Snapshot, r: Rules, now: number, previous: Previous | undefine
     const sub = zero();
     for (const kid of node.kids) {
       const total = settle(kid);
-      if (kid.kind === "pool") sub.pool += total.items + total.pool; else addInto(sub, total);
+      if (kid.kind === "pool") {
+        sub.pool += total.items + total.pool;
+        sub.poolUnattended += total.unattended + total.poolUnattended; sub.poolOverdue += total.overdue + total.poolOverdue; sub.poolWorking += total.working + total.poolWorking;
+      } else addInto(sub, total);
     }
     node.sub = sub;
     const total = zero();
@@ -283,16 +296,15 @@ export function look(s: Snapshot, r: Rules, now: number, o: LookOptions = {}, pr
     let changed = 0, added = 0, finished = 0;
     const count = (node: LookNode): void => { if (node.mark === "changed") changed++; else if (node.mark === "new") added++; for (const kid of node.kids) count(kid); };
     for (const project of picked) count(project);
-    for (const id of previous.sigs.keys()) {
-      if (built.sigs.has(id)) continue;
-      const group = s.items[id]?.group;
-      if (group === undefined || !names || names.includes(group)) finished++;
-    }
+    for (const id of previous.sigs.keys()) if (!built.sigs.has(id) && (!names || names.includes(s.items[id]?.group ?? ""))) finished++;
     track = { at: previous.at, changed, added, finished };
   }
-  // What the session saw: the items of the projects looked at as they are now, the others as they were when it last saw them (as they are now when it never did), so that a look at one project does not hide a change in another.
+  // What the session saw: the items of the projects looked at as they are now; everything else (an item of another project, open or no longer) as it was
+  // at the last look, and an item of another project it never saw stays unseen, so that a look at one project hides no change, new item or finish in another.
   const sigs = new Map<string, string>();
-  for (const [id, sig] of built.sigs) sigs.set(id, !names || names.includes(built.byId.get(id)!.project) ? sig : previous?.sigs.get(id) ?? sig);
+  const looked = (id: string): boolean => !names || names.includes(built.byId.get(id)?.project ?? s.items[id]?.group ?? "");
+  for (const [id, sig] of previous?.sigs ?? []) if (!looked(id)) sigs.set(id, sig);
+  for (const [id, sig] of built.sigs) if (looked(id)) sigs.set(id, sig);
   return { now, limit, asked, names, projects: picked, expanded, unmet, track, sigs };
 }
 
@@ -303,15 +315,20 @@ function counts(t: Tally): string {
   const change = [t.changed ? `上次看后变了 ${t.changed} 件` : "", t.added ? `新出现 ${t.added} 件` : ""].filter(Boolean).join(" · ");
   return [by, attention, change].filter(Boolean).join("；");
 }
+/** The pools' items below a line: how many, and how many of them nobody holds, wait too long or are being worked on (the runner reports on them). */
+function poolText(t: Tally, word: string): string {
+  const hot = [t.poolUnattended ? `没人管 ${t.poolUnattended}` : "", t.poolOverdue ? `等太久 ${t.poolOverdue}` : "", t.poolWorking ? `在做 ${t.poolWorking}` : ""].filter(Boolean).join(" · ");
+  return `${word} ${t.pool} 件${hot ? `（${hot}）` : ""}`;
+}
 /** What a line says of the nodes below it that it does not list: `下面 N 件` for the items and `待选池 N 件` for the pools'. */
 function below(t: Tally): string {
   const items = t.items ? `下面 ${t.items} 件：${counts(t)}` : "";
-  return [items, t.pool ? `待选池 ${t.pool} 件` : ""].filter(Boolean).join(" · ");
+  return [items, t.pool ? poolText(t, "待选池") : ""].filter(Boolean).join(" · ");
 }
 
 function nodeLine(node: LookNode, open: boolean, now: number): string {
   if (node.kind === "project") {
-    return ` ${node.id} · ${open ? `共 ${node.sub.items} 件${node.sub.items ? `：${counts(node.sub)}` : ""}${node.sub.pool ? `；待选池另 ${node.sub.pool} 件` : ""}` : below(node.sub)}`;
+    return ` ${node.id} · ${open ? `共 ${node.sub.items} 件${node.sub.items ? `：${counts(node.sub)}` : ""}${node.sub.pool ? `；${poolText(node.sub, "待选池另")}` : ""}` : below(node.sub)}`;
   }
   const indent = " ".repeat(2 * node.depth - 1);
   if (node.kind === "pool") {
@@ -345,14 +362,15 @@ export function lookLines(view: LookView): string[] {
   const emit = (node: LookNode): void => { body.push(nodeLine(node, view.expanded.has(node), now)); if (view.expanded.has(node)) for (const kid of node.kids) emit(kid); };
   for (const project of view.projects) emit(project);
   const scope = view.names ? view.names.join("、") : "全部项目";
-  if (!view.projects.length) return [`看 · ${scope} · 没有没做完的工作。`];
+  const track = view.track === "none" ? "没带 session，不标上次看以后的变化"
+    : view.track === "first" ? "这个会话头一次看（看板重启后，或上次看被挤出记忆后，也一样），不标变化"
+    : `上次看在 ${spanText(now - view.track.at)}前：变了 ${view.track.changed} 件 · 新出现 ${view.track.added} 件 · 收尾 ${view.track.finished} 件（做完、取消）`;
+  if (!view.projects.length) return [`看 · ${scope} · 没有没做完的工作 · ${track}`];
   const total = zero();
   for (const project of view.projects) addInto(total, project.sub);
   const lines = body.length + 1 + (view.unmet === undefined ? 0 : 1);
-  const track = view.track === "none" ? "没带 session，不标上次看以后的变化"
-    : view.track === "first" ? "这个会话头一次看（看板重启后也一样），不标变化"
-    : `上次看在 ${spanText(now - view.track.at)}前：变了 ${view.track.changed} 件 · 新出现 ${view.track.added} 件 · 收尾 ${view.track.finished} 件（做完、取消）`;
-  const header = `看 · ${scope} · 没做完 ${total.items + total.pool} 件（待选池 ${total.pool} 件在内）；没人管 ${total.unattended} · 等太久 ${total.overdue} · 在做 ${total.working} · 共 ${lines}/${view.limit} 行${view.limit > view.asked ? "（每个项目至少一行，上限提到这个数）" : ""} · ${track}`;
+  // The whole view puts a pool's item that the runner reports on among the unattended, the overdue and the working; so does the header.
+  const header = `看 · ${scope} · 没做完 ${total.items + total.pool} 件（待选池 ${total.pool} 件在内）；没人管 ${total.unattended + total.poolUnattended} · 等太久 ${total.overdue + total.poolOverdue} · 在做 ${total.working + total.poolWorking} · 共 ${lines}/${view.limit} 行${view.limit > view.asked ? "（每个项目至少一行，上限提到这个数）" : ""} · ${track}`;
   return [header, ...(view.unmet === undefined ? [] : [view.unmet]), ...body];
 }
 export const lookText = (view: LookView): string => lookLines(view).join("\n");
