@@ -329,11 +329,11 @@ adds nothing to any trace. A second line says when the event loop itself was hel
 due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs
 `event loop held for 621 ms (a timer due every 100 ms came that late); cpu 612 ms, gc 3 ms, load 1.82`,
 because a git command's time that is the time of a held loop is not git's. The three
-readings say why it was held, each over the stretch between the timer's last two firings
-(the held time and the 100 ms before it): `cpu` is the CPU the process used
-(`process.cpuUsage`, user and system, all its threads), `gc` the time its garbage
-collections took (the `gc` entries of a `PerformanceObserver`) and `load` the machine's load
-average over the last minute (`os.loadavg`). `cpu` about the held time with little `gc` is
+readings say why it was held. `cpu` and `gc` are over the stretch between the timer's last
+two firings (the held time and the 100 ms before it): `cpu` is the CPU the process used
+(`process.cpuUsage`, user and system, all its threads) and `gc` the time its garbage
+collections took (the `gc` entries of a `PerformanceObserver`). `load` is the machine's load
+average over the last minute (`os.loadavg`), read when the line is told. `cpu` about the held time with little `gc` is
 code that did not return; `gc` about the held time is the collector; `cpu` far under the
 held time is a process that was not given the CPU, and `load` tells whether the machine was
 busy. The collector's helper threads count in `cpu`, so a collection can put it over the
