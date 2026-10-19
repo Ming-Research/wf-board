@@ -117,6 +117,32 @@ export async function checkCompact({ bp, lib }: Scene): Promise<string[]> {
   return got === want ? [] : [`mermaid-config: the page configured the library with ${got}, not ${want}`];
 }
 
+/** The colors the page gives a chart's series, light and dark, with the contrast of each against the page's surface (docs/design.md, section 7,
+ * Diagrams, Data charts); a chart's plate is clear so that the page's surface shows; a chart is 360 px high. */
+const CHART_PALETTE = {
+  default: "#2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4,#008300,#6250d6,#e34948",
+  dark: "#3987e5,#d95926,#199e70,#c98500,#d55181,#008300,#9085e9,#e66767",
+};
+/** The page asks the library for chart colors that follow the page's color scheme, a clear plate and a height of 360 px. Whether the library draws a chart in them (a bar in the first color, not its own near-white) is the browser layer's (`checkChart` in test/e2e/mermaid-checks.ts). */
+export async function checkChartConfig({ bp, lib }: Scene): Promise<string[]> {
+  const waited = await settled(bp, 1);
+  if (waited) return [`mermaid-chart: ${waited}`];
+  const v: string[] = [];
+  for (const scheme of ["dark", "light"] as const) {
+    const theme = scheme === "dark" ? "dark" : "default";
+    bp.setScheme(scheme);
+    const missing = await takes(bp, theme, `mermaid-chart (${scheme})`);
+    if (missing) { v.push(missing); continue; }
+    // A diagram drawn before in this scheme comes from the page's cache, so the configuration is the last one given for the theme.
+    const config = lib().configs.filter(c => c.theme === theme).at(-1), xy = config?.themeVariables?.xyChart;
+    if (xy?.plotColorPalette !== CHART_PALETTE[theme]) v.push(`mermaid-chart (${scheme}): the page gave the library the series colors ${JSON.stringify(xy?.plotColorPalette)}, not ${JSON.stringify(CHART_PALETTE[theme])}`);
+    if (xy?.backgroundColor !== "transparent") v.push(`mermaid-chart (${scheme}): the page gave the library the chart plate ${JSON.stringify(xy?.backgroundColor)}, not "transparent"`);
+    if (config?.xyChart?.height !== 360) v.push(`mermaid-chart (${scheme}): the page gave the library the chart height ${JSON.stringify(config?.xyChart?.height)}, not 360`);
+  }
+  bp.setScheme("light");
+  return v;
+}
+
 /** The head the repaint check writes: a new line before the blocks and a new diagram after them. */
 export const REPAINT_HEAD = (head: string) => "新写了一段。\n\n" + head + "\n\n" + fence("flowchart TD\n  P[甲] --> Q[乙]");
 /** A live update repaints the item: its diagrams, the old ones and a new one, are diagrams again after it. */
