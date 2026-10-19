@@ -9,8 +9,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, osize, semi4, g30, g50, semi4-g30, semi4-g50, semi4-g100, semi4-g50-decommit, semi4-old512]
-        rep: [1, 2]
+        variant: [default, semi4-g50, rt-semi4-g50, semi2-g50, semi8-g50, rt-g50]
+        rep: [1, 2, 3]
     name: study ${{ matrix.variant }} ${{ matrix.rep }}
     runs-on: macos-latest
     timeout-minutes: 60

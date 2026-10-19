@@ -94,6 +94,7 @@ function writeBoard(dir: string, files: Map<string, string>): void {
 /** Read in the daemon through SIGUSR2; the command file says whether to collect first. */
 const PRELOAD = `import v8 from "node:v8"; import vm from "node:vm"; import { writeFileSync, readFileSync } from "node:fs"; import { PerformanceObserver } from "node:perf_hooks";
 v8.setFlagsFromString("--expose-gc"); const gc = vm.runInNewContext("gc");
+for (const flag of (process.env.STUDY_V8_FLAGS ?? "").split(" ").filter(Boolean)) v8.setFlagsFromString(flag);
 const gcs = { minor: [0, 0], major: [0, 0], incremental: [0, 0], other: [0, 0] };
 new PerformanceObserver(list => { for (const e of list.getEntries()) { const k = e.detail?.kind ?? e.kind; const name = k === 1 ? "minor" : k === 4 ? "major" : k === 8 ? "incremental" : "other"; gcs[name][0]++; gcs[name][1] += e.duration; } }).observe({ entryTypes: ["gc"] });
 process.on("SIGUSR2", () => {
