@@ -318,28 +318,34 @@ test("the affected walk reaches what an owner's status moves for, though the pau
   assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
 });
 
-test("the shared cache holds the state before the newest one and none older, however many writes follow", async t => {
-  setFlagsFromString("--expose-gc");
-  const collect = runInNewContext("gc") as () => void;
-  const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
-  const cache = new DerivedCache(), id = Object.keys(store.snapshot().items)[0]!;
-  // Each state is a new object, as each published snapshot is; only the newest is held here, the first only weakly (a copy, since
-  // the store holds its own).
-  let state: Snapshot = { ...store.snapshot(), items: { ...store.snapshot().items } };
-  // The first state has Rules of its own, and each later one is built from the one before: the path a chain would take.
-  const at = Date.now(), first = new WeakRef(state), firstRules = new WeakRef(cache.rules(state, at));
+/** Six writes on a copy of `start`, each state's Rules built from the one before, in the same minute, as the daemon's are: the
+ * path a chain of states would take. A plain function, so that no temporary of its own outlives it: a suspended async function
+ * keeps its registers, which may still hold a value the code no longer names. */
+function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: number): { first: WeakRef<Snapshot>; firstRules: WeakRef<Rules>; last: Snapshot } {
+  // Each state is a new object, as each published snapshot is (a copy, since the store holds its own).
+  let state: Snapshot = { ...start, items: { ...start.items } };
+  const first = new WeakRef(state), firstRules = new WeakRef(cache.rules(state, at));
   for (let k = 0; k < 6; k++) {
     const next: Snapshot = { ...state, items: { ...state.items } };
     cache.follows(next, state, [{ kind: "item", id }]);
     assert.equal(rebuiltBecause(cache.rules(next, at)), null, `state ${k + 1} reused the rules before it`);
     state = next;
   }
+  return { first, firstRules, last: state };
+}
+test("the shared cache holds the state before the newest one and none older, however many writes follow", async t => {
+  setFlagsFromString("--expose-gc");
+  const collect = runInNewContext("gc") as () => void;
+  const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
+  const cache = new DerivedCache();
+  // Only the newest state is held here; the first state and its Rules only weakly.
+  const { first, firstRules, last } = chainOfStates(cache, store.snapshot(), Object.keys(store.snapshot().items)[0]!, Date.now());
   // A WeakRef keeps its target until the current job ends.
   await new Promise(resolve => setImmediate(resolve));
   collect();
   assert.equal(firstRules.deref(), undefined, "the first state's Rules object was collected: no later one holds it");
   assert.equal(first.deref(), undefined, "the first state was collected: neither the cache's step nor a later Rules object leads back to it");
-  assert.ok(cache.rules(state, Date.now()), "the newest state is still served");
+  assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {

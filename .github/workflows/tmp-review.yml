@@ -35,6 +35,22 @@ jobs:
       - run: npm ci
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: node --test ${{ matrix.files }}
+  # The collection test once failed in one run of three; 20 runs in fresh processes show whether it holds steadily.
+  gc-repeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: |
+          fails=0
+          for k in $(seq 1 20); do node --test --test-name-pattern "holds the state before the newest" test/derived.test.ts > "$RUNNER_TEMP/gc-$k.txt" 2>&1 || { fails=$((fails + 1)); tail -30 "$RUNNER_TEMP/gc-$k.txt"; }; done
+          echo "failed $fails of 20"
+          test "$fails" = 0
   # Each spoils what one new test guards and must see that test fail.
   witness:
     runs-on: ubuntu-latest
