@@ -1,0 +1,315 @@
+name: tmp-exp2
+# Temporary (item ci-status-under-1min): times how long after the last of three dummy checks the status is written, for the
+# result job as it is now (R0), a result job with no checkout and no node (R1), and one that starts with the run and waits (R2).
+# Four rounds in one run. Deleted before the last full CI.
+on:
+  push:
+    branches-ignore: [main]
+    paths: ['.github/workflows/tmp-exp2.yml']
+permissions:
+  contents: read
+jobs:
+  chk-1-a:
+    name: chk-1-a
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 8
+  chk-1-b:
+    name: chk-1-b
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 14
+  chk-1-c:
+    name: chk-1-c
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20
+  R0-1:
+    name: R0-1
+    needs: [chk-1-a, chk-1-b, chk-1-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/ci-time-gate.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIME_GATE: report
+        run: node scripts/ci-time-gate.ts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R0-1 \
+            -f description="R0" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R1-1:
+    name: R1-1
+    needs: [chk-1-a, chk-1-b, chk-1-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+          total=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-1-")) | .completed_at | fromdateiso8601] | max')
+          echo "last check ended at $total"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R1-1 \
+            -f description="R1" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R2-1:
+    name: R2-1
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-1-")) | select(.status != "completed")] | length')
+            have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-1-"))] | length')
+            [ "$have" = 3 ] && [ "$open" = 0 ] && break
+            sleep 1
+          done
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R2-1 \
+            -f description="R2" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  chk-2-a:
+    name: chk-2-a
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 8
+  chk-2-b:
+    name: chk-2-b
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 14
+  chk-2-c:
+    name: chk-2-c
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20
+  R0-2:
+    name: R0-2
+    needs: [chk-2-a, chk-2-b, chk-2-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/ci-time-gate.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIME_GATE: report
+        run: node scripts/ci-time-gate.ts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R0-2 \
+            -f description="R0" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R1-2:
+    name: R1-2
+    needs: [chk-2-a, chk-2-b, chk-2-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+          total=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-2-")) | .completed_at | fromdateiso8601] | max')
+          echo "last check ended at $total"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R1-2 \
+            -f description="R1" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R2-2:
+    name: R2-2
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-2-")) | select(.status != "completed")] | length')
+            have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-2-"))] | length')
+            [ "$have" = 3 ] && [ "$open" = 0 ] && break
+            sleep 1
+          done
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R2-2 \
+            -f description="R2" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  chk-3-a:
+    name: chk-3-a
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 8
+  chk-3-b:
+    name: chk-3-b
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 14
+  chk-3-c:
+    name: chk-3-c
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20
+  R0-3:
+    name: R0-3
+    needs: [chk-3-a, chk-3-b, chk-3-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/ci-time-gate.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIME_GATE: report
+        run: node scripts/ci-time-gate.ts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R0-3 \
+            -f description="R0" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R1-3:
+    name: R1-3
+    needs: [chk-3-a, chk-3-b, chk-3-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+          total=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-3-")) | .completed_at | fromdateiso8601] | max')
+          echo "last check ended at $total"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R1-3 \
+            -f description="R1" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R2-3:
+    name: R2-3
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-3-")) | select(.status != "completed")] | length')
+            have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-3-"))] | length')
+            [ "$have" = 3 ] && [ "$open" = 0 ] && break
+            sleep 1
+          done
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R2-3 \
+            -f description="R2" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  chk-4-a:
+    name: chk-4-a
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 8
+  chk-4-b:
+    name: chk-4-b
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 14
+  chk-4-c:
+    name: chk-4-c
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20
+  R0-4:
+    name: R0-4
+    needs: [chk-4-a, chk-4-b, chk-4-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/ci-time-gate.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIME_GATE: report
+        run: node scripts/ci-time-gate.ts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R0-4 \
+            -f description="R0" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R1-4:
+    name: R1-4
+    needs: [chk-4-a, chk-4-b, chk-4-c]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+          total=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-4-")) | .completed_at | fromdateiso8601] | max')
+          echo "last check ended at $total"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R1-4 \
+            -f description="R1" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  R2-4:
+    name: R2-4
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest")
+            open=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-4-")) | select(.status != "completed")] | length')
+            have=$(echo "$jobs" | jq '[.jobs[] | select(.name | startswith("chk-4-"))] | length')
+            [ "$have" = 3 ] && [ "$open" = 0 ] && break
+            sleep 1
+          done
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=exp-R2-4 \
+            -f description="R2" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
