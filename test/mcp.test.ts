@@ -581,3 +581,23 @@ test("a card migrated from the old shape shows its old text as legacy lines in c
   const found = text(await client.callTool({ name: "search", arguments: { query: "Old background" } }));
   assert.match(found, /ruled/);
 });
+
+test("MCP takes `standing` on create_item and update_item, and says 常设 in the rows it prints and the data it returns", async t => {
+  const { client, text, store } = await connected(t), tools = (await client.listTools()).tools;
+  for (const name of ["create_item", "update_item"]) assert.ok(tools.find(tool => tool.name === name)!.inputSchema.properties!.standing, `${name} takes standing`);
+  const created = await client.callTool({ name: "create_item", arguments: { ...asArchitect, key: "rules", group: author, title: "Keep the rules", standing: true } });
+  assert.ok(!created.isError, text(created));
+  assert.equal(store.snapshot().items.rules!.standing, true);
+  const call = async (name: string, args: Record<string, unknown>) => text(await client.callTool({ name, arguments: args }));
+  // The text rows say it after the status; an ordinary item's row does not.
+  assert.match(await call("list", {}), /^rules · WIP · 常设 · Keep the rules/m);
+  assert.doesNotMatch(await call("list", {}), /^a · .*常设/m);
+  assert.match(await call("context", { id: "rules" }), /^rules · WIP · 常设 · Keep the rules/);
+  assert.match(await call("search", { query: "Keep the rules" }), /^rules · WIP · 常设 · Keep the rules/m);
+  // The data rows carry the mark, and brief names a standing item that is not paused under its progress.
+  const brief = JSON.parse(await call("brief", { project: author })) as { progress: Array<{ id: string; standing?: boolean }> };
+  assert.equal(brief.progress.find(row => row.id === "rules")?.standing, true);
+  // A project writer cannot mark an item standing.
+  const refused = await client.callTool({ name: "update_item", arguments: { author, id: "b", rev: store.snapshot().items.b!.rev, standing: true } });
+  assert.equal(refused.isError, true); assert.match(text(refused), rx`only ${PROCESS_WRITERS} may mark an item standing or ordinary`);
+});
