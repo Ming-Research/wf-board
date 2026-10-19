@@ -16,6 +16,11 @@
 //   messages instead of set_tags: what a board holding a year of messages costs to open, to hold, to send to the page
 //   (snapshot bytes, whole and as the page gets it) and per write. --write report_state replays the runner's reports (docs/design.md,
 //   section 5, Runner reports), each a change of state on an item as the architect writes it: the cost of the two reports a turn.
+//   --unread N puts the owner's read cursor N commits before the head, and after each write the bench asks for the unread list
+//   as the open page does after every change event (GET /api/unread), so the CPU per write includes it; the replayed writes
+//   are themselves changes the owner has not read, so the list grows by one stop a write. --profile records a CPU profile of
+//   the replay and prints the functions with the most self time and the most total time (the profiler slows the run, so its
+//   CPU numbers are not the ones to compare).
 //   A quick smoke run: --items 150 --writes 50 --history 600.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,6 +29,8 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { PerformanceObserver } from "node:perf_hooks";
+import { writeFile, mkdir } from "node:fs/promises";
+import { Session } from "node:inspector/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { stringify } from "yaml";
@@ -36,7 +43,9 @@ const { values: args } = parseArgs({ options: {
   items: { type: "string", default: "1500" }, writes: { type: "string", default: "1000" }, history: { type: "string", default: "12000" },
   decisions: { type: "string" }, notes: { type: "string" }, warmup: { type: "string", default: "20" },
   messages: { type: "string", default: "0" }, write: { type: "string", default: "set_tags" },
+  unread: { type: "string" }, profile: { type: "boolean", default: false },
 } });
+const UNREAD = args.unread === undefined ? undefined : Number(args.unread);
 const MESSAGES = Number(args.messages), WRITE = args.write!;
 if (WRITE !== "set_tags" && WRITE !== "send_message" && WRITE !== "report_state") throw new Error("--write is set_tags, send_message or report_state");
 const ITEMS = Number(args.items), WRITES = Number(args.writes), HISTORY = Number(args.history), WARMUP = Number(args.warmup);
@@ -46,6 +55,23 @@ const load = (file: string) => import(pathToFileURL(join(src, file)).href);
 
 const yaml = (value: unknown) => stringify(value, { version: "1.2", schema: "core", lineWidth: 0, blockQuote: "literal" });
 const MINUTE = 60_000, iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+interface Profile { nodes: Array<{ id: number; callFrame: { functionName: string; url: string; lineNumber: number }; children?: number[] }>; samples: number[]; timeDeltas: number[] }
+/** Prints the functions with the most self time and the most total time per write, in milliseconds. */
+function summarize(profile: Profile, writes: number): void {
+  const parent = new Map<number, number>(), node = new Map(profile.nodes.map(n => [n.id, n]));
+  for (const n of profile.nodes) for (const child of n.children ?? []) parent.set(child, n.id);
+  const name = (id: number) => { const { functionName, url, lineNumber } = node.get(id)!.callFrame; return `${functionName || "(anonymous)"} ${url.replace(/^.*\/(src|web|node_modules)\//, "$1/")}:${lineNumber + 1}`; };
+  const self = new Map<string, number>(), total = new Map<string, number>();
+  for (const [k, id] of profile.samples.entries()) {
+    const dt = (profile.timeDeltas[k] ?? 0) / 1000, seen = new Set<string>();
+    self.set(name(id), (self.get(name(id)) ?? 0) + dt);
+    for (let at: number | undefined = id; at !== undefined; at = parent.get(at)) { const key = name(at); if (!seen.has(key)) { seen.add(key); total.set(key, (total.get(key) ?? 0) + dt); } }
+  }
+  const top = (map: Map<string, number>, n: number) => [...map].sort((a, b) => b[1] - a[1]).slice(0, n).map(([key, ms]) => `    ${(ms / writes).toFixed(2).padStart(7)} ms/write  ${key}`).join("\n");
+  console.log(`  profile, self time:\n${top(self, 40)}`);
+  console.log(`  profile, total time:\n${top(total, 60)}`);
+}
 
 /** The synthetic board: every file of the first commit, and each later commit's one changed item file. */
 function board() {
@@ -131,6 +157,12 @@ try {
   let t0 = Date.now();
   await writeRepository(dir, data);
   const built = Date.now() - t0;
+  // The owner's cursor, kept in the working tree as the store keeps it between commits.
+  if (UNREAD !== undefined) {
+    const cursor = execFileSync("git", ["rev-parse", `HEAD~${UNREAD}`], { cwd: dir, encoding: "utf8" }).trim();
+    await mkdir(join(dir, "state"), { recursive: true });
+    await writeFile(join(dir, "state/owner.yaml"), yaml({ cursor }));
+  }
   const { Store } = await load("store.ts"), { ops } = await load("ops.ts"), { createMcpServer } = await load("mcp.ts");
   const { createHttpServer } = await load("http.ts"), { ownerOps } = await load("owner-ops.ts");
   t0 = Date.now();
@@ -164,17 +196,33 @@ try {
       ? await client.callTool({ name: "report_state", arguments: { author: "Architect", session: "架构师", id, state: n % 2 ? "running" : "ci", turns: n, cost: n / 100, note: `第 ${n} 轮` } })
       : await client.callTool({ name: "set_tags", arguments: { author: data.group.get(id), id, tags: [n % 2 ? "健全性" : "报错信息"] } });
     if (result.isError) throw new Error(JSON.stringify(result.content));
+    if (UNREAD !== undefined) await unread();
   };
+  // What the page asks for after each change event; the body is read whole and not parsed.
+  let unreadBytes = 0, unreadSteps = 0;
+  const unread = () => new Promise<void>((ok, fail) => http.get({ host: "127.0.0.1", port, path: "/api/unread", headers: { host: `127.0.0.1:${port}` } }, res => {
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(chunk));
+    res.on("end", () => {
+      const body = Buffer.concat(chunks);
+      if (res.statusCode !== 200) { fail(new Error(`GET /api/unread ${res.statusCode}: ${body.toString().slice(0, 300)}`)); return; }
+      unreadBytes = body.length; unreadSteps = body.toString().split('"commits":').length - 1; ok();
+    });
+  }).on("error", fail));
+  if (UNREAD !== undefined) { t0 = Date.now(); await unread(); console.log(`  first unread list over ${UNREAD} commits: ${Date.now() - t0} ms, ${unreadSteps} stops`); }
   for (let n = 0; n < WARMUP; n++) await write(n);
   await new Promise(ok => setTimeout(ok, 200));
   const bytesBefore = bytes, eventsBefore = events;
   let gc = 0;
   const observer = new PerformanceObserver(list => { for (const entry of list.getEntries()) gc += entry.duration; });
   observer.observe({ entryTypes: ["gc"] });
+  const session = args.profile ? new Session() : undefined;
+  if (session) { session.connect(); await session.post("Profiler.enable"); await session.post("Profiler.setSamplingInterval", { interval: 250 }); await session.post("Profiler.start"); }
   const cpu = process.cpuUsage();
   t0 = Date.now();
   for (let n = WARMUP; n < WARMUP + WRITES; n++) await write(n);
   const wall = Date.now() - t0, used = process.cpuUsage(cpu);
+  if (session) { const { profile } = await session.post("Profiler.stop"); session.disconnect(); summarize(profile as unknown as Profile, WRITES); }
   for (let wait = 0; events - eventsBefore < WRITES && wait < 100; wait++) await new Promise(ok => setTimeout(ok, 100));
   observer.disconnect();
   const result = {
@@ -183,6 +231,7 @@ try {
     gcMsPerWrite: +(gc / WRITES).toFixed(1), wallMsPerWrite: +(wall / WRITES).toFixed(1),
     eventBytesPerChange: Math.round((bytes - bytesBefore) / Math.max(1, events - eventsBefore)), changeEvents: events - eventsBefore,
     peakRssMB: Math.round(process.resourceUsage().maxRSS / 1024), buildMs: built, openMs: opened, briefChars,
+    ...(UNREAD === undefined ? {} : { unread: UNREAD, unreadStops: unreadSteps, unreadBytes }),
     messages: Object.values(store.snapshot().messages ?? {}).reduce((n: number, day) => n + (day as { messages: unknown[] }).messages.length, 0), write: WRITE,
     snapshotBytes: JSON.stringify(store.snapshot()).length,
     // What GET /api/snapshot sends the page; code from before messages has no such function and sends the snapshot whole.
@@ -191,6 +240,7 @@ try {
   console.log(`bench-writes ${result.label}: ${result.items} items, ${result.decisions} cards, ${result.notes} notes, ${result.messages} messages, ${result.activityWrites} activity writes, ${WRITES} ${WRITE} writes`);
   console.log(`  CPU ms/write ${result.cpuMsPerWrite} (user ${result.userMsPerWrite}, system ${result.systemMsPerWrite}); GC ms/write ${result.gcMsPerWrite}; wall ms/write ${result.wallMsPerWrite}`);
   console.log(`  event bytes/change ${result.eventBytesPerChange} over ${result.changeEvents} events; peak RSS ${result.peakRssMB} MB; build ${built} ms, open ${opened} ms`);
+  if (UNREAD !== undefined) console.log(`  unread list after the replay: ${unreadSteps} stops, ${unreadBytes} bytes`);
   console.log(`  snapshot ${result.snapshotBytes} bytes, as the page gets it ${result.pageSnapshotBytes} bytes`);
   console.log(`  brief characters per project: ${Object.entries(briefChars).map(([name, n]) => `${name} ${n}`).join(", ")}; total ${Object.values(briefChars).reduce((a, b) => a + b, 0)}`);
   console.log(`BENCH ${JSON.stringify(result)}`);
