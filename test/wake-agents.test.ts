@@ -41,8 +41,8 @@ test("every kind says where it goes, and a holder or session route names one of 
     const keys = typeof to === "object" && to !== null ? Object.keys(to).filter(k => k !== "only" && k !== "otherwise") : [];
     assert.ok(to === "architect" || (field !== undefined && keys.length === 1 && (spec.fields as readonly string[]).includes(field)), `${kind} must name its recipient`);
   }
-  // What needs the content of an item read to judge, or the state of the board kept, goes to the architect: the owner's notes, its own hourly wake, a slow operation, a copy of the data left behind.
-  for (const kind of ["note", "timed-architect", "slow-op", "backup-behind"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
+  // What needs the content of an item read to judge, or the state of the board kept, goes to the architect: the owner's notes, its own hourly wake, a slow operation, a copy of the data left behind, a runner that stopped.
+  for (const kind of ["note", "timed-architect", "slow-op", "backup-behind", "runner-stopped"] as const) assert.equal(WAKE_KINDS[kind].to, "architect", kind);
   assert.deepEqual(WAKE_KINDS["item-done"].to, { holder: "parent", only: true });
   assert.deepEqual(WAKE_KINDS.deployed.to, { holder: "item", only: true });
   assert.deepEqual(WAKE_KINDS.deployFailed.to, { holder: "item", otherwise: "architect" }, "a failed deploy with no session on the item is the architect's");
@@ -62,6 +62,7 @@ const LONGEST: { [K in WakeKind]: Record<string, unknown> } = {
   "main-red": { repo: L, project: L, branch: L, commit: L, failed: many, url: L, item: L, pr: 123456 },
   "slow-op": { op: L, ms: 123456789, limitMs: 1000, params: L },
   "backup-behind": { commits: 123456, lastSuccess: L, reason: L },
+  "runner-stopped": { lastBeat: L, limitMs: 123456789 },
   deployed: { version: L, restarted: true, item: L, project: L, title: L, pr: 123456 },
   deployFailed: { version: L, running: L, reason: L, item: L, project: L, title: L, pr: 123456 },
   "item-done": { item: L, project: L, title: L, parent: L },

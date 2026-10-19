@@ -21,6 +21,19 @@ const MIN_ZOOM = 0.5, MAX_ZOOM = 6, STEP = 1.25;
  * The gaps reach ELK only through web/mermaid-entry.ts. */
 const COMPACT = { look: "classic", flowchart: { look: "classic", padding: 8, nodeSpacing: 20, rankSpacing: 20 } };
 
+/** The colors of a data chart (`xychart`), eight for the series in order, light and dark. Each is at least 3:1 (WCAG 2's floor for a mark) against
+ * the page's surface, #ffffff for the light set and #182020 for the dark, except the light set's aqua #1baf7a (2.82), pink #e87ba4 (2.69) and yellow
+ * #eda100 (2.17), which a chart with several series carries by naming each series (the library then draws a legend). The library's own first
+ * series is #ECECFF, 1.17:1 against a white page, which hides the bars and lines. The keys are the library's themes ("default" is the light
+ * one). A settings block at the start of a diagram wins over these. */
+const CHART_COLORS = {
+  default: "#2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4,#008300,#6250d6,#e34948",
+  dark: "#3987e5,#d95926,#199e70,#c98500,#d55181,#008300,#9085e9,#e66767",
+};
+/** A chart's other settings: the library's dark theme gives a chart a #333 plate of its own, so the plate is clear and the page's surface shows;
+ * and 360 px high instead of the library's 500, so that a chart does not fill the screen (a provisional number, not measured). */
+const CHART = { xyChart: { height: 360 } };
+
 let library: Promise<Mermaid> | undefined;
 function load(): Promise<Mermaid> {
   library ??= import(LIBRARY).then((module: { default: Mermaid }) => module.default, (error: unknown) => { library = undefined; throw error; });
@@ -215,7 +228,9 @@ function draw(block: HTMLElement) {
         // A syntax error is reported here, in the block, not as a picture of a bomb added to the end of the page.
         suppressErrorRendering: true,
         fontFamily: getComputedStyle(document.body).fontFamily,
+        themeVariables: { xyChart: { plotColorPalette: CHART_COLORS[theme], backgroundColor: "transparent" } },
         ...COMPACT,
+        ...CHART,
       });
       const { svg } = await mermaid.render(id, source);
       drawn.set(key, { svg, id });

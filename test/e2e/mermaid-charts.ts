@@ -9,6 +9,8 @@ export const SEQUENCE = "sequenceDiagram\n  参与者甲->>参与者乙: 你好\
 export const BAD = "flowchart LR\n  A --> --> B";
 /** A head with a good diagram, a bad one, another good one after it and a code block that is no diagram. */
 export const HEAD = ["先看这张图：", "", fence(GOOD), "", "下面这张是错的：", "", fence(BAD), "", "错的后面还有一张：", "", fence(SEQUENCE), "", "```wf\nfn main() {}\n```"].join("\n");
+/** A data chart (`xychart`) of the shape a measurement chart on the board has: a bar series and a line series over three categories with Chinese names, each series named. */
+export const CHART = ['xychart', '  title "完整 CI 用时（秒）"', '  x-axis ["一月", "二月", "三月"]', '  y-axis "秒" 0 --> 500', '  bar "全量" [412, 287, 300]', '  line "快速" [100, 90, 80]'].join("\n");
 // Asks for the dark theme in its own frontmatter, on a page that shows the light colors.
 export const OWN = "---\nconfig:\n  theme: dark\n---\nflowchart LR\n  A[需求] --> B[设计]";
 export const WIDE = "flowchart LR\n  " + Array.from({ length: 30 }, (_, i) => `N${i}[第${i}步]`).join(" --> ");
