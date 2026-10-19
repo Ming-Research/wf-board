@@ -15,7 +15,6 @@ import type { BoardServer, Hooks } from "../e2e/board-server.ts";
 import { reverted } from "../e2e/variant.ts";
 import type { Revert } from "../e2e/variant.ts";
 import { Styles } from "./styles.ts";
-import { timed } from "../tmp-timing.ts";
 
 /** One turn of the event loop: what the page's frames, its short timers and its settled promises need to run. */
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -59,7 +58,7 @@ export function pageScript(reverts: Revert[] = []): Promise<string> {
  * changes. `dir` is the page directory its imports resolve from: a checkout of another commit, for a page to compare with
  * (test/nkey). */
 export async function bundleScript(contents: string, dir: string, plugins: Plugin[] = []): Promise<string> {
-  const out = await timed("bundle", () => build({ stdin: { contents, resolveDir: dir, sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", supported: { "dynamic-import": false }, plugins, nodePaths: [join(ROOT, "node_modules")], absWorkingDir: join(dir, ".."), write: false, logLevel: "silent" }));
+  const out = await build({ stdin: { contents, resolveDir: dir, sourcefile: "app.ts", loader: "ts" }, bundle: true, format: "iife", target: "es2022", supported: { "dynamic-import": false }, plugins, nodePaths: [join(ROOT, "node_modules")], absWorkingDir: join(dir, ".."), write: false, logLevel: "silent" });
   return out.outputFiles[0]!.text;
 }
 /** The page's HTML as `GET /` serves it for a page that does not know its version (it then never reloads itself). */
@@ -134,13 +133,11 @@ export class DomPage {
   private constructor(board: BoardServer, options: PageOptions) { this.board = board; this.options = options; }
 
   /** Opens the page on `board` and waits until it has drawn; the window is closed when the test ends. */
-  static open(t: Hooks, board: BoardServer, options: PageOptions = {}): Promise<DomPage> {
-    return timed("pageOpen", async () => {
-      const page = new DomPage(board, options);
-      t.after(() => page.close());
-      await page.reset(options.storage);
-      return page;
-    });
+  static async open(t: Hooks, board: BoardServer, options: PageOptions = {}): Promise<DomPage> {
+    const page = new DomPage(board, options);
+    t.after(() => page.close());
+    await page.reset(options.storage);
+    return page;
   }
 
   get doc(): Document { return this.win.document; }
