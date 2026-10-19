@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Look at all the open work in one answer
+
+Nodes: mcp/look, mcp/whole-view
+
+Summary: The architect read the board one item at a time (1,193 `context` calls in eleven sessions) because the reads that show a whole each showed a corner, and six paused items were missed when the queue of engineers was filled. A new read, `look`, answers with the tree the owner's board shows, one line for each open work item, in a budget of lines the caller sets: it opens the subtrees that need a reader first, folds a pause into one line with its reason, counts a project's backlog apart, and puts every open item in a line or in a count. What a session saw at its last look is kept in the daemon's memory as a signature for each open item (not in the data repository), so the next look marks what changed, including changes no write made; the memory is kept under the credential's session together with the session the call names. The whole-view node now records what the code already did, that a backlog item the runner reports on is a row, which the look's header counts the same way. The grounds and the refused alternatives (a tree option on `whole_view`, only the time of the last look, a commit for each look, listing every item) are in the node; the shape is in docs/design.md, section 6, The look.
+
 ## 2026-10-19 List paused work and work with a start condition beside the candidates
 
 Nodes: mcp/candidates
