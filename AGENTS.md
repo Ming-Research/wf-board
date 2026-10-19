@@ -22,7 +22,9 @@ matches what the artifact board offered.
 - `src/model.ts`: document schemas. Every read and write passes through them.
 - `src/store.ts`: the data repository: YAML files, revisions, one commit per
   operation, history and diffs. The only code that touches the data files or
-  runs git against them; its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
+  runs git against them, and the one place that parses a YAML document
+  (`parseDocument`, which flattens the strings of its result; design section 4,
+  Parsed documents); its push runs beside the write queue, not in it, and its repository maintenance is a task of the queue.
 - `src/net-git.ts`: the one way the store's push and the deploy job's fetch run
   git against a remote: its own process group, a time cap, killed with its ssh
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
@@ -33,9 +35,14 @@ matches what the artifact board offered.
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
   old board, bounded by the heap they are estimated to hold. Design section 4,
   Request budgets.
+- `src/pauses.ts`: the graph the pause spans of the activity index come from (each item's project, record mark, pause and owned items, and the
+  owner of each), changed in place by the items of a commit, so the replay of a history and a live write cost the changed items and their
+  subtrees, and the signature of an item file (the lines that name those fields), by which the replay parses only a file that changed them
+  (design section 5, the activity index).
 - `src/startup-cache.ts`: the format of the startup cache (what a start derives from the history, kept in git's
   metadata directory so a start replays only the commits since); `src/log.ts`: timestamps on every service log
-  line and the start-up step timings.
+  line, the start-up step timings and the start-up memory line (the heap in use
+  after a full collection and the resident set).
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
@@ -141,6 +148,17 @@ matches what the artifact board offered.
   synthetic board of the live board's size with a long history); the same workflow
   runs it on this tree, where a failed check fails the run, and on the base commit,
   as a report only.
+- `scripts/bench-startup.ts`: the start-up scan benchmark (the time of each step of a start with no startup cache, and a digest of the
+  activity index, on a synthetic history of the live board's shape at three sizes, each double the one before); the same workflow runs it on
+  this tree, where a failed check fails the run, and on the base commit, as a report only.
+- `scripts/bench-page.ts`: the page benchmark (the open page's busy time per `set_tags` and
+  log change event, in jsdom on a board of the live board's weight, answered from recorded
+  server answers so the time is the page's own); the same workflow runs it on this tree three
+  times on each of four runners, as a step that never fails the run. `scripts/profile-summary.ts` prints where the CPU went for
+  both write and page benchmarks' `--profile`.
+- `scripts/bench-pairs.ts`: the write path's CPU in interleaved rounds of a base commit, its twin
+  and this tree, with the intervals of the ratios; the same workflow runs it on four runners, as a
+  step that never fails the run, beside the peak memory at 300 and 1,500 writes.
 - `scripts/bench-noise.ts`: the noise measurement for the 14900K (pairs of one pinned job
   against its own twin in rounds, the noise floor as the widest interval half width; `--work`
   is the job), run by the `noise-14900k` workflow.

@@ -37,6 +37,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   let derived = rules(snapshot);
   let steps: Step[] = [];
   let serverSteps: Step[] = [];
+  // The server's version of the list serverSteps holds: the next request asks only for what changed after it.
+  let unreadVersion: string | undefined;
   const pendingReads = new Map<string, { covered: Set<string>; saving: boolean }>();
   function pendingReadCovers(doc: string, step: Step) {
     const overlay = pendingReads.get(doc);
@@ -491,23 +493,35 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function setDepFilter(g: string, key: string) { const f = groupFilter(g); filters[g] = { status: f.status, dep: f.dep === key ? "" : key, tags: f.tags }; saveFilters(); }
   function clearFilters(g?: string | null) { if (g == null) filters = {}; else delete filters[g]; try { localStorage.setItem("board-filters2", JSON.stringify(filters)); } catch (e) {} invalidateView(); }
   // The filter row under a project heading: the status filters with their counts in that project, then the dependency ones it has.
-  function filterRow(g: string) {
-    const row = el("div", "sum-row grp-filters");
-    const f = groupFilter(g);
-    const btn = (on: boolean, text: string, title: string, fn: () => void) => { const b = el("button", "sbtn s-plain" + (on ? " s-on" : ""), text); b.type = "button"; if (title) b.title = title; b.addEventListener("click", fn); return b; };
+  // A group's filter buttons as what they show (class, text, title) and what a click does; the row is made from them, and
+  // a partial render compares what they show with the row on the page, which it replaces only when that changed.
+  function filterButtons(g: string) {
+    const f = groupFilter(g), out: Array<{ on: boolean; text: string; title: string; tag?: boolean; fn: () => void }> = [];
     STATUS_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(key, g), on = f.status.includes(key);
-      if (n || on) row.appendChild(btn(on, label + " " + n, title + "（可多选）", () => toggleStatusFilter(g, key)));
+      if (n || on) out.push({ on, text: label + " " + n, title: title + "（可多选）", fn: () => toggleStatusFilter(g, key) });
     });
     DEP_FILTERS.forEach(([key, label, title]) => {
       const n = filterCount(key, g), on = f.dep === key;
-      if (n || on) row.appendChild(btn(on, label + " " + n, title, () => setDepFilter(g, key)));
+      if (n || on) out.push({ on, text: label + " " + n, title, fn: () => setDepFilter(g, key) });
     });
     (snapshot.board.tags ?? []).filter(t => tagApplies(t, g)).forEach(t => {
       const n = tagCount(t.name, g), on = f.tags.includes(t.name);
-      if (n || on) { const b = btn(on, esc(t.name) + " " + n, t.meaning + "（可多选，显示带任一所选标签的条目）", () => toggleTagFilter(g, t.name)); b.classList.add("tagfilter"); row.appendChild(b); }
+      if (n || on) out.push({ on, text: esc(t.name) + " " + n, title: t.meaning + "（可多选，显示带任一所选标签的条目）", tag: true, fn: () => toggleTagFilter(g, t.name) });
     });
-    if (filtering(g)) row.appendChild(btn(false, "清除筛选", "", () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); }));
+    if (filtering(g)) out.push({ on: false, text: "清除筛选", title: "", fn: () => { clearFilters(g); renderNow("areas",...(selectedItem ? ["head:"+selectedItem] : [])); } });
+    return out;
+  }
+  const filterShown = (buttons: ReturnType<typeof filterButtons>) => JSON.stringify(buttons.map(b => [b.on, b.text, b.title, !!b.tag]));
+  function filterRow(g: string, buttons = filterButtons(g)) {
+    const row = el("div", "sum-row grp-filters");
+    row.dataset.shown = filterShown(buttons);
+    for (const { on, text, title, tag, fn } of buttons) {
+      const b = el("button", "sbtn s-plain" + (on ? " s-on" : "") + (tag ? " tagfilter" : ""), text); b.type = "button";
+      if (title) b.title = title;
+      b.addEventListener("click", fn);
+      row.appendChild(b);
+    }
     return row;
   }
   // For each item, how many waiting and new stops lie below it; recomputed once per render.
@@ -2042,7 +2056,8 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   try { wholeOpen = localStorage.getItem("board-whole") === "open"; } catch (e) {}
   const wholeAll = new Set<Bucket>();
   let wholeSignature = "";
-  function wholeViewNow() { return cached("wholeView", () => wholeView(snapshot, derived, Date.now())); }
+  // Made again when the board changes or a minute passes, not when only the view does (the unread list, a fold).
+  function wholeViewNow() { return dataCached("wholeView", () => wholeView(snapshot, derived, Date.now())); }
   function wholeItem(id: string, title: string, project: string) {
     const button = el("button", "whole-title", inline(title));
     button.type = "button"; button.title = plain(title) + "（" + project + "）";
@@ -2152,23 +2167,32 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     host.appendChild(panel);
   }
   // The blocking waits (cards with blocks, and asks), the longest waiting first.
+  // The panel last drawn and what it was drawn from: the header is drawn again on every change, the panel only when its rows change.
+  let waitBox: HTMLElement | null = null, waitSignature = "";
   function waitPanel() {
     const rows = stops().filter(blockingStop).map(st => {
       const card = st.id.startsWith("q-") ? snapshot.decisions[st.id.slice(2)] : undefined, it = st.item ? snapshot.items[st.item] : undefined;
       const since = card ? card.at ?? card.updated : it?.updated ?? "";
       return { st, card, it, since, text: card ? card.blocks || "" : it?.ask?.text || "", project: st.item ? groupOf(index().byId.get(st.item)!) : "", summary: card ? plain(firstLine(card.question)) : plain(it?.title) };
     }).sort((a, b) => a.since.localeCompare(b.since) || a.st.id.localeCompare(b.st.id));
-    if (!rows.length) return null;
-    const box = el("div", "waitpanel"); box.id = "wait-panel";
-    rows.forEach(r => {
+    if (!rows.length) { waitBox = null; waitSignature = ""; return null; }
+    const plainCards = stops().filter(st => !blockingStop(st)).length;
+    const markups = rows.map(r => {
       const short = r.summary.length > 40 ? r.summary.slice(0, 40) + "…" : r.summary;
-      const b = el("button", "waitrow", '<span class="waitdot"></span><span class="where">' + esc(r.project || "其他") + '</span><span class="t">' + inline(r.text) + '</span><span class="where">' + esc(short) + "</span>");
+      return '<span class="waitdot"></span><span class="where">' + esc(r.project || "其他") + '</span><span class="t">' + inline(r.text) + '</span><span class="where">' + esc(short) + "</span>";
+    });
+    // The rows' markup (references in the text read the titles they name) and where each row jumps to.
+    const signature = JSON.stringify([plainCards, markups, rows.map(r => [r.card ? "card" : "item", r.st.id, r.st.item ?? null])]);
+    if (waitBox && signature === waitSignature) return waitBox;
+    const box = el("div", "waitpanel"); box.id = "wait-panel";
+    rows.forEach((r, i) => {
+      const b = el("button", "waitrow", markups[i]!);
       b.type = "button";
       b.addEventListener("click", () => { if (r.card) jumpTo("card", r.st.id.slice(2)); else if (r.st.item) jumpTo("item", r.st.item); });
       box.appendChild(b);
     });
-    const plainCards = stops().filter(st => !blockingStop(st)).length;
     if (plainCards) box.appendChild(el("div", "waitmore", "另有 " + plainCards + " 张决策卡不挡工作"));
+    waitBox = box; waitSignature = signature;
     return box;
   }
   function planSection(it: ViewItem, before: Item | null | undefined, terms: TermLinks) {
@@ -2903,10 +2927,11 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // Group counts and dependency summaries are independent of the unchanged item/card subtrees.
     projectGroups().forEach((g,i) => {
       const box=get("group-"+i); if (!box) return;
-      const filters=[...box.children].find(e => e.classList.contains("grp-filters")); if (filters) filters.replaceWith(filterRow(g.name));
+      const filters=[...box.children].find(e => e.classList.contains("grp-filters")) as HTMLElement | undefined;
+      if (filters) { const buttons=filterButtons(g.name); if (filters.dataset.shown !== filterShown(buttons)) filters.replaceWith(filterRow(g.name,buttons)); }
       const head=box.children[0] as HTMLElement | undefined; if (!head) return;
-      const next=el("h2","group-head",inline(g.name || "其他"));
-      head.replaceWith(next);
+      const html=inline(g.name || "其他");
+      if (head.innerHTML !== html) head.replaceWith(el("h2","group-head",html));
     });
     const order=stops().map(s => s.id);
     if (!sameValue(order,waitingOrder)) {
@@ -3078,11 +3103,14 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const operation=(async () => {
       for (;;) {
         const revision=eventGeneration;
-        const result = await api<{cursor?: string; steps: Step[]}>("/api/unread",undefined,"GET",signal);
+        const since=unreadVersion;
+        const result = await api<{cursor?: string; version?: string; keep?: number; steps: Step[]}>("/api/unread"+(since ? "?since="+encodeURIComponent(since) : ""),undefined,"GET",signal);
         if (generation !== unreadGeneration || !active()) return false;
         if (revision !== eventGeneration) continue;
         const previous=steps, failed=new Set(failedDiffs);
-        serverSteps = result.steps;
+        // With keep, the server sent only the stops after the first keep of the list it named, which is the one held here.
+        serverSteps = result.keep === undefined ? result.steps : serverSteps.slice(0,result.keep).concat(result.steps);
+        unreadVersion = result.version;
         for (const [doc, overlay] of pendingReads) {
           if (!overlay.saving && !serverSteps.some(step => pendingReadCovers(doc, step) && step.docs.some(d => d.kind + ":" + d.id === doc))) pendingReads.delete(doc);
         }

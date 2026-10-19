@@ -14,6 +14,7 @@ import { createMcpServer } from "../src/mcp.ts";
 import { SlowOps, STEPS_FROM_MS } from "../src/slow-ops.ts";
 import { WriteTrace, currentTrace, withTrace } from "../src/write-trace.ts";
 import { board, author } from "./helpers.ts";
+import { cleanup } from "./cleanup.ts";
 
 // Where the time of a slow write went (docs/design.md, section 4, Time limits): the steps of a write call. The stalls of the
 // event loop that make a git command's time not git's own are told by the watch tested in test/loop-watch.test.ts.
@@ -100,9 +101,11 @@ test("a commit under a trace has a step for each place it waited or worked, git 
   const line = trace.finish();
   const names = stepNames(line).filter(name => name !== "rest" && name !== "other");
   // git runs for a millisecond or more, so each of its steps is told; the pure code steps may be under a millisecond.
-  for (const git of ["git diff", "git add", "git commit", "git show"]) assert.ok(names.includes(git), `${git} in: ${line}`);
+  for (const git of ["git add", "git commit"]) assert.ok(names.includes(git), `${git} in: ${line}`);
+  // The read of the commit's time goes to the long-lived cat-file process, which may answer in under a millisecond.
   const order = names.filter(name => name.startsWith("git "));
-  assert.deepEqual(order, ["git diff", "git add", "git commit", "git show"], line);
+  assert.deepEqual(order.filter(name => name !== "git cat-file"), ["git add", "git commit"], line);
+  assert.ok(!order.includes("git cat-file") || order.at(-1) === "git cat-file", line);
 });
 
 test("a slow git commit is the step that is slow, and the commands around it are not", async t => {
@@ -112,7 +115,7 @@ test("a slow git commit is the step that is slow, and the commands around it are
   await withTrace(trace, () => store.commit({ author, message: "Slow commit", puts: [put(1)] }));
   const line = trace.finish();
   assert.ok((stepMs(line, "git commit") ?? 0) >= 550, line);
-  for (const other of ["git diff", "git add", "git show", "validate", "files", "publish", "listeners"]) assert.ok((stepMs(line, other) ?? 0) < 400, `${other} in: ${line}`);
+  for (const other of ["git add", "git cat-file", "validate", "files", "publish", "listeners"]) assert.ok((stepMs(line, other) ?? 0) < 400, `${other} in: ${line}`);
 });
 
 test("a write that waits in the store's queue says how long, how many were ahead and what it was behind; the one ahead does not", async t => {
@@ -170,8 +173,8 @@ test("a tool call that takes long says where it went; the writes behind it say h
   for (const line of steps) {
     assert.ok((stepMs(line, "git commit") ?? 0) >= 550, line);
     // An append also reads the item's log (git log) before it commits; the commit's own commands come in this order.
-    assert.deepEqual(stepNames(line).filter(name => ["git diff", "git add", "git commit", "git show"].includes(name)), ["git diff", "git add", "git commit", "git show"], line);
-    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git diff") || stepMs(line, "ops queue") === undefined, line);
+    assert.deepEqual(stepNames(line).filter(name => ["git add", "git commit"].includes(name)), ["git add", "git commit"], line);
+    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git add") || stepMs(line, "ops queue") === undefined, line);
   }
   const waited = steps.map(line => stepMs(line, "ops queue") ?? 0);
   assert.ok(Math.max(...waited) >= 550, `the second call waited for the first's commit: ${steps.join(" | ")}`);
@@ -183,7 +186,7 @@ test("a page write that takes long says where it went, and reads carry no steps"
   await slowCommits(dir, 0.6);
   const slow = new SlowOps(), http = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(import.meta.dirname, "../web"), slow, createMcp: () => createMcpServer({ store, ops: op, slow }) });
   http.listen(0, "127.0.0.1"); await once(http, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
+  cleanup(t, () => new Promise<void>((resolve, reject) => http.close(e => e ? reject(e) : resolve())));
   const address = http.address(); assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   const { info } = await logged(async () => {

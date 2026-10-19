@@ -2,8 +2,8 @@
 import { parseArgs } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { parse, stringify } from "yaml";
-import { Store, readPlanData } from "./store.ts";
+import { stringify } from "yaml";
+import { Store, parseDocument, readPlanData } from "./store.ts";
 import { convertPlans, removeArchives, updatePlanSummary } from "./convert-plans.ts";
 import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import type { Snapshot as LegacySnapshot } from "./legacy-model.ts";
@@ -19,7 +19,7 @@ try {
   const source=loaded.snapshot as LegacySnapshot;
   if(!values["dry-run"]){
     if(!values["approved-head"])throw new Error("Live conversion requires --approved-head from the owner-approved dry run");
-    const approved=parse(await readFile(reportPath,"utf8")) as {sourceHead?:unknown;errors?:unknown};
+    const approved=parseDocument(await readFile(reportPath,"utf8")) as {sourceHead?:unknown;errors?:unknown};
     if(approved.sourceHead!==values["approved-head"]||approved.sourceHead!==source.head)throw new Error("Approved dry-run report does not match the current data head");
     if(!Array.isArray(approved.errors)||approved.errors.length)throw new Error("Approved dry-run report has errors or lacks verification");
   }

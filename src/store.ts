@@ -17,11 +17,13 @@ import { verifyPlans, verifyArchiveRemoval } from "./verify-plans.ts";
 import { RETIRED_LEVEL_REFUSAL, clearedItem } from "./migrate-architect-level.ts";
 import { RETIRED_PRIORITY_REFUSAL, CLEAR_PRIORITY_MESSAGE, isPriorityClearing } from "./migrate-priority.ts";
 import type { ClearedPriority } from "./migrate-priority.ts";
-import { rules, DerivedCache, withSorted } from "./rules.ts";
+import { DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
 import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
 import { startOfReport, withStateStart } from "./timeline.ts";
+import { PauseGraph, pauseSignature, sameShape } from "./pauses.ts";
+import type { PauseShape, PauseSignature } from "./pauses.ts";
 import type { CachedPauseItem } from "./startup-cache.ts";
 import { stopwatch } from "./log.ts";
 import { netGit, netGitReason } from "./net-git.ts";
@@ -48,7 +50,12 @@ export interface ChangedDoc { kind: DocKind | "board" | "owner"; id: string; bef
 /** `activity` is how the commit changed Snapshot["activity"]; rules' applyActivityDelta applies it. */
 export interface Change { commit: string; at: string; author: string; message: string; changed: ChangedDoc[]; activity: ActivityDelta }
 /** `session`: the writing session's name from the commit's `Session:` trailer; `message` excludes the trailer. */
-export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string }
+export interface CommitInfo { commit: string; parents: string[]; at: string; author: string; message: string; files: string[]; session?: string; items?: ItemBlobs[] }
+/** An item file a commit changed, as the blobs of its two sides (null: the file did not exist); `log` gives them when asked for `blobs`. */
+export interface ItemBlobs { id: string; before: string | null; after: string | null }
+/** One entry of `git log --raw -z --no-abbrev`: the modes and blob ids of the two sides and the kind of change; its path is the next field. */
+const RAW_ENTRY = /^:\d{6} \d{6} ([0-9a-f]{40}) ([0-9a-f]{40}) [A-Z]$/;
+const NO_BLOB = /^0+$/;
 /** The commit trailer that records which session made a write (docs/design.md, history). */
 const SESSION_TRAILER = /\n\nSession: ([^\n]+)$/;
 
@@ -91,13 +98,23 @@ export const RETIRE_NOTICES_MESSAGE = "Delete the notices: the 要你知道 list
 /** Start of the message of the one-time commit that cleared the retired level 「架构师做」; the message goes on with the item count. */
 const CLEAR_LEVEL_MESSAGE = "clear_architect_level";
 
+/** Parses one YAML document the board reads (YAML 1.2, core schema) and returns it with every string a flat copy of its own. The
+ * library's strings are slices of the whole source text, which V8 keeps in full while one slice lives (two bytes a character
+ * for Chinese), or joined one character at a time, each character a node of about 32 bytes until something reads the string; the
+ * documents the store holds are not read as strings, so both stay. `structuredClone` writes each string out flat for 3 to 5% of
+ * the parse's time. Every YAML document the daemon or a CLI reads goes through here, and a test checks that no other source file
+ * imports the library's `parse` (docs/design.md, section 4, Parsed documents). */
+export function parseDocument(text: string): unknown {
+  return structuredClone(parse(text, { version: "1.2", schema: "core" }));
+}
+
 // History grows for the lifetime of the daemon. What is read from it is cached, bounded by an estimate of the heap it
-// holds and not by how many entries there are: a parsed document takes about 16 times the bytes of its file (a board of
-// 32.7 MB of files is 510 MB of heap once parsed, measured in CI). The count bounds are for reads still pending, whose
-// size is not known yet. Normalization is needed at format boundaries, not for every old commit, so one whole old board
-// is kept.
+// holds and not by how many entries there are: a parsed document takes about 1.4 times the bytes of its file (opening a board of
+// 21.8 MB of files in the live board's shape keeps 28.3 MB of heap, measured in CI), and the estimate is 2 to leave room
+// for small files, whose objects are a larger part. The count bounds are for reads still pending, whose size is not known yet.
+// Normalization is needed at format boundaries, not for every old commit, so one whole old board is kept.
 const MB = 1024 * 1024;
-const HEAP_PER_FILE_BYTE = 16;
+const HEAP_PER_FILE_BYTE = 2;
 const historicalDocumentBytes = 64 * MB;
 const historicalDocumentEntries = 4096;
 const historicalDiffBytes = 16 * MB;
@@ -130,6 +147,33 @@ function pauseProjection(raw: unknown, id: string, fallbackAt: string): Item | n
   const paused = pauseMetadata(fields.paused);
   if (paused) it.paused = paused;
   return it;
+}
+
+/** What the pause graph keeps of a projected item. */
+function pauseShape(it: Item | null): PauseShape | null {
+  return it ? { group: it.group, record: it.record === true, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.flatMap(row => "item" in row && row.own ? [row.item] : []) } : null;
+}
+
+/** One item a commit changes, as the pause replay sees it: its shape before and after, and when the commit changed it. */
+interface PauseChange { id: string; before: PauseShape | null; after: PauseShape | null; updated: string }
+
+/** The files of items the replay of pauses asks git for at once: their bytes are held until the commits of the chunk are walked. */
+const PAUSE_READ_COMMITS = 256;
+
+type PauseWork = "read" | "signature" | "parse";
+/** Where the time of the replay of pauses went, and how many files it read and parsed (told in its log line). */
+class PauseTally {
+  private readonly ms: Record<PauseWork, number> = { read: 0, signature: 0, parse: 0 };
+  blobs = 0;
+  parsed = 0;
+  async time<T>(part: PauseWork, run: () => Promise<T> | T): Promise<T> {
+    const start = performance.now();
+    try { return await run(); } finally { this.ms[part] += performance.now() - start; }
+  }
+  describe(): string {
+    const ms = (part: PauseWork) => `${Math.round(this.ms[part])} ms`;
+    return `${this.blobs} files read in ${ms("read")}, signatures in ${ms("signature")}, ${this.parsed} parsed in ${ms("parse")}`;
+  }
 }
 
 /** A historical document as read: parsed, with the size of its file for the cache to weigh. */
@@ -278,19 +322,27 @@ function sealed(state: Snapshot): Snapshot {
 }
 
 /**
- * One long-lived `git cat-file --batch` that reads `<rev>:<path>` objects in
- * order, so history queries cost no process per document. The process keeps
+ * One long-lived `git cat-file --batch` that reads `<rev>:<path>` objects, and
+ * the commit a write has just made, in order, so history queries cost no
+ * process per document and a write none for its commit's time. The process keeps
  * Node alive only while a read is pending, and restarts after a failure.
  */
 class BlobReader {
   private readonly dir: string;
   private child: ChildProcessWithoutNullStreams | undefined;
   private buffer = Buffer.alloc(0);
-  private waiting: Array<{ resolve: (b: Buffer | null) => void; reject: (e: Error) => void }> = [];
+  private waiting: Array<{ resolve: (o: { id: string; type: string; body: Buffer } | null) => void; reject: (e: Error) => void }> = [];
 
   constructor(dir: string) { this.dir = dir; }
 
-  read(spec: string): Promise<Buffer | null> {
+  /** The blob `spec` names, or null when it names none. */
+  async read(spec: string): Promise<Buffer | null> {
+    const object = await this.object(spec);
+    return object?.type === "blob" ? object.body : null;
+  }
+
+  /** The object `spec` names, with its id and type, or null when it names none. */
+  object(spec: string): Promise<{ id: string; type: string; body: Buffer } | null> {
     if (/[\n\r\0]/.test(spec)) return Promise.reject(new Error(`invalid object name: ${JSON.stringify(spec)}`));
     const child = this.start();
     if (!this.waiting.length) this.hold(child, true);
@@ -329,13 +381,13 @@ class BlobReader {
       const nl = this.buffer.indexOf(0x0a);
       if (nl === -1) return;
       const header = this.buffer.subarray(0, nl).toString("utf8");
-      const m = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+      const m = /^([0-9a-f]+) (\w+) (\d+)$/.exec(header);
       if (!m) { this.buffer = this.buffer.subarray(nl + 1); this.waiting.shift()!.resolve(null); if (!this.waiting.length && this.child) this.hold(this.child, false); continue; }
-      const size = Number(m[2]);
+      const size = Number(m[3]);
       if (this.buffer.length < nl + 1 + size + 1) return;
       const body = this.buffer.subarray(nl + 1, nl + 1 + size);
       this.buffer = this.buffer.subarray(nl + 1 + size + 1);
-      this.waiting.shift()!.resolve(m[1] === "blob" ? Buffer.from(body) : null);
+      this.waiting.shift()!.resolve({ id: m[1]!, type: m[2]!, body: Buffer.from(body) });
     }
     if (!this.waiting.length && this.child) this.hold(this.child, false);
   }
@@ -462,7 +514,7 @@ export class Store {
     const clearingPriority: Array<{ id: string; priority: unknown }> = [];
     async function load<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
       try {
-        const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });
+        const raw = parseDocument(await readFile(join(dir, path), "utf8"));
         if (retiredShape(path, raw)) retired = true;
         if (path.startsWith("items/") && holdsRetiredLevel(raw)) {
           if (!opts.clearArchitectLevel) throw new ValidationError([{ path, issues: RETIRED_LEVEL_REFUSAL }]);
@@ -633,7 +685,7 @@ export class Store {
   private async loadActivity(): Promise<void> {
     const cache = await this.readStartupCache();
     if (cache) this.lap("read startup cache", `of ${cache.head.slice(0, 12)}`);
-    const commits = (await this.log(cache ? { since: cache.head } : {})).reverse();
+    const commits = (await this.log({ blobs: true, ...(cache ? { since: cache.head } : {}) })).reverse();
     allowRange(commits.length);
     this.lap("read git log", `${commits.length} commits${cache ? " after the cache" : ""}`);
     const activity: NonNullable<Snapshot["activity"]> = cache
@@ -683,11 +735,11 @@ export class Store {
       }
     }
     this.lap("replay activity", `${commits.length} commits`);
-    await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null, cache ? `${cache.head}..${this.state.head}` : this.state.head);
+    const pauses = await this.loadPauses(activity, commits, cache ? cache.pause?.items ?? null : null);
     activity.writes.sort();
     this.state = sealed({ ...this.state, activity });
     this.activityLoaded = true;
-    this.lap("replay pauses");
+    this.lap("replay pauses", pauses);
     // A scan is the slow path: write what it found at once, so the next start does not scan. A start that only
     // replayed commits leaves the write to the timer, which keeps it quick.
     if (!cache) await this.saveStartupCache();
@@ -762,73 +814,116 @@ export class Store {
     this.cacheTimer.unref();
   }
 
-  /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot. Read each later
-   * changed item once; never convert whole historical boards or inspect old item bodies when no pause existed.
-   * `prior` is the item projections the cache holds as of its commit (null: no pause had been set by then), so the
-   * replay continues from them; `range` is the commits `commits` are, for finding the first pause among them. */
-  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null, range: string): Promise<void> {
+  /** Pause history starts at the first native paused field, not at the board's oldest legacy snapshot, and never converts
+   * whole historical boards. The walk reads every item file a commit changed once, as the blob `log` named, and takes its
+   * signature (src/pauses.ts) without parsing it; only a file whose signature differs from the one before is parsed, and
+   * only its fields the pause spans read are used. `prior` is the item projections the cache holds as of its commit (null:
+   * no pause had been set by then), so the replay continues from them. Returns what the step did, for its log line. */
+  private async loadPauses(activity: NonNullable<Snapshot["activity"]>, commits: CommitInfo[], prior: Record<string, CachedPauseItem> | null): Promise<string> {
     this.pauseStarted = prior !== null;
-    let items: Snapshot["items"], replay: CommitInfo[];
-    if (prior) {
-      items = Object.fromEntries(Object.entries(prior).map(([id, it]) => [id, { title: id, log: [], links: [], rev: 1, ...it } as Item]));
-      replay = commits;
-    } else {
-      if (!commits.length) return;
-      const firstCommit = await this.firstPauseCommit(commits, range);
-      const first = commits.findIndex(commit => commit.commit === firstCommit);
-      if (first < 0) return;
-      this.pauseStarted = true;
-      const initial = commits[first]!;
-      items = {};
-      const paths = (await this.gitRead(["ls-tree", "-r", "--name-only", initial.commit, "--", "items"])).trim().split("\n");
-      for (const path of paths) {
-        const match = /^items\/(.+)\.yaml$/.exec(path);
-        if (match) {
-          const it = await this.pauseItem(path, initial.commit, match[1]!, initial.at);
-          if (it) items[match[1]!] = it;
+    let graph = prior ? PauseGraph.from(Object.entries(prior).map(([id, it]): [string, PauseShape] => [id, { group: it.group, record: it.record, ...(it.paused ? { paused: it.paused } : {}), owned: it.plan.map(row => row.item) }])) : null;
+    // For each item, the blob the walk saw last and its signature (null: the file was deleted).
+    const seen = new Map<string, { blob: string | null; signature: PauseSignature | null }>();
+    const tally = new PauseTally();
+    const sign = async (blob: string, texts: ReadonlyMap<string, Buffer>): Promise<PauseSignature | undefined> => {
+      const text = texts.get(blob) ?? (await tally.time("read", () => this.blobTexts([blob]))).get(blob);
+      return text === undefined ? undefined : tally.time("signature", () => this.fileSignature(text));
+    };
+    for (let from = 0; from < commits.length; from += PAUSE_READ_COMMITS) {
+      const chunk = commits.slice(from, from + PAUSE_READ_COMMITS);
+      // Ask git for the files of the whole chunk at once; it answers them in order, so no read waits for a round trip of its own.
+      const texts = await tally.time("read", () => this.blobTexts(chunk.flatMap(commit => (commit.items ?? []).flatMap(item => item.after ? [item.after] : []))));
+      tally.blobs += texts.size;
+      for (const commit of chunk) {
+        const changed: Array<{ item: ItemBlobs; text: Buffer | null }> = [];
+        let first = false;
+        for (const item of commit.items ?? []) {
+          const text = item.after === null ? null : texts.get(item.after) ?? null;
+          const signature = item.after === null ? null : await sign(item.after, texts);
+          if (signature === undefined) { console.warn(`Skipping unreadable pause history item ${commit.commit}:items/${item.id}.yaml`, "its blob is missing"); continue; }
+          const known = seen.get(item.id);
+          const before = known && known.blob === item.before ? known.signature : item.before === null ? null : await sign(item.before, texts) ?? null;
+          seen.set(item.id, { blob: item.after, signature });
+          if (before && signature && before.key === signature.key) continue;
+          changed.push({ item, text });
+          if (!!before?.paused !== !!signature?.paused) first = true;
         }
-      }
-      const source = rules({ ...this.state, items });
-      for (const id of Object.keys(items)) {
-        const owner = source.pausedBy(id);
-        if (owner) {
-          activity.pauses ??= {};
-          activity.pauses[id] = [{ start: items[owner]!.paused!.at }];
+        if (!graph) {
+          // The first commit that adds or removes a `paused:` line sets the pause history's start; the board as of this commit is its first state.
+          if (!first) continue;
+          graph = await this.firstPauseGraph(activity, commit, tally, seen);
+          this.pauseStarted = true;
+          continue;
         }
-      }
-      replay = commits.slice(first + 1);
-    }
-    for (const commit of replay) {
-      const next = { ...items }, changes: ChangedDoc[] = [];
-      for (const path of commit.files) {
-        const match = /^items\/(.+)\.yaml$/.exec(path);
-        if (!match) continue;
-        const id = match[1]!, after = await this.pauseItem(path, commit.commit, id, commit.at);
-        if (after === undefined) continue; // An unreadable revision supplies no new evidence.
-        changes.push({ kind: "item", id, before: Object.hasOwn(items, id) ? items[id]! : null, after });
-        if (after) next[id] = after; else delete next[id];
-      }
-      if (!changes.length) continue;
-      this.notePauses(activity, items, next, changes, commit.at);
-      for (const change of changes) {
-        if (change.after) items[change.id] = change.after as Item; else delete items[change.id];
+        const changes: PauseChange[] = [];
+        for (const { item, text } of changed) {
+          const projected = await tally.time("parse", () => this.pauseItem(text, `items/${item.id}.yaml`, commit.commit, item.id, commit.at));
+          tally.parsed++;
+          if (projected === undefined) {
+            // An unreadable revision supplies no new evidence, and the next one must be read whatever its lines are.
+            seen.set(item.id, { blob: item.after, signature: null });
+            continue;
+          }
+          changes.push({ id: item.id, before: graph.shape(item.id), after: pauseShape(projected), updated: projected?.updated ?? commit.at });
+        }
+        this.applyPauses(activity, graph, changes);
       }
     }
+    return tally.describe();
   }
 
-  /** The first of `commits` (oldest first, all within `range`) that sets a pause, found by a pickaxe over the range. */
-  private async firstPauseCommit(commits: CommitInfo[], range: string): Promise<string | null> {
-    const matches = new Set((await this.gitRead(["log", "--format=%H", "--no-renames", "-G", "^paused:", range, "--", "items"])).trim().split(/\s+/));
-    return commits.find(commit => matches.has(commit.commit))?.commit ?? null;
+  /** The graph of the board as `commit` left it, for the replay to continue from; the items that are paused or sit under a
+   * paused item begin their spans at once. A file that cannot be read is left out, and `seen` is told, so that the next
+   * version of it is read whatever its signature. */
+  private async firstPauseGraph(activity: NonNullable<Snapshot["activity"]>, commit: CommitInfo, tally: PauseTally, seen: Map<string, { blob: string | null; signature: PauseSignature | null }>): Promise<PauseGraph> {
+    const listed = (await this.gitRead(["ls-tree", "-r", commit.commit, "--", "items"])).trim().split("\n");
+    const files = listed.flatMap(line => { const match = /^\d+ blob ([0-9a-f]{40})\titems\/(.+)\.yaml$/.exec(line); return match ? [{ blob: match[1]!, id: match[2]! }] : []; });
+    const shapes: Array<[string, PauseShape]> = [];
+    for (let from = 0; from < files.length; from += PAUSE_READ_COMMITS) {
+      const chunk = files.slice(from, from + PAUSE_READ_COMMITS);
+      const texts = await tally.time("read", () => this.blobTexts(chunk.map(file => file.blob)));
+      for (const { blob, id } of chunk) {
+        const text = texts.get(blob);
+        if (text === undefined) console.warn(`Skipping unreadable pause history item ${commit.commit}:items/${id}.yaml`, "its blob is missing");
+        const projected = text === undefined ? undefined : await tally.time("parse", () => this.pauseItem(text, `items/${id}.yaml`, commit.commit, id, commit.at));
+        if (text !== undefined) tally.parsed++;
+        if (projected === undefined) { seen.set(id, { blob, signature: null }); continue; }
+        const shape = pauseShape(projected);
+        if (shape) shapes.push([id, shape]);
+      }
+    }
+    const graph = PauseGraph.from(shapes);
+    for (const [id, source] of graph.sources()) (activity.pauses ??= {})[id] = [{ start: graph.shape(source)!.paused!.at }];
+    return graph;
   }
 
-  /** Historical schemas are not today's write schema. Extract only the fields
-   * consumed by pausedBy and interval timestamps, ignoring unrelated evolution. */
-  private async pauseItem(path: string, commit: string, id: string, fallbackAt: string): Promise<Item | null | undefined> {
+  /** The signature of an item file as the replay takes it; the bytes are read as one-byte characters, since only whether two
+   * versions have the same lines matters, and that is the cheapest way for a large text. */
+  private fileSignature(text: Buffer): PauseSignature {
+    return pauseSignature(text.toString("latin1"));
+  }
+
+  /** The files of the given blobs. All the reads are asked of the one `git cat-file --batch` before any answer is waited for,
+   * and the bytes are charged to the budget as a read of a historical file is. A blob git does not have is left out. */
+  private async blobTexts(ids: Iterable<string>): Promise<Map<string, Buffer>> {
+    const budget = this.budget(), unique = [...new Set(ids)];
+    const blobs = await Promise.all(unique.map(id => this.blobs.read(id)));
+    const texts = new Map<string, Buffer>();
+    unique.forEach((id, i) => {
+      const blob = blobs[i];
+      if (!blob) return;
+      budget?.readBytes(blob.length);
+      texts.set(id, blob);
+    });
+    return texts;
+  }
+
+  /** An item file of an earlier commit as the pause spans read it. Historical schemas are not today's write schema: only the
+   * fields consumed by pausedBy and interval timestamps are taken, ignoring unrelated evolution. Null: the file did not exist. */
+  private pauseItem(text: Buffer | null, path: string, commit: string, id: string, fallbackAt: string): Item | null | undefined {
+    if (text === null) return null;
     try {
-      const raw = await this.readAt(path, commit);
-      if (raw === null) return null;
-      const it = pauseProjection(raw, id, fallbackAt);
+      const it = pauseProjection(this.parsePauseDocument(text, path, commit), id, fallbackAt);
       if (!it) throw new Error("Historical item is not an object");
       return it;
     } catch (error) {
@@ -837,43 +932,46 @@ export class Store {
     }
   }
 
-  /** Only ownership, identity or a pause marker can alter inherited pause.
-   * Logs and ordinary plan progress avoid a whole-board inheritance walk. */
+  /** The YAML of an item file of `commit`, as the core schema reads it. */
+  private parsePauseDocument(text: Buffer, _path: string, _commit: string): unknown {
+    return parseDocument(text.toString("utf8"));
+  }
+
+  /** Live writes: only ownership, identity or a pause marker can alter inherited pause, so a write that changes none of
+   * them, or that finds no pause before or after, costs a comparison of the changed items. Otherwise the shapes of the
+   * board before the write are built once and the same change the replay makes is applied to them. */
   private notePauses(activity: NonNullable<Snapshot["activity"]>, before: Record<string, unknown>, after: Record<string, unknown>, changed: ChangedDoc[], fallbackAt: string): void {
-    const shape = (it: Item | null) => {
-      return it ? { group: it.group, record: it.record, paused: it.paused, owned: it.plan.flatMap(row => "item" in row && row.own ? [row.item] : []) } : null;
-    };
-    const relevant = changed.filter(change => change.kind === "item").map(change => ({
-      before: pauseProjection(change.before, change.id, fallbackAt), after: pauseProjection(change.after, change.id, fallbackAt),
-    })).filter(change => !isDeepStrictEqual(shape(change.before), shape(change.after)));
-    if (!relevant.length) return;
+    const changes = changed.filter(change => change.kind === "item").map((change): PauseChange => {
+      const was = pauseProjection(change.before, change.id, fallbackAt), now = pauseProjection(change.after, change.id, fallbackAt);
+      return { id: change.id, before: pauseShape(was), after: pauseShape(now), updated: now?.updated ?? fallbackAt };
+    });
+    if (changes.every(change => sameShape(change.before, change.after))) return;
     const hasPause = (items: Record<string, unknown>) => Object.values(items).some(value => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return false;
       const fields = value as Record<string, unknown>;
       return fields.record !== true && !!pauseMetadata(fields.paused);
     });
     if (!hasPause(before) && !hasPause(after)) return;
-    const project = (items: Record<string, unknown>): Snapshot["items"] => Object.fromEntries(Object.entries(items).flatMap(([id, value]): Array<[string, Item]> => {
-      const it = pauseProjection(value, id, fallbackAt);
-      return it ? [[id, it]] : [];
-    }));
-    const oldItems = project(before), newItems = project(after);
-    // A move starts inheritance at the move, not at the destination's older
-    // pause. Document times retain sub-second precision that git dates lack.
-    const dates = relevant.map(change => change.after?.updated ?? fallbackAt);
-    const at = dates.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, dates[0] ?? fallbackAt);
-    const oldRules = rules({ ...this.state, items: oldItems }), newRules = rules({ ...this.state, items: newItems });
-    for (const id of new Set([...Object.keys(oldItems), ...Object.keys(newItems)])) {
-      const oldSource = oldRules.pausedBy(id), newSource = newRules.pausedBy(id);
-      if (!!oldSource === !!newSource) continue;
+    const shapes = Object.entries(before).flatMap(([id, value]): Array<[string, PauseShape]> => {
+      const shape = pauseShape(pauseProjection(value, id, fallbackAt));
+      return shape ? [[id, shape]] : [];
+    });
+    this.applyPauses(activity, PauseGraph.from(shapes), changes);
+  }
+
+  /** Change the graph by the items of a commit whose shape differs, and open or close the pause spans of the items that
+   * began or stopped being paused. A move starts inheritance at the move, not at the destination's older pause; document
+   * times retain sub-second precision that git dates lack, so the time is the latest `updated` of the changed items. */
+  private applyPauses(activity: NonNullable<Snapshot["activity"]>, graph: PauseGraph, changes: PauseChange[]): void {
+    const relevant = changes.filter(change => !sameShape(change.before, change.after));
+    if (!relevant.length) return;
+    const at = relevant.map(change => change.updated).reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest);
+    for (const event of graph.apply(new Map(relevant.map(change => [change.id, change.after])))) {
       activity.pauses ??= {};
       // Copy on write: the previous snapshot shares the earlier spans.
-      const spans = activity.pauses[id] = Object.hasOwn(activity.pauses, id) ? [...activity.pauses[id]!] : [];
-      if (newSource) {
-        const pause = newItems[newSource]!.paused!;
-        const newlyPaused = !oldItems[newSource]?.paused;
-        spans.push({ start: newlyPaused ? pause.at : at });
-      } else {
+      const spans = activity.pauses[event.id] = Object.hasOwn(activity.pauses, event.id) ? [...activity.pauses[event.id]!] : [];
+      if (event.paused) spans.push({ start: event.since ?? at });
+      else {
         const current = spans.at(-1);
         if (current && current.end === undefined) spans[spans.length - 1] = { ...current, end: at };
       }
@@ -1065,7 +1163,6 @@ export class Store {
     if (numbersChanged) paths.push(numbersPath);
     const trace = currentTrace();
     trace?.lap("validate");
-    if ((await this.git(["diff", "--cached", "--name-only"])).trim()) throw new Error("Refusing to commit an already staged index");
     this.writing = true;
     let event: Change;
     try {
@@ -1080,15 +1177,24 @@ export class Store {
       trace?.lap("files");
       await this.git(["add", "--", ...paths]);
       const slug = txn.author.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
-      await this.git(["-c", "commit.gpgsign=false", "commit", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : [])], txn.author);
-      const [head, timestamp] = (await this.git(["show", "-s", "--format=%H%x00%aI", "HEAD"])).trimEnd().split("\0");
-      if (!head || !/^[0-9a-f]{40}$/.test(head) || !timestamp) throw new Error("Invalid git commit metadata");
+      // `--only` commits exactly these paths, whatever else is staged, so nothing staged by hand enters a board commit; the
+      // summary line names the new commit in full, and its time is read through the long-lived cat-file process: two git
+      // processes a write (docs/design.md, section 4, Write cost).
+      const summary = await this.git(["-c", "commit.gpgsign=false", "-c", "core.abbrev=no", "commit", "--only", "--author", `${txn.author} <${slug}@wf-board.invalid>`, "-m", txn.message, ...(session ? ["-m", `Session: ${session}`] : []), "--", ...paths], txn.author);
+      const head = /^\[[^\n\]]* ([0-9a-f]{40})\]/m.exec(summary)?.[1];
+      const object = head && await this.blobs.object(head);
+      trace?.lap("git cat-file");
+      const seconds = object && object.type === "commit" && object.id === head ? /^author .* (\d+) [+-]\d{4}$/m.exec(object.body.toString("utf8"))?.[1] : undefined;
+      if (!head || !seconds) throw new Error("Invalid git commit metadata");
+      const timestamp = new Date(Number(seconds) * 1000).toISOString();
       next.head = head;
+      // git just named it as a commit: a read of history up to it needs no rev-parse.
+      this.resolved.set(head, head);
       // Owner writes arriving during git work stay out of the staged snapshot.
       if (this.deferredOwnerWrite || !isDeepStrictEqual(this.state.owner, ownerAtCommit)) this.writeOwner();
       next.owner = this.state.owner;
       // Documents in `changed` are already frozen snapshot documents.
-      event = { commit: head, at: new Date(timestamp).toISOString(), author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
+      event = { commit: head, at: timestamp, author: txn.author, message: txn.message, changed, activity: { from: this.state.head, items: {}, pauses: {}, sessions: {}, agents: {} } };
     } catch (error) {
       // A metadata or deferred-file failure can occur after git committed.
       // The sole-writer contract lets us restore the old ref before the paths.
@@ -1145,7 +1251,9 @@ export class Store {
     frozen(event);
     trace?.lap("publish");
     if (changed.some(change => change.kind === "item" && (change.after as Item | null)?.paused)) this.pauseStarted = true;
+    const before = this.state;
     this.state = next;
+    this.derived.follows(next, before, changed, event.activity);
     this.scheduleCacheWrite();
     this.pending += 1;
     void this.queueMaintenance();
@@ -1245,10 +1353,12 @@ export class Store {
     return () => { this.listeners.delete(fn); };
   }
 
-  async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number } = {}): Promise<CommitInfo[]> {
+  /** The commits of a range, newest first, with the files each changed. `blobs`: also the blobs of the two sides of each item file
+   * (`items`), which the same walk of git gives for no more than the names (the start's replay of pauses reads them). */
+  async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number; blobs?: true } = {}): Promise<CommitInfo[]> {
     if ((opts.kind === undefined) !== (opts.id === undefined)) throw new Error("History path needs both kind and id");
     const at = opts.at === undefined ? "HEAD" : await this.resolveCommit(opts.at);
-    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", "--name-only", "--no-renames", "-z"];
+    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", ...(opts.blobs ? ["--raw", "--no-abbrev"] : ["--name-only"]), "--no-renames", "-z"];
     if (opts.limit !== undefined) {
       if (!Number.isSafeInteger(opts.limit) || opts.limit < 0) throw new Error("History limit must be a nonnegative integer");
       args.push(`--max-count=${opts.limit}`);
@@ -1278,15 +1388,21 @@ export class Store {
       let message = fields[index++]!.trimEnd();
       const trailer = SESSION_TRAILER.exec(message);
       if (trailer) message = message.slice(0, trailer.index);
-      const files: string[] = [];
+      const files: string[] = [], items: ItemBlobs[] = [];
       // The extra NUL following the format separates metadata from file paths.
       while (index < fields.length && !(fields[index]?.trim().match(/^[0-9a-f]{40}$/))) {
         const file = fields[index++]!.replace(/^\n/, "");
-        if (file) files.push(file);
+        // With `blobs` a path comes after its entry (modes, blob ids, kind of change).
+        const raw = opts.blobs ? RAW_ENTRY.exec(file) : null;
+        if (!raw) { if (file) files.push(file); continue; }
+        const path = fields[index++]!;
+        files.push(path);
+        const item = /^items\/(.+)\.yaml$/.exec(path);
+        if (item) items.push({ id: item[1]!, before: NO_BLOB.test(raw[1]!) ? null : raw[1]!, after: NO_BLOB.test(raw[2]!) ? null : raw[2]! });
       }
       // git just named these as commits, so later reads of them need no rev-parse.
       for (const c of [hash, ...parents]) this.resolved.set(c, c);
-      infos.push({ commit: hash, parents, at, author, message, files, ...(trailer ? { session: trailer[1]!.trim() } : {}) });
+      infos.push({ commit: hash, parents, at, author, message, files, ...(opts.blobs ? { items } : {}), ...(trailer ? { session: trailer[1]!.trim() } : {}) });
     }
     return infos;
   }
@@ -1341,7 +1457,7 @@ export class Store {
       const blob = await this.blobs.read(key);
       if (blob === null) return { doc: null, size: 0 };
       budget?.readBytes(blob.length);
-      try { return { doc: frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })), size: blob.length }; }
+      try { return { doc: frozen(parseDocument(blob.toString("utf8"))), size: blob.length }; }
       catch (error) { throw new ValidationError([{ path: key, issues: String(error) }]); }
     });
     return doc;
@@ -1365,9 +1481,9 @@ export class Store {
 
   private readonly compared = new ReadCache<Snapshot>(Infinity, comparedSnapshotLimit, () => 0);
   private readonly comparisonAt = new Date().toISOString();
-  /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board costs 2.7 to 3.1
-   * seconds and about 510 MB of heap (measured in CI on a board of the live one's size), so a request may do it once
-   * (`REQUEST_LIMITS.boards`) and one board is kept. */
+  /** Normalized comparison only; show() and diff() retain raw historical evidence. Rebuilding a board takes seconds (2.7 to 3.1
+   * on a synthetic board of the live one's size, measured in CI) and keeps about 30 MB of heap in the live board's shape, so a request
+   * may do it once (`REQUEST_LIMITS.boards`) and one board is kept. */
   async comparisonSnapshot(commit: string): Promise<Snapshot> {
     const budget = this.budget();
     const hash = await this.resolveCommit(commit);
@@ -1474,7 +1590,7 @@ function checkNumbers(docs: Pick<Snapshot, "items" | "decisions">, numbers: Numb
 export async function readPlanData(dir: string): Promise<{ legacy: boolean; hasArchives: boolean; planConversionAt?: string; snapshot: Legacy.Snapshot | Snapshot }> {
   const raw: Record<string, unknown> = {}, invalid: InvalidDocument[] = [];
   async function load(path: string, optional = false): Promise<void> {
-    try { const doc = parse(await readFile(join(dir,path),"utf8"),{version:"1.2",schema:"core"}); raw[path] = path.startsWith("items/") ? without(withoutRetiredLevel(doc), ["priority"]) : doc; }
+    try { const doc = parseDocument(await readFile(join(dir,path),"utf8")); raw[path] = path.startsWith("items/") ? without(withoutRetiredLevel(doc), ["priority"]) : doc; }
     catch(error) { if(optional&&(error as NodeJS.ErrnoException).code==="ENOENT")return;invalid.push({path,issues:String(error)}); }
   }
   await load("board.yaml");

@@ -6,11 +6,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { Store } from "../src/store.ts";
 import type { Change, Put } from "../src/store.ts";
 import { ops, OpError } from "../src/ops.ts";
 import { ownerOps } from "../src/owner-ops.ts";
-import { rules, ActivityIndex, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
+import { rules, rebuiltBecause, answersFor, ActivityIndex, DerivedCache, applyActivityDelta, affectedItems, changeSeeds, presentationSignature, sameStatus, STATUS_FIELDS, STALLED_LABEL } from "../src/rules.ts";
 import type { Rules } from "../src/rules.ts";
 import type { Item, Snapshot } from "../src/model.ts";
 import { architect, asArchitect, board, author, at } from "./helpers.ts";
@@ -175,7 +177,12 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
     // The last two are after the six-hour window of a session started in the sequence has passed.
     for (const at of [synthetic, synthetic - 37 * MINUTE, Date.now() + 60 * MINUTE, synthetic + 7 * 60 * MINUTE, Date.now() + 8 * 60 * MINUTE]) {
       const expected = derivedView(rules(after, at), after);
-      assert.deepEqual(derivedView(store.derived.rules(after, at), after), expected, `shared rules after ${change.message}`);
+      // The shared rules of a published state may be built from those of the state before it, and then answer for the time
+      // those answered for, in the same minute (docs/design.md, section 4, Write cost). This sequence's clock runs a day behind
+      // the real one the writes' own reads use, so it seldom happens here; the next test counts it.
+      const shared = store.derived.rules(after, at), answered = answersFor(shared)!;
+      assert.equal(Math.floor(answered / MINUTE), Math.floor(at / MINUTE), `the shared rules after ${change.message} answer for a time in the minute asked for`);
+      assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answered), after), `shared rules after ${change.message}`);
       assert.deepEqual(derivedView(store.derived.candidate(before, after, at), after), expected, `candidate rules after ${change.message}`);
       assert.deepEqual(derivedView(rules(page, at, { activity: ActivityIndex.build(page) }), page), expected, `page rules after ${change.message}`);
       const index = store.derived.activity(after), built = ActivityIndex.build(after);
@@ -247,6 +254,31 @@ test("shared and incremental derivation equal a from-scratch derivation after ev
   assert.ok(smaller > compared / 3, `the walk usually leaves most items unsigned (${smaller} of ${compared})`);
 });
 
+test("the shared rules of a published state are built from the state before it, as the daemon's writes and reads come", async t => {
+  const rand = random(20261019), { store } = await synthetic(t, rand, Date.now() - 60 * MINUTE);
+  // The real clock, as in the daemon: a write's own read of the board and the reads after it fall in the same minute.
+  const op = ops(store), events: Snapshot[] = [];
+  store.onChange(() => events.push(store.snapshot()));
+  const ids = Object.keys(store.snapshot().items), pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
+  const reasons = new Map<string, number>();
+  let logs = 0, steps = 0;
+  for (let round = 0; round < 60; round++) {
+    const id = pick(ids), it = store.snapshot().items[id]!, row = it.plan.find(r => "text" in r && !r.accept) as { id: string; text: string; state: string } | undefined;
+    // A log entry changes no field a status reads; a step's state does.
+    if (round % 4 === 3 && row) { steps++; await op.setPlan({ author: it.group, id, row: { id: row.id, text: row.text, state: row.state === "doing" ? "done" : "doing" } }); }
+    else { logs++; await op.appendLog({ author: it.group, id, text: `entry ${round}` }); }
+    const read = Date.now(), after = events.at(-1)!, shared = store.derived.rules(after, read), reason = rebuiltBecause(shared) ?? "reused";
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    const answered = answersFor(shared)!;
+    assert.equal(Math.floor(answered / MINUTE), Math.floor(read / MINUTE), `the shared rules after round ${round} answer for a time in the minute asked for`);
+    assert.deepEqual(derivedView(shared, after), derivedView(rules(after, answered), after), `shared rules after round ${round}`);
+  }
+  const summary = JSON.stringify(Object.fromEntries(reasons));
+  // A minute that turns between a write's read and the next, or the first write's new active time, may rebuild one or two.
+  assert.ok((reasons.get("reused") ?? 0) >= logs - 3, `the log writes reused the rules before them: ${summary} (${logs} log writes)`);
+  assert.ok((reasons.get("document") ?? 0) >= steps - 3, `a step's state is a field a status reads, so those were rebuilt: ${summary} (${steps})`);
+});
+
 test("the affected walk reaches work that a paused root stops needing, past a rated item that shows no change", async t => {
   const { store, op } = await board(t);
   const work = (title: string, group: string, fields: object, rows: object[] = []) => ({ title, group, plan: [...rows, { id: "accept", accept: true, text: "passes", state: "todo" }], updated: at, ...fields });
@@ -284,6 +316,62 @@ test("the affected walk reaches what an owner's status moves for, though the pau
   assert.deepEqual([rb.statusOf("b-top"), ra.statusOf("b-top")], ["todo", "idle"], "the owner's status moves");
   assert.notEqual(presentationSignature(rb, before.decisions, "b-leaf"), presentationSignature(ra, after.decisions, "b-leaf"), "the leaf paints the status of the item waiting on it");
   assert.equal(affectedItems(rb, ra, ["b-inner"]).has("b-leaf"), true, "so the page re-signs it now, not at the next full scan");
+});
+
+/** `writes` writes on a copy of `start`, each state's Rules built from the one before in the same minute, as the daemon's are:
+ * the path a chain of states would take. A plain function, so that no temporary of its own outlives it (a suspended async
+ * function keeps its registers). Every state and Rules object is returned only weakly, with the newest state. */
+function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: number, writes: number): { states: WeakRef<Snapshot>[]; rules: WeakRef<Rules>[]; last: Snapshot } {
+  // Each state is a new object, as each published snapshot is (a copy, since the store holds its own).
+  let state: Snapshot = { ...start, items: { ...start.items } };
+  const states = [new WeakRef(state)], made = [new WeakRef(cache.rules(state, at))];
+  for (let k = 1; k <= writes; k++) {
+    const next: Snapshot = { ...state, items: { ...state.items } };
+    cache.follows(next, state, [{ kind: "item", id }]);
+    const r = cache.rules(next, at);
+    assert.equal(rebuiltBecause(r), null, `state ${k} reused the rules before it`);
+    states.push(new WeakRef(next)); made.push(new WeakRef(r));
+    state = next;
+  }
+  return { states, rules: made, last: state };
+}
+/** The most Rules objects, and the most states, of a chain that may stay reachable after full collections. The cache holds two by
+ * construction (`follows` keeps only the newest step, the newest state and the one before it; the Rules objects sit in a WeakMap by
+ * state), so this guards that what stays reachable does not grow with the number of writes, not that no older state does. Up to three
+ * more were seen reachable on hosted runners: 5 of 51 after one collection when the test was written; in 375 fresh processes that each
+ * ran this file, after three collections a chain of 50 writes left 2 (3 in three runs, the extra being its first state) and a chain of 200
+ * left 3 in 318 runs, the extra always its 114th state, and 2 in the rest, and after the first collection a chain of 50 left up to 5.
+ * Chains run one after another in a single process left at most 4 after three collections. From 50 writes to 200 they grew by at most
+ * one (in fresh processes always the 114th state), not in proportion to the chain: a cache that keeps one state in every twenty leaves
+ * 12 of 201, and one that keeps every state 51 of 51, which the chain of 200 writes stops if the one of 50 does not. The bound is the
+ * two plus three. */
+const REACHABLE = 5;
+/** A cache of its own over a chain of `writes` states, collected up to three times (a WeakRef keeps its target until the current job
+ * ends, so each collection runs in a job of its own), then how many of the chain's Rules objects and states are still reachable. */
+async function reachableAfterChain(collect: () => void, start: Snapshot, id: string, writes: number): Promise<{ rules: number; states: number }> {
+  const cache = new DerivedCache();
+  const { states, rules: made, last } = chainOfStates(cache, start, id, Date.now(), writes);
+  const alive = (refs: WeakRef<object>[]) => refs.filter(r => r.deref() !== undefined).length;
+  for (let round = 0; round < 3; round++) {
+    await new Promise(resolve => setImmediate(resolve));
+    collect();
+    if (alive(made) <= REACHABLE && alive(states) <= REACHABLE) break;
+  }
+  assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
+  return { rules: alive(made), states: alive(states) };
+}
+test("what the shared cache holds of a chain of states does not grow with the number of writes", async t => {
+  setFlagsFromString("--expose-gc");
+  const collect = runInNewContext("gc") as () => void;
+  const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
+  const start = store.snapshot(), id = Object.keys(start.items)[0]!;
+  // The same bound at two lengths: the extras that stay reachable stay a few, not in proportion to the chain, which a cache keeping
+  // every state, or one in every few, does not.
+  for (const writes of [50, 200]) {
+    const left = await reachableAfterChain(collect, start, id, writes);
+    assert.ok(left.rules <= REACHABLE, `${left.rules} of ${writes + 1} Rules objects are still reachable after a collection`);
+    assert.ok(left.states <= REACHABLE, `${left.states} of ${writes + 1} states are still reachable after a collection`);
+  }
 });
 
 test("one Rules object per snapshot and minute is shared, and a write or a new minute makes another", async t => {

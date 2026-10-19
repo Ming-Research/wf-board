@@ -17,7 +17,7 @@ import { GithubWatch } from "./watch.ts";
 import { ghToken, restSource } from "./ci-source.ts";
 import { CiWatch } from "./ci-watch.ts";
 import { BackupPush } from "./backup-push.ts";
-import { startupLogger, stopwatch, timestampLogs } from "./log.ts";
+import { startupLogger, startupMemory, stopwatch, timestampLogs } from "./log.ts";
 import { SlowOps } from "./slow-ops.ts";
 import { watchLoop } from "./loop-watch.ts";
 import { CredentialFile, Credentials, defaultCredentialsPath } from "./credentials.ts";
@@ -66,7 +66,11 @@ async function main() {
   const looks = new LookMemory();
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential, looks }) });
   lap("create wake, watch and server");
-  server.once("listening", () => startup("listening", process.uptime() * 1000, "since the process started"));
+  server.once("listening", () => {
+    startup("listening", process.uptime() * 1000, "since the process started");
+    // The memory the open board holds, read after a collection, is one line of the log; a start does not depend on it.
+    try { startupMemory(startup); } catch (error) { console.warn("startup memory: not read:", error); }
+  });
   // The pushes of the board's data to its remote, each with its duration in the log. One takes about 4 to 7 seconds and runs beside
   // the writes, not in their queue; when the remote copy stays behind for an hour the architect is told (design section 4, Storage).
   const backup = new BackupPush({ store, wake });

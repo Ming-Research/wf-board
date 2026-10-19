@@ -1,6 +1,6 @@
 // The timeline of an agent (src/timeline.ts): the segments a list of state starts, one dispatch record and the item's pause spans and end make; the
 // store's index of state starts (written live, applied as deltas by the page, replayed after a restart); and the `timeline` tool. The page's
-// line is tested in test/dom/runner-table.test.ts.
+// line is tested in test/dom/runner-table.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";

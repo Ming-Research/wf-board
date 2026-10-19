@@ -103,7 +103,10 @@ export class Tape {
     return {
       misses: () => misses,
       fetch: async (url, init, page) => {
-        const hit = (init?.method ?? "GET") === "GET" ? this.answers.get("GET " + url.pathname + url.search) : undefined;
+        // The page asks for the unread list with the version it holds; a version the tape never met is answered with the whole list,
+        // as the server answers a version it no longer keeps.
+        const hit = (init?.method ?? "GET") !== "GET" ? undefined : this.answers.get("GET " + url.pathname + url.search)
+          ?? (url.pathname === "/api/unread" ? this.answers.get("GET /api/unread") : undefined);
         if (!hit) { if ((init?.method ?? "GET") === "GET") misses++; return fetch(url, init); }
         const held = wait?.(url);
         if (held) await page.hold(held);
@@ -116,7 +119,7 @@ export class Tape {
 // ---- change events as the server's stream carries them ----
 
 /** A reader of the real server's event stream, the only one connected: the data of each `change` event, in order. */
-class EventTap {
+export class EventTap {
   private controller = new AbortController();
   private queue: string[] = [];
   private waiting: Array<(data: string) => void> = [];
@@ -354,16 +357,20 @@ export function samePage(a: { script: string; html: string }, b: { script: strin
 /** Pairs measured per round, the pairs thrown away at the start of a round while the page warms up, and the rounds at most. */
 export const PAIRS = 30, WARMUP = 2, ROUNDS = 3;
 
-export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press> }
+/** `against`: the label of the window this one is judged against, for a page made from that one (the slow witness of a changed page);
+ * without it, the reference. */
+export interface PhaseWindow { label: string; open: (scope: Hooks) => Promise<Press>; against?: string }
 export interface PhaseResult {
   /** The landings of the first round, all windows, for the counts. */
   first: Record<string, Landing[]>;
   /** Busy times of the measured pairs of all rounds, per window. */
   busy: Record<string, number[]>;
   rounds: number;
-  /** `twin`: the twin's ratio to the base, the noise of this run; every other window: its ratio to the reference, per pair the geometric
-   * mean of base and twin (`reference`). */
+  /** `twin`: the twin's ratio to the base, the noise of this run; every other window: its ratio to the window it names in `against`, or
+   * to the reference, per pair the geometric mean of base and twin (`reference`). */
   ratios: Record<string, Interval>;
+  /** Per window other than base and twin, what its ratio is against: a window's label, or `ref`. */
+  against: Record<string, string>;
   /** The twin's interval over each round's pairs alone. */
   alone: Interval[];
   /** `sound`: the twin's interval is no wider than `floor`; per window other than base and twin the verdict against the reference. */
@@ -398,9 +405,10 @@ export async function timePhase(windows: readonly PhaseWindow[], floor: number, 
       alone.push(compare(lands.twin!.slice(WARMUP).map(l => l.busy), lands[windows[0]!.label]!.slice(WARMUP).map(l => l.busy)));
     } finally { await scope.close(); }
     const ref = reference(busy[windows[0]!.label]!, busy.twin!);
-    ratios = { twin: compare(busy.twin!, busy[windows[0]!.label]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, ref)])) };
+    ratios = { twin: compare(busy.twin!, busy[windows[0]!.label]!), ...Object.fromEntries(windows.slice(2).map(w => [w.label, compare(busy[w.label]!, w.against ? busy[w.against]! : ref)])) };
     sound = twinIsSound(ratios.twin!, floor);
   }
   const verdicts = Object.fromEntries(windows.slice(2).map(w => [w.label, judge(ratios.twin!, ratios[w.label]!, floor)]));
-  return { first: first!, busy, rounds, ratios, alone, sound, verdicts, misses };
+  const against = Object.fromEntries(windows.slice(2).map(w => [w.label, w.against ?? "ref"]));
+  return { first: first!, busy, rounds, ratios, against, alone, sound, verdicts, misses };
 }

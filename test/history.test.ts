@@ -8,7 +8,7 @@ import { parse, stringify } from "yaml";
 import { Item as LegacyItem } from "../src/legacy-model.ts";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { board, author, architect, asArchitect, later } from "./helpers.ts";
-import { unreadSteps, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
+import { unreadSteps, unreadSince, unreadStepsFromScratch, stepDiff, piecesOf, commitsSince } from "../src/history.ts";
 import type { Step } from "../src/history.ts";
 import { describeChanges, changes } from "../src/query.ts";
 import { ops } from "../src/ops.ts";
@@ -807,4 +807,53 @@ test("historical comparison omits the retired level 「架构师做」 from an o
   // And the current schema refuses it.
   const current = store.snapshot().items.work!;
   await assert.rejects(store.commit({ author: "Whitefoot", message: "Write the retired level", puts: [{ kind: "item", id: "work", expectRev: current.rev, doc: { ...current, difficulty: "architect" as never } }] }), /difficulty/);
+});
+
+test("the unread list continued over new commits equals the list derived from nothing, and a list given out never changes", async t => {
+  const { store, op } = await board(t), own = ownerOps(store);
+  // A fixed sequence drawn from a small generator, so a failure names the write it happened at.
+  let seed = 2105;
+  const draw = (n: number) => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed % n; };
+  const groups: Record<string, string> = { a: author, b: author, area: author, other: "Firn" };
+  await own.read({ through: store.snapshot().head });
+  let held: { version?: string; steps: Step[] } = { steps: [] };
+  const given: Array<{ steps: Step[]; text: string }> = [];
+  for (let k = 0; k < 60; k++) {
+    const id = ["a", "b", "area", "other"][draw(4)]!, kind = draw(10);
+    // Mostly runs of visible writes to one item by one author, which extend the last stop; between them log lines, which the
+    // owner never reads, a write by another identity, the owner's own comment and reads of one document or of everything.
+    if (kind < 5) await op.setPlan({ author: groups[id]!, id, row: { id: `row${draw(3)}`, state: "todo", text: `entry ${k}` } });
+    else if (kind === 5) await op.appendLog({ author: groups[id]!, id, text: `log ${k}` });
+    else if (kind === 6) { const it = store.snapshot().items[id]!; await store.commit({ author: "other", message: `retitle ${id}`, puts: [{ kind: "item", id, expectRev: it.rev, doc: { ...it, title: `title ${k}` } }] }); }
+    else if (kind === 7) await own.createNote({ target: `it:${id}`, kind: "comment", text: `owner ${k}` });
+    else if (kind === 8) await own.read({ doc: `item:${id}` });
+    else if (draw(4) === 0) await own.read({ through: store.snapshot().head }); else await op.setPlan({ author: groups[id]!, id, row: { id: "row0", state: "doing", text: `entry ${k}` } });
+    const { head, owner: { cursor, readMarks } } = store.snapshot();
+    const continued = await unreadSteps(store, cursor, readMarks, head), scratch = await unreadStepsFromScratch(store, cursor, readMarks, head);
+    assert.deepEqual(continued, scratch, `after write ${k}`);
+    // The page holds the list it was given and asks only for what changed since; what it then holds is the whole list.
+    const answer = await unreadSince(store, cursor, readMarks ?? {}, head, held.version);
+    held = { version: answer.version, steps: answer.keep === undefined ? answer.steps : held.steps.slice(0, answer.keep).concat(answer.steps) };
+    assert.deepEqual(held.steps, scratch, `the page's list after write ${k}`);
+    given.push({ steps: continued, text: JSON.stringify(continued) });
+  }
+  // Every list given out reads as it did, also those whose last stop a later commit extended.
+  for (const [k, list] of given.entries()) assert.equal(JSON.stringify(list.steps), list.text, `the list given after write ${k}`);
+  assert.ok(given.some(({ steps }, k) => k > 0 && steps.at(-1)?.commits.length! > 1), "some stop was extended over several commits");
+});
+
+test("a version given by another run of the store is answered with the whole list", async t => {
+  const { store, op } = await board(t);
+  const cursor = store.snapshot().head;
+  await op.setPlan({ author, id: "a", row: { id: "first", state: "todo", text: "first new entry" } });
+  const head = store.snapshot().head;
+  // The page holds the list of everything after `cursor`, the first list a run of the store made.
+  const held = await unreadSince(await Store.open(store.dir), cursor, {}, head);
+  assert.ok(held.steps.length, "the held list has a stop");
+  // The daemon restarts; on the same head the owner has read everything, and this is again the run's first list.
+  const restarted = await Store.open(store.dir);
+  const answer = await unreadSince(restarted, head, {}, head, held.version);
+  assert.notEqual(answer.version, held.version, "a new run never repeats a version of the run before");
+  assert.equal(answer.keep, undefined, "the held list is not kept");
+  assert.deepEqual(answer.steps, [], "the whole list, which is empty");
 });
