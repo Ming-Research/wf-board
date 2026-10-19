@@ -198,19 +198,21 @@ test("the budget opens work being done before a check flag, a check flag before 
   // Five roots with two items each that differ in one thing. Their names run in the order of the walk, from the least pressing to the
   // most, so the walk alone cannot give the order. r1: both items blocked on gate (a held-up item is not one that needs a reader),
   // r2: one item paused, r3: one item with a title that is too long (a check flag), r4: one item being worked on (the runner reports
-  // it), r5: one item nobody holds. r0 owns gate, which nobody holds, so r0 is opened first, with r5.
+  // it, which also flags it), r5: one item nobody holds. r0 owns gate, which nobody holds, so r0 is opened first, with r5. An item whose
+  // plan is only its acceptance step is flagged (只差验收), so the ones nobody holds or that are paused have a step to do besides.
   const blocked = (id: string, more: Record<string, unknown> = {}): Spec => ({ id, plan: [{ id: "gate", item: "gate", own: false }], ...more });
+  const step = [{ id: "s1", text: "做", state: "todo" }];
   const s = board([
-    { id: "r0", plan: owns("gate") }, { id: "gate" },
+    { id: "r0", plan: owns("gate") }, { id: "gate", plan: step },
     { id: "r1", plan: owns("r1a", "r1b") }, blocked("r1a"), blocked("r1b"),
-    { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", paused: { reason: "等", at: iso(NOW - DAY) } }, blocked("r2b"),
+    { id: "r2", plan: owns("r2a", "r2b") }, { id: "r2a", plan: step, paused: { reason: "等", at: iso(NOW - DAY) } }, blocked("r2b"),
     { id: "r3", plan: owns("r3a", "r3b") }, blocked("r3a", { title: "这是一个超过二十个字的很长很长的条目标题名字" }), blocked("r3b"),
     { id: "r4", plan: owns("r4a", "r4b") }, { id: "r4a", plan: doing, ...report("running", 8, { turns: 2 }) }, blocked("r4b"),
-    { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a" }, blocked("r5b"),
+    { id: "r5", plan: owns("r5a", "r5b") }, { id: "r5a", plan: step }, blocked("r5b"),
   ]);
   const all = lookText(view(s));
   assert.match(line(all, "r3a")!, /检查：.*需核对/, "the item with the long title carries a check flag");
-  for (const id of ["r1a", "r1b", "r2b", "r3b", "r4b", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
+  for (const id of ["gate", "r1a", "r1b", "r2a", "r2b", "r3b", "r4b", "r5a", "r5b"]) assert.doesNotMatch(line(all, id)!, /检查：/, `${id} carries none`);
   assert.match(line(all, "r5a")!, /没人管/);
   assert.match(line(all, "r2a")!, /暂停/);
   // The room of 13 lines is the header, the project, its six roots, the one line of r0 and two roots opened; each more root takes two.
