@@ -1,35 +1,13 @@
 name: tmp-gate-margin
-# Temporary (ci-gate-margin): the test shards of the full CI in 20, 24 and 28 shards one after the other (the jobs of one count
+# Temporary (ci-gate-margin): the test shards of the full CI in 24 and 28 shards one after the other (the jobs of one count
 # end before the next count starts, so they do not wait for each other's runners), with the cost table of this branch.
 on:
   push:
 jobs:
-  s20:
-    name: s20 shard ${{ matrix.shard }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: tests
-        run: |
-          timeout 90 node --test --test-timeout=40000 \
-            --test-reporter=spec --test-reporter-destination=stdout \
-            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
-            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
-      - if: ${{ !cancelled() }}
-        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
   s24:
     name: s24 shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [s20]
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [s24]
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
