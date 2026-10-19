@@ -1,6 +1,8 @@
 # wf-board — agent instructions
 
-The shared rules (`~/dev/wf/AGENTS.md`) apply. This file adds what is
+Your own rule file applies: each agent's rules are assembled from the
+board's rule blocks into `$WF_HOME/agents_config` (the board's rule block
+`agents-md-rules` says which file each agent reads). This file adds what is
 specific to wf-board.
 
 ## Goal
@@ -74,7 +76,8 @@ matches what the artifact board offered.
   the mark `GET /` fills it into; `web/update.ts`: what the open page does when told another version, as plain functions
   tests call directly (design section 4, Deploying; section 7, Updating the page).
 - `src/mcp.ts`: MCP tools; `src/instructions.ts`: the server's instructions,
-  a short pointer to the board rules in `~/dev/wf/AGENTS.md`; `src/http.ts`:
+  a short pointer to the board section of the shared rules (the board's
+  rule block `shared-rules`); `src/http.ts`:
   page, page API, events and wake stream; `src/main.ts`: the daemon.
 - `src/head-sections.ts`: an item head split into its sections (`context`'s
   default answer and `section`); `src/tool-errors.ts`: the parameter table and
@@ -216,12 +219,13 @@ The shared rules' design-tree section applies; this is how it maps here.
 - A test copy of the board uses its own port and a temporary data directory, never port 7417 or the board's data.
 - A board rule (what a valid item is, how status rolls up) is defined once, in
   `src/model.ts` or `src/rules.ts`, and the agent guidance points to it.
-- Board usage for agents lives only in `~/dev/wf/AGENTS.md`, section "Board"
-  (from the agents_config repository), never in this file or in the server's
+- Board usage for agents lives only in the shared rules, section The board
+  (the board's rule block `shared-rules`, assembled into every agent's rule
+  file in `$WF_HOME/agents_config`), never in this file or in the server's
   instructions, which are a short pointer (`src/instructions.ts`, design
   section 6). When a change alters a tool's behavior or a board rule, its
-  engineer writes on the item what that section must say; the observer
-  changes the section after the merge (shared rules, Other rule files).
+  engineer hands the changes that section must take to the architect, as
+  the engineer rules say (Always, Where the shared rules differ).
 - A change to the page that the owner has not asked for in those words, or
   one that changes a rule an earlier test guards, goes to the owner on a card
   before the code changes: the engineer reports it to the architect, naming

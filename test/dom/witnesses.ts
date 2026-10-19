@@ -26,7 +26,7 @@ const ARROW_NEW = `    // Only the stops whose item the left list shows; a stop 
     if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
     // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
     // last stop above it, wrapping around at the list's ends.
-    const order = new Map<string, number>(); boardOrder().forEach((it, i) => { if (!order.has(it.id)) order.set(it.id, i); });
+    const order = boardPlace();
     const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
     const row = home && order.has(home) ? order.get(home)! : -1;
     const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;

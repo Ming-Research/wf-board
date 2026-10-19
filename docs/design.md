@@ -615,6 +615,25 @@ derivation design that replaced this:
   write then costs the page about 0.41 times what it did (80 → 33 ms on a hosted
   runner, n-writes-stable-study). The daemon's shared rules do not reuse yet: a
   write there is a new snapshot, rebuilt as before.
+- The page keeps what depends only on the rules' structure and on ids through a write that
+  reused the rules (section 7, The page): the order of the items, the stops that wait on the
+  owner, the unread stops, the counts by status and the ancestors and waiters of open work, which
+  cost about 9 of the 31.6 ms one write cost the page (a profile of 72 log writes at 3 a second on
+  a hosted runner, one draw per write, the profiler's own cost included). Caching them as whole
+  lists, made again when the data changes, would have saved none of it: a write changes the data
+  and draws once. In the same profile, per write, `presentationScopes` went from 3.82 to 2.34 ms,
+  the stops from 2.09 to 0.42, `countBelow` from 1.30 to 0.52 and `renderPage` from 22.4 to 19.1.
+  Measured as n-writes-stable measured (a hosted EPYC 7763 runner with 4 vCPUs, the board of the
+  live board's weight, three log writes a second, 6 interleaved rounds of the main line, a twin of
+  it and this tree, at the runner's speed and with the page's CPU throttled 1.3 times; main-thread
+  busy time, 95% interval of the ratio of the tree to the main line, then the twin's ratio, the
+  noise, in brackets): one write costs 0.84 times (0.76–0.93; twin 0.94, ±8.0%) at the runner's
+  speed and 0.85 times (0.81–0.88; twin 0.98, ±3.8%) throttled; a press of n that lands while sessions
+  write costs a median of 0.90 times (0.86–0.95; twin 1.00, ±3.1%) and 0.88 times (0.83–0.93; twin
+  0.99, ±7.0%) throttled, and its 90th percentile 0.87 times (0.74–1.01; twin ±12.8%) and 0.89 times
+  (0.73–1.08; twin ±17.9%): no change detected, the intervals include 1. The time to the landing
+  is not slower either (median 0.92 times, 0.83–1.01, and 0.96 times, 0.92–1.00; 90th percentile
+  0.97 times, 0.88–1.07, and 0.91 times, 0.86–0.96).
 - A step diff for the page is kept by its two commits and path, which name
   the same text forever, so a reload asks git again only for new steps.
 
@@ -1970,8 +1989,8 @@ and is no sign of life.
 
 The server's instructions (`src/instructions.ts`) are a short pointer of at
 most 2048 characters. They say that how to use the board and write on it is in
-the shared `AGENTS.md` (`~/dev/wf/AGENTS.md`, section "Board", kept in the
-agents_config repository), and give the first steps: call `projects`, pick the
+the shared rules (the board's rule block `shared-rules`, section "The board",
+assembled into every agent's rule file in `$WF_HOME/agents_config`), and give the first steps: call `projects`, pick the
 project whose `repo` matches the repository's GitHub remote, call `brief`, and
 pass that project's name as `author` and the session's own name as `session`
 in every write. They state no rule of their own, so each rule has one
@@ -2595,7 +2614,22 @@ so a live change counts again only the items it reaches (`affectedItems`) and a 
 the minute counts them all; the page keeps its copy of an item while the item is the same
 object; and the cards each head places are
 found once for each version of an item (a write makes a new object), so a write does not scan
-all the heads again. A navigation (n, a number on an
+all the heads again.
+
+What depends only on the rules' structure and on ids is kept in a third cache, the page's
+structure, and outlives a live change that reused the rules (the condition of section 4, Write
+cost, with the head of every changed item the same as before, because the head places an item's
+cards): the order of the items as the tree lists them and the first place of each, the ids of
+the items an item owns and of those that wait on it, the ancestors of open work, the counts by
+status, the comments of each target, the stops that wait on the owner (an item's pending ask and
+its open cards, in the order the item shows them, found from the open cards and the asks and not by
+walking every item) and the list of unread stops, which also reads the unread steps and is made
+again when the list is another one (the page keeps the array it had when a refresh brings the
+same list, so a write that brings no new unread step does not make it again). The caches hold ids,
+not items, so a change to an item's text, title or log leaves nothing stale in them. What is
+the view's and not the structure's stays out and is applied when the structure is read: a card whose
+choice is being sent leaves the stops, and a draft being sent shows as sent among the comments.
+Every other live change, a snapshot and the minute make the structure again. A navigation (n, a number on an
 item, a link) unfolds the rows above the item, selects it and opens its cards and
 comments in one draw, and draws once more when the baselines it needs have loaded. The
 rows that first draw paints around the target ask for their own baselines too, and the
@@ -2605,9 +2639,11 @@ comes, holds the landing for 100 ms and draws its row when it arrives. After
 the owner marks something read the page asks for the unread list, which carries the new
 cursor and the steps still unread, and not for the board, which a read does not change
 (15 MB on the live board). The page leaves a performance mark for each draw, each build
-of the rules, each build that derived them from scratch, with its reason, and each count of
-every item's filters (`board:render`, `board:rules`, `board:rules-full`,
-`board:filter-counts`) and clears it at once, so the browser test can count them
+of the rules, each build that derived them from scratch, with its reason, each count of
+every item's filters, each time the structure is made again, with its reason, and each time
+the list of stops that wait on the owner and the list of unread stops are made (`board:render`,
+`board:rules`, `board:rules-full`, `board:filter-counts`, `board:structure`, `board:stops`,
+`board:fresh-stops`) and clears it at once, so the browser test can count them
 (section 11) and a page left open for days piles up nothing.
 
 After a jump, the page holds the target at its landing position through
@@ -3042,7 +3078,7 @@ session holding an item, a reviewer, the observer, and the architect, whose sess
 「架构师」) has its own stream at `/wake/<session name>` (Agents' streams, below), with its
 own numbers and retention and a record of how far it was delivered. No stream is the PM's: the
 PM is retired (The PM is retired, below). What an agent does with a push, and how it listens, is in
-its rules and in `~/dev/wf/AGENTS.md`, section "Board".
+its rules and in the shared rules, section "The board".
 
 **Where a push goes.** The kinds table gives each kind `to`: `architect`, the stream of
 the session 「架构师」; `{holder: <field>}`, the stream of the session holding the item that
@@ -4601,8 +4637,10 @@ test sets that time on the virtual clock: the rows around the target answer afte
 2 s, the landing draws twice at most; on the page itself it draws twice and then the late rows on their own, every later draw of other items' rows alone;
 whether two late rows share a frame is the frames' timing and not checked. The page without the wait, and the page with a wait that has no limit, must be
 reported by the first and the second. While sessions write, each write builds the rules again, derives them from scratch no time except in a new minute
-(the mark `board:rules-full` names the reason), and counts every item's filters no time. After m the page asks for the unread list and does not fetch
-the board.
+(the mark `board:rules-full` names the reason), counts every item's filters no time, makes the page's structure again no time except in a new minute
+(`board:structure`) and lists the stops that wait on the owner and the unread stops no time except once after such a minute (`board:stops`, `board:fresh-stops`); a quiet press
+makes the structure and both lists no time either. The writes of the lane only add log entries, which neither the rules' structure nor the unread
+list read. After m the page asks for the unread list and does not fetch the board.
 
 **Time**, compared and never limited by a fixed number of seconds: the seconds the event loop was busy (`eventLoopUtilization().active`) from the key until
 the page is quiet, as the page of the commit over the page of its base (the merge base with the main line, or the commit before a push to it; built from that

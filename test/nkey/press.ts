@@ -161,12 +161,15 @@ export async function writeEvents(board: BoardServer, count: number): Promise<st
 export interface Counted {
   /** Draws (`board:render`), builds of the board's rules, of those from scratch the reasons, counts of the filters, baselines asked for. */
   draws: number; rules: number; full: string[]; filters: number; baselines: number;
+  /** The structure kept through a write made again (`board:structure`, with the reason), and the two lists built from it: the stops that
+   * wait on the owner (`board:stops`) and the unread stops (`board:fresh-stops`). */
+  structure: string[]; stops: number; freshStops: number;
   /** The scopes of the draws, in order. */
   scopes: string[];
   /** Characters assigned to `innerHTML` and elements made by `createElement`. */
   innerHtml: number; created: number;
 }
-const noCounts = (): Counted => ({ draws: 0, rules: 0, full: [], filters: 0, baselines: 0, scopes: [], innerHtml: 0, created: 0 });
+const noCounts = (): Counted => ({ draws: 0, rules: 0, full: [], filters: 0, baselines: 0, structure: [], stops: 0, freshStops: 0, scopes: [], innerHtml: 0, created: 0 });
 /** One press that moved to another item; `press` is the number of the press (from 0) in its window. */
 export interface Landing extends Counted { item: string; busy: number; press: number }
 
@@ -210,6 +213,9 @@ export class Press {
         else if (name === "board:rules") c.rules++;
         else if (name === "board:rules-full") c.full.push(String(detail));
         else if (name === "board:filter-counts") c.filters++;
+        else if (name === "board:structure") c.structure.push(String(detail));
+        else if (name === "board:stops") c.stops++;
+        else if (name === "board:fresh-stops") c.freshStops++;
         else if (name === "board:baseline") c.baselines++;
       },
       // The cost of what the page writes: markup assigned to innerHTML, elements made.
