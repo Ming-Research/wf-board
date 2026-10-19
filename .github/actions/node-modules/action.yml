@@ -6,7 +6,15 @@ description: >
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v5
+    # The runner's image carries Node 24 in its tool cache; putting it on the path costs nothing, where `setup-node` also prints the
+    # versions of node, npm and yarn, which took 0.4 to 7.2 seconds. `setup-node` stays for an image without it.
+    - id: node
+      shell: bash
+      run: |
+        dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1)
+        if [ -n "$dir" ]; then echo "$dir" >> "$GITHUB_PATH"; echo "found=true" >> "$GITHUB_OUTPUT"; fi
+    - if: ${{ steps.node.outputs.found != 'true' }}
+      uses: actions/setup-node@v5
       with:
         node-version: 24
     # `restore` and `save` apart, because the single action ends with a step of its own in every job, 0.2 to 0.8 seconds that count in the
