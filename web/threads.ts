@@ -6,20 +6,21 @@ export const THREAD_STEPS = 3;
 /** The classes that indent a comment of this depth: none for a comment on its own, else `follow` and the step (`d1` to `d3`). */
 export const stepClass = (depth: number): string => depth > 0 ? "follow d" + Math.min(depth, THREAD_STEPS) : "";
 
-/** What the order needs of a comment: when it was written, and the anchor it may carry. */
-export interface Threadable { id: string; at: string; anchor?: { kind: string; id?: string } }
+/** What the order needs of a comment: its id and the anchor it may carry. */
+export interface Threadable { id: string; anchor?: { kind: string; id?: string } }
 
-/** The comments in the order the page lists them, each with its depth: in the order written, except that a comment which follows
- * another one of the list comes right under it, after the comments that follow it in turn (depth 0 for a comment on its own, 1 for
- * one that follows it, 2 for one that follows that). A comment whose anchor names no comment of the list (a log entry, a comment
- * that is gone, itself) stays where its time puts it; so does the earliest of a ring of comments that follow each other, which only
- * a damaged board can hold, so that every comment is listed once. */
+/** The comments, given in the order written, in the order the page lists them, each with its depth. That is the order written,
+ * except that a comment which follows another one of the list comes right under it, after the comments that follow it in turn
+ * (depth 0 for a comment on its own, 1 for one that follows it, 2 for one that follows that). A comment whose anchor names no
+ * comment of the list (a log entry, a comment that is gone, itself) stays where its time puts it; so does the earliest of a ring
+ * of comments that follow each other, which only a damaged board can hold, so that every comment is listed once. */
 export function threadOrder<T extends Threadable>(notes: readonly T[]): Array<{ note: T; depth: number }> {
-  const sorted = notes.slice().sort((x, y) => String(x.at).localeCompare(String(y.at)));
-  const listed = new Set(sorted.map(n => n.id));
+  // Most lists hold no follow-up. The page builds this list for every item and card it draws, so such a list costs one pass.
+  if (!notes.some(n => n.anchor?.kind === "note")) return notes.map(note => ({ note, depth: 0 }));
+  const listed = new Set(notes.map(n => n.id));
   const parentOf = (n: T) => n.anchor?.kind === "note" && n.anchor.id !== undefined && n.anchor.id !== n.id && listed.has(n.anchor.id) ? n.anchor.id : undefined;
   const followers = new Map<string, T[]>();
-  for (const n of sorted) {
+  for (const n of notes) {
     const parent = parentOf(n);
     if (parent !== undefined) followers.set(parent, [...followers.get(parent) ?? [], n]);
   }
@@ -29,8 +30,8 @@ export function threadOrder<T extends Threadable>(notes: readonly T[]): Array<{ 
     placed.add(n.id); out.push({ note: n, depth });
     for (const f of followers.get(n.id) ?? []) place(f, depth + 1);
   };
-  for (const n of sorted) if (parentOf(n) === undefined) place(n, 0);
-  for (const n of sorted) place(n, 0);
+  for (const n of notes) if (parentOf(n) === undefined) place(n, 0);
+  for (const n of notes) place(n, 0);
   return out;
 }
 

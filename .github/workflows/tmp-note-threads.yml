@@ -1,0 +1,48 @@
+name: tmp-note-threads
+# Temporary: delete before the last full CI, which fails while this file exists.
+# The full CI's n-key time parts (test/nkey), which the change made slower by about 5% (the second sort of each comment list),
+# with the unit tests of the list order and the fake-DOM page that the fix touches.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-note-threads-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build:web
+        if: ${{ !cancelled() }}
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+        if: ${{ !cancelled() }}
+      - run: node --test test/threads.test.ts test/web.test.ts
+        if: ${{ !cancelled() }}
+  nkey:
+    name: nkey ${{ matrix.part }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [time-writing, time-quiet]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Base page
+        run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts

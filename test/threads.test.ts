@@ -5,10 +5,11 @@ import { threadOrder } from "../web/threads.ts";
 type N = { id: string; at: string; anchor?: { kind: "log"; at: string } | { kind: "note"; id: string } };
 const note = (id: string, minute: number, anchor?: N["anchor"]): N => ({ id, at: `2026-10-11T01:${String(minute).padStart(2, "0")}:00Z`, ...(anchor ? { anchor } : {}) });
 const follows = (id: string): N["anchor"] => ({ kind: "note", id });
+// The page gives the comments in the order written, as `list` does.
 const shape = (list: N[]) => threadOrder(list).map(({ note, depth }) => `${note.id}:${depth}`);
 
-test("comments with no anchor are listed in the order written, whatever order they come in", () => {
-  assert.deepEqual(shape([note("c", 3), note("a", 1), note("b", 2)]), ["a:0", "b:0", "c:0"]);
+test("comments with no anchor are listed as they are given, in the order written", () => {
+  assert.deepEqual(shape([note("a", 1), note("b", 2), note("c", 3)]), ["a:0", "b:0", "c:0"]);
   assert.deepEqual(shape([]), []);
 });
 
