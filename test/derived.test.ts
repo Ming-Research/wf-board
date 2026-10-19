@@ -335,13 +335,15 @@ function chainOfStates(cache: DerivedCache, start: Snapshot, id: string, at: num
   }
   return { states, rules: made, last: state };
 }
-/** The most Rules objects, and the most states, of a chain that may stay reachable after full collections. The cache holds two: the newest
- * state and the one before it. On hosted runners up to three more were seen reachable besides. In 375 fresh processes that each ran this
- * file, after three collections a chain of 50 writes left 2 (3 in three runs, the extra being its first state) and a chain of 200 left 3
- * in 318 runs, the extra always its 114th state, and 2 in the rest; after the first collection a chain of 50 left up to 5. Chains
- * run one after another in a single process left at most 4 after three collections. These did not grow from 50 writes to 200: a cache that
- * keeps one state in every twenty leaves 12 of 201, and one that keeps every state 51 of 51, which the chain of 200 writes stops if the one
- * of 50 does not. The bound is the two plus three. */
+/** The most Rules objects, and the most states, of a chain that may stay reachable after full collections. The cache holds two by
+ * construction (`follows` keeps only the newest step, the newest state and the one before it; the Rules objects sit in a WeakMap by
+ * state), so this guards that what stays reachable does not grow with the number of writes, not that no older state does. Up to three
+ * more were seen reachable on hosted runners: 5 of 51 after one collection when the test was written; in 375 fresh processes that each
+ * ran this file, after three collections a chain of 50 writes left 2 (3 in three runs, the extra being its first state) and a chain of 200
+ * left 3 in 318 runs, the extra always its 114th state, and 2 in the rest, and after the first collection a chain of 50 left up to 5.
+ * Chains run one after another in a single process left at most 4 after three collections. These did not grow from 50 writes to 200: a
+ * cache that keeps one state in every twenty leaves 12 of 201, and one that keeps every state 51 of 51, which the chain of 200 writes
+ * stops if the one of 50 does not. The bound is the two plus three. */
 const REACHABLE = 5;
 /** A cache of its own over a chain of `writes` states, collected up to three times (a WeakRef keeps its target until the current job
  * ends, so each collection runs in a job of its own), then how many of the chain's Rules objects and states are still reachable. */
@@ -357,7 +359,7 @@ async function reachableAfterChain(collect: () => void, start: Snapshot, id: str
   assert.ok(cache.rules(last, Date.now()), "the newest state is still served");
   return { rules: alive(made), states: alive(states) };
 }
-test("the shared cache holds the state before the newest one and no growing number of older ones, however many writes follow", async t => {
+test("what the shared cache holds of a chain of states does not grow with the number of writes", async t => {
   setFlagsFromString("--expose-gc");
   const collect = runInNewContext("gc") as () => void;
   const { store } = await synthetic(t, random(11), Date.now() - 60 * MINUTE);
