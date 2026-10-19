@@ -1,4 +1,6 @@
 import { format } from "node:util";
+import { getHeapStatistics, setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 
 const LEVELS = ["debug", "info", "log", "warn", "error"] as const;
 
@@ -28,4 +30,23 @@ export function startupLogger(print: (line: string) => void = line => console.in
 export function stopwatch(report?: StartupStep): (step: string, detail?: string) => void {
   let from = performance.now();
   return (step, detail) => { const now = performance.now(); report?.(step, now - from, detail); from = now; };
+}
+
+/** A full garbage collection, which node gives only to a process started with `--expose-gc`; turning the flag on afterwards gives it to a new context. */
+function fullCollection(): () => void {
+  setFlagsFromString("--expose-gc");
+  return runInNewContext("gc") as () => void;
+}
+
+const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+
+/** What the process holds once the board is open, as the detail of a startup line with the time of the collection: the heap in use
+ * after a full collection, so that the garbage of the start is not counted, and the resident set. Told to the log once, and what the
+ * live verification of the heap reads (docs/design.md, section 4, Parsed documents). */
+export function startupMemory(report: StartupStep, sources: { collect?: () => void; heapUsed?: () => number; rss?: () => number } = {}): void {
+  const { collect = fullCollection(), heapUsed = () => getHeapStatistics().used_heap_size, rss = () => process.memoryUsage.rss() } = sources;
+  const from = performance.now();
+  collect();
+  const ms = performance.now() - from;
+  report("memory", ms, `heap ${megabytes(heapUsed())} MB in use after a full collection, rss ${megabytes(rss())} MB`);
 }
