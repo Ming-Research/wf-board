@@ -1,6 +1,7 @@
 name: tmp-exp
 # Temporary (item ci-status-under-1min): times the set-up of a job (checkout, node, npm ci, build) in several ways, four jobs each,
 # to find what shortens the fixed part of every job of the full CI. Deleted before the last full CI.
+# Second run: the caches written by the first one are there.
 on:
   push:
     branches-ignore: [main]
@@ -19,30 +20,6 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 24, cache: npm }
       - run: npm ci
-      - run: npm run build:web
-  flags:
-    name: flags ${{ matrix.rep }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: { rep: [1, 2, 3, 4] }
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 24, cache: npm }
-      - run: npm ci --ignore-scripts --no-audit --no-fund --prefer-offline
-      - run: npm run build:web
-  nocache:
-    name: nocache ${{ matrix.rep }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: { rep: [1, 2, 3, 4] }
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 24 }
-      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build:web
   modules:
     name: modules ${{ matrix.rep }}
