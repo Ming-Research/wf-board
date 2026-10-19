@@ -1,6 +1,6 @@
 // What one change event costs the owner's open page, on a board of the live board's weight (test/e2e/live-board.ts: about
 // 1,600 items, a 15 MB snapshot, 330 unread commits). It serves the board item that cuts the board's CPU per write, whose
-// acceptance holds the page's work per change event to 50 ms, and is run by hand or by a temporary workflow.
+// acceptance holds the page's work per change event to 50 ms, and is run by the `bench` workflow (by hand).
 //
 // The real page runs in jsdom (test/dom/page.ts) in this process. Writes are made through the server's operations as sessions
 // make them: `set_tags`, a change the owner reads, so the page asks again for the unread list and for the new stop's baseline,

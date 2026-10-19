@@ -1,6 +1,6 @@
 name: bench
 # Benchmarks, run by hand: scripts/bench-writes.ts (the write path) and scripts/bench-changes.ts (the history queries), on this
-# branch and on the commit it started from.
+# branch and on the commit it started from, and scripts/bench-page.ts (the page's work per change event) on this branch.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +31,10 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/bench-base" "$base"
           ln -s "$PWD/node_modules" "$RUNNER_TEMP/bench-base/node_modules"
           node scripts/bench-writes.ts --label "base $base" --src "$RUNNER_TEMP/bench-base/src"
+      # Reports the page's busy time per set_tags and log event; never fails the run.
+      - name: Page benchmark (non-gating)
+        continue-on-error: true
+        run: node scripts/bench-page.ts
       # What changes, the unread list and diff cost on a board of the live one's size, and how far the heap gets (docs/design.md,
       # section 4, Request budgets). This one fails the run when a check fails: changes over the last 50 commits with 10 notes
       # deleted takes at most 1 s and 100 MB of heap, and no query's heap passes half the line a budget stops a request at.
