@@ -1,0 +1,41 @@
+name: tmp-offheap-tests
+# Temporary (item board-offheap): the checks of the change, and the runs that watch the new test fail on broken code. Removed before
+# the pull request is ready.
+on:
+  push:
+    branches: [board-offheap]
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/memory-flags.test.ts test/log.test.ts test/test-shard.test.ts test/data-dir.test.ts
+  # The service file without the flags: the test must fail, and on the file's arguments.
+  red-without-flags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          sed -i 's#<string>--max-semi-space-size=4</string><string>--heap-growing-percent=50</string>##' ops/wf-board.plist
+          grep -n ProgramArguments ops/wf-board.plist
+          if node --test test/memory-flags.test.ts; then echo "the test passed on a service file without the flags"; exit 1; fi
+  # A flag that node rejects, and one that takes no effect on the young generation: the test must fail on each.
+  red-misspelled-flag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          sed -i 's#--max-semi-space-size=4#--max-semi-space-sise=4#' ops/wf-board.plist
+          if node --test test/memory-flags.test.ts; then echo "the test passed with a misspelled flag"; exit 1; fi
+  red-large-half:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          sed -i 's#--max-semi-space-size=4#--max-semi-space-size=64#' ops/wf-board.plist
+          if node --test test/memory-flags.test.ts; then echo "the test passed with a 64 MB half"; exit 1; fi

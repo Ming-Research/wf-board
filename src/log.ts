@@ -41,12 +41,14 @@ function fullCollection(): () => void {
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
 /** What the process holds once the board is open, as the detail of a startup line with the time of the collection: the heap in use
- * after a full collection, so that the garbage of the start is not counted, and the resident set. Told to the log once, and what the
- * live verification of the heap reads (docs/design.md, section 4, Parsed documents). */
-export function startupMemory(report: StartupStep, sources: { collect?: () => void; heapUsed?: () => number; rss?: () => number } = {}): void {
-  const { collect = fullCollection(), heapUsed = () => getHeapStatistics().used_heap_size, rss = () => process.memoryUsage.rss() } = sources;
+ * after a full collection, so that the garbage of the start is not counted, the resident set, and the options node was started with
+ * (the service's V8 flags, so that the line tells whether the service was installed again after they changed). Told to the log once,
+ * and what the live verification of the heap and of the memory reads (docs/design.md, section 4, Parsed documents, Memory beyond
+ * the heap). */
+export function startupMemory(report: StartupStep, sources: { collect?: () => void; heapUsed?: () => number; rss?: () => number; options?: () => string[] } = {}): void {
+  const { collect = fullCollection(), heapUsed = () => getHeapStatistics().used_heap_size, rss = () => process.memoryUsage.rss(), options = () => process.execArgv } = sources;
   const from = performance.now();
   collect();
   const ms = performance.now() - from;
-  report("memory", ms, `heap ${megabytes(heapUsed())} MB in use after a full collection, rss ${megabytes(rss())} MB`);
+  report("memory", ms, `heap ${megabytes(heapUsed())} MB in use after a full collection, rss ${megabytes(rss())} MB, node options ${options().join(" ") || "none"}`);
 }

@@ -4,6 +4,7 @@ name: tmp-offheap
 on:
   push:
     branches: [board-offheap]
+    paths: [study-config.json, scripts/study-offheap.ts]
 jobs:
   study:
     strategy:

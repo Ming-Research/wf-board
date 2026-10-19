@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Start the daemon with two V8 memory flags
+
+Nodes: daemon/memory
+
+Summary: The daemon's physical footprint on the owner's Mac was several times its heap: 259.7 MB right after a start (heap 60.4 MB), and 450.7 MB after an hour and a quarter, of which V8's own pages were 343.6 MB and malloc about 37 MB (`vmmap`). Replaying the live board's request mix against the real daemon on a macOS hosted runner showed why: with node's defaults the young generation reaches 128 MB and the old generation averages 2.7 times its live data between full collections, and the pages are not returned at once. The service file now starts node with `--max-semi-space-size=4` and `--heap-growing-percent=50`, which in 5 runs held the V8 pages at 269 MB against 584 MB in 7 runs of the defaults, for 5% more CPU a request and no change in latency; the start log's `startup memory` line also names the options node was started with, so that a service not installed again after a change shows. The refused alternatives (`--optimize-for-size`, the young generation alone, a lower heap limit, setting the flags from the code, `--memory-saver-mode` and `--memory-balancer`) are in the node; the numbers are in docs/design.md, section 4, Memory beyond the heap.
+
 ## 2026-10-19 Bound the n-key time parts by a time budget
 
 Nodes: testing/press-n
