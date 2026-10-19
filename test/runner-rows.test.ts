@@ -50,8 +50,8 @@ test("every piece of work the runner holds is a row, those a person has to look 
 test("the state column says each state in a word or two", () => {
   const word = (state: RunnerReport["state"], to?: RunnerReport["to"]) => stateWord({ state, ...(to ? { to } : {}) });
   assert.deepEqual(
-    [word("running"), word("ci"), word("ask", "owner"), word("ask", "architect"), word("items"), word("run"), word("ready"), word("exception"), word("done")],
-    ["在跑", "等 CI", "等主人", "等架构师", "等条目", "等 14900K", "等合入", "要人看", "待收尾"],
+    [word("running"), word("ci"), word("ask", "owner"), word("ask", "architect"), word("items"), word("run"), word("wait"), word("ready"), word("exception"), word("done")],
+    ["在跑", "等 CI", "等主人", "等架构师", "等条目", "等 14900K", "等事件", "等合入", "要人看", "待收尾"],
   );
   // A beat adds the turn's number to 「在跑」, and only that state has a beat.
   const rows = rowsOf(snap(job("run", { state: "running" }), job("waits", { state: "ci" })), open(), [beat("run", { turn: 3 }), beat("waits", { turn: 9 })], NOW);
@@ -99,6 +99,34 @@ test("the wide column says the last action of the turn running, else what the wo
   assert.deepEqual([arch.text, arch.full, arch.silent], ["架构师在答：读 条目 asks", "架构师第 4 轮 · 这一轮 2 分钟 · 读 条目 asks", false]);
   assert.equal(runnerLine(row("asks", [beat("asks", { role: "架构师", at: ago(5) })]), NOW, nameOf).text, "架构师没有动静 5 分钟");
   assert.equal(runnerLine(row("asks"), NOW, nameOf).text, "架构师轮次在答", "no beat: the note");
+});
+
+test("a wait for an event is a row in its words, amber an hour after its wake time and, with none, after a day", () => {
+  const started = ago(30 * 60);
+  const s = snap(
+    // Began an hour ago, to be woken in two hours: on time for another three hours.
+    job("dated", { state: "wait", what: "上线后 24 小时的日志", until: ago(-120), since: ago(60) }, started),
+    // Woken 61 minutes ago by its time, and still here: the hour of room is used up.
+    job("not-woken", { state: "wait", what: "到点叫醒", until: ago(61), since: ago(300) }, started),
+    job("undated", { state: "wait", what: "执行程序重启", since: ago(23 * 60) }, started),
+    job("undated-late", { state: "wait", what: "主线下一次合入", since: ago(25 * 60) }, started),
+  );
+  const rows = rowsOf(s, open(), [], NOW), by = Object.fromEntries(rows.map(r => [r.item, r]));
+  assert.deepEqual(rows.map(r => [r.item, r.overdue]), [["undated-late", true], ["not-woken", true], ["undated", false], ["dated", false]], "overdue first, then the longest in the state first");
+  // The state column says 「等事件」; the wide column says the event, and the wake time when there is one.
+  assert.deepEqual(rows.map(r => r.label), ["等事件", "等事件", "等事件", "等事件"]);
+  assert.equal(by.dated!.waitFor, "上线后 24 小时的日志（到 10-18 14:00Z）", "NOW is 12:00, the wake time two hours later");
+  assert.equal(by["undated-late"]!.waitFor, "主线下一次合入");
+  assert.equal(runnerLine(by.dated!, NOW).text, "上线后 24 小时的日志（到 10-18 14:00Z）");
+  assert.equal(runnerLine(by["undated-late"]!, NOW).full, "主线下一次合入");
+  assert.deepEqual([by.dated!.state, by.dated!.live, by.dated!.architect, by.dated!.turnStartedAt], ["wait", undefined, undefined, undefined], "a wait has no turn running and no architect's turn");
+  assert.equal(limitOf(s.items.dated!.runner!), 4 * 60 * 60_000, "from the start of the wait to an hour after the wake time");
+  // The event and the note are cleaned like a note: a path of the runner's machine shrinks, and the note follows the event after a colon.
+  const noted = snap(job("noted", { state: "wait", what: "看 ~/Library/Logs/wf-board.log 的最后几行", until: "2026-10-18T14:00:00Z", note: "第 3 轮", since: ago(5) }));
+  assert.equal(runnerLine(rowsOf(noted, open(), [], NOW)[0]!, NOW).text, "看 wf-board.log 的最后几行（到 10-18 14:00Z）：第 3 轮");
+  // A beat for the engineer or the architect is not read for a wait: only a running turn and an ask to the architect have one.
+  const withBeats = rowsOf(s, open(), [beat("dated"), beat("dated", { role: "架构师" })], NOW).find(r => r.item === "dated")!;
+  assert.deepEqual([withBeats.live, withBeats.architect], [undefined, undefined]);
 });
 
 test("a report counts only with the job's own open engineer dispatch, on open and unpaused work", () => {

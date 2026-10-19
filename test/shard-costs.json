@@ -37,7 +37,7 @@
   "test/dom/page-search.test.ts": 22.8,
   "test/dom/page-tree.test.ts": 21.1,
   "test/dom/page-unread.test.ts": 25.4,
-  "test/dom/runner-block.test.ts": 5.2,
+  "test/dom/runner-block.test.ts": 10.2,
   "test/dom/runner-table.test.ts": 15.6,
   "test/dom/styles.test.ts": 21.3,
   "test/dom/whole.test.ts": 8.6,
@@ -87,7 +87,7 @@
   "test/rules-reuse-guards.test.ts": 14.0,
   "test/rules-reuse-share.test.ts": 19.3,
   "test/rules.test.ts": 0.6,
-  "test/runner-report.test.ts": 3.1,
+  "test/runner-report.test.ts": 3.9,
   "test/runner-rows.test.ts": 0.3,
   "test/session.test.ts": 1.8,
   "test/shutdown.test.ts": 20.4,
@@ -103,6 +103,6 @@
   "test/wake.test.ts": 3.7,
   "test/watch.test.ts": 8.9,
   "test/web.test.ts": 18.8,
-  "test/whole-view.test.ts": 4.0,
+  "test/whole-view.test.ts": 6.3,
   "test/write-trace.test.ts": 7.0
 }

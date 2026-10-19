@@ -10,7 +10,7 @@ import { LIVE_FRESH_MS } from "./live.ts";
 import type { LiveEntry } from "./live.ts";
 import type { Dispatch, Item, RunnerReport, RunnerState } from "./model.ts";
 import type { Rules } from "./rules.ts";
-import { limitOf, spanText } from "./whole-view.ts";
+import { limitOf, spanText, untilText } from "./whole-view.ts";
 
 /** A turn running now, as the runner's last beat describes it. */
 export interface RunnerTurn {
@@ -38,6 +38,8 @@ export interface RunnerRow {
   /** What the report waits on: the items of the state `items`, the cards of an ask to the owner. The page turns the keys into titles and questions. */
   waitItems?: readonly string[];
   waitCards?: readonly string[];
+  /** The event a `wait` is for, with its wake time (`untilText`) when it has one, cleaned like a note (`listText`). */
+  waitFor?: string;
   /** Since when the work has been in this state, when it began, and the rounds and dollars it has taken so far. */
   since: number;
   started: number;
@@ -65,7 +67,7 @@ function turnOf(entry: LiveEntry, now: number): RunnerTurn {
   };
 }
 
-const STATE_WORDS: Record<Exclude<RunnerState, "ask">, string> = { running: "在跑", ci: "等 CI", items: "等条目", run: "等 14900K", ready: "等合入", exception: "要人看", done: "待收尾" };
+const STATE_WORDS: Record<Exclude<RunnerState, "ask">, string> = { running: "在跑", ci: "等 CI", items: "等条目", run: "等 14900K", wait: "等事件", ready: "等合入", exception: "要人看", done: "待收尾" };
 /** The state column's word: what the work does or whom it waits for, in a word or two. */
 export function stateWord(report: Pick<RunnerReport, "state" | "to">): string {
   return report.state === "ask" ? report.to === "owner" ? "等主人" : "等架构师" : STATE_WORDS[report.state];
@@ -102,7 +104,7 @@ export type NameOf = (kind: "item" | "card", key: string) => string | undefined;
 /**
  * What the work is doing or waits on, in one line: the last action of the turn running now (the engineer's, or the architect's for an
  * ask the architect answers), else the report's note; the items it waits for by their titles and the cards by their questions, so no
- * key stands in the line. A turn not heard from for LIVE_FRESH_MS reads as silent.
+ * key stands in the line, and the event a `wait` is for with its wake time. A turn not heard from for LIVE_FRESH_MS reads as silent.
  */
 export function runnerLine(x: RunnerRow, now: number, nameOf: NameOf = () => undefined): RunnerLine {
   const turn = x.state === "running" ? x.live : x.architect, who = x.state === "running" ? "" : "架构师";
@@ -118,8 +120,8 @@ export function runnerLine(x: RunnerRow, now: number, nameOf: NameOf = () => und
   const items = (x.waitItems ?? []).map(key => [nameOf("item", key) ?? key, key] as const), cards = (x.waitCards ?? []).map(key => [nameOf("card", key) ?? key, key] as const);
   const join = (parts: Array<string | undefined>) => parts.filter(Boolean).join("：");
   return {
-    text: join([items.map(([name]) => name).join("、") || cards.map(([name]) => name).join("；"), x.note]),
-    full: join([items.map(([name, key]) => `${name}（${key}）`).join("、") || cards.map(([name, key]) => `${key}：${name}`).join("\n"), x.note]),
+    text: join([items.map(([name]) => name).join("、") || cards.map(([name]) => name).join("；") || x.waitFor, x.note]),
+    full: join([items.map(([name, key]) => `${name}（${key}）`).join("、") || cards.map(([name, key]) => `${key}：${name}`).join("\n") || x.waitFor, x.note]),
     silent: false,
   };
 }
@@ -148,6 +150,7 @@ export function runnerRows(items: Iterable<HeldItem>, r: Pick<Rules, "isOpenWork
       item, agent: dispatch.agent, level: dispatch.level, model: dispatch.model, ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
       state: report.state, label: stateWord(report), note: listText(report.note ?? ""), since, started: Date.parse(report.started),
       ...(report.items === undefined ? {} : { waitItems: report.items }), ...(report.cards === undefined ? {} : { waitCards: report.cards }),
+      ...(report.what === undefined ? {} : { waitFor: listText(report.what) + (report.until === undefined ? "" : untilText(report.until)) }),
       ...(report.turns === undefined ? {} : { turns: report.turns }), ...(report.cost === undefined ? {} : { cost: report.cost }),
       overdue: report.state === "exception" || now - since > limitOf(report),
       needsPerson: report.state === "exception" || (report.state === "ask" && report.to === "owner"),

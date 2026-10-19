@@ -19,12 +19,20 @@ const MINUTE = 60_000, HOUR = 60 * MINUTE;
  * another item, a card or the owner), where the time counts from the item's last change.
  */
 export const WAIT_LIMITS_MS = {
-  running: 5 * HOUR, ci: 90 * MINUTE, ownerAsk: 12 * HOUR, architectAsk: HOUR, items: 24 * HOUR, run: 4 * HOUR, ready: HOUR, done: 30 * MINUTE,
+  running: 5 * HOUR, ci: 90 * MINUTE, ownerAsk: 12 * HOUR, architectAsk: HOUR, items: 24 * HOUR, run: 4 * HOUR, wait: 24 * HOUR, ready: HOUR, done: 30 * MINUTE,
   exception: 0, plan: 72 * HOUR,
 } as const;
-/** How long the state of a runner report may last. */
-export function limitOf(report: Pick<RunnerReport, "state" | "to">): number {
-  return report.state === "ask" ? report.to === "owner" ? WAIT_LIMITS_MS.ownerAsk : WAIT_LIMITS_MS.architectAsk : WAIT_LIMITS_MS[report.state];
+/** How long after its wake time (`until`) a wait is still on time: the runner wakes the work as the time comes, so this is its room to have been stopped. */
+export const WAKE_GRACE_MS = HOUR;
+/**
+ * How long the state of a runner report may last, counted from its `since`. A wait with a wake time lasts until that time and
+ * WAKE_GRACE_MS more (0 when that moment is not after `since`: the work is overdue as soon as it is reported); a wait without
+ * one is for an event nobody dates and has WAIT_LIMITS_MS.wait.
+ */
+export function limitOf(report: Pick<RunnerReport, "state" | "to" | "since" | "until">): number {
+  if (report.state === "ask") return report.to === "owner" ? WAIT_LIMITS_MS.ownerAsk : WAIT_LIMITS_MS.architectAsk;
+  if (report.state === "wait" && report.until !== undefined) return Math.max(0, Date.parse(report.until) + WAKE_GRACE_MS - Date.parse(report.since));
+  return WAIT_LIMITS_MS[report.state];
 }
 
 /** The most rows the default answer lists for each kind; `bucket` lists one kind with EXPANDED_ROWS. The rest are counted. */
@@ -74,6 +82,11 @@ export interface WholeView {
 
 type Input = Pick<Snapshot, "items" | "board"> & { activity?: Snapshot["activity"] };
 
+/** The wake time of a wait as the lists write it, in UTC: 「（到 10-19 23:55Z）」. */
+export function untilText(until: string): string {
+  return `（到 ${until.slice(5, 10)} ${until.slice(11, 16)}Z）`;
+}
+
 /** What a runner report says in a few words. */
 export function reportText(report: RunnerReport): string {
   const what = report.state === "running" ? "跑一轮"
@@ -81,6 +94,7 @@ export function reportText(report: RunnerReport): string {
     : report.state === "ask" ? report.to === "owner" ? `问主人（卡 ${report.cards!.join("、")}）` : "问架构师"
     : report.state === "items" ? `等条目 ${report.items!.join("、")}`
     : report.state === "run" ? "要 14900K"
+    : report.state === "wait" ? `等：${report.what!}${report.until ? untilText(report.until) : ""}`
     : report.state === "ready" ? "合入核对"
     : report.state === "exception" ? "例外，要人看"
     : "做完，待收尾";
