@@ -8,7 +8,7 @@ import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
 
 export type Kind = "item" | "card" | "note";
-export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
+export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; standing?: boolean; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
 /** `<session> · <time to the minute>`: the one form `context` and `brief` print for an item's last writer. */
 export const pushLine = (last: { name: string; at: string }): string => `${last.name} · ${last.at.slice(0, 16)}Z`;
 export interface Scope { group?: string; under?: string }
@@ -42,7 +42,7 @@ export function row(s: Snapshot, r: Rules, kind: Kind, id: string, owner = itemI
   const num = kind === "item" ? s.items[id]?.num : kind === "card" ? s.decisions[id]?.num : undefined;
   return { kind, id, ...(num === undefined ? {} : { num }), title: card?.question ?? s.items[owner]?.title ?? s.notes[id]?.target ?? id,
     status: kind === "item" ? r.statusOf(id) : kind === "card" ? s.decisions[id]!.status : s.notes[id]!.state,
-    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
+    ...(kind === "item" ? { ...(s.items[id]?.record ? { record: true } : {}), ...(s.items[id]?.standing ? { standing: true } : {}), ...(s.items[id]?.tags?.length ? { tags: s.items[id]!.tags } : {}), ...difficultyOf(s.items[id]) } : {}), area: s.items[areaId]?.title ?? areaId, areaId,
     group: r.groupOf(owner) };
 }
 function validateScope(s: Snapshot, scope: Scope): void {
@@ -285,7 +285,7 @@ export function brief(s: Snapshot, r: Rules, project: string) {
     return r.statusOf(id) === "blocked" && p.behind && !p.ask && !p.waiting.length && !r.workedOn(id);
   };
   const queued = new Map<string, number>(), listed: string[] = [];
-  for (const id of ids.filter(id => !shown.has(id) && (s.items[id]!.record || r.statusOf(id) === "blocked"))) {
+  for (const id of ids.filter(id => !shown.has(id) && (s.items[id]!.record || s.items[id]!.standing || r.statusOf(id) === "blocked"))) {
     if (!waitsForTurn(id)) { listed.push(id); continue; }
     const owner = r.parentOf(id)!;
     queued.set(owner, (queued.get(owner) ?? 0) + 1);
@@ -412,6 +412,7 @@ export function describeChanges(before: unknown, after: unknown, kind: DocKind):
       if (newLog.length > oldLog.length && isDeepStrictEqual(oldLog, newLog.slice(0, oldLog.length))) changes.push(`+${newLog.length - oldLog.length} log`);
       else changes.push("log changed");
     } else if (key === "record") changes.push(b.record ? "changed to record" : "changed to work item");
+    else if (key === "standing") changes.push(b.standing ? "changed to standing item" : "changed to ordinary item");
     else if (key === "status") changes.push(`status ${a.status ?? "unset"}→${b.status ?? "unset"}`);
     else if (key === "reply" && !a.reply && b.reply) changes.push("new reply");
     else if (["at", "repliedAt", "repliedBy", "ruledAt"].includes(key)) continue;

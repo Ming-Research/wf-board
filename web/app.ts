@@ -2099,8 +2099,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const ratio = derived.planRatio(it.id);
     const heading = el("div", "log-head", "计划和进展");
     if (it.provisional && !isCancelled(it)) heading.appendChild(el("span", "checktag", "待重写"));
-    heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total)); box.appendChild(heading);
-    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : "item" in row.row && derived.isPaused(row.row.item) ? "paused" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
+    if (!derived.isStanding(it.id)) heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
+    box.appendChild(heading);
+    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : row.glyph === "∞" ? "standing" : "item" in row.row && derived.isPaused(row.row.item) ? "paused" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
     const ref = (kind: "item" | "card", id: string, title: string) => {
       const link = el("a", "plan-link itemref", esc(plain(title))); link.href = "#"; link.dataset.ref = (kind === "item" ? "it:" : "q:") + id;
       return link;
@@ -2340,13 +2341,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const beforeStatus = beforeDerived?.status ?? (before ? "record" : undefined);
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    // A standing item is always in progress and never completes: the tag says so, and it has no share of its plan done to count.
+    const standing = derived.isStanding(it.id);
+    if (standing) head.appendChild(el("span", "standing-tag", "常设")).title = "常设条目：一直进行中，不会完成，没有验收和难度";
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     // A plan read by stages (docs/design.md, How the page shows a plan) shows the stage the item is at on its tree row, and counts
     // stages where the row has no band; the detail and the agent list keep the count of rows.
     const stages = !detail && !m && !ended(it) ? derived.stages(it.id) : undefined;
     if (stages?.current) head.appendChild(el("span", "stage-tag", esc(stages.current.label))).title = "现在在大步骤「" + stages.current.label + "」，大步骤做完 " + stages.done + "/" + stages.total;
     // A tree row that draws the band shows no count of its done rows: the band already says how far it is.
-    if (it.plan.length && !(share > 0)) {
+    if (it.plan.length && !(share > 0) && !standing) {
       const ratio = stages ?? derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }

@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Mark an item as standing
+
+Nodes: plans/standing, plans, mcp/whole-view
+
+Summary: The board could not say that a rule, or a long-term promise such as keeping board operations within their limits, is work that is always in force and never completes, so a never-ticked acceptance step held it up and status and the checks took it for an item about to complete: read on a copy of the board of 2026-10-16, four of the ten such items showed 只差验收 and all ten showed 缺难度. An item may now carry `standing: true`, set only by the architect and excluding the record mark, with no acceptance step and no difficulty. It is in progress while it is not paused or cancelled, whatever its rows say; its rows for other standing items are resolved and uncounted; the checks that ask for acceptance or a rating do not apply; a row of an ordinary item that owns or waits for a standing item is refused, since it could never be resolved; the items it owns stay needed and startable; the whole view lists it only when something works on it. The first design also gave the sub-items of a standing item their own stored priority; the item priority was removed on 2026-10-17, so that part was dropped. The refused alternatives (a never-ticked acceptance step, a record, a tag the checks skip, a flag on a plan row) are in the node; the derivation is in docs/design.md, section 5, Standing items.
+
 ## 2026-10-19 Give a card a kind
 
 Nodes: cards

@@ -289,6 +289,8 @@ export const Item = z.object({
   difficulty: Difficulty.optional(),
   /** A head and log without a work status. */
   record: z.boolean().optional(),
+  /** Work that is always in progress and never completes (docs/design.md, Item plans, Standing items): only the architect sets it; it takes no acceptance step and no difficulty and is not a record. */
+  standing: z.literal(true).optional(),
   head: z.string().optional(),
   log: z.array(LogEntry).default([]),
   plan: ItemPlan.default([]),
@@ -311,10 +313,12 @@ export const Item = z.object({
   .refine(it => !it.record || it.paused === undefined, "A record cannot be paused")
   .refine(it => !it.record || it.difficulty === undefined, "A record has no difficulty")
   .refine(it => !it.record || it.runner === undefined, "A record has no runner report")
+  .refine(it => !it.record || !it.standing, "A record cannot be standing")
+  .refine(it => !it.standing || it.difficulty === undefined, "A standing item has no difficulty")
   .refine(it => {
     const count = it.plan.filter(row => "accept" in row && row.accept).length;
-    return it.record ? count === 0 : count >= 1;
-  }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none");
+    return it.record || it.standing ? count === 0 : count >= 1;
+  }, "A work item needs at least one acceptance step, placed where its check happens; a record takes none, and so does a standing item");
 export type Item = z.infer<typeof Item>;
 
 /**
@@ -517,14 +521,14 @@ export const LONG_LIVED_ROLES = [ARCHITECT_ROLE, "观察者", "资源管理"] as
 export const PARTS = [
   "project.create", "project.update", "tag-vocab", "journal",
   "item.create", "item.title", "item.head", "item.plan", "item.log", "item.targets", "item.links", "item.data", "item.order",
-  "item.record", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row", "item.runner",
+  "item.record", "item.standing", "item.tags", "item.difficulty", "item.move", "item.move-project", "item.cancel", "item.pause", "item.ask", "item.merge-row", "item.runner",
   "card.write", "card.rule", "note.reply", "note.close", "term", "dispatch.start", "dispatch.finish", "message.send",
 ] as const;
 export type Part = (typeof PARTS)[number];
 /** `board`: any item of any project. `subtree`: the items the credential names and everything they own, and the writer's own project's glossary. `below`: the same without the items the credential names: the writer has been handed those and does not rewrite the hand-off. `own`: no item at all, only a document of the writer's own (a message it sends). */
 export type Scope = "board" | "subtree" | "below" | "own";
 /** What the board reserves for the architect (ops `onlyProcess`), starting a dispatch and the runner's report on an item: the process. The engineer has two of them: `item.create` inside its subtree and `item.difficulty` below its root. */
-const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
+const PROCESS: readonly Part[] = ["item.create", "item.title", "item.difficulty", "item.standing", "item.cancel", "item.pause", "item.move-project", "item.runner", "dispatch.start", "dispatch.finish"];
 /** What only the architect does beyond the process (ops `onlyArchitect`): the journal, the tag vocabulary, creating a project. No role has the merge row. */
 const ARCHITECT_ONLY: readonly Part[] = ["project.create", "tag-vocab", "journal", "item.merge-row"];
 const RESERVED: readonly Part[] = [...PROCESS, ...ARCHITECT_ONLY];

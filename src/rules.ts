@@ -222,6 +222,7 @@ export const CHECK_KINDS = {
   "owned-by-many": { refused: true },
   "owned-across-projects": { refused: true },
   "unowned-but-awaited": { refused: true },
+  "waits-on-standing": { refused: true },
   "no-acceptance": { refused: true },
   "plan-provisional": { label: "待重写" },
   "acceptance-pending": {},
@@ -271,6 +272,8 @@ export interface Rules {
   projectOf(id: string): string;
   /** An existing work item whose status is neither done nor cancelled. Records are not open work. */
   isOpenWork(id: string): boolean;
+  /** A standing item: always in progress (paused when it or an owner is), never done; its plan rows do not decide its status (docs/design.md, Item plans, Standing items). */
+  isStanding(id: string): boolean;
   isLeaf(id: string): boolean;
   /** No non-record children contribute work status. */
   isStatusLeaf(id: string): boolean;
@@ -336,6 +339,7 @@ export interface Rules {
   stepLine(step: PlanStep): string;
   planRows(id: string): DerivedPlanRow[];
   planGroups(id: string): Array<{ start: number; end: number; level: number }>;
+  /** The rows of the plan that are done and all that count; a standing item has none to count. */
   planRatio(id: string): { done: number; total: number };
   /** The share of an item's plan that is done, 0 to 1, with a row in progress counting half (docs/design.md, How the page shows a plan).
    * A plan read by stages counts only its stage rows: this is the share of `stages`. */
@@ -641,7 +645,7 @@ export function applyActivityDelta(activity: Snapshot["activity"], delta: Activi
  * of the top items, which the index sorts as it is built, and the dispatch records (a live session makes an item worked on).
  * The test in test/derived.test.ts records which fields the derivation reads and fails when this list and that set
  * differ. */
-export const STATUS_FIELDS: ReadonlyArray<keyof Item> = ["record", "status", "plan", "paused", "group", "ask", "order", "dispatches"];
+export const STATUS_FIELDS: ReadonlyArray<keyof Item> = ["record", "standing", "status", "plan", "paused", "group", "ask", "order", "dispatches"];
 /** Whether two versions of one item give the same status on the same board. Versions that differ in some other
  * field (the text, the log, the tags) do; one that differs in a listed field may not, which only costs the caller a derivation. */
 export function sameStatus(a: Item, b: Item): boolean {
@@ -659,7 +663,7 @@ export function presentationSignature(r: Rules, decisions: Readonly<Record<strin
   };
   const deps = r.depsOf(id).map(d => [d, ...label(d.kind, d.id)]);
   const waiters = r.dependents(id).map(d => [d, ...label("item", d.id)]);
-  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, deps, waiters,
+  return JSON.stringify([r.groupOf(id), r.statusOf(id), r.progress(id), r.checks(id), it?.tags ?? [], it?.difficulty ?? null, r.stalledBelow(id), r.pausedBy(id), r.item(r.pausedBy(id) || "")?.paused, it?.paused, r.isStanding(id), deps, waiters,
     r.planRows(id).map(row => [row, "text" in row.row ? r.stepLine(row.row) : null, "item" in row.row && row.row.own ? r.planRows(row.row.item).map(child => [child, "text" in child.row ? r.stepLine(child.row) : "item" in child.row ? label("item", child.row.item) : label("card", child.row.card)]) : null])]);
 }
 
@@ -678,7 +682,7 @@ export function affectedItems(before: Rules, after: Rules, seeds: Iterable<strin
     const it = r.item(id);
     if (!it) return "";
     const parent = r.parentOf(id), pausedBy = r.pausedBy(id);
-    return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
+    return JSON.stringify([it.title, r.groupOf(id), r.statusOf(id), r.isOpenWork(id), r.isStanding(id), r.isPaused(id), pausedBy, pausedBy ? r.item(pausedBy)?.paused : null,
       parent, parent ? r.item(parent)?.title : null, r.onCycle(id), r.planRatio(id), r.isNeeded(id), r.begun(id), r.checks(id)]);
   };
   const neighbours = (id: string): string[] => [before, after].flatMap(r => [...r.depsOf(id).filter(d => d.kind === "item").map(d => d.id), ...r.dependents(id).map(d => d.id)]);
@@ -856,7 +860,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     }
     return include ? ordered() : cached("areas", "", ordered);
   }
-  function rowState(row: PlanRow, seen: Set<string>): Pick<DerivedPlanRow, "state" | "dropped" | "excluded" | "weight"> & { paused?: boolean } {
+  /** Whether `row` is a row of a standing item's plan that points at another standing item: always resolved, left out of the counts (docs/design.md, Item plans, Standing items). */
+  const standingPair = (owner: Item | undefined, row: PlanRow): boolean => !!owner?.standing && "item" in row && !!item(row.item)?.standing;
+  function rowState(row: PlanRow, seen: Set<string>, owner?: Item): Pick<DerivedPlanRow, "state" | "dropped" | "excluded" | "weight"> & { paused?: boolean } {
     if ("text" in row) {
       // The state is read once: the walk is bounded per snapshot (test/rules.test.ts, shared diamonds).
       const { state } = row;
@@ -874,6 +880,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     if (!target) return { state: "waiting", dropped: false, excluded: false, weight: 0 };
     // A record is no step: resolved so that nothing waits for it, and left out of the counts and the share, owned or shared.
     if (target.record) return { state: "resolved", dropped: false, excluded: true, weight: null };
+    // A standing item never completes, so a standing item's row for another one waits for nothing: resolved and left out of the counts like a record's.
+    if (standingPair(owner, row)) return { state: "resolved", dropped: false, excluded: true, weight: null };
     const status = statusWalk(row.item, seen), dropped = row.own && status === "cancelled";
     const state = status === "done" || dropped ? "resolved" : !row.own || status === "blocked" || status === "paused" ? "waiting" : status === "wip" ? "progress" : "open";
     // A sub-item counts as its status says, shared or owned: done whole, in progress or idle half; a cancelled one is left out of the share.
@@ -882,13 +890,14 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   const isRecord = (row: PlanRow): boolean => isRecordRow(s.items, row);
   function planRowsWalk(id: string, seen: Set<string>): DerivedPlanRow[] {
-    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>(), plan = item(id)?.plan ?? [];
+    const out: DerivedPlanRow[] = [], byId = new Map<string, DerivedPlanRow>(), owner = item(id), plan = owner?.plan ?? [];
     for (const [at, row] of plan.entries()) {
       const preceding = (row.after ?? followedRows(plan, at, isRecord)).map(key => byId.get(key));
-      const { paused, ...derived } = rowState(row, seen);
+      const { paused, ...derived } = rowState(row, seen, owner);
       const ready = derived.state !== "resolved" && preceding.every(p => p?.state === "resolved");
       const level = preceding.length ? 1 + Math.max(...preceding.map(p => p?.level ?? 0)) : 0;
       const glyph = paused ? "◌"
+        : standingPair(owner, row) ? "∞"
         : derived.dropped ? "✗" : { resolved: "✓", progress: "●", waiting: "⏸", open: "○" }[derived.state];
       const entry = { row, ...derived, ready, level, glyph };
       out.push(entry); byId.set(row.id, entry);
@@ -897,11 +906,14 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
   }
   function planRows(id: string): DerivedPlanRow[] { return cached("planRows", id, () => planRowsWalk(id, new Set([id]))); }
   function planRatio(id: string): { done: number; total: number } {
+    // A standing item does not progress toward anything, so it has no share of its plan done.
+    if (item(id)?.standing) return { done: 0, total: 0 };
     const rows = planRows(id).filter(row => !row.excluded);
     return { done: rows.filter(row => row.state === "resolved").length, total: rows.length };
   }
   function stageInfo(id: string): StageInfo | undefined {
     return cached("stages", id, () => {
+      if (item(id)?.standing) return undefined;
       const entries = planRows(id).flatMap(entry => { const stage = stageOf(entry.row); return stage ? [{ entry, ...stage }] : []; });
       if (!entries.some(e => e.kind === "research") || !entries.some(e => e.kind === "impl")) return undefined;
       const counted = entries.filter(e => !e.entry.excluded), open = counted.filter(e => e.entry.state !== "resolved");
@@ -914,6 +926,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     });
   }
   function progressShare(id: string): number {
+    if (item(id)?.standing) return 0;
     const stages = stageInfo(id);
     if (stages) return stages.share;
     const rows = planRows(id).filter(row => !row.excluded && row.weight !== null);
@@ -951,6 +964,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const it = item(id);
     if (!it || it.record) return undefined;
     if (it.status === "cancelled") return "cancelled";
+    // A standing item never completes, whatever its rows say.
+    if (it.standing) return undefined;
     if (seen.has(id)) { closedGuards++; return undefined; }
     const before = closedGuards;
     seen.add(id);
@@ -968,7 +983,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const resolved = new Map<string, boolean>(), seen = new Set([id]);
     for (const [at, row] of plan.plan.entries()) {
       if ("item" in row && row.item === id) return (row.after ?? followedRows(plan.plan, at, isRecord)).filter(key => !(resolved.get(key) ?? false));
-      resolved.set(row.id, rowResolved(row, seen));
+      resolved.set(row.id, standingPair(plan, row) || rowResolved(row, seen));
     }
     return [];
   }
@@ -996,6 +1011,8 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     const it = item(id);
     if (!it || it.record) return undefined;
     if (it.status === "cancelled") return "cancelled";
+    // A standing item is in progress for as long as it is not paused: its plan rows do not decide anything (docs/design.md, Item plans, Standing items).
+    if (it.standing) { const status = pausedBy(id) ? "paused" : "wip"; targetStatuses.set(id, status); return status; }
     if (seen.has(id)) return "blocked";
     seen.add(id);
     const rows = planRowsWalk(id, seen);
@@ -1226,7 +1243,9 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
       for (const owner of index().owners.get(id) || []) if (groupOf(owner) !== it.group) out.push(check("owned-across-projects", "跨项目拥有", { kind: "item", id: owner }));
       if (!parent && isOpenWork(id) && (reverseDeps().items.get(id) || []).some(e => !e.own && isOpenWork(e.id) && groupOf(e.id) === it.group)) out.push(check("unowned-but-awaited", "同项目有条目在等它，却没有条目拥有它"));
       for (const card of cardsOf(id)) for (const inner of cardChecks(card)) out.push({ ...inner, target: { kind: "card", id: card } });
-      if (!it.record && !rows.some(({ row }) => "text" in row && row.accept)) out.push(check("no-acceptance", "没有计划：至少要有一个验收步骤"));
+      if (!it.record && !it.standing && !rows.some(({ row }) => "text" in row && row.accept)) out.push(check("no-acceptance", "没有计划：至少要有一个验收步骤"));
+      // A standing item never completes, so a row of an ordinary item that owns it or waits for it can never be resolved.
+      if (!it.record && !it.standing) for (const row of it.plan) if ("item" in row && item(row.item)?.standing) out.push(check("waits-on-standing", row.own ? "拥有一个常设条目，它不会完成：常设条目放在顶层，或放在别的常设条目下面" : "等着一个常设条目，它不会完成：删掉这一行", { kind: "item", id: row.item }));
       // Titles of closed items are not revised, so only open items and records are checked.
       const titleLength = [...it.title.replace(/\s/g, "")].length;
       if (titleLength > TITLE_MAX_CHARS && (it.record || !ended(id))) out.push(check("title-too-long", `标题超过 ${TITLE_MAX_CHARS} 个字（现在 ${titleLength} 个）`));
@@ -1310,7 +1329,7 @@ export function rules(s: RulesInput, now = Date.now(), options: { activity?: Act
     mentionedBy: id => (index().mentioned.get(id) || []).slice(),
     item, parentOf, children: id => (index().children.get(id) || []).slice(), areas: include => areas(include).slice(),
     ancestors: id => ancestors(id).slice(), lineOf, groupOf, projectOf: groupOf,
-    isOpenWork,
+    isOpenWork, isStanding: id => !!item(id)?.standing,
     isLeaf, isStatusLeaf, statusOf, workedOn, begun: begunOf, dispatchedItems, canStart, startable, progress, ownerRowWaits, pausedBy, isPaused, isBacklog, isRoot, isNeeded: id => neededSet().has(id), openDependents,
     depsOf: id => depsOf(id).map(e => ({ ...e })),
     dependents: id => (reverseDeps().items.get(id) || []).map(e => ({ ...e })),
