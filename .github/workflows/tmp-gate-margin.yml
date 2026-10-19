@@ -1,12 +1,11 @@
 name: tmp-gate-margin
-# Temporary (ci-gate-margin): the 20 test shards and the n-key lane with the temp directory in memory, as the full CI runs them
-# otherwise, to read the seconds of each file and each job.
+# Temporary (ci-gate-margin): the test shards of the full CI in 20, 24 and 28 shards one after the other (the jobs of one count
+# end before the next count starts, so they do not wait for each other's runners), with the cost table of this branch.
 on:
   push:
-  workflow_dispatch:
 jobs:
-  test:
-    name: test shard ${{ matrix.shard }}
+  s20:
+    name: s20 shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -19,32 +18,54 @@ jobs:
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: tests
-        env:
-          TMPDIR: /dev/shm
         run: |
-          timeout 60 node --test --test-timeout=40000 \
+          timeout 90 node --test --test-timeout=40000 \
             --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
             $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
       - if: ${{ !cancelled() }}
         run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
-  nkey:
-    name: nkey ${{ matrix.part }} ${{ matrix.tmp }}
+  s24:
+    name: s24 shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: [s20]
     strategy:
       fail-fast: false
       matrix:
-        part: [counts, witnesses, time-quiet, time-writing]
-        tmp: [disk, memory]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: ./.github/actions/node-modules
+      - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: Base page
-        run: echo "NKEY_BASE=$(git merge-base origin/main HEAD)" >> "$GITHUB_ENV"
-      - if: ${{ matrix.tmp == 'memory' }}
-        run: echo "TMPDIR=/dev/shm" >> "$GITHUB_ENV"
-      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
+      - name: tests
+        run: |
+          timeout 90 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
+  s28:
+    name: s28 shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [s24]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          timeout 90 node --test --test-timeout=40000 \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+            $(node scripts/test-shard.ts ${{ matrix.shard }} ${{ strategy.job-total }})
+      - if: ${{ !cancelled() }}
+        run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
