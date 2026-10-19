@@ -594,7 +594,14 @@ derivation design that replaced this:
   state each published one was made from, with the write's changed documents and
   activity delta (`DerivedCache.follows`), and the Rules object of the new state
   is built from that state's one, as the page builds its own (below): it then
-  answers for the time that one answered for, in the same minute (`answersFor`). A prospective state inside a
+  answers for the time that one answered for, in the same minute (`answersFor`). The cache keeps only the
+  newest such step, and no Rules object keeps the one it was built from: the first version kept a step for
+  every state, each holding the state before it, and a closure of every Rules object read the options that
+  held the Rules object before it, so each kept every earlier state reachable and the daemon's peak RSS grew
+  by about 1.25 MB a write (732 MB after 300 writes, 2,227 MB after 1,500, on a hosted runner); after the fix
+  the heap left after a full collection grows 5.6 KB a write over 1,500 writes, against 5.0 KB on the base,
+  both for the growing unread list. `test/derived.test.ts` counts what a chain of 50 writes leaves reachable
+  (at most 3 of 51; each of the two chains keeps all 51). A prospective state inside a
   write gets one Rules object, built again only when the write changes it.
 - The activity times the stalled check reads are parsed once and kept as an
   index (`ActivityIndex` in `src/rules.ts`), advanced per snapshot by
@@ -674,9 +681,14 @@ derivation design that replaced this:
   state from nothing: in the profile of the replay with nothing unread, the rules'
   memoized derivations (`cached` in `src/rules.ts`) took 16.3 ms a write, the profiler's
   own cost included. With the
-  continued list, the shared rules' reuse and the commit below, the same benchmark gives
-  31.2 ms with the owner 4,000 commits behind and 23.8 ms with nothing unread (one run
-  each on a hosted runner, board-cpu-usage).
+  continued list, the shared rules' reuse and the commit below, single runs gave 31.2 and
+  43.3 ms with the owner 4,000 commits behind, and 23.8 and 30.4 ms with nothing unread:
+  hosted runners differ by more than 10 ms for the same code, so the comparison is made in
+  interleaved pairs (`scripts/bench-pairs.ts`: on each of four hosted runners, ten rounds
+  of the merge base, its twin and this tree in an order drawn each round, 200 writes each,
+  the owner 4,000 commits behind). There a write cost ×0.440 to ×0.451 of the base (every
+  runner's 95% interval within 0.427–0.457, the twin against the base within ±1.2 to
+  ±2.6%), 21.5 to 34.1 ms of CPU against 48.8 to 75.6 ms (board-cpu-usage).
 - A write starts two git processes: `git add` of its paths and `git commit --only` of
   the same paths, which commits exactly them whatever else is staged, so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
@@ -684,15 +696,18 @@ derivation design that replaced this:
   names the new commit in full (`core.abbrev=no`), and its author time is read through
   the long-lived `git cat-file` process the history reads use, where `git show` ran
   before. Starting a process is what a write's git work costs the daemon: on a hosted
-  runner, with the daemon holding about 1.9 GB, the profile of a `set_tags` write gave
+  runner, with the daemon holding about 1.9 GB (most of it the chain of states above, removed
+  since), the profile of a `set_tags` write gave
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
   the store's own code around them; with the commit's two, the write costs 31.2 ms.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
-peak memory, and the characters of each project's brief); the `bench` workflow
-runs it by hand on this tree and on a base commit, without gating; `--unread N`
+peak memory, the growth of the heap after a full collection per write, and the characters
+of each project's brief); the `bench` workflow runs it by hand on this tree and on a base
+commit, without gating, `scripts/bench-pairs.ts` in interleaved pairs against the base on four
+runners, and this tree at 300 and 1,500 writes; `--unread N`
 puts the owner's cursor N commits back and asks for the unread list after each write,
 as the open page does, and `--profile` prints where the CPU went.
 `scripts/bench-page.ts` measures the page's side: the real page in jsdom on a board of
