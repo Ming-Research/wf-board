@@ -378,5 +378,6 @@ test("a status is derived from the fields sameStatus compares, and from no other
   assert.equal(sameStatus(item, changed({ plan: item.plan.map(row => "state" in row && row.state === "todo" ? { ...row, state: "done" as const } : row) })), false, "a step's state");
   assert.equal(sameStatus(item, changed({ group: "Firn" })), false, "the project");
   assert.equal(sameStatus(item, changed({ paused: { reason: "wait", at } })), false, "a pause");
+  assert.equal(sameStatus(item, changed({ standing: true })), false, "the standing mark");
   assert.equal(sameStatus(item, changed({ dispatches: [{ agentId: "session-1", agent: "engineer", role: "工程师", level: 2, model: "Sonnet", started: at }] })), false, "a dispatch");
 });

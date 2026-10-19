@@ -806,19 +806,29 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   // n and its reverse step from the stop shown last; once m has read it, from where it stood on the page.
   function shownPlace() { return shownStop === null ? -1 : freshIndex().position.get(shownStop) ?? -1; }
-  // When the owner selected another item since n last landed (a click in the tree), n starts from that item: the
-  // first stop at or below its row, and its reverse the last stop above it (owner, 2026-10-14).
+  // The item the selection belongs to: the one the cursor is on (j and k move it without opening detail; so does a click on
+  // a card or a comment), else the one whose detail is shown. The arrows, n and its reverse all start from its row.
+  function selectionHome(): string | null {
+    const key = containerOf(effectiveSelection());
+    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : null;
+    return home && index().byId.has(home) ? home : null;
+  }
+  // When the owner selected another item since n last landed (a click in the tree, or j and k down to it), n starts from that
+  // item: the first stop at or below its row, and its reverse the last stop above it (owner, 2026-10-14).
   function selectionRow() {
-    if (!selectedItem) return null;
+    const home = selectionHome();
+    if (!home) return null;
     const all = freshStops(), at = shownPlace(), landed = at >= 0 ? all[at]!.item : null;
-    if (landed === selectedItem) return null;
-    const row = boardPlace().get(selectedItem) ?? -1;
+    if (landed === home) return null;
+    const row = boardPlace().get(home) ?? -1;
     return row < 0 ? null : row;
   }
+  // A stop the list places (its item has a row); the stops it does not place come last and take no part in the wrap from a row.
+  const placed = (st: FreshStop) => st.at[0]! < Number.MAX_SAFE_INTEGER;
   function goNextFresh() {
     const all = freshStops(); if (!all.length) return;
     const row = selectionRow();
-    if (row !== null) { const k = all.findIndex(st => st.at[0]! >= row && st.at[0]! < Number.MAX_SAFE_INTEGER); goFresh(k < 0 ? 0 : k); return; }
+    if (row !== null) { const k = all.findIndex(st => placed(st) && st.at[0]! >= row); goFresh(k < 0 ? 0 : k); return; }
     const at = shownPlace();
     if (at >= 0) {
       // Inside a changed item, n first visits its remaining new places.
@@ -833,7 +843,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   function goPrevFresh() {
     const all = freshStops(); if (!all.length) return;
     const row = selectionRow();
-    if (row !== null) { let k = -1; all.forEach((st, i) => { if (st.at[0]! < row) k = i; }); goFresh(k < 0 ? all.length - 1 : k); return; }
+    if (row !== null) { let k = -1, bottom = -1; all.forEach((st, i) => { if (placed(st)) bottom = i; if (st.at[0]! < row) k = i; }); goFresh(k >= 0 ? k : bottom >= 0 ? bottom : all.length - 1); return; }
     const at = shownPlace();
     if (at >= 0) { goFresh(at - 1); return; }
     const before = shownAt ? freshIndex().before(shownAt) : -1;
@@ -996,8 +1006,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     if (k >= 0) { goStop(stops().findIndex(st => st.id === all[((k + dir) % all.length + all.length) % all.length]!.id)); return; }
     // Otherwise start from the selected row of the list, as n does: forward the first stop at or below it, backward the
     // last stop above it, wrapping around at the list's ends.
-    const order = boardPlace();
-    const home = key?.startsWith("q:") ? index().decById.get(key.slice(2))?.item : key?.startsWith("it:") ? key.slice(3) : selectedItem;
+    const order = boardPlace(), home = selectionHome();
     const row = home && order.has(home) ? order.get(home)! : -1;
     const at = (st: {item:string|null}) => st.item && order.has(st.item) ? order.get(st.item)! : Infinity;
     let n = -1;
@@ -2111,8 +2120,9 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const ratio = derived.planRatio(it.id);
     const heading = el("div", "log-head", "计划和进展");
     if (it.provisional && !isCancelled(it)) heading.appendChild(el("span", "checktag", "待重写"));
-    heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total)); box.appendChild(heading);
-    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : "item" in row.row && derived.isPaused(row.row.item) ? "paused" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
+    if (!derived.isStanding(it.id)) heading.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
+    box.appendChild(heading);
+    const stateClass = (row: typeof rows[number]) => row.dropped ? "dropped" : row.glyph === "∞" ? "standing" : "item" in row.row && derived.isPaused(row.row.item) ? "paused" : ({resolved:"done",progress:"wip",waiting:"blocked",open:"todo"} as const)[row.state];
     const ref = (kind: "item" | "card", id: string, title: string) => {
       const link = el("a", "plan-link itemref", esc(plain(title))); link.href = "#"; link.dataset.ref = (kind === "item" ? "it:" : "q:") + id;
       return link;
@@ -2352,13 +2362,16 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const beforeStatus = beforeDerived?.status ?? (before ? "record" : undefined);
     head.appendChild(el("span", "st " + st + (before && beforeStatus !== st ? " chg-add" : ""), esc(chipText(it, st)))).title = it.num === undefined ? "" : STATUS[st] || st;
     appendTitle(head,it.title,before === null ? null : before?.title,"item-title");
+    // A standing item is always in progress and never completes: the tag says so, and it has no share of its plan done to count.
+    const standing = derived.isStanding(it.id);
+    if (standing) head.appendChild(el("span", "standing-tag", "常设")).title = "常设条目：一直进行中，不会完成，没有验收和难度";
     if (!detail && it.tags?.length) { const tags = el("span", "tagchips"); for (const name of it.tags) tags.appendChild(el("span", "tagchip", esc(name))).title = (snapshot.board.tags ?? []).find(t => t.name === name)?.meaning ?? ""; head.appendChild(tags); }
     // A plan read by stages (docs/design.md, How the page shows a plan) shows the stage the item is at on its tree row, and counts
     // stages where the row has no band; the detail and the agent list keep the count of rows.
     const stages = !detail && !m && !ended(it) ? derived.stages(it.id) : undefined;
     if (stages?.current) head.appendChild(el("span", "stage-tag", esc(stages.current.label))).title = "现在在大步骤「" + stages.current.label + "」，大步骤做完 " + stages.done + "/" + stages.total;
     // A tree row that draws the band shows no count of its done rows: the band already says how far it is.
-    if (it.plan.length && !(share > 0)) {
+    if (it.plan.length && !(share > 0) && !standing) {
       const ratio = stages ?? derived.planRatio(it.id);
       head.appendChild(el("span", "steps-ratio", ratio.done + "/" + ratio.total));
     }
