@@ -51,6 +51,7 @@
   --font-body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-head: "Noto Sans SC", "IBM Plex Sans", "PingFang SC", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --tl-work: #2f9e5b; --tl-ci: #5aa0c8; --tl-owner: #e5574f; --tl-architect: #8b5cf6; --tl-items: #b8a2e6; --tl-run: #e08a1e; --tl-wait: #8fa3a0; --tl-merge: #2f7de1; --tl-person: #8f1d17; --tl-closing: #c9d1ce; --tl-paused: #9aa4a0;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -62,6 +63,7 @@
     --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
     --amber: #f0c060; --amber-soft: #3a2d0a;
     --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
+    --tl-work: #3fcf6a; --tl-ci: #5b9cc4; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #5aa0f0; --tl-person: #ff5c4d; --tl-closing: #3f4a47; --tl-paused: #5b6663;
     color-scheme: dark;
   }
 }
@@ -74,6 +76,7 @@
   --tk-comment: #9aa8b2; --tk-keyword: #d79be0; --tk-string: #8fd49f; --tk-number: #f0b27a; --tk-type: #7cc0f0; --gutter: #6f7c78;
   --amber: #f0c060; --amber-soft: #3a2d0a;
   --fresh: #4c8fe8; --fresh-ink: #ffffff; --fresh-soft: #16263d; --fresh-soft-ink: #9cc3f5;
+  --tl-work: #3fcf6a; --tl-ci: #5b9cc4; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #5aa0f0; --tl-person: #ff5c4d; --tl-closing: #3f4a47; --tl-paused: #5b6663;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -209,13 +212,7 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 }
 
 /* The line of a piece of work in the runner's block (src/timeline.ts): one segment for each state, as long as the time it took. A wait with no
-   engineer session open is striped; a stretch drawn shorter than it was has a gap in it. */
-:root {
-  --tl-work: #2f9e5b; --tl-ci: #5aa0c8; --tl-owner: #e5574f; --tl-architect: #8b5cf6; --tl-items: #b8a2e6; --tl-run: #e08a1e; --tl-wait: #8fa3a0; --tl-merge: #2f7de1; --tl-person: #8f1d17; --tl-closing: #c9d1ce; --tl-paused: #9aa4a0;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --tl-work: #3fcf6a; --tl-ci: #5b9cc4; --tl-owner: #ff8a80; --tl-architect: #a78bfa; --tl-items: #7d6bb0; --tl-run: #f5a524; --tl-wait: #6f827f; --tl-merge: #5aa0f0; --tl-person: #ff5c4d; --tl-closing: #3f4a47; --tl-paused: #5b6663; }
-}
+   engineer session open is striped; a stretch drawn shorter than it was has a gap in it. The colours (`--tl-*`) are in the three theme blocks above. */
 /* A segment is at least one pixel wide, and the cut between two is drawn inside them, so that a line of a hundred segments still fits the cell. */
 .rt-line { display: flex; height: 10px; min-width: 0; overflow: hidden; border-radius: 2px; align-self: center; }
 .tl { position: relative; flex: 1 1 0; min-width: 1px; box-shadow: inset -1px 0 0 var(--surface); background: var(--tl-work); }
