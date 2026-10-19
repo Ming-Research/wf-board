@@ -223,7 +223,7 @@ test("a line says the status, what the runner reports with its turn, how long, a
 async function connected(t: { after(fn: () => void | Promise<void>): void }) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-look-"));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }] } });
+  const store = await Store.open(dir, { init: true, board: { title: "Synthetic board", projects: [{ name: "Whitefoot", repo: "Ming-Research/Whitefoot" }, { name: "Firn" }, { name: "Architect" }] } });
   const op = ops(store, () => iso(Date.now()));
   const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
   const server = createMcpServer({ store, ops: op, looks: new LookMemory() });
