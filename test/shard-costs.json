@@ -6,7 +6,7 @@
   "test/board-gen.test.ts": 5.1,
   "test/browser-limits.test.ts": 0.2,
   "test/budget.test.ts": 4.1,
-  "test/candidates.test.ts": 9.2,
+  "test/candidates.test.ts": 9.0,
   "test/changes-cost.test.ts": 2.4,
   "test/changes-report.test.ts": 10.7,
   "test/check-private-content.test.ts": 1.7,
