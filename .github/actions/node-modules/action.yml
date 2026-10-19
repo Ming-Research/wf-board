@@ -9,8 +9,10 @@ runs:
     - uses: actions/setup-node@v5
       with:
         node-version: 24
+    # `restore` and `save` apart, because the single action ends with a step of its own in every job, 0.2 to 0.8 seconds that count in the
+    # time of a job that found the cache.
     - id: modules
-      uses: actions/cache@v5
+      uses: actions/cache/restore@v5
       with:
         path: node_modules
         # Both files: npm ci fails when they disagree, and a restored directory would hide that. The major version of Node is in the key
@@ -19,3 +21,8 @@ runs:
     - if: ${{ steps.modules.outputs.cache-hit != 'true' }}
       shell: bash
       run: npm ci
+    - if: ${{ steps.modules.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: node_modules
+        key: ${{ steps.modules.outputs.cache-primary-key }}

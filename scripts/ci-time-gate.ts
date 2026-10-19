@@ -25,7 +25,7 @@ export type Verdict = "ok" | "yellow" | "red";
 export const SELF_JOB = "result";
 /** The context of the status the run writes to the commit. */
 export const STATUS_CONTEXT = "full-ci";
-/** Milliseconds between two looks at the run's jobs: longer while more than FEW_OPEN jobs are open, so that a run asks the API about 25 times
+/** Milliseconds between two looks at the run's jobs: longer while more than FEW_OPEN jobs are open, so that a run asks the API 13 to 17 times
  * and not 50 (the token of a run may make 1,000 requests an hour for the whole repository), shorter at the end, when the last jobs decide the time. */
 export const LOOK_MS = { many: 2000, few: 1000 };
 export const FEW_OPEN = 4;

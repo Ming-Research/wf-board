@@ -5027,7 +5027,7 @@ run and waited, 1 to 2 seconds (two runs of four rounds, 10-19). A waiting job
 sees only the jobs the run listed when it looked: a job with `needs` is listed
 once the jobs it needs have ended (the first look of each waiting job showed the
 twelve checks and the four waiting jobs themselves, not the eight jobs with `needs`), so no job of the full CI may use `needs` (`test/ci-workflow.test.ts`). It
-costs one runner for the length of the run and about 25 requests of the run's
+costs one runner for the length of the run and 13 and 17 requests (two runs) of the run's
 token, of the 1,000 an hour the whole repository may make; the full CI was started
 by hand up to 20 times in an hour. A run that is cancelled ends this job too, and
 a cancelled run must write nothing, since the pending status of the newer run
@@ -5059,7 +5059,7 @@ restore 2 to 3, 8 jobs) and 16 to 19 when it was not (4 jobs), the `npm ci`
 included. The action `.github/actions/node-modules` does this: Node 24,
 the cache of `node_modules` with the hash of `package.json` and `package-lock.json`
 in its key (a restored directory would hide that `npm ci` refuses a disagreement
-between the two), `npm ci` on a miss. A cache is read from the branch that made it
+between the two), `npm ci` on a miss, with `restore` and `save` of the cache as two steps so that a job that found the cache has no step after its tests for it. A cache is read from the branch that made it
 and from the main line; a change of the packages makes one miss on its branch, as
 slow as before. The Node that the runner has already is 22, and the project runs on
 24, so the step `setup-node` stays (0 to 1 second without a cache). A history
