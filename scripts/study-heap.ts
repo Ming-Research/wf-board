@@ -24,11 +24,15 @@
 //   open       the real Store.open: time per startup step and heap kept
 //   rebuild    the real comparisonSnapshot: heap kept, then after dropping the document cache, then the snapshot
 //   snapshot   a heap snapshot of 300 parsed files, summed by V8's node type (cons and sliced strings are types of their own)
+//   daemon     the real daemon (src/main.ts) on the board: resident memory and heap by space after the start, after five page
+//              loads (GET /api/snapshot) and after 15 s idle
+// open, rebuild and daemon run twice: on this tree (label main) and on a copy of src/ in which every parse of a YAML document
+// is followed by structuredClone, which writes each string out flat (label flat).
 //
 // Usage: node scripts/study-heap.ts [--scale 0.03] [--stages a,b] [--variants quoted,block]
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir, cpus, totalmem } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -40,10 +44,12 @@ import { Item, Decision, Note, Board } from "../src/model.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   scale: { type: "string", default: "1" }, stages: { type: "string" }, variants: { type: "string" },
-  stage: { type: "string" }, variant: { type: "string" }, dir: { type: "string" },
+  stage: { type: "string" }, variant: { type: "string" }, dir: { type: "string" }, src: { type: "string" }, label: { type: "string" },
 } });
 const SCALE = Number(args.scale);
-const STAGES = ["micro", "text", "parse", "freeze", "clone", "json", "strings", "structure", "validate", "validate-clone", "buffers", "jsonload", "jsyaml", "open", "rebuild", "snapshot"];
+/** The source tree the open, rebuild and daemon stages load: this one, or the copy with flattening that the driver makes. */
+const srcDir = args.src ? resolve(args.src) : join(here, "../src");
+const STAGES = ["micro", "text", "parse", "freeze", "clone", "json", "strings", "structure", "validate", "validate-clone", "buffers", "jsonload", "jsyaml", "open", "rebuild", "snapshot", "daemon"];
 const VARIANTS: Record<string, { items: number; decisions: number; notes: number }> = {
   quoted: { items: 1674, decisions: 633, notes: 927 },
   block: { items: 1942, decisions: 839, notes: 1210 },
@@ -300,25 +306,65 @@ const stages: Record<string, (c: Ctx) => Promise<Record<string, unknown>>> = {
     return { ms: r.ms, retainedMB: r.retainedMB, afterFlattenMB: afterFlatten, documentsDifferentFromYamlParse: different };
   },
   async open(c) {
-    const { Store } = await import(pathToFileURL(join(here, "../src/store.ts")).href) as { Store: { open(dir: string, opts: unknown): Promise<unknown> } };
+    const { Store } = await import(pathToFileURL(join(srcDir, "store.ts")).href) as { Store: { open(dir: string, opts: unknown): Promise<unknown> } };
     const laps: string[] = [];
     const r = await retained(() => Store.open(c.dir, { startup: (step: string, ms: number, detail?: string) => laps.push(`${step}: ${Math.round(ms)} ms${detail ? ` (${detail})` : ""}`) }));
     return { ms: r.ms, retainedMB: r.retainedMB, laps };
   },
   async rebuild(c) {
-    const { Store } = await import(pathToFileURL(join(here, "../src/store.ts")).href) as { Store: { open(dir: string, opts: unknown): Promise<any> } };
+    const { Store } = await import(pathToFileURL(join(srcDir, "store.ts")).href) as { Store: { open(dir: string, opts: unknown): Promise<any> } };
     const store = await Store.open(c.dir, {});
     gc();
     const base = heap(), t0 = performance.now();
-    const board = await store.comparisonSnapshot(store.snapshot().head);
+    let board: unknown = await store.comparisonSnapshot(store.snapshot().head);
     const ms = Math.round(performance.now() - t0);
     keep.push(board);
+    board = undefined;
     const afterRebuild = sinceBase(base);
     store.historicalDocuments.entries.clear();
     const afterDroppingDocuments = sinceBase(base);
     store.compared.entries.clear();
     keep.length = 0;
     return { ms, afterRebuildMB: afterRebuild, afterDroppingDocumentCacheMB: afterDroppingDocuments, afterDroppingSnapshotToo: sinceBase(base) };
+  },
+  async daemon(c) {
+    const port = 17400 + Math.floor(Math.random() * 500), stats = join(tmpdir(), `study-heap-stats-${process.pid}.json`);
+    const preload = `import v8 from "node:v8"; import { writeFileSync } from "node:fs"; process.on("SIGUSR2", () => { globalThis.gc?.(); globalThis.gc?.(); writeFileSync(process.env.STUDY_STATS, JSON.stringify({ heap: v8.getHeapStatistics(), spaces: v8.getHeapSpaceStatistics(), mem: process.memoryUsage() })); });`;
+    const started = performance.now();
+    const child = spawn(process.execPath, ["--max-old-space-size=4096", "--expose-gc", "--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(srcDir, "main.ts")], {
+      env: { ...process.env, WF_BOARD_DATA: c.dir, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "3600000", WF_BOARD_CREDENTIALS: join(tmpdir(), "study-heap-no-credentials.json"), STUDY_STATS: stats },
+      stdio: ["ignore", "pipe", "pipe"] });
+    let log = "";
+    child.stdout.on("data", (d: Buffer) => { log += d; log = log.slice(-4000); });
+    child.stderr.on("data", (d: Buffer) => { log += d; log = log.slice(-4000); });
+    const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
+    let healthy = false;
+    for (let i = 0; i < 600 && !healthy && child.exitCode === null; i++) {
+      healthy = await fetch(`http://127.0.0.1:${port}/health`).then(r => r.ok, () => false);
+      if (!healthy) await sleep(200);
+    }
+    if (!healthy) { child.kill("SIGKILL"); return { failed: "the daemon did not answer /health", exitCode: child.exitCode, log: log.slice(-1500) }; }
+    const startMs = Math.round(performance.now() - started);
+    const status = () => readFileSync(`/proc/${child.pid}/status`, "utf8");
+    const kb = (text: string, name: string) => Number(new RegExp(`^${name}:\\s+(\\d+) kB`, "m").exec(text)?.[1] ?? 0);
+    const sample = async () => {
+      const before = status();
+      rmSync(stats, { force: true });
+      child.kill("SIGUSR2");
+      for (let i = 0; i < 300 && !existsSync(stats); i++) await sleep(100);
+      await sleep(300);
+      const j = JSON.parse(readFileSync(stats, "utf8")) as { heap: Record<string, number>; spaces: Array<{ space_name: string; space_used_size: number }>; mem: Record<string, number> };
+      const after = status();
+      return { rssBeforeGcMB: mb(kb(before, "VmRSS") * 1024), rssAfterGcMB: mb(kb(after, "VmRSS") * 1024), rssPeakMB: mb(kb(after, "VmHWM") * 1024), heapUsedMB: mb(j.heap.used_heap_size!), heapTotalMB: mb(j.heap.total_heap_size!), heapPhysicalMB: mb(j.heap.total_physical_size!), externalMB: mb(j.heap.external_memory!), arrayBuffersMB: mb(j.mem.arrayBuffers!), spacesUsedMB: Object.fromEntries(j.spaces.map(x => [x.space_name, mb(x.space_used_size)])) };
+    };
+    await sleep(3000);
+    const afterStart = await sample();
+    for (let i = 0; i < 5; i++) await fetch(`http://127.0.0.1:${port}/api/snapshot`).then(r => r.arrayBuffer(), () => undefined);
+    const afterPageLoads = await sample();
+    await sleep(15_000);
+    const idle = await sample();
+    child.kill("SIGTERM");
+    return { startMs, afterStart, afterPageLoads, idle };
   },
   async snapshot(c) {
     const step = Math.max(1, Math.floor(c.abs.length / 300));
@@ -372,7 +418,7 @@ if (args.stage) {
   const paths = boardPaths(dir), abs = paths.map(p => join(dir, p));
   const bytes = abs.reduce((n, p) => n + statSync(p).size, 0);
   const result = await stages[args.stage]!({ dir, paths, abs, bytes });
-  console.log(`STUDY ${JSON.stringify({ variant: args.variant, stage: args.stage, files: paths.length, fileMB: mb(bytes), ...result })}`);
+  console.log(`STUDY ${JSON.stringify({ variant: args.variant, src: args.label ?? "main", stage: args.stage, files: paths.length, fileMB: mb(bytes), ...result })}`);
   process.exit(0);
 }
 
@@ -381,6 +427,19 @@ const root = await mkdtemp(join(tmpdir(), "wf-board-study-heap-"));
 try {
   const wantedVariants = (args.variants ?? Object.keys(VARIANTS).join(",")).split(",");
   const wantedStages = (args.stages ?? STAGES.join(",")).split(",");
+  // A copy of src/ inside the repository (so it finds node_modules) in which each YAML parse is followed by structuredClone.
+  const flatSrc = join(here, "../.study-flat-src");
+  cpSync(srcDir, flatSrc, { recursive: true });
+  const storeFile = join(flatSrc, "store.ts");
+  let storeText = readFileSync(storeFile, "utf8");
+  for (const [from, to] of [
+    ['const raw = parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" });', 'const raw = structuredClone(parse(await readFile(join(dir, path), "utf8"), { version: "1.2", schema: "core" }));'],
+    ['frozen(parse(blob.toString("utf8"), { version: "1.2", schema: "core" }))', 'frozen(structuredClone(parse(blob.toString("utf8"), { version: "1.2", schema: "core" })))'],
+  ] as const) {
+    if (storeText.split(from).length !== 2) throw new Error(`the flattening patch does not apply: ${from}`);
+    storeText = storeText.replace(from, to);
+  }
+  writeFileSync(storeFile, storeText);
   for (const name of wantedVariants) {
     const n = VARIANTS[name]!, scaled = { items: Math.max(6, Math.round(n.items * SCALE)), decisions: Math.max(3, Math.round(n.decisions * SCALE)), notes: Math.max(3, Math.round(n.notes * SCALE)) };
     const dir = join(root, name);
@@ -388,19 +447,22 @@ try {
     let t0 = Date.now();
     writeBoard(dir, name === "quoted" ? quotedBoard(scaled) : blockBoard(scaled));
     console.log(`board ${name}: ${scaled.items} items, ${scaled.decisions} cards, ${scaled.notes} notes, built in ${Date.now() - t0} ms`);
-    for (const stage of wantedStages) {
+    // The stages on this tree, then three of them on the copy with flattening.
+    const jobs: Array<{ stage: string; label: string; src: string }> = wantedStages.map(stage => ({ stage, label: "main", src: srcDir }));
+    for (const stage of ["open", "rebuild", "daemon"]) if (wantedStages.includes(stage)) jobs.push({ stage, label: "flat", src: flatSrc });
+    for (const { stage, label, src } of jobs) {
       // The micro stage does not depend on a board shape.
       if (stage === "micro" && name !== wantedVariants[0]) continue;
       await new Promise<void>(ok => {
         t0 = Date.now();
-        const child = spawn(process.execPath, ["--max-old-space-size=4096", "--expose-gc", fileURLToPath(import.meta.url), "--stage", stage, "--variant", name, "--dir", dir], { stdio: ["ignore", "pipe", "inherit"] });
+        const child = spawn(process.execPath, ["--max-old-space-size=4096", "--expose-gc", fileURLToPath(import.meta.url), "--stage", stage, "--variant", name, "--dir", dir, "--src", src, "--label", label], { stdio: ["ignore", "pipe", "inherit"] });
         const timeout = setTimeout(() => child.kill("SIGKILL"), 15 * 60_000);
         let output = "";
         child.stdout.on("data", (d: Buffer) => { output += d; });
         child.on("exit", (code, signal) => {
           clearTimeout(timeout);
           const line = output.split("\n").find(l => l.startsWith("STUDY "));
-          console.log(line ?? `STUDY ${JSON.stringify({ variant: name, stage, failed: true, exitCode: code, signal, ms: Date.now() - t0 })}`);
+          console.log(line ?? `STUDY ${JSON.stringify({ variant: name, src: label, stage, failed: true, exitCode: code, signal, ms: Date.now() - t0 })}`);
           ok();
         });
       });
@@ -408,4 +470,5 @@ try {
   }
 } finally {
   await rm(root, { recursive: true, force: true });
+  rmSync(join(here, "../.study-flat-src"), { recursive: true, force: true });
 }
