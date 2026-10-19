@@ -1,7 +1,9 @@
 name: tmp-nkey-time-margin
-# Temporary (nkey-time-margin): the type check and the unit test of the n-key lane's arithmetic, and the two time parts of the lane several
-# times each, set up and run as in the full CI, so that the time of the job and of its test step is read from several runners. Remove it
-# before the full CI: the check `no-tmp-workflow` fails on a leftover.
+# Temporary (nkey-time-margin): the type check and the unit test of the n-key lane's arithmetic, and the two time parts of the lane
+# run side by side with the lane as the merge base has it (`old`) and as this branch has it (`new`), set up and run as in the full CI,
+# so that the time of the job and of its test step is read from runners at the same hour. `writing-changed` compares with a commit
+# whose page differs by a harmless statement (branch nkey-time-margin-base), so that four windows press as for a pull request that
+# changes the page. Remove it before the full CI: the check `no-tmp-workflow` fails on a leftover.
 on:
   push:
     branches: ["nkey-time-margin*"]
@@ -16,22 +18,30 @@ jobs:
       - run: npm run check
       - run: node --test test/nkey/stats.test.ts
   nkey:
-    name: nkey ${{ matrix.part }} ${{ matrix.run }}
+    name: nkey ${{ matrix.variant }} ${{ matrix.code }} ${{ matrix.run }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        part: [time-writing, time-quiet]
-        run: [1, 2, 3, 4]
+        code: [old, new]
+        variant: [writing-same, writing-changed, quiet-same]
+        run: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: The lane as the merge base has it
+        if: ${{ matrix.code == 'old' }}
+        run: git checkout "$(git merge-base origin/main HEAD)" -- test/nkey
       - name: Base page
         env:
           PUSHED_FROM: ${{ github.event.before }}
-        run: echo "NKEY_BASE=$PUSHED_FROM" >> "$GITHUB_ENV"
-      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          if [ "${VARIANT#*-}" = changed ]; then base=$(git rev-parse origin/nkey-time-margin-base); else base="$PUSHED_FROM"; fi
+          echo "NKEY_BASE=$base" >> "$GITHUB_ENV"
+          echo "part=${VARIANT%%-*}" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/time-${{ env.part }}.nkey.ts
