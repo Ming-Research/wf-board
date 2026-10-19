@@ -5903,7 +5903,7 @@ between 10-18 23:00 and 10-19 09:00. The waits come from two causes, neither of
 them the change. (1) The organization's jobs running at once reached the limit.
 GitHub's page of usage limits gives 60 concurrent jobs of the standard hosted
 runners for the Team plan, and the most jobs running at one moment in these data
-was exactly 60. A run has 28 jobs; of the 9 runs that started while more than 32
+was exactly 60. A run had 28 jobs (40 since ci-gate-45); of the 9 runs that started while more than 32
 jobs of the organization were running, 8 had jobs that started late, 6 of them by
 more than 20 seconds (48 at most) and with 25 to 27 jobs late at once; they were
 runs started by several engineers within a minute (4 between 08:07 and 08:08). The
@@ -6014,7 +6014,7 @@ it again; the pending that `start` wrote is not written again then.
 
 ### The set-up of a job
 
-Every job of the full CI starts the same way, and 28 jobs run at once, so the
+Every job of the full CI starts the same way, and 40 jobs run at once (28 before ci-gate-45), so the
 set-up is in the time of the job that ends last: the runner's wait (3 to 4
 seconds), `Set up job` (about 1), `checkout` (about 1; 2 for the n-key parts, which
 fetch the history for the base page), Node and the packages (8 to 9 with the cache

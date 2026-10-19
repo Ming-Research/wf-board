@@ -12,7 +12,8 @@ runs:
     - id: node
       shell: bash
       run: |
-        dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1)
+        # No match is no failure: the step's shell runs with pipefail, and an image without Node 24 goes on to `setup-node`.
+        dir=$(ls -d "$RUNNER_TOOL_CACHE"/node/24.*/x64/bin 2>/dev/null | sort -V | tail -n 1 || true)
         if [ -n "$dir" ]; then echo "$dir" >> "$GITHUB_PATH"; echo "found=true" >> "$GITHUB_OUTPUT"; fi
     - if: ${{ steps.node.outputs.found != 'true' }}
       uses: actions/setup-node@v5
