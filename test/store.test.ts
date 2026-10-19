@@ -880,7 +880,7 @@ test("pause replay by the pickaxe gives what reading every commit gives, and wha
       if (model.get(target)!.record || model.get(target)!.paused) continue;
       model.get(target)!.paused = stamp(k); touched.add(target);
     } else if (kind === "resume") {
-      if (!model.get(target)!.paused) continue;
+      if (!model.get(target)?.paused) continue;
       delete model.get(target)!.paused; touched.add(target);
     } else if (kind === "delete") {
       const from = ownerOf(target);

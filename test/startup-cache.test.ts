@@ -357,16 +357,21 @@ test("pickaxe covers only the commits after the cache, and a cache without pause
   const original = internals(store).git.bind(store);
   t.mock.method(internals(store), "git", async (args: string[], author?: string) => { if (args.includes("-G")) scans.push(args); return original(args, author); });
   await internals(store).loadActivity();
-  assert.equal(scans.length, 1);
-  assert.ok(scans[0]!.includes(`${knownHead}..${store.snapshot().head}`));
+  // The search for the first pause covers the commits after the cache; the search for the commits that name a pause field only those after that pause.
+  const firstPause = (list: string[][]) => list.filter(args => args.includes("^paused:"));
+  assert.equal(firstPause(scans).length, 1);
+  assert.ok(firstPause(scans)[0]!.includes(`${knownHead}..${store.snapshot().head}`));
+  assert.equal(scans.length, 2);
+  const pauseCommit = (await store.log({ limit: 2 }))[1]!.commit;
+  assert.ok(scans.find(args => !args.includes("^paused:"))!.includes(`${pauseCommit}..${store.snapshot().head}`));
   assert.deepEqual(store.snapshot().activity!.pauses!.root, [{ start: pausedAt, end: resumed.updated }]);
   const latest = store.snapshot().items.root!;
   await store.commit({ author: "总管", message: "Pause again", puts: [put("root", { ...latest, paused: { reason: "Deferred", at: "2026-10-11T08:20:00.125Z" } }, latest.rev)] });
   const negative = StartupCache.parse(JSON.parse(await readFile(await cacheFile(dir), "utf8")));
   await writeFile(await cacheFile(dir), JSON.stringify({ ...negative, head: store.snapshot().head, pause: null }));
   await internals(store).loadActivity();
-  assert.equal(scans.length, 2, "current pauses contradict a cache that records none, so the history is searched whole");
-  assert.equal(scans[1]![scans[1]!.indexOf("-G") + 2], store.snapshot().head);
+  assert.equal(firstPause(scans).length, 2, "current pauses contradict a cache that records none, so the history is searched whole");
+  assert.equal(firstPause(scans)[1]![firstPause(scans)[1]!.indexOf("-G") + 2], store.snapshot().head);
   assert.equal(store.snapshot().activity!.pauses!.root!.length, 2);
 });
 

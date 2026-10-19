@@ -794,6 +794,7 @@ export class Store {
     } else {
       if (!commits.length) return;
       const firstCommit = await this.firstPauseCommit(commits, range);
+      this.lap("TMP first pickaxe");
       const first = commits.findIndex(commit => commit.commit === firstCommit);
       if (first < 0) return;
       this.pauseStarted = true;
@@ -807,12 +808,14 @@ export class Store {
         if (shape) shapes.push([match[1]!, shape]);
       }
       graph = PauseGraph.from(shapes);
+      this.lap("TMP initial board", `${shapes.length} items`);
       for (const [id, source] of graph.sources()) (activity.pauses ??= {})[id] = [{ start: graph.shape(source)!.paused!.at }];
       replay = commits.slice(first + 1);
       after = `${initial.commit}..${commits.at(-1)!.commit}`;
     }
     if (!replay.length) return;
     const touching = await this.pauseCommits(after);
+    this.lap("TMP field pickaxe", `${touching.size} commits of ${replay.length}`);
     for (const commit of replay) {
       if (!touching.has(commit.commit)) continue;
       const changes: PauseChange[] = [];
@@ -825,6 +828,7 @@ export class Store {
       }
       this.applyPauses(activity, graph, changes);
     }
+    this.lap("TMP loop");
   }
 
   /** The first of `commits` (oldest first, all within `range`) that sets a pause, found by a pickaxe over the range. */
