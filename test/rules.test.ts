@@ -14,7 +14,7 @@ const workPlan = (rows: PlanRow[] = [], state: PlanStep["state"] = "todo") => [.
 function snapshot(items: Record<string, Partial<Item>>, decisions: Record<string, Partial<Decision>> = {}, notes: Record<string, Partial<Note>> = {}): Snapshot {
   return {
     board: { title: "Synthetic", projects: ["Default", "First", "Second"].map(name => ({ name })) }, head: "0".repeat(40), glossaries: {}, owner: {},
-    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", ...(fields.record ? {} : { difficulty: 2 }), plan: fields.record ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
+    items: Object.fromEntries(Object.entries(items).map(([id, fields]) => [id, Item.parse({ title: id, group: "Default", ...(fields.record || fields.standing ? {} : { difficulty: 2 }), plan: fields.record || fields.standing ? [] : workPlan([step()]), updated: T0, rev: 1, ...fields })])),
     decisions: Object.fromEntries(Object.entries(decisions).map(([id, fields]) => [id, Decision.parse({ item: "area", question: id, options: [{ key: "A", text: "choose" }], status: "open", updated: T0, rev: 1, ...fields })])),
     notes: Object.fromEntries(Object.entries(notes).map(([id, fields]) => [id, Note.parse({ target: "it:area", kind: "comment", text: "note", at: T0, state: "sent", rev: 1, ...fields })])),
   };
