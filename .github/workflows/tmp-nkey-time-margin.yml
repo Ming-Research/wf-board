@@ -1,0 +1,37 @@
+name: tmp-nkey-time-margin
+# Temporary (nkey-time-margin): the type check and the unit test of the n-key lane's arithmetic, and the two time parts of the lane several
+# times each, set up and run as in the full CI, so that the time of the job and of its test step is read from several runners. Remove it
+# before the full CI: the check `no-tmp-workflow` fails on a leftover.
+on:
+  push:
+    branches: ["nkey-time-margin*"]
+jobs:
+  unit:
+    name: check and stats test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/nkey/stats.test.ts
+  nkey:
+    name: nkey ${{ matrix.part }} ${{ matrix.run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [time-writing, time-quiet]
+        run: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: Base page
+        env:
+          PUSHED_FROM: ${{ github.event.before }}
+        run: echo "NKEY_BASE=$PUSHED_FROM" >> "$GITHUB_ENV"
+      - run: node --test --test-concurrency=1 test/nkey/${{ matrix.part }}.nkey.ts
