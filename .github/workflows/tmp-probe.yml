@@ -1,0 +1,42 @@
+name: tmp-probe
+# Temporary (nkey-lane-false-red): the probe of the n-key time layer's bias. Delete before the last full CI, which fails while this file exists.
+on:
+  push:
+    branches-ignore: [main]
+concurrency:
+  group: tmp-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    name: probe ${{ matrix.phase }} ${{ matrix.job }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [writing]
+        job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        include:
+          - { phase: quiet, job: 0 }
+          - { phase: quiet, job: 1 }
+          - { phase: quiet, job: 2 }
+          - { phase: quiet, job: 3 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - env:
+          PROBE_PHASE: ${{ matrix.phase }}
+          PROBE_JOB: ${{ matrix.job }}
+          PROBE_ARMS: cyclic4,balanced4,cyclic3,balanced3,cyclic4-minor,cyclic4-major
+          PROBE_ROUNDS: 2
+          PROBE_OUT: probe.json
+        run: node --test --test-concurrency=1 test/nkey/tmp-probe.nkey.ts
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.phase }}-${{ matrix.job }}
+          path: probe.json
