@@ -92,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [counts, witnesses, time-quiet, time-writing]
+        part: [counts, counts-out, late-rows, witnesses, time-quiet, time-writing]
     steps:
       - uses: actions/checkout@v5
         with:
