@@ -1,0 +1,58 @@
+name: tmp-derived-shape
+# Temporary (ci-gate-margin): what the collection test of the derived cache leaves reachable in the shape the full CI runs it in: the
+# whole of test/derived.test.ts in a fresh process, the chain of 50 and then the one of 200, after each of three collections (the patch
+# drops the early exit, so every round is counted). `seq`: ten runs one after another in a job; `par`: five rounds of three runs at once,
+# as a shard runs files side by side. Delete before the last full CI.
+on:
+  push:
+    branches-ignore: [main]
+jobs:
+  shape:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [seq, par]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: patch
+        run: |
+          python3 -I - <<'PY'
+          p = "test/derived.test.ts"
+          s = open(p).read()
+          old = "    if (alive(made) <= REACHABLE && alive(states) <= REACHABLE) break;\n"
+          assert s.count(old) == 1
+          log = ("    __append(process.env.REACH_OUT!, `${writes} round${round + 1} rules=${alive(made)} states=${alive(states)} "
+                 "rulesAt[${made.flatMap((r, i) => r.deref() !== undefined ? [i] : [])}] "
+                 "statesAt[${states.flatMap((r, i) => r.deref() !== undefined ? [i] : [])}]\\n`);\n")
+          s = s.replace(old, log)
+          s = 'import { appendFileSync as __append } from "node:fs";\n' + s
+          open(p, "w").write(s)
+          PY
+          git diff --stat
+      - name: run
+        run: |
+          set +e
+          if [ "${{ matrix.mode }}" = seq ]; then
+            for k in 1 2 3 4 5 6 7 8 9 10; do
+              REACH_OUT=reach-$k.txt timeout 200 node --test --test-reporter=spec test/derived.test.ts > out-$k.txt 2>&1
+              echo "SHAPE ${{ matrix.mode }} rep ${{ matrix.rep }} run $k exit=$?"
+            done
+          else
+            for round in 1 2 3 4 5; do
+              for c in 1 2 3; do
+                REACH_OUT=reach-$round-$c.txt timeout 200 node --test --test-reporter=spec test/derived.test.ts > out-$round-$c.txt 2>&1 &
+              done
+              wait
+              echo "SHAPE ${{ matrix.mode }} rep ${{ matrix.rep }} round $round done"
+            done
+          fi
+          for f in reach-*.txt; do
+            sed "s|^|REACH ${{ matrix.mode }} ${{ matrix.rep }} $f |" "$f"
+          done
+          grep -a -l "are still reachable after a collection" out-*.txt | sed 's/^/REDFILE /'
+          grep -a -h "^ℹ fail " out-*.txt | sort | uniq -c | sed 's/^/FAILCOUNT /'
+          exit 0
