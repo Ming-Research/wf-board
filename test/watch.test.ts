@@ -211,7 +211,7 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
   await op.createItem({ ...asArchitect, key: "bold", group: author, title: "Bold", head: heads.bold, accept: "验收通过" });
   await op.createItem({ ...asArchitect, key: "gone", group: author, title: "Cancelled", head: heads.gone, accept: "验收通过" });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "not needed" });
-  const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", question: `${key}?`, confidence: { reason: "判断" }, options: [{ text: "是", detail: "是" }, { text: "否", detail: "否" }], ...(blocks ? { blocks } : {}) });
+  const card = (key: string, blocks?: string) => op.writeCard({ author, key, item: "watch", kind: "design", question: `${key}?`, confidence: { reason: "判断" }, options: [{ text: "是", detail: "是" }, { text: "否", detail: "否" }], ...(blocks ? { blocks } : {}) });
   await card("approval", "合入停着"); await card("stop", "发布停着"); await card("plain"); await card("settled", "旧的");
   await op.ruleCard({ author, key: "settled", choice: "A", ruling: "同意" });
   await op.setPlan({ author, id: "watch", rows: [

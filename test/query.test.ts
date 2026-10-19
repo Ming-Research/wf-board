@@ -211,7 +211,7 @@ test("changes recovers no owner for a live root, so it rebuilds no earlier whole
 test("created-then-deleted items, cards and notes retain intermediate identity and ownership in changes", async t => {
   const { store, op } = await board(t), baseline = store.snapshot().head;
   await op.createItem({ ...asArchitect, key: "temporary", owner: "area", title: "Temporary item", accept: "Temporary witness passes" });
-  await op.writeCard({ author, key: "temporary-card", item: "temporary", question: "Temporary question?", blocks: "Waits", confidence: { reason: "Guess" }, options: [{ text: "A", detail: "Does A" }] });
+  await op.writeCard({ author, key: "temporary-card", item: "temporary", kind: "design", question: "Temporary question?", blocks: "Waits", confidence: { reason: "Guess" }, options: [{ text: "A", detail: "Does A" }] });
   await store.commit({ author, message: "Temporary note", puts: [{ kind: "note", id: "temporary-note", expectRev: null, doc: { target: "q:temporary-card", kind: "comment", text: "Temporary note", at, state: "sent" } }] });
   await store.commit({ author, message: "Delete temporary documents", deletes: [
     { kind: "item", id: "temporary", expectRev: 2 }, { kind: "decision", id: "temporary-card", expectRev: 1 }, { kind: "note", id: "temporary-note", expectRev: 1 },

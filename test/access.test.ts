@@ -81,7 +81,7 @@ const calls: Record<keyof Ops, Array<{ parts: Part[]; args: Record<string, unkno
   moveItem: [{ parts: ["item.move"], args: { id: "a" } }],
   moveItemProject: [{ parts: ["item.move-project"], args: { id: "a", project: "Firn" } }],
   clearAsk: [{ parts: ["item.ask"], args: { id: "a", log: "l" } }],
-  writeCard: [{ parts: ["card.write", "item.plan", "item.log"], args: { key: "k", item: "a", question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] } }],
+  writeCard: [{ parts: ["card.write", "item.plan", "item.log"], args: { key: "k", item: "a", kind: "design", question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] } }],
   ruleCard: [{ parts: ["card.rule"], args: { key: "choice", ruling: "r" } }],
   withdrawCard: [{ parts: ["card.write", "item.log"], args: { key: "choice", log: "l" } }],
   replyNote: [{ parts: ["note.reply"], args: { id: "note-1", reply: "r" } }],
@@ -133,7 +133,7 @@ test("an engineer's credential writes inside its subtree only", async t => {
 test("a card is written inside the subtree only, and a write that reaches another item through its effects is refused", async t => {
   const { op, store } = await board(t);
   const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
-  const card = { key: "q-new", question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] };
+  const card = { key: "q-new", kind: "design" as const, question: "q", confidence: { reason: "r" }, options: [{ text: "t", detail: "d" }] };
   await op.writeCard({ ...who, ...card, item: "a" });
   assert.equal(store.snapshot().decisions["q-new"]!.item, "a");
   await assert.rejects(op.writeCard({ ...who, ...card, key: "q-other", item: "b" }), (e: unknown) => e instanceof OpError && /item b: outside the subtree/.test(e.message));

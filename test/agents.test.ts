@@ -23,7 +23,7 @@ test("the index keeps a session's last two distinct items, newest first, and cou
   assert.deepEqual(touched(), ["other", "a"], "only two are kept");
   await op.appendLog({ author, id: "b", text: "no session" });
   assert.deepEqual(touched(), ["other", "a"], "a write without a session is nobody's");
-  await op.writeCard({ author, session: "S", key: "k1", item: "area", question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }] });
+  await op.writeCard({ author, session: "S", key: "k1", item: "area", kind: "design", question: "Which?", confidence: { reason: "guess" }, options: [{ text: "a", detail: "does a", recommended: true }, { text: "b", detail: "does b" }] });
   assert.deepEqual(touched(), ["area", "other"], "a card counts for its item");
   await op.appendLog({ author, session: "S", id: "area", text: "twice in a row" });
   assert.deepEqual(touched(), ["area", "other"], "the item at the front is not listed twice");

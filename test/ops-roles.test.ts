@@ -118,7 +118,7 @@ test("other projects still refuse cross-project writes without changing memory, 
     () => op.updateItem({ author: "Firn", id: "a", rev: before.items.a!.rev, head: "Changed head", reason: "Foreign" }),
     () => op.moveItem({ author: "Firn", id: "a", owner: "other" }),
     () => op.appendLog({ author: "Firn", id: "a", text: "Foreign log" }),
-    () => op.writeCard({ confidence: conf, author: "Firn", key: "foreign-card", item: "a", question: "Q?", options: [opt("A")] }),
+    () => op.writeCard({ confidence: conf, author: "Firn", key: "foreign-card", item: "a", kind: "design", question: "Q?", options: [opt("A")] }),
     () => op.ruleCard({ author: "Firn", key: "choice", choice: "A" }),
     () => op.withdrawCard({ author: "Firn", key: "choice", log: "Not needed" }),
     () => op.replyNote({ author: "Firn", id: "note-1", reply: "Answer" }),
@@ -145,7 +145,7 @@ test("Architect writes any project's items, cards and note replies under its own
   assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: "改了 head：Scope settled" });
   await mine(() => op.moveItem({ ...asArchitect, id: "a", owner: "other" }));
   assert.equal(rules(store.snapshot()).parentOf("a"), "other");
-  await mine(() => op.writeCard({ confidence: conf, ...asArchitect, key: "architect-card", item: "a", question: "Choose?", options: [opt("A")] }));
+  await mine(() => op.writeCard({ confidence: conf, ...asArchitect, key: "architect-card", item: "a", kind: "design", question: "Choose?", options: [opt("A")] }));
   await mine(() => op.ruleCard({ ...asArchitect, key: "architect-card", choice: "A" }));
   await mine(() => op.replyNote({ ...asArchitect, id: "note-1", reply: "Answer" }));
   assert.equal(store.snapshot().notes["note-1"]!.repliedBy, architect);
@@ -236,7 +236,7 @@ test("Architect from another session writes only the Architect project's items, 
   const before = store.snapshot(), count = (await store.log()).length;
   for (const who of [engineer, { author: architect }]) {
     await assert.rejects(op.appendLog({ ...who, id: "a", text: "Foreign" }), rx`item a belongs to project Whitefoot; report what you need from it to the architect, who creates work another project needs in the project that delivers it; only ${PROCESS_WRITERS} write other projects' items`);
-    await assert.rejects(op.writeCard({ confidence: conf, ...who, key: "foreign-card", item: "a", question: "Q?", options: [opt("A")] }), /item a belongs to project Whitefoot/);
+    await assert.rejects(op.writeCard({ confidence: conf, ...who, key: "foreign-card", item: "a", kind: "design", question: "Q?", options: [opt("A")] }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.replyNote({ ...who, id: "note-1", reply: "Answer" }), /item a belongs to project Whitefoot/);
     await assert.rejects(op.moveItem({ ...who, id: "a", owner: "other" }), /item a belongs to project Whitefoot/);
     assert.deepEqual(store.snapshot(), before);
@@ -256,9 +256,9 @@ test("the architect's turns (author Architect, session 架构师轮次) write as
   // What the engineer's question needs: an answer on its item, a card, a pause, a new item and its rating.
   await mine(() => op.appendLog({ ...turn, id: "a", text: "Answer to the engineer" }));
   assert.deepEqual(store.snapshot().items.a!.log.at(-1), { at: later, by: architect, text: "Answer to the engineer" });
-  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card", item: "a", question: "Choose?", options: [opt("A"), opt("B"), opt("C", true)] }));
+  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card", item: "a", kind: "design", question: "Choose?", options: [opt("A"), opt("B"), opt("C", true)] }));
   await mine(() => op.withdrawCard({ ...turn, key: "turn-card", log: "Asked twice" }));
-  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card-2", item: "a", question: "Choose again?", options: [opt("A"), opt("B"), opt("C", true)] }));
+  await mine(() => op.writeCard({ confidence: conf, ...turn, key: "turn-card-2", item: "a", kind: "design", question: "Choose again?", options: [opt("A"), opt("B"), opt("C", true)] }));
   await mine(() => op.ruleCard({ ...turn, key: "turn-card-2", choice: "C" }));
   await mine(() => op.setPause({ ...turn, id: "b", paused: true, reason: "Owner chose to wait" }));
   await mine(() => op.createItem({ ...turn, key: "made-by-turn", group: "Firn", title: "Made for Firn", accept: "Pass" }));
@@ -420,7 +420,7 @@ for (const retired of ["总管", "PM"]) test(`every write under the retired auth
     moveItem: () => op.moveItem({ author: retired, id: "a", owner: "other" }),
     moveItemProject: () => op.moveItemProject({ author: retired, id: "a", project: "Firn" }),
     clearAsk: () => op.clearAsk({ author: retired, id: "a", log: "Settled" }),
-    writeCard: () => op.writeCard({ confidence: conf, author: retired, key: "new-card", item: "a", question: "Q?", options: [opt("A")] }),
+    writeCard: () => op.writeCard({ confidence: conf, author: retired, key: "new-card", item: "a", kind: "design", question: "Q?", options: [opt("A")] }),
     ruleCard: () => op.ruleCard({ author: retired, key: "choice", choice: "A" }),
     withdrawCard: () => op.withdrawCard({ author: retired, key: "choice", log: "Not needed" }),
     replyNote: () => op.replyNote({ author: retired, id: "note-1", reply: "Answer" }),
@@ -556,7 +556,7 @@ test("converting closed work to a record requires clearing its retained owner pa
 test("a project card ruling may complete an unwritten paused dependent without clearing its marker", async t => {
   const { store, op, dir } = await board(t);
   await op.createItem({ ...asArchitect, key: "pause-card-dependent", group: author, title: "Paused card dependent", accept: "Result passes" });
-  await op.writeCard({ confidence: conf, author, key: "pause-card", item: "pause-card-dependent", question: "Proceed?", blocks: "The dependent waits", options: [opt("Yes")] });
+  await op.writeCard({ confidence: conf, author, key: "pause-card", item: "pause-card-dependent", kind: "design", question: "Proceed?", blocks: "The dependent waits", options: [opt("Yes")] });
   await op.setPlan({ author, id: "pause-card-dependent", row: { id: "accept", accept: true, text: "Result passes", state: "done" } });
   await op.setPause({ ...asArchitect, id: "pause-card-dependent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;

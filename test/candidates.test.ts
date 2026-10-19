@@ -126,7 +126,7 @@ test("the pools take items by level and count the engineers that are working, no
   await b.child("w4", "r", { difficulty: 3, plan: [{ item: "dep", own: false }] }); await b.engineer("w4", 3);
   // blocked on a card: its only open row is a decision the owner has not ruled.
   await b.child("w7", "r", { difficulty: 3 });
-  await b.op.writeCard({ author: "Whitefoot", key: "w7-card", item: "w7", question: "选哪个？", confidence: { reason: "判断" }, options: [{ text: "甲", detail: "做甲" }, { text: "乙", detail: "做乙" }, { text: "丙", detail: "做丙" }], blocks: "停着" });
+  await b.op.writeCard({ author: "Whitefoot", key: "w7-card", item: "w7", kind: "design", question: "选哪个？", confidence: { reason: "判断" }, options: [{ text: "甲", detail: "做甲" }, { text: "乙", detail: "做乙" }, { text: "丙", detail: "做丙" }], blocks: "停着" });
   await b.op.setPlan({ author: "Whitefoot", id: "w7", row: { card: "w7-card", after: [] } }); await b.engineer("w7", 3);
   // waiting on a sub-item that another session works; that session is working.
   await b.child("w5", "r", { difficulty: 3 }); await b.child("c5", "w5", { difficulty: 3, plan: [{ id: "go", text: "干活", state: "doing" }] });

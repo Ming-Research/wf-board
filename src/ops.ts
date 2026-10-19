@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
-import type { Access, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
+import { Key, Item, RunnerReport, runnerReportProblem, REMOVED_PRIORITY, PlanRowInput, PlanInput, ItemTargetInput, ItemTargetsInput, StepId, Decision, CARD_KINDS, CARD_KIND_WHAT, CARD_KIND_HOW, Note, Board, Glossary, GlossaryId, Term, Tag, TagName, Difficulty, ARCHITECT, ARCHITECT_SESSION, ARCHITECT_WRITER, PROCESS_WRITERS, RETIRED_AUTHORS, isArchitect, mayRunProcess, tagApplies, tagsRequired, boardTags, Dispatch, dispatchCountProblem, isArchitectName, isRunner, isRunnerSession, RUNNER_SESSION, milliDollars, DISPATCH_ROLES, DISPATCH_RESULTS, DISPATCH_SIGNALS, ACCESS, writesAnyProject, Message, MESSAGE_TEXT_LIMIT } from "./model.ts";
+import type { Access, CardKind, Part, PlanRow, ItemTarget, Link, Option, Snapshot, DispatchUsage, RunnerState } from "./model.ts";
 import { hashToken, newToken } from "./credentials.ts";
 import { Store, ConflictError, ValidationError } from "./store.ts";
 import { BudgetError, allowRange } from "./budget.ts";
@@ -73,8 +73,8 @@ export interface Ops {
   /** Moves an item and everything it owns to another project; an owner left behind keeps a shared row. */
   moveItemProject(a: { author: string; session?: string; access?: Access; id: string; project: string }): Promise<Result>;
   clearAsk(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
-  /** Creates a card and its row in the item's plan in one commit, or revises an open card's question, options and blocks. */
-  writeCard(a: { author: string; session?: string; access?: Access; key: string; rev?: number; item: string; question: string; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
+  /** Creates a card and its row in the item's plan in one commit, or revises an open card's question, kind, options and blocks. */
+  writeCard(a: { author: string; session?: string; access?: Access; key: string; rev?: number; item: string; question: string; kind?: CardKind; options: Array<{ text: string; detail: string; recommended?: boolean }>; confidence?: { score?: number; reason: string }; blocks?: string | null; before?: string; after?: string[] }): Promise<Result>;
   /** Records the pick the owner made outside the page; a pick made on the page is recorded when the owner sends it. */
   ruleCard(a: { author: string; session?: string; access?: Access; key: string; choice?: string; ruling?: string }): Promise<Result>;
   /** Closes an open card nobody needs any more, with the reason in its item's log. */
@@ -1045,9 +1045,13 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
         if (previous.status !== "open") throw new OpError("status: only an open card can be revised; create a new card");
       } else newKey(s, a.key);
       if (a.confidence === undefined && !previous?.confidence) throw new OpError("confidence: say how sure you are of the recommended option (a score of 1 to 5 and the reason, with what would overturn it)");
+      // kind: a new card says what it asks; a revision may change it, and one that omits it keeps the card's (a card written before the field existed has none).
+      if (a.kind !== undefined && !CARD_KINDS.includes(a.kind)) throw new OpError(`kind: use one of ${CARD_KINDS.join(", ")}. ${CARD_KIND_WHAT} ${CARD_KIND_HOW}`);
+      if (a.kind === undefined && previous === undefined) throw new OpError(`kind: say what the card asks, one of ${CARD_KINDS.join(", ")}. ${CARD_KIND_WHAT} ${CARD_KIND_HOW}`);
       // blocks: text sets it, null clears it, omitted keeps the revised card's.
       const merged: Record<string, unknown> = { ...previous, item: a.item, question: a.question, options, status: "open", at: previous?.at ?? at, updated: at, rev: previous?.rev ?? 1 };
       if (a.confidence !== undefined) merged.confidence = a.confidence;
+      if (a.kind !== undefined) merged.kind = a.kind;
       if (a.blocks === null) delete merged.blocks; else if (a.blocks !== undefined) merged.blocks = a.blocks;
       const doc = parse(Decision, merged);
       const blocking = doc.blocks !== undefined, was = previous?.blocks !== undefined;
