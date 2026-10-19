@@ -4,7 +4,7 @@
 // its violations, each opening with the family name, so a test can assert none and a witness can assert the one its bug causes.
 // These are the checks whose answer does not depend on layout; what needs a box (a position, a size, a hit) is in the browser
 // layer (test/e2e/invariants.ts). Families: tree-row, plan-*, card-*, dep-row, badge-*, wait-*, new-*, fresh-*, n-walk, filter-*,
-// search, comment-*, empty-row, tag-text, difficulty-chip, idle-status, wrap-*, ref-fold-*, shared-section-*.
+// search, comment-*, empty-row, tag-text, difficulty-chip, idle-status, wrap-*, rows-*, ref-fold-*, shared-section-*.
 
 import { ops } from "../../src/ops.ts";
 import { placedCards, rules } from "../../src/rules.ts";
@@ -550,21 +550,53 @@ export async function checkIdleStatus(bp: DomPage, o: Oracle): Promise<string[]>
   return v;
 }
 
-/** The rows of the left tree once n has walked over every item holding unread content that the tree has not drawn. A write can leave
- * such an item (a closed one, which a freshly loaded page draws when it holds some, live-tree-fresh-ended); n draws it when it lands there.
- * So a page kept open through writes is judged on the same rows as a freshly loaded one. When that item is fixed, the walk goes. The walk
- * ends when every such item has been drawn or landed on, so a page that draws every row needs no press of n. */
-async function wrapRows(bp: DomPage, o: Oracle): Promise<string[]> {
+/** The rows of the left tree, once the page has settled. */
+async function wrapRows(bp: DomPage): Promise<string[]> {
   await bp.settle();
   bp.blur();
-  const reached = new Set<string>();
-  const undrawn = () => { const rows = new Set(bp.treeRows()); return [...o.fresh].some(id => !rows.has(id) && !reached.has(id)); };
-  for (let k = 0; k < 4 * o.docs.size + 4 && undrawn(); k++) {
-    bp.key("n"); await bp.settle();
-    const sel = bp.selected();
-    if (sel) reached.add(sel);
-  }
   return bp.treeRows();
+}
+
+/** The rows the left tree has, against the rows the rules call for. Without a project filter, a done or cancelled item is drawn when
+ * open work lies below it, or when it or an item below it holds unread content; every other item is drawn. Read from the board's rules
+ * and the server's unread history, not from the page. Families: rows-missing, rows-extra. */
+async function rowsDrawn(bp: DomPage, o: Oracle): Promise<string[]> {
+  await bp.settle();
+  const v: string[] = [], ids = Object.keys(o.s.items), status = (id: string) => o.r.statusOf(id) ?? "record";
+  // The items above open work, and those above an item holding unread content.
+  const underOpen = new Set<string>(), underFresh = new Set<string>();
+  for (const id of ids) {
+    if (o.r.isOpenWork(id)) o.r.ancestors(id).forEach(a => underOpen.add(a));
+    if (o.fresh.has(id)) o.r.ancestors(id).forEach(a => underFresh.add(a));
+  }
+  // Why the rules draw the item, or null when they do not.
+  const why = (id: string) => !/^(done|cancelled)$/.test(status(id)) ? "it is not closed" : o.fresh.has(id) ? "it holds unread content"
+    : underFresh.has(id) ? "an item below it holds unread content" : underOpen.has(id) ? "open work lies below it" : null;
+  const drawn = new Set(bp.treeRows());
+  for (const id of ids) {
+    const reason = why(id);
+    if (reason && !drawn.has(id)) v.push(`rows-missing: ${id} (${status(id)}) is not in the tree, but ${reason}`);
+    if (!reason && drawn.has(id)) v.push(`rows-extra: ${id} (${status(id)}) is in the tree, but it is closed and neither it nor an item below it holds unread content, and no open work lies below it`);
+  }
+  for (const id of drawn) if (!o.s.items[id]) v.push(`rows-extra: ${id} is in the tree, but the board has no such item`);
+  return v;
+}
+
+/** The tree as the page has it, then again after two writes that bring unread content to closed items the tree does not draw: a new
+ * head text on one and a new reply to a comment on the other. A page that has applied the writes draws the same rows as one loaded after
+ * them, and the first look judges a page that has applied the writes before it (the families run after bursts of writes). Writes to
+ * the board. Families: rows-missing, rows-extra. */
+export async function checkRows(bp: DomPage, b: BoardServer): Promise<string[]> {
+  const o = await oracle(b.store), v = await rowsDrawn(bp, o), drawn = new Set(bp.treeRows());
+  const [byHead, byReply] = Object.keys(o.s.items).filter(id => /^(done|cancelled)$/.test(o.r.statusOf(id) ?? "") && !drawn.has(id));
+  if (!byHead || !byReply) return [...v, "witness setup: the board has fewer than two closed items the tree does not draw"];
+  const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), base = bp.changes(), cur = o.s.items[byHead]!, { rev, ...doc } = cur;
+  await b.store.commit({ author: "Burst", message: "rows: a new head text on a closed item", puts: [{ kind: "item", id: byHead, expectRev: rev, doc: { ...doc, head: (cur.head ?? "") + "\n\n新写入的一段正文。", updated: at } }] });
+  const reply = "rows-reply-" + Object.keys(o.s.notes).filter(id => id.startsWith("rows-reply-")).length;
+  await b.store.commit({ author: "Burst", message: "rows: a reply to a comment on a closed item", puts: [{ kind: "note", id: reply, expectRev: null,
+    doc: { target: "it:" + byReply, kind: "comment", text: "这一项后来怎么样了？", at, sentAt: at, state: "done", reply: "已经收尾。", repliedAt: at, repliedBy: o.s.items[byReply]!.group } }] });
+  await bp.waitChanges(base + 2);
+  return [...v, ...await rowsDrawn(bp, await oracle(b.store))];
 }
 
 /** With the bottom row of the left tree selected, n lands on the first row of the tree holding unread content (or on the bottom row
@@ -623,7 +655,7 @@ async function wrapCursor(bp: DomPage, o: Oracle, rows: string[]): Promise<strin
   return v;
 }
 
-export async function checkWrapCursor(bp: DomPage, o: Oracle): Promise<string[]> { return wrapCursor(bp, o, await wrapRows(bp, o)); }
+export async function checkWrapCursor(bp: DomPage, o: Oracle): Promise<string[]> { return wrapCursor(bp, o, await wrapRows(bp)); }
 
 /** The right arrow, with a row selected, goes to the first waiting card at or below that row in the list, not to whatever card is
  * nearest the top of the screen. Family: wrap-card. */
@@ -644,7 +676,7 @@ export async function checkWrapCard(bp: DomPage, o: Oracle): Promise<string[]> {
 /** n and the arrows wrap around the list as it stands: from its bottom row and from the cursor j and k move. Families: wrap-n,
  * wrap-cursor, wrap-card. */
 export async function checkWrap(bp: DomPage, o: Oracle): Promise<string[]> {
-  const rows = await wrapRows(bp, o);
+  const rows = await wrapRows(bp);
   return [...await wrapN(bp, o, rows), ...await wrapCursor(bp, o, rows), ...await checkWrapCard(bp, o)];
 }
 
