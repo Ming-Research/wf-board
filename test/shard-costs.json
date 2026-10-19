@@ -85,6 +85,7 @@
   "test/owner-ops.test.ts": 8.1,
   "test/owner-wait.test.ts": 1.4,
   "test/page-version.test.ts": 3.6,
+  "test/parsed-heap.test.ts": 6.0,
   "test/pauses.test.ts": 1.6,
   "test/push.test.ts": 18.1,
   "test/query.test.ts": 6.0,

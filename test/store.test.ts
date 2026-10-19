@@ -124,10 +124,10 @@ test("historical document cache also stays within an estimate of the heap its do
     blobs: { read(key: string): Promise<Buffer | null> };
   };
   const reads = new Map<string, number>();
-  // A file of 1 MB is estimated at 16 MB of heap once parsed; the cache holds 64 MB.
+  // A file of 8 MB is estimated at 16 MB of heap once parsed (2 bytes for each byte of file); the cache holds 64 MB.
   t.mock.method(internals.blobs, "read", async (key: string) => {
     reads.set(key, (reads.get(key) ?? 0) + 1);
-    return Buffer.from(`evidence: ${"x".repeat(1_000_000)}\n`);
+    return Buffer.from(`evidence: ${"x".repeat(8_000_000)}\n`);
   });
   for (let i = 0; i < 4; i++) await internals.readAt(`items/big${i}.yaml`, "commit");
   for (let i = 0; i < 4; i++) await internals.readAt(`items/big${i}.yaml`, "commit");
