@@ -2086,6 +2086,7 @@ instructions within the limit and free of rule text.
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued` |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog, in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
+| `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session`, what changed, is new or finished since that session's last look is marked (below, The look) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
 | `followups(minutes)` | What is still unhandled? | Older sent notes with project |
@@ -2237,6 +2238,51 @@ it reads the items, the live dispatches and the runner reports once, and the too
   items), that the answer comes back in under 2000 milliseconds and in at most 6000
   characters, and that every open item is counted once. The measured values go in the item's
   acceptance rows, from the CI log.
+
+**The look.** `look` answers in one call where all the board's open work stands, as the tree the owner's board shows, so the
+architect reads the board whole in one or two calls and does not collect it item by item. Eleven architect sessions made 1,193
+`context` calls that returned about 4.14 million characters (counted from their transcripts), while the reads that show a whole each
+showed a corner: `whole_view` sorts by kind and mixes the projects, `candidates` lists only what can start, `changes` only what was
+written. `look` in `src/look.ts` is the one function; the tool prints it (`lookText`) and writes nothing to the board. The page does
+not call it.
+
+- *The tree.* The roots are each project's top items (`areas`), the projects in their configured order. A node is an open work
+  item, one line, below the item that owns it, in the order of the owner's plan. A done or cancelled item has no line: the open items
+  it owns hang on the node above. A record that holds work is a pool, a line of its own (`待选池`) with its items below it, counted
+  apart from the project's (`items` and `pool` of a tally), because nobody has started them on purpose; a record that holds no open work has
+  no line. An item no root reaches (its owners form a cycle, which a check flags) is visited last and hangs on its project, marked
+  `没挂在树上`. Each item is visited once, so each open work item is a line or inside a count.
+- *The budget.* `rows` lines, 80 by default, 10 at least and 400 at most. The header and a line for each project come first (so a
+  budget under that is raised to it, and the header says so). A node that is not open and has children can be opened for as many
+  lines as it has children. First the nodes `expand` names are opened, each with the nodes above it, in the order given, as many as
+  fit; one line is kept for the sentence that says which did not fit or have no children. Then, until none fits, the closed node whose parent is open with
+  the highest priority is opened: the sum of 8 if an item below it is held by nobody (没人管) or waits too long (等太久), 4 if
+  work is being done below it, 2 if an item below carries a check flag, 1 if a pause marker is below it; then the shallower, then the
+  earlier in the walk. The opening is the owner's order of attention made a number: the subtrees that need a reader before the quiet
+  ones, within the lines the caller chose. A pool counts as a node of its own, and what is in it does not raise the priority of the
+  nodes above it.
+- *A pause is one line.* An item that carries a pause marker, or stands below one, is not opened by the budget: its line says the
+  reason (cut at 40 characters) and how long it has been paused, or `暂停（随 <the item that carries the marker>）`, and ends with
+  the count below it. `expand` opens it one level.
+- *What a line says.* The key, the title cut at 22 characters, the status in the page's words (进行中, 卡住, 停滞, 未开始, 暂停), what
+  the runner reports or the live session holds (the whole view's words, with the turn the work is on for a turn in progress), 没人管 or
+  等太久 with its limit (the whole view's kind of the item: a parent whose sub-items are open has none), how long it has been so, its
+  check flags, and the item number. A line not opened ends with `下面 N 件：` and the items below it by status, then the numbers of
+  没人管 and 等太久 and of those changed since the last look, and `待选池 N 件` for the pools below it. An open project or pool line
+  says `共 N 件` instead (and the project `待选池另 N 件`), which the lines below it list. So the lines of an answer, the `下面 N 件`
+  and the `待选池 N 件` add up to the open work items: `test/look.test.ts` checks that on text, on a small board with every kind
+  of item and on one of the live board's size.
+- *What changed since the last look.* Each session's last look is kept in the daemon's memory, never in the data repository: for
+  every open item a signature, `rev|status|check keys` (its revision changes with any write to it; its status and checks are
+  derived, so a change no write made is seen: an item stops waiting when what it waited on is done). The next call of the same
+  session (`session`, or the credential's) compares: a line is marked `*` when the signature differs and `+` when the item has
+  no signature (new, or reopened), and the header counts those and the items that were open and no longer are (`收尾`). A look at
+  some projects keeps the signatures of the others as they were, so it does not hide their changes. The memory holds at most 16
+  sessions, the newest last, and is lost when the daemon restarts: the first look after that, and a call with no session, mark nothing, and the
+  header says so. A look whose session is not given is not remembered.
+- *Cost.* One pass over the items: the whole view's pass, the checks of each item and the tree. `test/look.test.ts` checks on a
+  generated board of the live board's size (about 1,900 items) that the look takes under 2,000 milliseconds; the measured values
+  go in the item's acceptance rows, from the CI log.
 
 ### Lean replies
 
