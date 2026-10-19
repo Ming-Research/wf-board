@@ -5584,15 +5584,18 @@ judged against the current page when it differs from the base, else against the 
 the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
 15 ms more per draw ×1.005 (board-cpu-usage).
 
-**Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
-(the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two
-time phases. The jobs take 30 to 55 s including the 10 to 17 s the runner needs before the tests start. `test/nkey/stats.test.ts` holds the arithmetic and the
+**Parts.** The lane is six files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
+(the current page's counts quiet and while writing, and the pages that redo their work at every write), counts-out (the changes of a quiet press taken out one at a
+time), late-rows (the rows around the target that answer late), witnesses (all three changes taken out, m), and the two time phases. The jobs took 30 to 55 s
+including the 10 to 17 s the runner needs before the tests start while the lane was four files; with counts and witnesses each split in two (ci-gate-45), when the
+counts job ended last in a full CI at 43 s with a test step of 25 s (its start, seeding and the first walk, about 9 s, then seven walks of 1 to 2.5 s each), the six
+jobs took 23 to 27 s, test steps 10 to 20 s, in one run (39321571725). `test/nkey/stats.test.ts` holds the arithmetic and the
 verdict on made-up pairs whose answer is known.
 
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the start of the run
+`test` in 30 shards, `nkey` in 6 parts and `result`) is meant to take a minute from the start of the run
 to the status `full-ci` (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml`, `ci-mark.yml` and the
@@ -5714,7 +5717,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 20 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split), each in a job of its own, beside the type check, which is a
+full CI as 30 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split, 20 until ci-gate-45), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -5725,7 +5728,7 @@ seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
 a file is the seconds of its own entry in the runner's report, from the start of
 its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
 not the sum of the file's tests, which leaves out loading the file and its hooks:
-`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+`shutdown.test.ts` was 8.5 seconds of tests and 19.7 as a file (10 of the difference a timer that held its process after its last test, With 30 shards below). A file the table
 does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
 a new test file is run from its first push and never missed. The table is brought
 up to date from the table of seconds per file that every shard writes to its job
@@ -5829,6 +5832,27 @@ for one run of the 20 shards (run 39255686754, removed again) found 34 of the 35
 (79 boards), opening a page 13.7% (189 pages, bundling the page included, 1.5%), so the page checks themselves are about 30% and the other test
 files 49%. Copying a seeded board would save about 6% at most; opening a page has no such cheap cut. Bringing the slowest of 100 samples to 20
 seconds needs the mean near 13, the sum per shard near 23 seconds, which is a cut of the total by about 55%, or a faster runner.
+
+**With 30 shards** (hosted runners, 19 October 2026, ci-gate-45): after the table was brought up to date and the n-key time
+parts were bounded, eleven full CIs on the main line were judged 45 to 59 seconds by the time gate (median 50), the last job a test
+shard in most, so the gate's line of 60 had no margin for a slow set-up. The suite is bound by the processor, not by waiting: the 126
+test files run one at a time took 789 seconds of wall time and 951 of CPU (23% of it in the kernel), and a shard running four files
+at a time was no quicker than one running three (mean step 22.4 against 22.7 seconds), so a four-core runner gives about 2.5 cores
+and a shard's step is about its files' CPU divided by 2.5. A profile of the main threads (607 seconds sampled) put about 40% in the
+page in jsdom, 12% in the oracle of the `rules-reuse` files and 87 seconds in starting git processes, whose cost grows with the
+parent's memory (2.7, 3.6 and 5.9 ms a start at 73, 330 and 903 MB resident; Write cost, section 4). Thirty shards alone made the mean
+step 17 seconds against 22.7 but left the longest at 26, the floor of one file (`deploy.test.ts`), and the run at 46. What brought it
+under: the files over about 15 seconds split as before (`deploy`, the `rules-reuse` seeds in three parts each, the page witnesses in
+eight, the agent list, the diagrams, the project filters), Node's compile cache for the test processes (`NODE_COMPILE_CACHE`, about 8%
+less CPU on a warm run of the same files, 55 against 50 seconds), the store's write starting one git process where it started two, and
+three test files that held their process 10 seconds after their last test (a deadline raced against a daemon's exit whose timer stayed
+referenced: `shutdown`, `push` and `stateless`, 12 to 20 seconds as files for 2 to 10 of tests). A probe that logged, for each of the
+139 files of one run, the time from its last test to its process's exit found one more such timer (`backup-push`, 3 seconds) and
+nothing over 0.1 second in the rest; the probe was removed again. Two full CIs of the result (runs 39320840092 and 39321571725, push
+mode) were judged 45 and 44 seconds, the steps `tests` 11 to 23 seconds and the sums of the files' seconds 984 and 1,120; the job that
+ended last was once an n-key part, since split (The n-key lane, Parts), and once a shard whose `npm run build:web` took 14 seconds
+before esbuild started, npm's own files being read from the image's disk for the first time (The set-up of a job). A file
+of more than about 15 seconds is the sign to split it: the time gate names a shard that runs over 1.5 times the others.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
@@ -6014,8 +6038,17 @@ between the two), `npm ci` on a miss, with `restore` and `save` of the cache as 
 and from the main line; a change of the packages makes one miss on its branch, as
 slow as before. Both paths of the action were run once on the branch (run 39210292901): with the caches of
 the key deleted from the branch first, the job found none, `npm ci` added 259 packages in 8 seconds, the cache
-was saved (65 MB, 2.2 seconds) and a second job restored it. The Node that the runner has already is 22, and the project runs on
-24, so the step `setup-node` stays (0 to 1 second without a cache). A history
+was saved (65 MB, 2.2 seconds) and a second job restored it. The Node on the runner's path is 22, and the project runs on
+24, so the step `setup-node` was kept (0 to 1 second without a cache). It also prints the
+versions of node, npm and yarn, which took 1.1 seconds on average and up to 7.2 (15 of 72 jobs
+over 2 seconds in three runs, ci-gate-45); the image carries Node 24 in its tool cache, so the
+action now puts that on the path, a step of no measurable time, and runs `setup-node` only on an
+image without it. The first start of npm in a job then reads npm's own files from the image's disk:
+`npm run build:web` took 3 to 14 seconds in 13 of 60 shards over two runs before esbuild started
+(0 to 2 seconds in every shard of two main-line runs, where `setup-node` had started npm before),
+so the jobs run their scripts with `node --run`, and a job that found the cache of `node_modules`
+starts no npm at all. The download of that cache took 2.7 seconds on average and up to 9 in the same
+three runs (6 of 72 jobs over 4 seconds, stalled on the last block), which is left as it is. A history
 without the file contents (`filter: blob:none`) for the n-key parts was not
 measurably faster (one run of 3 jobs each: checkout 1 to 3 seconds against 2 to 4),
 and a base that differs from the checkout would read its changed files from the

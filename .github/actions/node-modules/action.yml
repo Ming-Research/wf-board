@@ -7,7 +7,8 @@ runs:
   using: composite
   steps:
     # The runner's image carries Node 24 in its tool cache; putting it on the path costs nothing, where `setup-node` also prints the
-    # versions of node, npm and yarn, which took 0.4 to 7.2 seconds. `setup-node` stays for an image without it.
+    # versions of node, npm and yarn, which took 0.4 to 7.2 seconds. `setup-node` stays for an image without it. A job that found the
+    # cache of the packages then starts no npm (the jobs run scripts with `node --run`), whose files are slow to read the first time.
     - id: node
       shell: bash
       run: |

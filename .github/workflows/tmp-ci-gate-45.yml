@@ -25,8 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
-      - run: npm run check
-  # The script tests in 20 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
+      - run: node --run check
+  # The script tests in 30 shards at once. A shard runs the files scripts/test-shard.ts gives it (test/shard-costs.json holds the
   # seconds each file takes) and writes a table of seconds per file to its job summary. The shard's step is cut at 60 seconds
   # and a test at 40, so that a slow shard or test is named in the log of a red run; the time gate reads the step `tests`.
   test:
@@ -40,7 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
-      - run: npm run build:web
+      # `node --run` and not `npm run`: npm's own files are read from the image's disk the first time they are used, which took 3 to
+      # 14 seconds in a few jobs of a run, and nothing else in a job that found the cache of the packages starts npm.
+      - run: node --run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: tests
         env:
@@ -53,8 +55,8 @@ jobs:
       - if: ${{ !cancelled() }}
         run: if [ -f test-times.md ]; then tee -a "$GITHUB_STEP_SUMMARY" < test-times.md; fi
   # The n-key lane (test/nkey, docs/design.md, section 11, The n-key lane): the page in jsdom on a board of the live board's weight,
-  # the counts of one press of n and its time against the base page, in four parts that each seed the board and run at once. A part
-  # takes about 10 seconds to start and 15 to 30 to run. The time parts compare with the page of the base: on a main-line push the
+  # the counts of one press of n and its time against the base page, in six parts that each seed the board and run at once. A part
+  # takes about 10 seconds to start and 10 to 20 to run. The time parts compare with the page of the base: on a main-line push the
   # commit before the push, otherwise the merge base with the main line; the checkout carries history for it.
   nkey:
     name: nkey ${{ matrix.part }}

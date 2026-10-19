@@ -128,8 +128,8 @@ matches what the artifact board offered.
   for `press-n-report.e2e.ts`, which reports the time of n in a real browser and judges nothing, and for the n-key lane (design section 11,
   The browser file). `test/nkey/`
   holds the n-key lane (`*.nkey.ts`, not picked by `npm test`; design section 11, The n-key lane): the real page in jsdom on that board,
-  the counts of one press of n and its time against the page of the base, in four files (`counts`, `witnesses`, `time-quiet`,
-  `time-writing`) that are four jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
+  the counts of one press of n and its time against the page of the base, in six files (`counts`, `counts-out`, `late-rows`, `witnesses`,
+  `time-quiet`, `time-writing`) that are six jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
   and the pairs, `stats.ts` the interval and the verdict (`stats.test.ts` runs in `npm test`). `test/dom/` holds the DOM
   layer: the bundled page in jsdom against the real server on the same generated board (`page.ts` the window,
   its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
@@ -171,7 +171,7 @@ matches what the artifact board offered.
   11). It reads only added lines, paths, commit messages and the pull request's
   title and body, and prints the rule and place, never the matched text.
 - `scripts/test-shard.ts` with `test/shard-costs.json`, `scripts/test-times-reporter.ts`
-  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 20
+  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 30
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
   summary, and the job `result`, which starts with the run, waits for the other jobs, reads the time gate (the time without
@@ -186,7 +186,7 @@ matches what the artifact board offered.
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
-  three on every main-line merge (`npm test` as 20 shards at once), with the four jobs of the n-key lane beside them, and on a pull
+  three on every main-line merge (`npm test` as 30 shards at once), with the six jobs of the n-key lane beside them, and on a pull
   request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
   pushes in between are
   checked by a temporary `tmp-*.yml` workflow that runs what
@@ -194,7 +194,7 @@ matches what the artifact board offered.
   file is added, renamed or becomes much slower, bring `test/shard-costs.json` up
   to date from the per-file table in the shards' summaries; the time gate names a
   shard that runs over 1.5 times the others.
-- `npm run test:nkey` runs the n-key lane (all four files, one after the other; CI runs each as a job of its own, `node --test
+- `npm run test:nkey` runs the n-key lane (all six files, one after the other; CI runs each as a job of its own, `node --test
   test/nkey/<part>.nkey.ts`, with `NKEY_BASE` naming the commit whose page the time layer compares with, the merge base or the commit before a
   push to the main line). It needs no browser but is made for hosted runners: a timing run on the owner's Mac says nothing about them.
 - `npm run test:e2e` builds the page and runs the browser file in headless Chromium,

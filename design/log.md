@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Thirty test shards, and the image's own Node for the jobs of the full CI
+
+Nodes: testing/ci-shards, testing/ci-job-setup
+
+Summary: With twenty shards the time gate judged eleven full CIs at 45 to 59 seconds (median 50) against its line of 60, so a slow set-up turned a run red. The suite is bound by the processor (951 seconds of CPU for 789 of wall time; a shard running four files was no quicker than one running three), so only more shards shorten a shard's step, and only up to its largest file. The script tests now run as thirty shards, with the files over about 15 seconds split, Node's compile cache for the test processes, three test files no longer held 10 seconds after their last test by a deadline's timer, and the store's write starting one git process where it started two; the two largest n-key parts are split in two each. The jobs take Node 24 from the runner image's tool cache instead of `setup-node`, whose print of the versions took up to 7.2 seconds, and run their scripts with `node --run`, since the first start of npm read its own files for up to 14 seconds. Two full CIs were judged 44 and 45 seconds. Twenty shards, thirty without the splits and a larger runner are recorded as refused in `testing/ci-shards`; `setup-node` in every job and `npm run` in `testing/ci-job-setup`. The numbers are in docs/design.md, section 11, Sharding the script tests and The set-up of a job.
+
 ## 2026-10-19 Bound the n-key time parts by a time budget
 
 Nodes: testing/press-n
