@@ -1,0 +1,16 @@
+name: tmp-accept-label-strip-2
+# Temporary quick workflow for the shard cost refresh: runs the tests that read the cost table. Removed before the branch is ready.
+on:
+  push:
+    branches: [accept-label-strip-2]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/test-shard.test.ts test/ci-workflow.test.ts test/ci-time-gate.test.ts
