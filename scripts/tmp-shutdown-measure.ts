@@ -30,7 +30,7 @@ async function one(lane: number, n: number) {
     const port = (probe.address() as { port: number }).port;
     await new Promise<void>(resolve => probe.close(() => resolve()));
     const url = `http://127.0.0.1:${port}`;
-    const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "1500" }, stdio: ["ignore", "pipe", "pipe"] });
+    const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, ...(process.env.MEASURE_CACHE === "cold" ? { NODE_COMPILE_CACHE: await mkdtemp(join(tmpdir(), "ncc-")) } : process.env.MEASURE_CACHE === "warm" ? { NODE_COMPILE_CACHE: join(process.env.RUNNER_TEMP ?? tmpdir(), "ncc-warm") } : {}), WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "1500" }, stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
     const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;

@@ -13,21 +13,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        load: [lanes-a, lanes-b, lanes-c, lanes-d, files-a, files-b, files-c, files-d]
+        load: [cold-1, warm-1, cold-4, shard-a, shard-b, shard-c, shard-d]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: node --run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: measure
+        env:
+          NODE_COMPILE_CACHE_DIR: ${{ runner.temp }}/node-compile-cache
         run: |
           nproc; cat /proc/loadavg
           case "${{ matrix.load }}" in
-            lanes-*) node scripts/tmp-shutdown-measure.ts 40 4 ;;
-            files-*)
-              # the files the red shard ran beside the test, started again as soon as they end
-              (while :; do node --test test/rules-reuse-a-3.test.ts > /dev/null 2>&1; done) &
-              (while :; do node --test test/dom/page-chips.test.ts > /dev/null 2>&1; done) &
-              node scripts/tmp-shutdown-measure.ts 40 2 ;;
+            cold-1) MEASURE_CACHE=cold node scripts/tmp-shutdown-measure.ts 40 1 ;;
+            warm-1) MEASURE_CACHE=warm node scripts/tmp-shutdown-measure.ts 40 1 ;;
+            cold-4) MEASURE_CACHE=cold node scripts/tmp-shutdown-measure.ts 25 4 ;;
+            shard-*)
+              # the red shard's step as ci.yml runs it (flags, reporters, compile cache), its files, a cold cache each time
+              for i in $(seq 1 24); do
+                rm -rf "$NODE_COMPILE_CACHE_DIR"
+                NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
+                  --test-reporter=spec --test-reporter-destination=stdout \
+                  --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+                  test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || echo "SHARD-RED run $i"
+                grep -A12 "SHUTDOWN-TOOK" shard.log | head -14
+              done ;;
           esac
           cat /proc/loadavg
