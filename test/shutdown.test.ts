@@ -246,7 +246,6 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   const written = await local();
   assert.equal((await fetch(url + "/api/read", { ...json, body: JSON.stringify({ through: written }) })).status, 200);
   const mark = log.length;
-  const mark = log.length;
   const stopped = Date.now();
   let lastTick = stopped, maxGap = 0;
   const states: string[] = [];
@@ -261,7 +260,8 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   // file's process, and its shard, waiting the full 10 seconds after the last test.
   const [code, signal] = await Promise.race([exited, sleep(10_000, undefined, { ref: false }).then(() => { throw new Error("the daemon was still running 10 s after SIGTERM"); })]);
   const took = Date.now() - stopped;
-  console.log(`SHUTDOWN-TOOK ${took}` + (took >= 300 ? "\n" + log.slice(mark) : ""));
+  clearInterval(poller);
+  console.log(`SHUTDOWN-TOOK ${took} maxgap=${maxGap} states=${states.join(",")}` + (took >= 300 ? "\n" + log.slice(mark) : ""));
   assert.deepEqual([code, signal], [0, null], "it exits by itself and does not need a SIGKILL");
   assert.ok(took < 2000, `it exited ${took} ms after SIGTERM`);
   const subject = (await git("git", ["-C", data, "log", "-1", "--format=%s"])).stdout.trim();

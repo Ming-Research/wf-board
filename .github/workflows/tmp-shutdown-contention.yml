@@ -32,7 +32,7 @@ jobs:
             NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
               --test-reporter=spec --test-reporter-destination=stdout \
               --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
-              test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || echo "RED-RUN $i"
+              test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
             grep -A12 "SHUTDOWN-TOOK" shard.log | head -14
           done
           cat /proc/loadavg
