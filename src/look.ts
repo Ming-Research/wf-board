@@ -87,6 +87,8 @@ export interface LookNode {
   checks: string[];
   /** The first sentence of the item's 何时 section (the condition for starting it), when its head has one. */
   when: string | undefined;
+  /** The cards waiting for the owner on the item and below it, as the tree's chips count them on the page: the places that block work, and the cards that block nothing. */
+  cards: { blocking: number; plain: number };
   /** The pause that holds the item: the item that carries the marker (this one, or one above), its reason and when it began. */
   pause: { source: string; reason: string; at: number } | undefined;
   mark: "changed" | "new" | undefined;
@@ -130,7 +132,7 @@ function build(s: Snapshot, r: Rules, now: number, previous: Previous | undefine
   const projects = new Map<string, LookNode>(), byId = new Map<string, LookNode>(), sigs = new Map<string, string>(), seen = new Set<string>();
   let counter = 0;
   const make = (kind: LookNode["kind"], id: string, project: string, title: string, num: number | undefined, parent: LookNode | undefined): LookNode => ({
-    kind, id, project, title, num, depth: parent ? parent.depth + 1 : 0, order: counter++, parent, kids: [], stray: false, status: undefined, what: undefined, since: undefined, when: undefined,
+    kind, id, project, title, num, depth: parent ? parent.depth + 1 : 0, order: counter++, parent, kids: [], stray: false, status: undefined, what: undefined, since: undefined, when: undefined, cards: { blocking: 0, plain: 0 },
     bucket: undefined, fresh: false, limit: undefined, turns: undefined, runner: false, checks: [], pause: undefined, mark: undefined, own: zero(), sub: zero(),
   });
   const projectNode = (name: string): LookNode => {
@@ -143,6 +145,7 @@ function build(s: Snapshot, r: Rules, now: number, previous: Previous | undefine
     const node = make("item", id, host.project, it.title, it.num, host);
     node.stray = stray; node.status = status; node.checks = [...new Set(checks.map(checkLabel))];
     node.when = whenText(it.head ?? "");
+    node.cards = { blocking: r.blockingBelow(id), plain: r.nonBlockingBelow(id) };
     if (row) {
       node.what = row.what; node.since = row.since; node.bucket = row.bucket; node.fresh = row.fresh === true; node.limit = row.limit; node.turns = row.turns; node.runner = row.from === "runner";
     }
@@ -353,6 +356,8 @@ function nodeLine(node: LookNode, open: boolean, now: number): string {
     }
     if (node.since !== undefined) parts.push(spanText(now - node.since));
   }
+  // The numbers the page's chips show on the item's row (the purple one, the red one): the owner's waits on it and below it.
+  if (node.cards.blocking || node.cards.plain) parts.push(`卡：${[node.cards.blocking ? `挡事 ${node.cards.blocking}` : "", node.cards.plain ? `不挡事 ${node.cards.plain}` : ""].filter(Boolean).join(" · ")}`);
   if (node.checks.length) parts.push(`检查：${node.checks.join("、")}`);
   if (node.stray) parts.push("没挂在树上");
   if (!open && node.kids.length) parts.push(below(node.sub));
