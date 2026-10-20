@@ -33,12 +33,11 @@ const LIMITS = [0, 1, 3, 20];
 
 /** Every document at every limit: the commits `log` names are the ones git's path-limited walk finds, and the whole record agrees with the one the walk gives. */
 async function agrees(store: Store, dir: string, label: string) {
-  const head = store.snapshot().head;
   for (const [kind, id] of DOCS) {
     const all = (await git(dir, "log", "--format=%H", "HEAD", "--", `${folder[kind]}/${id}.yaml`)).split("\n").filter(Boolean);
     for (const limit of LIMITS) assert.deepEqual((await store.log({ kind, id, limit })).map(c => c.commit), all.slice(0, limit), `${label}: ${kind} ${id}, limit ${limit}`);
-    // `at` sends the read to git's walk through the same parser: the record of each commit is the same either way.
-    assert.deepEqual(await store.log({ kind, id, limit: 20 }), await store.log({ kind, id, limit: 20, at: head }), `${label}: ${kind} ${id}: the record of each commit`);
+    // A ref that is not the hash of the head sends the read to git's walk through the same parser: the record of each commit is the same either way.
+    assert.deepEqual(await store.log({ kind, id, limit: 20 }), await store.log({ kind, id, limit: 20, at: "HEAD" }), `${label}: ${kind} ${id}: the record of each commit`);
   }
 }
 
@@ -74,11 +73,20 @@ test("git is asked for the listed commits by name, and not at all for a document
   assert.deepEqual(await store.log({ kind: "item", id: "never-written", limit: 20 }), []);
   assert.deepEqual(await store.log({ kind: "note", id: "b", limit: 20 }), [], "a note of the id of an item has its own file");
   assert.equal(spawned.mock.calls.length, 0, "an unknown document is decided without git");
-  // The reads the list cannot answer still go to git's walk.
-  for (const opts of [{ at: store.snapshot().head }, { since: "2026-01-01T00:00:00Z" }, { blobs: true as const }]) {
+  // A read at the head the store holds (the owner's read marks name it) is the list's too, and so is the unknown document there.
+  const head = store.snapshot().head;
+  spawned.mock.resetCalls();
+  assert.deepEqual((await store.log({ kind: "item", id: "a", limit: 20, at: head })).map(c => c.commit), four.map(c => c.commit));
+  assert.deepEqual(await store.log({ kind: "item", id: "never-written", limit: 1, at: head }), []);
+  assert.equal(spawned.mock.calls.length, 1, "one git command, for the document that has commits");
+  assert.ok((spawned.mock.calls[0]!.arguments[0] as string[]).includes("--no-walk=unsorted"), "named by the list");
+  // The reads the list cannot answer still go to git's walk. A read at an older commit has fewer commits to show than the head has.
+  const older = four[1]!.commit;
+  for (const opts of [{ at: older }, { at: "HEAD" }, { since: "2026-01-01T00:00:00Z" }, { blobs: true as const }]) {
     spawned.mock.resetCalls();
-    await store.log({ kind: "item", id: "a", limit: 20, ...opts });
+    const got = await store.log({ kind: "item", id: "a", limit: 20, ...opts });
     assert.ok((spawned.mock.calls.at(-1)!.arguments[0] as string[]).some(arg => arg.startsWith("--max-count=20")), JSON.stringify(opts));
+    if (opts.at === older) assert.deepEqual(got.map(c => c.commit), four.slice(1).map(c => c.commit), "the commits at that commit: the newest is not among them");
   }
   spawned.mock.resetCalls();
   await store.log({ kind: "glossary", id: "P", limit: 20 });

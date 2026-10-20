@@ -1400,12 +1400,13 @@ export class Store {
   }
 
   /** The commits `docCommits` lists for the newest `limit` of one document, newest first, when that answers the read: a document of
-   * an indexed kind, from the head (no `since`, `at` or `blobs`), once the start has derived the list. None: git must be asked. An
-   * empty list is a document no commit ever changed. A file with fewer commits than the most kept has all of them listed; one with
-   * that many may have had more, so a read for more than the list holds is left to git. */
+   * an indexed kind, from the head (no `since` or `blobs`; `at` only when it is the hash of the head the store holds, which the owner's
+   * read marks name), once the start has derived the list. None: git must be asked. An empty list is a document no commit ever
+   * changed. A file with fewer commits than the most kept has all of them listed; one with that many may have had more, so a read for
+   * more than the list holds is left to git. The list and the head move together, with no wait between, so they never differ. */
   private listedCommits(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number; blobs?: true }): string[] | undefined {
     const { kind, id, limit } = opts;
-    if (!this.activityLoaded || !kind || !id || limit === undefined || opts.since || opts.at !== undefined || opts.blobs || !INDEXED_KINDS.has(kind)) return undefined;
+    if (!this.activityLoaded || !kind || !id || limit === undefined || opts.since || (opts.at !== undefined && opts.at !== this.state.head) || opts.blobs || !INDEXED_KINDS.has(kind)) return undefined;
     const list = this.docCommits.get(docPath(kind, id)) ?? [];
     if (limit <= list.length) return list.slice(0, limit);
     return list.length < DOC_COMMITS_KEPT ? [...list] : undefined;

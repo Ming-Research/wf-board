@@ -38,8 +38,12 @@ jobs:
           - { name: cut-list-is-whole, file: src/store.ts, from: 'return list.length < DOC_COMMITS_KEPT ? [...list] : undefined;', to: 'return [...list];', tests: test/doc-commits.test.ts }
           # one more than the most kept is listed
           - { name: one-too-many, file: src/store.ts, from: 'slice(0, DOC_COMMITS_KEPT - 1)', to: 'slice(0, DOC_COMMITS_KEPT)', tests: test/doc-commits.test.ts }
-          # a read at a commit is answered from the list of the head
-          - { name: at-ignored, file: src/store.ts, from: 'opts.since || opts.at !== undefined || opts.blobs ||', to: 'opts.since || opts.blobs ||', tests: test/doc-commits.test.ts }
+          # a read at an older commit is answered from the list of the head
+          - { name: at-ignored, file: src/store.ts, from: 'opts.since || (opts.at !== undefined && opts.at !== this.state.head) || opts.blobs ||', to: 'opts.since || opts.blobs ||', tests: test/doc-commits.test.ts }
+          # a read at the head the store holds goes to git's walk
+          - { name: at-head-through-git, file: src/store.ts, from: '(opts.at !== undefined && opts.at !== this.state.head)', to: 'opts.at !== undefined', tests: test/doc-commits.test.ts }
+          # the owner's read mark of an unknown document goes to git's walk
+          - { name: read-mark-through-git, file: src/store.ts, from: '(opts.at !== undefined && opts.at !== this.state.head)', to: 'opts.at !== undefined', tests: '--test-name-pattern="nobody wrote" test/owner-ops.test.ts' }
           # a commit that git made and the store rolled back is listed
           - { name: rolled-back-listed, file: src/store.ts, from: 'const object = head && await this.blobs.object(head);', to: 'if (head) this.noteDocCommits(paths, head); const object = head && await this.blobs.object(head);', tests: '--test-name-pattern="fails after git" test/doc-commits.test.ts' }
     steps:

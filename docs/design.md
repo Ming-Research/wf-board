@@ -429,6 +429,13 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    `net-git.ts` (git against a remote, whose output is never read as history) and
    the two that run `gh` and the notification command, and that those two do not
    run git.
+
+   A read that two requests share (a file read or a board rebuild still pending, and the
+   unread list's memo) is charged to the request that started it. If that request's
+   budget stops it, the other request fails with the same error, and its retry is
+   served; this is accepted because two requests reading the same history at once is
+   rare and the failure is only a retry.
+
 4. *The newest commits of one document are named, not searched for.* A path-limited
    `git log --max-count=20 -- <path>` ends only when it has found 20 commits of the path
    or reached the first commit of the history, so for a document with fewer than 20
@@ -445,11 +452,16 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    ms, 43 over 500 ms, 9 over 3 s, mean 408 ms; a read line has no item id and no segments,
    so a single call cannot be matched to its document, only to the command's time. The
    store keeps, for each item, card and note file, the hashes of its newest
-   `DOC_COMMITS_KEPT` (100) commits, newest first (`docCommits`). The start's replay adds
-   every commit it replays, a commit adds itself once git has made it (one that is rolled
-   back does not), and the startup cache holds the lists (format 5; the first start with it
+   `DOC_COMMITS_KEPT` (100) commits, newest first (`docCommits`). The 100 is provisional: the
+   `history` tool asks for 20 unless told otherwise and a version conflict asks for one
+   commit for each version the writer is behind, but no measurement says how many commits
+   readers ask for; a read for more goes to git as before, and the count is raised if the
+   service log shows such reads, each as slow as the length of the history, often enough to
+   matter. The start's replay adds every commit it replays, a commit adds itself once git
+   has made it (one that is rolled back does not), and the startup cache holds the lists (format 5; the first start with it
    scans the history once). `Store.log` for the newest `limit` commits of one document from
-   the head, with no `since`, `at` or `blobs`, takes the hashes from the list and asks git
+   the head, with no `since` or `blobs` (`at` only when it is the hash of the head the store
+   holds, which the owner's read marks name), takes the hashes from the list and asks git
    for those commits alone: `git log --no-walk=unsorted <hashes> -- <path>` printed
    the same bytes as the path-limited walk, in 0.02 s on the same clone. A document with
    no list was never committed and is decided without git; a read for more than the list
@@ -471,12 +483,6 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    revision (`--max-count` of `rev`, as `versionAt` does) or its creation time (`--since`):
    only an item created recently gains, since 1,937 of the 1,996 item files have their
    oldest commit more than 5,000 commits back, most of them from the import at the start.
-
-   A read that two requests share (a file read or a board rebuild still pending, and the
-   unread list's memo) is charged to the request that started it. If that request's
-   budget stops it, the other request fails with the same error, and its retry is
-   served; this is accepted because two requests reading the same history at once is
-   rare and the failure is only a retry.
 
 The history caches are bounded by the heap they are estimated to hold: parsed
 documents 64 MB (2 bytes of heap per byte of file, as the flat whole-board figures
