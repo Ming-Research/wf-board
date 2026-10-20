@@ -618,10 +618,12 @@ the process starts, so only the growing percentage takes effect, and the pages s
 set at the start. Hence the flags are arguments of the
 service file `ops/wf-board.plist`.
 
-A change of the service file reaches the running service only when the service is installed again (`scripts/install-service.ts`
-writes the file; `launchctl bootout` and `bootstrap` load it): the deploy job's restart (`launchctl kickstart -k`) starts the
-process with the arguments launchd already holds. The `startup memory` line therefore names the options node was started
-with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), and `test/memory-flags.test.ts` holds that
+A change of the service file reaches the running service only when the service is loaded again: a restart by `launchctl kickstart -k`
+starts the process with the arguments launchd already holds. The deploy job therefore replaces the installed file itself when the
+template renders to another text (Deploying, The daemon's service file follows its template), and `scripts/install-service.ts`
+with `launchctl bootout` and `bootstrap` is the same by hand. The `startup memory` line names the options node was started
+with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), so that a service still on the old file shows,
+and `test/memory-flags.test.ts` holds that
 node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
 (128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
 halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 MB in one run of the sweep and
@@ -696,6 +698,44 @@ within the five minutes are one deploy and one restart.
   page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
   the pages that connect afterwards, not the open ones: restarting the daemon
   tells them too, since their streams reconnect.
+- **The daemon's service file follows its template.** launchd reads a service's
+  arguments and environment only when it loads the service, so `kickstart -k`
+  restarts the daemon on what launchd already holds, and a change to
+  `ops/wf-board.plist` (the template `scripts/install-service.ts` fills in) would
+  reach the live board only when someone installed the file by hand. Each run
+  therefore renders the template of the commit it leaves live (`git show
+  <commit>:ops/wf-board.plist`; the commit is the fetched head, which is the
+  checkout's own when nothing newer exists) and compares it with the file
+  installed (`~/Library/LaunchAgents/<label>.plist`, or the file `WF_BOARD_PLIST`
+  names). The values are the ones the installed file holds, read back by
+  what launchd takes each for (`installedValues` in `src/service-config.ts`):
+  the node is the first of its `ProgramArguments`, the checkout its
+  `WorkingDirectory`, the PATH and the data directory two of its environment
+  variables; only `{{HOME}}` is the job's own. A job that took them from its own
+  environment would put its own PATH and node into the daemon's file. When the
+  texts differ the replacement is the deploy's restart, in place of `kickstart`:
+  the file is written (to a temporary name, then renamed), `launchctl bootout`
+  stops the service, the job waits until `launchctl list <label>` no longer
+  finds it, and `launchctl bootstrap` loads the file and starts the daemon
+  (`RunAtLoad`); then the health judgment of the next bullet applies as it
+  does to a restart. The wait is for launchd to let go, not for `bootout` to
+  return: with a throwaway service on the Mac that takes 4 seconds to
+  exit, `bootout` returned at once and an immediate `bootstrap` failed with exit
+  status 5 (input/output error) while the old process was still there; with a service
+  that exits at once the immediate `bootstrap` worked three times in a row. A
+  `bootout` of a service launchd does not hold fails (exit status 3) and is
+  taken for nothing to stop. The comparison is made on every run, also when the
+  checkout is on the main line's head already (the outcome `reconfigured`): the
+  template may have reached the checkout in a deploy run by a job that did not
+  replace files yet (a deploy of the job's own code is that), and then it would
+  wait for the next merge. Such a run moves, builds and pushes nothing (`inPlace`
+  in the pending record; the commit went live on its checks), and its failure
+  goes to the architect as any `deployFailed` that names no item. An installed
+  file that lacks one of the values, or a template with a placeholder no value
+  fills, is not replaced: the run ends as a failure of the job itself (`error`,
+  pushed once) with the checkout where it was, since a guess would change what the
+  daemon runs under. Without an installed file (`launchd` does not hold the
+  daemon, as in the job's tests) nothing is compared.
 - The restart is `launchctl kickstart -k` on the daemon's own label, never a
   kill by process name. The daemon is healthy when launchd reports a process
   other than the one before, `/health` answers, and 5 seconds later the same
@@ -711,7 +751,12 @@ within the five minutes are one deploy and one restart.
   the lock file differs) and the page are built again from that code, and the
   daemon restarts and is waited for if a restart was begun for the deploy or it
   does not answer; a daemon that still answers on the process that served before
-  is left alone. A commit that failed after it was in the checkout is not tried
+  is left alone. A deploy that replaced the daemon's service file also puts the
+  old text of the file back: the pending record keeps the text the file had
+  (`config`) from the moment the replacement begins, and going back writes it
+  again and loads the service again (a daemon that cannot start under the new
+  file is not brought back by the old code alone); a deploy that fails before
+  that, in the build say, writes nothing. A commit that failed after it was in the checkout is not tried
   again until the main line has a newer commit; one that git refused to merge is
   not marked, since that says nothing about it. A `deployFailed` push says what
   happened.

@@ -30,6 +30,9 @@ matches what the artifact board offered.
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
   remote, their log lines, ending the push on shutdown, and the push to the
   architect when the remote copy stays behind for an hour.
+- `src/service-config.ts`: the launchd job files (`ops/*.plist`) as templates: filling one in (`renderPlist`, used by
+  `scripts/install-service.ts` and by the deploy job) and reading back from the installed daemon file the node, checkout, PATH and data
+  directory it holds (`installedValues`), which the deploy job fills the template with again (design section 4, Deploying).
 - `src/budget.ts`: the budget of one request's reads of the board's history (bytes
   read, whole old boards rebuilt, the process heap), held in the request's async
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
@@ -305,16 +308,22 @@ changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys. Checks it cannot read
 (`gh` signed out, GitHub not answering) hold the deploy the same way and are pushed once.
 
+The same job keeps the daemon's service file, `~/Library/LaunchAgents/org.ming-research.wf-board.plist`, equal to what the template
+`ops/wf-board.plist` of the main line's head renders to (with the node, PATH, data directory and checkout the installed file holds):
+when the two differ it writes the new file, stops the service with `launchctl bootout`, loads it with `launchctl bootstrap`, waits for it
+as after any restart, and writes the old text back if it does not come up. So a change to that template (a node flag, say)
+goes live with the merge, nobody installs it by hand and no agent stops the live service. The log line `deploying <commit> over
+<commit>, replacing the service file` and the `startup memory` line of the daemon's log (its end names the node options in force)
+show it; a head that is live already but has another file than the installed one gets it replaced on the next run
+(`docs/design.md`, section 4, Deploying).
+
 Install once, after the PR that adds the job has been deployed by hand (the
 merge does not install it):
 `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts deploy`
-writes the plist and prints the `launchctl bootstrap` command to run.
-
-A change to `ops/wf-board.plist`, the daemon's service file (it carries the V8 flags that keep its memory down: `docs/design.md`,
-section 4, Memory beyond the heap), reaches the live service only when the service is installed again; the deploy job's restart keeps
-the arguments launchd already holds. Write the file with `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts`,
-then run `launchctl bootout gui/$(id -u)/org.ming-research.wf-board` and the `launchctl bootstrap` command the script printed. The
-`startup memory` line of the service log names the node options in force (`node options none` means the old file is still loaded).
+writes the plist and prints the `launchctl bootstrap` command to run. The daemon's own file is written the same way
+(`node scripts/install-service.ts` with the same two variables, no argument), when the deploy job is off: then run
+`launchctl bootout gui/$(id -u)/org.ming-research.wf-board` and the `bootstrap` command it prints. The `startup memory` line of the
+service log names the node options in force (`node options none` means a file without the flags is still loaded).
 
 By hand, when the job is off, its own script broke, or `gh` cannot read the checks: fast-forward
 `~/dev/wf/wf-board` to the merged head of `main` and run
