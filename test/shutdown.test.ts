@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { execFile, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import { connect, createServer } from "node:net";
@@ -212,7 +213,7 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const url = `http://127.0.0.1:${port}`;
   // The first push is delayed by 4 s here (60 s by default), long enough to see that nothing is pushed before it.
-  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "4000" }, stdio: ["ignore", "pipe", "pipe"] });
+  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, ...(process.env.DAEMON_NO_CACHE ? { NODE_COMPILE_CACHE: undefined } : {}), WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "4000" }, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
@@ -245,7 +246,16 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   const written = await local();
   assert.equal((await fetch(url + "/api/read", { ...json, body: JSON.stringify({ through: written }) })).status, 200);
   const mark = log.length;
+  const mark = log.length;
   const stopped = Date.now();
+  let lastTick = stopped, maxGap = 0;
+  const states: string[] = [];
+  const poller = setInterval(() => {
+    const n = Date.now(); maxGap = Math.max(maxGap, n - lastTick); lastTick = n;
+    let state = "gone";
+    try { const stat = readFileSync(`/proc/${daemon.pid}/stat`, "utf8"); state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3); } catch {}
+    if (!states.length || states.at(-1)!.split(":")[1] !== state) states.push(`${n - stopped}:${state}`);
+  }, 2);
   daemon.kill("SIGTERM");
   // The deadline's timer does not hold the process: the daemon's exit ends the race, and a timer left running would keep the
   // file's process, and its shard, waiting the full 10 seconds after the last test.

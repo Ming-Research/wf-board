@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        load: [cold-1, warm-1, cold-4, shard-a, shard-b, shard-c, shard-d]
+        load: [cache-a, cache-b, cache-c, cache-d, cache-e, cache-f, cache-g, cache-h, nocache-a, nocache-b, nocache-c, nocache-d, nocache-e, nocache-f, nocache-g, nocache-h]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -24,19 +24,15 @@ jobs:
           NODE_COMPILE_CACHE_DIR: ${{ runner.temp }}/node-compile-cache
         run: |
           nproc; cat /proc/loadavg
-          case "${{ matrix.load }}" in
-            cold-1) MEASURE_CACHE=cold node scripts/tmp-shutdown-measure.ts 40 1 ;;
-            warm-1) MEASURE_CACHE=warm node scripts/tmp-shutdown-measure.ts 40 1 ;;
-            cold-4) MEASURE_CACHE=cold node scripts/tmp-shutdown-measure.ts 25 4 ;;
-            shard-*)
-              # the red shard's step as ci.yml runs it (flags, reporters, compile cache), its files, a cold cache each time
-              for i in $(seq 1 24); do
-                rm -rf "$NODE_COMPILE_CACHE_DIR"
-                NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
-                  --test-reporter=spec --test-reporter-destination=stdout \
-                  --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
-                  test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || echo "SHARD-RED run $i"
-                grep -A12 "SHUTDOWN-TOOK" shard.log | head -14
-              done ;;
-          esac
+          # cache-*: the red shard's step as ci.yml runs it (flags, reporters, compile cache for every process), its files, a cold cache each time
+          # nocache-*: the same, but the daemon the test starts is given no compile cache
+          for i in $(seq 1 24); do
+            rm -rf "$NODE_COMPILE_CACHE_DIR"
+            case "${{ matrix.load }}" in nocache-*) export DAEMON_NO_CACHE=1 ;; esac
+            NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
+              --test-reporter=spec --test-reporter-destination=stdout \
+              --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
+              test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || echo "RED-RUN $i"
+            grep -A12 "SHUTDOWN-TOOK" shard.log | head -14
+          done
           cat /proc/loadavg
