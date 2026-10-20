@@ -1,57 +1,30 @@
 name: tmp-shutdown-contention
-# TEMPORARY (item shutdown-test-contention): the fixed tests in the red shard's conditions, and the tests on a daemon made to stop slowly.
+# TEMPORARY (item shutdown-test-contention): the test of daemonEnv must fail when the helper is broken.
 on:
   push:
     branches: [shutdown-test-contention]
 permissions:
   contents: read
 jobs:
-  measure:
-    name: measure ${{ matrix.load }}
+  guard:
+    name: guard ${{ matrix.broken }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        load: [fixed-a, fixed-b, fixed-c, fixed-d, fixed-e, fixed-f, fixed-g, fixed-h, fixed-i, fixed-j, fixed-k, fixed-l, fixed-m, fixed-n, fixed-o, fixed-p, push-a, push-b, broken]
+        broken: [keeps-cache, drops-extra, intact]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: node --run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: measure
-        env:
-          NODE_COMPILE_CACHE_DIR: ${{ runner.temp }}/node-compile-cache
+      - name: guard
         run: |
-          nproc; cat /proc/loadavg
-          # the tests print the time they measured (done here, on the runner's copy, not in the repository)
-          sed -i 's|^  const took = Date.now() - stopped;|&\n  console.log(`SHUTDOWN-TOOK ${took}`);|' test/shutdown.test.ts test/push.test.ts
-          grep -c "SHUTDOWN-TOOK" test/shutdown.test.ts test/push.test.ts
-          step() {
-            # the red shard's step as ci.yml runs it: its flags, reporters and compile cache (cold each time)
-            rm -rf "$NODE_COMPILE_CACHE_DIR"
-            NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
-              --test-reporter=spec --test-reporter-destination=stdout \
-              --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md "$@"
-          }
-          case "${{ matrix.load }}" in
-            fixed-*)
-              for i in $(seq 1 24); do
-                step test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
-                grep "SHUTDOWN-TOOK" shard.log
-              done ;;
-            push-*)
-              for i in $(seq 1 12); do
-                step test/rules-reuse-a-3.test.ts test/push.test.ts test/dom/page-chips.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
-                grep "SHUTDOWN-TOOK" shard.log
-              done ;;
-            broken)
-              # a daemon that takes 3 s longer to exit: both tests must go red for that reason, and nothing else may
-              test "$(grep -c 'await store.flushOwner("owner");' src/main.ts)" = 1
-              sed -i 's|await store.flushOwner("owner");|await store.flushOwner("owner"); await new Promise(resolve => setTimeout(resolve, 3000));|' src/main.ts
-              for file in test/shutdown.test.ts test/push.test.ts; do
-                if step $file > broken.log 2>&1; then echo "NOT-RED $file"; else echo "RED $file"; fi
-                grep -E "exited [0-9]+ ms after SIGTERM|SHUTDOWN-TOOK|^ℹ (pass|fail)" broken.log
-              done ;;
+          case "${{ matrix.broken }}" in
+            keeps-cache) test "$(grep -c '  delete env.NODE_COMPILE_CACHE;' test/daemon-env.ts)" = 1; sed -i '/  delete env.NODE_COMPILE_CACHE;/d' test/daemon-env.ts ;;
+            drops-extra) test "$(grep -c '{ ...process.env, ...extra }' test/daemon-env.ts)" = 1; sed -i 's|{ ...process.env, ...extra }|{ ...process.env }|' test/daemon-env.ts ;;
           esac
-          cat /proc/loadavg
+          git diff --stat
+          if node --test --test-name-pattern="gets the test's environment" test/shutdown.test.ts > guard.log 2>&1; then echo "GREEN ${{ matrix.broken }}"; else echo "RED ${{ matrix.broken }}"; fi
+          grep -E "^(✔|✖) the daemon a test starts|AssertionError|^ℹ (pass|fail)" guard.log
