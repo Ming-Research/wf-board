@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-20 Say what the young generation's flag bounds
+
+Nodes: daemon/memory
+
+Summary: The node described `--max-semi-space-size=4` as each half of the young generation being at most 4 MB. A GC trace of the memory-flags test's probe (docs/design.md, section 4, Memory beyond the heap) shows that the flag sets the size the young generation is brought back to at a collection, and that it grew to 12.75 to 21.75 MB between two collections while the old generation was being marked (28.5 MB in the daemon in one paired run). The node now says that. The choice (the two flags and their values), its reason (the V8 pages at 0.55 times the defaults') and the refused alternatives are unchanged.
+
 ## 2026-10-20 Leave GitHub's late completion marks out of the time gate
 
 Nodes: testing/ci-time-gate
