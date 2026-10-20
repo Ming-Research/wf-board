@@ -5852,7 +5852,13 @@ referenced: `shutdown`, `push` and `stateless`, 12 to 20 seconds as files for 2 
 nothing over 0.1 second in the rest; the probe was removed again. Two full CIs of the result (runs 39320840092 and 39321571725, push
 mode) were judged 45 and 44 seconds, the steps `tests` 11 to 23 seconds and the sums of the files' seconds 984 and 1,120; the job that
 ended last was once an n-key part, since split (The n-key lane, Parts), and once a shard whose `npm run build:web` took 14 seconds
-before esbuild started, npm's own files being read from the image's disk for the first time (The set-up of a job). A file
+before esbuild started, npm's own files being read from the image's disk for the first time (The set-up of a job). Seven full CIs
+of the finished change, started by hand one after another on one commit (runs 39326783189, 39327040354, 39327949685, 39328216893,
+39328960700, 39329245774 and 39329512784), were judged 40 to 47 seconds (median 42); the one at 47 ended with the n-key part
+`time-writing` on a slower runner (its step 27 seconds against 15 to 23 in the others, its set-up 5 against 2 to 4), within that part's
+time budget (The n-key lane, The time budget). One more run of the same commit (39327317254) was judged 108 seconds, though every
+job's last step had ended by 35 seconds: GitHub marked 30 of its jobs complete 47 to 76 seconds after their last step, a delay the
+gate does not leave out. A file
 of more than about 15 seconds is the sign to split it: the time gate names a shard that runs over 1.5 times the others.
 
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
