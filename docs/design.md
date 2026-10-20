@@ -388,7 +388,7 @@ owner's page (measured in CI on a synthetic board of the live one's size, 18,000
 commits; `scripts/bench-changes.ts`). That board's long texts were single-line quoted
 scalars, which the library parses into the heap-heaviest strings; on a board shaped like
 the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed flat
-(Parsed documents, below). Three rules follow.
+(Parsed documents, below). Four rules follow.
 
 1. *Reads follow the range.* The commits of a query are listed from the range
    alone (`store.log({since, at})`), and a time given to `diff` is resolved by git going
@@ -429,6 +429,48 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    `net-git.ts` (git against a remote, whose output is never read as history) and
    the two that run `gh` and the notification command, and that those two do not
    run git.
+4. *The newest commits of one document are named, not searched for.* A path-limited
+   `git log --max-count=20 -- <path>` ends only when it has found 20 commits of the path
+   or reached the first commit of the history, so for a document with fewer than 20
+   commits, or whose 20th newest is old, what it costs is the length of the history. The
+   `history` tool made that read, and so did the error for an id nobody wrote (the
+   same tool, `diff`, the `under` filter and the owner's read marks look the document up
+   the same way) and a version conflict going back over an old item's versions
+   (`versionAt`). Measured on a clone of the live data repository (38,881 commits, git
+   2.56, one MacBook, single runs): 2.79 s for an item with 1 commit, 3.01 s for an id
+   nobody wrote, 0.37 s and 0.16 s for items whose 20 newest commits are recent. Of the
+   1,996 item files, 1,381 have fewer than 20 commits and 1,951 have their 20th newest
+   (the oldest, when fewer) more than 5,000 commits back, so most items cost nearly the
+   whole history. The service log of 10-16 to 10-20 holds 259 `history` calls: 53 under 100
+   ms, 43 over 500 ms, 9 over 3 s, mean 408 ms; a read line has no item id and no segments,
+   so a single call cannot be matched to its document, only to the command's time. The
+   store keeps, for each item, card and note file, the hashes of its newest
+   `DOC_COMMITS_KEPT` (100) commits, newest first (`docCommits`). The start's replay adds
+   every commit it replays, a commit adds itself once git has made it (one that is rolled
+   back does not), and the startup cache holds the lists (format 5; the first start with it
+   scans the history once). `Store.log` for the newest `limit` commits of one document from
+   the head, with no `since`, `at` or `blobs`, takes the hashes from the list and asks git
+   for those commits alone: `git log --no-walk=unsorted <hashes> -- <path>` printed
+   the same bytes as the path-limited walk, in 0.02 s on the same clone. A document with
+   no list was never committed and is decided without git; a read for more than the list
+   holds, the kinds of document without a list and the reads with a range go to git as
+   before. The cost is a list of at most 100 hashes for each file (43,000 hashes on the clone
+   today, about 2 MB in the cache and 4 MB of heap, both inferred from the count) and a
+   second derivation from the history that must agree with git, which
+   `test/doc-commits.test.ts` checks against git's own walk.
+   `scripts/bench-changes.ts` reads three documents' history on the synthetic board (an
+   item of 11 or 12 commits, a card of one, an id nobody wrote) at 18,000 and at 36,000
+   commits and fails when the median of nine reads passes 200 ms.
+
+   *Rejected.* Git's changed-path Bloom filters (`git commit-graph write --changed-paths`):
+   the same walk took 0.75 s against 3.17 s on the clone without a graph, but it still
+   passes all 38,881 commits, and 7,695 of them were judged possibly changed
+   (7,689 wrongly, since the filter of a commit that changes one file is a few bytes), so the
+   cost still follows the history, about 0.1 s more for each day's 5,000 commits (inferred);
+   writing the graph from nothing took 4.2 s. Bounding the walk by the document, with its
+   revision (`--max-count` of `rev`, as `versionAt` does) or its creation time (`--since`):
+   only an item created recently gains, since 1,937 of the 1,996 item files have their
+   oldest commit more than 5,000 commits back, most of them from the import at the start.
 
    A read that two requests share (a file read or a board rebuild still pending, and the
    unread list's memo) is charged to the request that started it. If that request's
@@ -1304,7 +1346,8 @@ log:
   item. No extra board data file is stored. A start does not derive the index
   from the whole history: a disposable startup cache in git's metadata
   directory (`wf-board-startup-cache.json`) holds the whole index as of one
-  commit, with where each card last was and the item projections the pause
+  commit, with where each card last was, the newest commits of each item, card
+  and note file (Request budgets, rule 4) and the item projections the pause
   replay continues from (none while no commit had set a pause). A start reads
   it and replays only the commits after it, with the same code that scans the
   history, so its time grows with the commits since the cache, not with the

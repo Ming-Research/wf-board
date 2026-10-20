@@ -25,6 +25,7 @@
   "test/derived.test.ts": 11.5,
   "test/difficulty.test.ts": 4.9,
   "test/dispatch.test.ts": 5.8,
+  "test/doc-commits.test.ts": 6.0,
   "test/dom/agents-fold.test.ts": 8.9,
   "test/dom/agents-spoiled-1.test.ts": 13.2,
   "test/dom/agents-spoiled-2.test.ts": 14.7,

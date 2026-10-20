@@ -7,7 +7,7 @@ import { stringify } from "yaml";
 import { Store } from "../src/store.ts";
 import type { CommitInfo } from "../src/store.ts";
 import type { StartupStep } from "../src/log.ts";
-import { StartupCache } from "../src/startup-cache.ts";
+import { StartupCache, DOC_COMMITS_KEPT } from "../src/startup-cache.ts";
 import { at, item, owns, put, git, setup, cacheFile } from "./startup-board.ts";
 
 const readCache = async (dir: string) => StartupCache.parse(JSON.parse(await readFile(await cacheFile(dir), "utf8")));
@@ -180,6 +180,9 @@ test("a cache that is missing, damaged, of another shape or of another history i
     ["the agent index missing", JSON.stringify({ ...good, activity: (({ agents: _, ...rest }) => rest)(good.activity) }), "startup cache malformed"],
     ["an activity field it does not know", JSON.stringify({ ...good, activity: { ...good.activity, touched: {} } }), "startup cache malformed"],
     ["a top-level field it does not know", JSON.stringify({ ...good, extra: 1 }), "startup cache malformed"],
+    ["the lists of each document's newest commits missing", JSON.stringify((({ docCommits: _, ...rest }) => rest)(good)), "startup cache malformed"],
+    ["a list of more commits than are kept", JSON.stringify({ ...good, docCommits: { "items/root.yaml": Array.from({ length: DOC_COMMITS_KEPT + 1 }, () => "a".repeat(40)) } }), "startup cache malformed"],
+    ["the file the version before the lists of commits wrote", JSON.stringify({ ...(({ docCommits: _, ...rest }) => rest)(good), version: 4 }), "startup cache malformed"],
     ["a commit the repository lacks", JSON.stringify({ ...good, head: "f".repeat(40) }), "startup cache is not of an ancestor of the head"],
     ["no pause recorded though an item is paused", JSON.stringify({ ...good, pause: null }), "startup cache has no pause history but items are paused"],
   ];

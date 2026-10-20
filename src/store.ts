@@ -20,7 +20,7 @@ import type { ClearedPriority } from "./migrate-priority.ts";
 import { DerivedCache, withSorted } from "./rules.ts";
 import { touchAgent } from "./agents.ts";
 import type { ActivityDelta } from "./rules.ts";
-import { StartupCache, STARTUP_CACHE_VERSION } from "./startup-cache.ts";
+import { StartupCache, STARTUP_CACHE_VERSION, DOC_COMMITS_KEPT } from "./startup-cache.ts";
 import { startOfReport, withStateStart } from "./timeline.ts";
 import { PauseGraph, pauseSignature, sameShape } from "./pauses.ts";
 import type { PauseShape, PauseSignature } from "./pauses.ts";
@@ -123,6 +123,12 @@ const comparedSnapshotLimit = 1;
 /** The startup cache is written at most this often, by the first commit after a write (a start that scanned writes it at once). */
 const CACHE_WRITE_DELAY_MS = 2 * 60_000;
 const CACHE_FILE = "wf-board-startup-cache.json";
+/** The files whose newest commits the store lists (`docCommits`): the ones `history` and the version conflict read, the documents of
+ * the kinds in `INDEXED_KINDS`. */
+const INDEXED_PATH = /^(?:items|decisions|notes)\/[^/]+\.yaml$/;
+const INDEXED_KINDS: ReadonlySet<DocKind> = new Set<DocKind>(["item", "decision", "note"]);
+/** The fields `log` asks git to print for a commit, which `parseLog` reads. */
+const LOG_FORMAT = "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00";
 
 function pauseMetadata(value: unknown): Item["paused"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -410,6 +416,11 @@ export class Store {
   private readonly blobs: BlobReader;
   /** Last known placement also resolves later changes to notes on a deleted card. */
   private readonly cardItems = new Map<string, string>();
+  /** For each item, card and note file, its newest commits, newest first, at most `DOC_COMMITS_KEPT`: derived from the history by
+   * the start's replay, carried on by every commit and kept in the startup cache. A file with none was never committed. It lets
+   * `log` ask git for the commits of one document by name and not look through the history for them (docs/design.md, section 4,
+   * Request budgets). */
+  private readonly docCommits = new Map<string, string[]>();
   /** Whether some commit up to the head set a pause: until then the pause replay has nothing to track. */
   private pauseStarted = false;
   /** The next short number to issue; numbers.yaml holds it once any number was issued. */
@@ -693,7 +704,11 @@ export class Store {
       : { writes: [], items: {} };
     this.cardItems.clear();
     for (const [card, item] of Object.entries(cache?.cardItems ?? {})) this.cardItems.set(card, item);
+    this.docCommits.clear();
+    for (const [file, list] of Object.entries(cache?.docCommits ?? {})) this.docCommits.set(file, list);
     for (const commit of commits) {
+      // Every commit counts here, the ones that are no work on the items too: git lists them for the file.
+      this.noteDocCommits(commit.files, commit.commit);
       // Numbering is bookkeeping, not work on the items: it starts no active time and resets no clock. So is clearing the retired priority.
       if (commit.message === NUMBERING_MESSAGE || commit.message === RETIRE_NOTICES_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE || isPriorityClearing(commit.message)) continue;
       const files = commit.files.filter(file => this.contentPath(file));
@@ -784,6 +799,7 @@ export class Store {
       version: STARTUP_CACHE_VERSION, head: this.state.head,
       activity: { writes: activity.writes, items: activity.items, pauses: activity.pauses ?? null, sessions: activity.sessions ?? null, agents: activity.agents ?? null, states: activity.states ?? null },
       cardItems: Object.fromEntries(this.cardItems),
+      docCommits: Object.fromEntries(this.docCommits),
       pause: this.pauseStarted ? { items: Object.fromEntries(items) } : null,
     };
   }
@@ -1224,6 +1240,7 @@ export class Store {
     } finally {
       this.writing = false;
     }
+    this.noteDocCommits(paths, next.head);
     // A message changes no item and is no work on the board: like owner state, it starts no active time (docs/design.md, Messages).
     if (changed.some(c => c.kind !== "owner" && c.kind !== "message")) {
       const previous = this.state.activity ?? { writes: [], items: {} };
@@ -1360,12 +1377,14 @@ export class Store {
    * (`items`), which the same walk of git gives for no more than the names (the start's replay of pauses reads them). */
   async log(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number; blobs?: true } = {}): Promise<CommitInfo[]> {
     if ((opts.kind === undefined) !== (opts.id === undefined)) throw new Error("History path needs both kind and id");
+    if (opts.limit !== undefined && (!Number.isSafeInteger(opts.limit) || opts.limit < 0)) throw new Error("History limit must be a nonnegative integer");
+    // The newest commits of one document are named from the list the store keeps, and git is asked for those commits alone: asked
+    // for the newest 20 of a document that has fewer, it looks through the whole history for the rest (item history-read-slow).
+    const listed = this.listedCommits(opts);
+    if (listed) return listed.length ? this.parseLog(await this.gitRead(["log", LOG_FORMAT, "--name-only", "--no-renames", "-z", "--no-walk=unsorted", ...listed, "--", docPath(opts.kind!, opts.id!)]), false) : [];
     const at = opts.at === undefined ? "HEAD" : await this.resolveCommit(opts.at);
-    const args = ["log", "--format=%H%x00%P%x00%aI%x00%an%x00%B%x00", ...(opts.blobs ? ["--raw", "--no-abbrev"] : ["--name-only"]), "--no-renames", "-z"];
-    if (opts.limit !== undefined) {
-      if (!Number.isSafeInteger(opts.limit) || opts.limit < 0) throw new Error("History limit must be a nonnegative integer");
-      args.push(`--max-count=${opts.limit}`);
-    }
+    const args = ["log", LOG_FORMAT, ...(opts.blobs ? ["--raw", "--no-abbrev"] : ["--name-only"]), "--no-renames", "-z"];
+    if (opts.limit !== undefined) args.push(`--max-count=${opts.limit}`);
     if (opts.since) {
       if (/^\d{4}-\d{2}-\d{2}T/.test(opts.since)) {
         if (!Number.isFinite(Date.parse(opts.since))) throw new Error("Invalid history time");
@@ -1377,7 +1396,32 @@ export class Store {
     } else args.push(at);
     args.push("--");
     if (opts.kind && opts.id) args.push(docPath(opts.kind, opts.id));
-    const output = await this.gitRead(args);
+    return this.parseLog(await this.gitRead(args), opts.blobs === true);
+  }
+
+  /** The commits `docCommits` lists for the newest `limit` of one document, newest first, when that answers the read: a document of
+   * an indexed kind, from the head (no `since`, `at` or `blobs`), once the start has derived the list. None: git must be asked. An
+   * empty list is a document no commit ever changed. A file with fewer commits than the most kept has all of them listed; one with
+   * that many may have had more, so a read for more than the list holds is left to git. */
+  private listedCommits(opts: { kind?: DocKind; id?: string; since?: string; at?: string; limit?: number; blobs?: true }): string[] | undefined {
+    const { kind, id, limit } = opts;
+    if (!this.activityLoaded || !kind || !id || limit === undefined || opts.since || opts.at !== undefined || opts.blobs || !INDEXED_KINDS.has(kind)) return undefined;
+    const list = this.docCommits.get(docPath(kind, id)) ?? [];
+    if (limit <= list.length) return list.slice(0, limit);
+    return list.length < DOC_COMMITS_KEPT ? [...list] : undefined;
+  }
+
+  /** Adds `commit`, the newest, to the list of each indexed file among `files`. */
+  private noteDocCommits(files: Iterable<string>, commit: string): void {
+    for (const file of files) {
+      if (!INDEXED_PATH.test(file)) continue;
+      // A new list each time, so the cache a write has begun to make keeps the lists of the commit it is of.
+      this.docCommits.set(file, [commit, ...(this.docCommits.get(file)?.slice(0, DOC_COMMITS_KEPT - 1) ?? [])]);
+    }
+  }
+
+  /** The commits `git log` printed in `LOG_FORMAT` followed by their files (with `blobs`, the raw entries of the item files). */
+  private parseLog(output: string, blobs: boolean): CommitInfo[] {
     const fields = output.split("\0");
     const infos: CommitInfo[] = [];
     let index = 0;
@@ -1396,7 +1440,7 @@ export class Store {
       while (index < fields.length && !(fields[index]?.trim().match(/^[0-9a-f]{40}$/))) {
         const file = fields[index++]!.replace(/^\n/, "");
         // With `blobs` a path comes after its entry (modes, blob ids, kind of change).
-        const raw = opts.blobs ? RAW_ENTRY.exec(file) : null;
+        const raw = blobs ? RAW_ENTRY.exec(file) : null;
         if (!raw) { if (file) files.push(file); continue; }
         const path = fields[index++]!;
         files.push(path);
@@ -1405,7 +1449,7 @@ export class Store {
       }
       // git just named these as commits, so later reads of them need no rev-parse.
       for (const c of [hash, ...parents]) this.resolved.set(c, c);
-      infos.push({ commit: hash, parents, at, author, message, files, ...(opts.blobs ? { items } : {}), ...(trailer ? { session: trailer[1]!.trim() } : {}) });
+      infos.push({ commit: hash, parents, at, author, message, files, ...(blobs ? { items } : {}), ...(trailer ? { session: trailer[1]!.trim() } : {}) });
     }
     return infos;
   }

@@ -5,7 +5,11 @@ import type { Snapshot } from "./model.ts";
 /** The format of the startup cache (docs/design.md, the activity index). Change it whenever the cache holds
  * something else or the replay derives it differently: a cache of another version is refused, and the next start
  * scans the whole history once and writes a new one. */
-export const STARTUP_CACHE_VERSION = 4;
+export const STARTUP_CACHE_VERSION = 5;
+
+/** How many of the newest commits of one item, card or note file the store keeps (`docCommits`): `history` asks for 20 by default,
+ * and a conflict going back over the versions asks for as many as the document is behind. A read for more asks git. */
+export const DOC_COMMITS_KEPT = 100;
 
 type Activity = NonNullable<Snapshot["activity"]>;
 
@@ -33,7 +37,8 @@ const CachedPauseItem = z.object({
 }).strict();
 export type CachedPauseItem = z.infer<typeof CachedPauseItem>;
 
-/** Everything a start derives from the history, as of one commit: the activity index, where each card last was, and
+/** Everything a start derives from the history, as of one commit: the activity index, where each card last was, the newest
+ * commits of each item, card and note file (`docCommits`, newest first, no more than `DOC_COMMITS_KEPT` of a file), and
  * the item projections the pause replay continues from (null while no commit up to `head` set a pause). The store
  * writes it in git's own metadata directory; it is never board data, and a start that cannot trust it scans the
  * history instead. */
@@ -42,6 +47,7 @@ export const StartupCache = z.object({
   head: z.string().regex(/^[0-9a-f]{40}$/),
   activity: CachedActivity,
   cardItems: z.record(z.string(), z.string()),
+  docCommits: z.record(z.string(), z.array(z.string().regex(/^[0-9a-f]{40}$/)).max(DOC_COMMITS_KEPT)),
   pause: z.object({ items: z.record(z.string(), CachedPauseItem) }).strict().nullable(),
 }).strict();
 export type StartupCache = z.infer<typeof StartupCache>;

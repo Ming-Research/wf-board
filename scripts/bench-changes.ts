@@ -19,6 +19,10 @@
 //   (formatChanges with the cap of 40 documents), so run on the base commit they give the real "before" for the same board and range
 //   every case: the heap stays at or below half of the budget's line (the margin that lets a normal query pass the budget)
 //   diff with a time: within 1 s
+//   history (the tool that lists the newest commits of one document), the median of nine reads of an item that has 11 or 12 commits
+//   among the 18,000 (21 or 22 among 36,000), a card that has only its first one and an id nobody wrote: within 200 ms each. The path-limited walk the tool
+//   used to make looks through all the commits for such a document, so its time follows the length of the history; the bench workflow
+//   runs these three again on a board of twice the commits (--history 36000), where the time must be the same.
 //
 // Usage: node scripts/bench-changes.ts [--src <dir>] [--label <text>] [--report-only] [--cases a,b] [--history N]
 //   A quick smoke run: --items 150 --decisions 60 --notes 80 --history 600
@@ -45,6 +49,8 @@ const MINUTE = 60_000, iso = (ms: number) => new Date(ms).toISOString().replace(
 // (items 14 MB / 1,674 ≈ 8.4 KB, cards 3.5 MB / 633 ≈ 5.5 KB, notes 4.0 MB / 927 ≈ 4.3 KB).
 const sentence = "看板服务读历史时只读需要的文件 and keeps the cost bounded by the range. ";
 const pad = (bytes: number) => sentence.repeat(Math.ceil(bytes / Buffer.byteLength(sentence)));
+const HISTORY_READ_MS = 200;
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const heap = () => v8.getHeapStatistics().used_heap_size;
 const mb = (bytes: number) => +(bytes / 1048576).toFixed(1);
 const gc = () => { (globalThis as { gc?: () => void }).gc?.(); (globalThis as { gc?: () => void }).gc?.(); };
@@ -134,6 +140,22 @@ const reportCase = (name: string, branch: string, since: (git: Context["git"]) =
 /** The old document listing as `changes` answered by default (the cap of 40 documents); on the base commit this is the real "before". */
 const listingSize = async ({ mcp }: Context, groups: unknown): Promise<Record<string, number>> => ({ defaultChars: mcp.formatChanges(groups, 40).length });
 
+/** `history` as the tool answers it (the newest 20 commits of one document), read nine times; the answer is the time of each read. A read
+ * that fails with the error the tool gives for a document nobody wrote counts as a read: the time to say so is what is measured. */
+const historyCase = (name: string, kind: string, id: string, missing = false): Case => ({ name, branch: "tail-0",
+  run: async ({ store, q }) => {
+    const times: number[] = [];
+    for (let k = 0; k < 9; k++) {
+      const t0 = performance.now();
+      const read = q.history(store, kind, id, 20);
+      if (missing) await read.then(() => { throw new Error(`${kind} ${id} has history`); }, (error: Error) => { if (!/^Unknown /.test(error.message)) throw error; });
+      else if (!(await read).length) throw new Error(`${kind} ${id} has no history`);
+      times.push(performance.now() - t0);
+    }
+    return times;
+  },
+  size: async (_ctx, times) => ({ medianMs: +median(times as number[]).toFixed(1), maxMs: +Math.max(...(times as number[])).toFixed(1) }) });
+
 /** The cases: a name, the branch it runs on, and the request it makes. */
 const CASES: Case[] = [
   ...DELETIONS.map(deletions => ({ name: `changes-50-delete-${deletions}`, branch: `tail-${deletions}`,
@@ -149,6 +171,11 @@ const CASES: Case[] = [
   { name: "unread-500", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~500"), {}, store.snapshot().head) },
   { name: "unread-3100", branch: "tail-0", run: ({ store, history, git }) => history.unreadSteps(store, git("rev-parse", "HEAD~3100"), {}, store.snapshot().head) },
   { name: "diff-by-time", branch: "tail-0", run: ({ store, q }) => q.diff(store, "item", "p0-0", new Date(Date.now() - 24 * 3600_000).toISOString()) },
+  // An item written round-robin with the others has 11 or 12 commits among the 18,000, a card has only the seed's: fewer than the 20 asked for
+  // (on a board of twice the commits the item has 21 or 22, and its 20th newest is almost as far back).
+  historyCase("history-item", "item", "p2-4"),
+  historyCase("history-card", "decision", "c3"),
+  historyCase("history-unknown", "item", "nobody-wrote-this", true),
 ];
 
 /** The heap's highest point while `run` is pending, sampled every 10 ms, and where it started once collected. */
@@ -231,6 +258,7 @@ for (const r of results) {
   if (r.failed || r.error) { problems.push(`${name}: ${r.failed ? `the process ended (exit ${r.exitCode}, signal ${r.signal})` : r.error}`); continue; }
   if ((name.startsWith("changes-50-delete-") || name.startsWith("report-50-delete-")) && (Number(r.ms) > 1000 || Number(r.growthMB) > 100)) problems.push(`${name}: ${r.ms} ms and ${r.growthMB} MB of heap growth, over the 1000 ms and 100 MB it may take`);
   if (name === "diff-by-time" && Number(r.ms) > 1000) problems.push(`${name}: ${r.ms} ms, over the 1000 ms it may take`);
+  if (name.startsWith("history-") && Number(r.medianMs) > HISTORY_READ_MS) problems.push(`${name}: the median of nine reads was ${r.medianMs} ms, over the ${HISTORY_READ_MS} ms it may take`);
   if (Number(r.peakOfLine) > 0.5) problems.push(`${name}: the heap reached ${r.peakUsedMB} MB, ${(Number(r.peakOfLine) * 100).toFixed(0)}% of the ${r.lineMB} MB line a budget stops a request at; a normal query must stay at or below half of it`);
 }
 console.log(problems.length ? `bench-changes ${args.label}: ${problems.length} problem(s)\n  ${problems.join("\n  ")}` : `bench-changes ${args.label}: every check passed`);
