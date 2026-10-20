@@ -586,13 +586,15 @@ Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request),
 spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
 defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
 
-The two flags are the choice: the half at 4 MB takes the young generation from 128 MB to 8 MB, and the growing percentage at 50
-makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
+The two flags are the choice: the half at 4 MB takes the ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
+and the growing percentage at 50 makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
 so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
 running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
 minutes) per run. A ratio is the run with the flags (or the twin) over the defaults of the same round; the table gives the
 geometric mean of the 12 ratios and its 95% interval (t distribution on the logarithms, 11 degrees of freedom). The twin differs
-from the defaults only by chance, so its ratio is this measurement's noise.
+from the defaults only by chance, so its ratio is this measurement's noise. No noise floor was recorded beforehand: each job of
+the hosted macOS runners lands on a different machine, so a floor cannot be taken for each machine, and the reading rests on the
+twin of the same measurement. The CPU figures are from shared CI runners, not timings on the 14900K.
 
 | metric | defaults (mean of 12) | twin | two flags | twin / defaults | two flags / defaults |
 |---|---|---|---|---|---|
@@ -612,15 +614,19 @@ way. The flags are accepted at that CPU cost on a design card (item `board-offhe
 
 `--optimize-for-size` goes further
 but at twice the CPU. Flags set from the code after the process has started do not do it: the size of a half is fixed when
-the process starts, so only the growing percentage takes effect, for a saving of 28%. Hence the flags are arguments of the
+the process starts, so only the growing percentage takes effect, and the pages stay at 381 MB (the table above), 112 MB more than with both flags
+set at the start. Hence the flags are arguments of the
 service file `ops/wf-board.plist`.
 
 A change of the service file reaches the running service only when the service is installed again (`scripts/install-service.ts`
 writes the file; `launchctl bootout` and `bootstrap` load it): the deploy job's restart (`launchctl kickstart -k`) starts the
 process with the arguments launchd already holds. The `startup memory` line therefore names the options node was started
 with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), and `test/memory-flags.test.ts` holds that
-node accepts the file's flags and that with them the young generation stays within 12 MB (two halves of 4 MB read 8 MB on every run)
-where without them it grows past that (128 MB).
+node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
+(128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
+halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 and 12.3 MB in the sweep and
+28.5 MB in one of the 12 paired runs, and the same probe written as a top-level script read 15 to 29 MB with the same flags. V8 lets
+the young generation hold more than two halves for a while; the cause was not looked into.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts

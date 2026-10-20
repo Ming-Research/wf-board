@@ -25,7 +25,9 @@ const PROBE = `
   console.log(peak / 1048576);
 })();
 `;
-/** The two halves of 4 MB read 8 MB; this leaves room for a V8 that holds a few pages more, and still rejects halves of 8 MB (16 MB). */
+/** A limit on this probe, not a bound on the daemon, which was seen with more (docs/design.md, section 4, Memory beyond the heap): two
+ * halves of 4 MB read 8 MB here on every run; the limit leaves room for a V8 that holds a few pages more, and still rejects halves of 8 MB
+ * (16 MB). */
 const LIMIT_MB = 12;
 const peakNewSpaceMB = (nodeFlags: string[]) => Number(execFileSync(process.execPath, [...nodeFlags, "-e", PROBE], { encoding: "utf8" }).trim());
 
@@ -35,7 +37,7 @@ test("the service file starts node with the memory flags, between the node and t
   assert.deepEqual(programArguments.slice(1, -1), ["--max-semi-space-size=4", "--heap-growing-percent=50"]);
 });
 
-test("node accepts the service's flags and with them the young generation stays within two 4 MB halves, where without them it grows past that", () => {
+test("node accepts the service's flags and with them the probe's young generation stays within 12 MB, where without them it grows past that", () => {
   const without = peakNewSpaceMB([]), withFlags = peakNewSpaceMB(flags);
   assert.ok(without > LIMIT_MB, `without the flags the new space grows past ${LIMIT_MB} MB: ${without}`);
   assert.ok(withFlags > 0 && withFlags <= LIMIT_MB, `with the service's flags it stays within ${LIMIT_MB} MB: ${withFlags}`);
