@@ -1,0 +1,52 @@
+name: tmp-ci-gate-github-lag
+# Temporary (ci-gate-github-lag): the type check, the time gate's tests, and the same tests against three spoiled copies of the script, each of which must fail
+# the tests that guard what was spoiled. Removed before the branch is ready.
+on:
+  push:
+    branches: [ci-gate-github-lag]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: node --test --test-reporter=spec test/ci-time-gate.test.ts test/ci-workflow.test.ts
+  spoiled:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mutant: [before, no-allowance, first-listed-step]
+    name: spoiled ${{ matrix.mutant }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/node-modules
+      - name: spoil the script
+        run: |
+          case "${{ matrix.mutant }}" in
+            # The script as it was before this change, with the constant the tests import so that the file still loads.
+            before)
+              git show origin/main:scripts/ci-time-gate.ts > scripts/ci-time-gate.ts
+              echo 'export const MARK_ALLOWANCE_SECONDS = 5;' >> scripts/ci-time-gate.ts ;;
+            # Every second of delay comes off, none is allowed.
+            no-allowance)
+              sed -i 's/MARK_ALLOWANCE_SECONDS = 5;/MARK_ALLOWANCE_SECONDS = 0;/' scripts/ci-time-gate.ts ;;
+            # The last step is the last one listed, not the one that ended latest.
+            first-listed-step)
+              sed -i 's/seconds(ends.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)), job.completed_at!)/seconds(ends[ends.length - 1]!, job.completed_at!)/' scripts/ci-time-gate.ts ;;
+          esac
+          git diff --stat -- scripts/ci-time-gate.ts
+      - name: the tests must fail
+        run: |
+          if node --test --test-reporter=spec test/ci-time-gate.test.ts > "$RUNNER_TEMP/spoiled.txt" 2>&1; then
+            echo "the tests passed on the spoiled script"; exit 1
+          fi
+          grep -E '^\s+✖' "$RUNNER_TEMP/spoiled.txt" | sort -u

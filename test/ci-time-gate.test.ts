@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANCEL_GRACE_MS, FEW_OPEN, LIMIT_SECONDS, LOOK_MS, SHARD_RATIO, evaluate, quickestWait, shardTable, statusOf, verdictOf, waitForJobs } from "../scripts/ci-time-gate.ts";
+import { CANCEL_GRACE_MS, FEW_OPEN, LIMIT_SECONDS, LOOK_MS, MARK_ALLOWANCE_SECONDS, SHARD_RATIO, evaluate, quickestWait, shardTable, statusOf, verdictOf, waitForJobs } from "../scripts/ci-time-gate.ts";
 import type { Job } from "../scripts/ci-time-gate.ts";
 
 const started = "2026-10-17T10:00:00Z";
@@ -16,6 +16,8 @@ const started = "2026-10-17T10:00:00Z";
 const at = (s: number) => new Date(Date.parse(started) + s * 1000).toISOString().replace(".000Z", "Z");
 /** A job that started `from` and ended `to` seconds after the run started, having waited `wait` seconds for a runner. */
 const job = (name: string, from: number, to: number, steps: Job["steps"] = [], wait = 3): Job => ({ name, conclusion: "success", created_at: at(from - wait), started_at: at(from), completed_at: at(to), steps });
+/** A job like `job` whose last step ended `lag` seconds before GitHub marked it complete (at `to`). */
+const markedLate = (name: string, from: number, to: number, lag: number, wait = 3): Job => job(name, from, to, [{ name: "tests", started_at: at(from), completed_at: at(to - lag) }], wait);
 /** A test shard whose `tests` step took `s` seconds, after 12 seconds of setup. */
 const shard = (n: number, s: number) => job(`test shard ${n}`, 3, 15 + s, [{ name: "tests", started_at: at(15), completed_at: at(15 + s) }]);
 const evenShards = (s: number) => Array.from({ length: 8 }, (_, i) => shard(i + 1, s));
@@ -32,7 +34,7 @@ test("the total runs from the start of the run to the moment of the status, not 
   const result = evaluate(started, jobs, { mode: "enforce", now: at(73) });
   assert.equal(result.total, 73);
   assert.equal(result.verdict, "red");
-  assert.match(result.markdown, /\*\*73 s\*\* from the start of the run to the status, without the wait for a runner: over the limit/);
+  assert.match(result.markdown, /\*\*73 s\*\* from the start of the run to the status, without the wait for a runner and the late marking of jobs complete: over the limit/);
   assert.match(result.markdown, /The run took 73 s in all \(the last job, e2e, ended at 71 s\)/);
   assert.match(result.markdown, /\| e2e \| 3 \| 0 \| 67 \| 71 \|/);
   assert.match(result.markdown, /\| check \| 3 \| 0 \| 18 \| 20 \|/);
@@ -76,7 +78,7 @@ test("one job that waited a long time for a runner is counted without the wait b
   const result = evaluate(started, runWithLateJob(45, 81), { mode: "enforce", now: at(83) });
   // The other jobs ended by 51 s; the late job's end less its 42 s beyond the quickest wait of 3 s is 39 s; the status came 2 s after the last job.
   assert.deepEqual([result.total, result.counted, result.waited, result.verdict, result.fail], [83, 53, 30, "yellow", false]);
-  assert.match(result.markdown, /\*\*53 s\*\* from the start of the run to the status, without the wait for a runner: close to the limit/);
+  assert.match(result.markdown, /\*\*53 s\*\* from the start of the run to the status, without the wait for a runner and the late marking of jobs complete: close to the limit/);
   assert.match(result.markdown, /The run took 83 s in all \(the last job, test shard 1, ended at 81 s\)\. 30 s of that is waiting for a runner beyond the 3 s that the quickest job of the run waited; test shard 1 waited 45 s\./);
   assert.match(result.markdown, /\| test shard 1 \| 45 \| 42 \| 33 \| 81 \|/);
 });
@@ -136,9 +138,100 @@ test("the run that was red for 83 s because one shard waited for a runner is wit
   ];
   const result = evaluate(started, jobs, { mode: "enforce", now: at(83) });
   assert.deepEqual([result.total, result.counted, result.waited, result.verdict, result.fail], [83, 53, 30, "yellow", false]);
-  assert.deepEqual(statusOf(jobs, "result", result), { state: "success", description: "full CI success (27 jobs, 83 s, 30 s of it waiting for a runner)" });
+  assert.deepEqual(statusOf(jobs, "result", result), { state: "success", description: "full CI success (27 jobs, 83 s, 30 s of it waiting for a runner, 0 s of it GitHub marking jobs complete late)" });
   // The same run judged by its total, as before, was red.
   assert.equal(verdictOf(result.total), "red");
+});
+
+// ---- GitHub marking a job complete late ----
+
+// The jobs of the full CI run 39327317254 on 10-19 (hosted runners), run by hand on the head commit of ci-gate-45, which the time gate turned red for 109 s
+// with every test green: the 39 jobs other than `result` all ended their last step by 35 s, and 30 of them were marked complete only between 77 and 105 s,
+// 47 to 76 s after it (the other 9 within 3 s).
+// [name, seconds after the run started that the job started, its last step ended, GitHub marked it complete]; every job was created at 2 s. The job that reads,
+// `result`, started at 5 s and its last step ended at 110 s.
+const LAG_RUN: [string, number, number, number][] = [
+  ["check", 5, 18, 20], ["test shard 20", 4, 24, 91], ["test shard 24", 4, 25, 80], ["nkey time-quiet", 5, 33, 83], ["nkey counts", 5, 28, 80], ["no-tmp-workflow", 5, 8, 10],
+  ["test shard 11", 4, 28, 87], ["start", 5, 6, 8], ["test shard 5", 5, 29, 85], ["nkey witnesses", 6, 32, 82], ["nkey counts-out", 5, 29, 83], ["test shard 6", 5, 24, 26],
+  ["test shard 27", 5, 23, 26], ["test shard 17", 5, 29, 87], ["nkey time-writing", 5, 35, 99], ["test shard 21", 5, 29, 86], ["test shard 3", 5, 31, 87],
+  ["test shard 18", 5, 30, 85], ["test shard 19", 5, 27, 96], ["test shard 16", 5, 26, 95], ["test shard 13", 5, 23, 25], ["test shard 29", 5, 22, 25],
+  ["test shard 9", 5, 34, 103], ["test shard 14", 6, 33, 92], ["test shard 15", 5, 29, 105], ["test shard 23", 5, 23, 25], ["test shard 28", 5, 32, 81],
+  ["test shard 22", 5, 27, 80], ["test shard 1", 5, 31, 87], ["test shard 8", 5, 26, 88], ["test shard 12", 5, 28, 77], ["test shard 26", 5, 25, 89],
+  ["nkey late-rows", 5, 31, 78], ["test shard 7", 5, 29, 87], ["test shard 25", 6, 31, 86], ["test shard 30", 5, 29, 84], ["test shard 10", 5, 22, 24],
+  ["test shard 4", 5, 29, 80], ["test shard 2", 5, 29, 84],
+];
+const lagRunJobs = (): Job[] => [
+  ...LAG_RUN.map(([name, from, last, marked]): Job => ({ name, conclusion: "success", created_at: at(2), started_at: at(from), completed_at: at(marked), steps: [{ name: "tests", started_at: at(from), completed_at: at(last) }] })),
+  { name: "result", status: "in_progress", conclusion: null, created_at: at(2), started_at: at(5), completed_at: null },
+];
+
+test("the run that was red for 109 s because GitHub marked 30 jobs complete 47 to 76 s after their last step is counted at 44 s, with the late marking written apart", () => {
+  const jobs = lagRunJobs();
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(110) });
+  // The latest job to end its last step is nkey time-writing, at 35 s; it counts as ended 5 s later, and the status came 5 s after the last job was marked.
+  assert.deepEqual([result.total, result.counted, result.waited, result.markedLate, result.verdict, result.fail], [110, 44, 1, 65, "ok", false]);
+  // Without the late marking the same jobs read 109 s, as the gate judged them.
+  assert.equal(result.counted + result.markedLate, 109);
+  assert.equal(verdictOf(109), "red");
+  assert.deepEqual(statusOf(jobs, "result", result), { state: "success", description: "full CI success (39 jobs, 110 s, 1 s of it waiting for a runner, 65 s of it GitHub marking jobs complete late)" });
+  assert.match(result.markdown, /\*\*44 s\*\* from the start of the run to the status, without the wait for a runner and the late marking of jobs complete: within the limit/);
+  assert.match(result.markdown, /65 s of it is GitHub marking jobs complete more than 5 s after their last step; test shard 15 was marked 76 s after its last step\./);
+  assert.match(result.markdown, /\| nkey time-writing \| 3 \| 1 \| 94 \| 99 \| 64 \|/);
+  assert.match(result.markdown, /\| check \| 3 \| 1 \| 15 \| 20 \| 2 \|/);
+});
+
+test("a delay that holds back every job from the start of the run comes off too, as no job is marked on time to compare with", () => {
+  const jobs = Array.from({ length: 5 }, (_, i) => markedLate(`test shard ${i + 1}`, 3, 90, 60));
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(92) });
+  // Each job's last step ended at 30 s and counts as ended at 35 s; the status came 2 s after the last mark.
+  assert.deepEqual([result.total, result.counted, result.waited, result.markedLate, result.verdict], [92, 37, 0, 55, "ok"]);
+});
+
+test("a job that is itself slow stays red whatever GitHub's delay, and the delay on top of it does not hide it", () => {
+  // The last step ended at 75 s and the job was marked complete 2 s later, in time.
+  assert.deepEqual(evaluate(started, [job("check", 2, 12), markedLate("test shard 1", 3, 77, 2)], { mode: "enforce", now: at(79) }).counted, 79);
+  // The last step ended at 75 s and the job was marked complete 25 s later: it counts as ended at 80 s.
+  const delayed = evaluate(started, [job("check", 2, 12), markedLate("test shard 1", 3, 100, 25)], { mode: "enforce", now: at(102) });
+  assert.deepEqual([delayed.counted, delayed.markedLate, delayed.verdict, delayed.fail], [82, 20, "red", true]);
+});
+
+test("a delay of 5 seconds, the usual one at most, is not taken off, and every second beyond it is", () => {
+  assert.equal(MARK_ALLOWANCE_SECONDS, 5);
+  const withLag = (lag: number) => evaluate(started, [job("check", 3, 12), markedLate("test shard 1", 3, 55, lag)], { mode: "enforce", now: at(56) });
+  assert.deepEqual([0, 2, 5].map(lag => [withLag(lag).counted, withLag(lag).markedLate]), [[56, 0], [56, 0], [56, 0]]);
+  assert.deepEqual([6, 8, 30].map(lag => [withLag(lag).counted, withLag(lag).markedLate]), [[55, 1], [53, 3], [31, 25]]);
+});
+
+test("a job with no step that has ended is not taken off, and its delay is shown as unknown", () => {
+  // `job` gives no steps; the other has a step that never ended.
+  const unfinished: Job = { ...job("test shard 2", 3, 70), steps: [{ name: "tests", started_at: at(3), completed_at: null }] };
+  const result = evaluate(started, [job("e2e", 4, 60), unfinished], { mode: "enforce", now: at(72) });
+  assert.deepEqual([result.counted, result.markedLate], [72, 0]);
+  assert.match(result.markdown, /\| e2e \| 3 \| 0 \| 56 \| 60 \| - \|/);
+  assert.match(result.markdown, /\| test shard 2 \| 3 \| 0 \| 67 \| 70 \| - \|/);
+});
+
+test("a job marked complete before the end of its last step has no delay, not a negative one", () => {
+  const early = job("check", 3, 40, [{ name: "tests", started_at: at(3), completed_at: at(43) }]);
+  const result = evaluate(started, [early], { mode: "enforce", now: at(41) });
+  assert.deepEqual([result.counted, result.markedLate], [41, 0]);
+  assert.match(result.markdown, /\| check \| 3 \| 0 \| 37 \| 40 \| 0 \|/);
+});
+
+test("the last step is the one that ended latest, whatever the order of the steps in the list", () => {
+  const steps = [{ name: "tests", started_at: at(3), completed_at: at(30) }, { name: "Post checkout", started_at: at(30), completed_at: at(20) }, { name: "Set up job", started_at: at(3), completed_at: null }];
+  const result = evaluate(started, [job("test shard 1", 3, 60, steps)], { mode: "enforce", now: at(62) });
+  // Marked 30 s after the step that ended at 30 s: 25 s beyond the 5 s; the later ones in the list ended earlier or not at all.
+  assert.deepEqual([result.counted, result.markedLate], [37, 25]);
+});
+
+test("the late marking and the wait for a runner are taken off together and written apart, and the sum is what the run lost", () => {
+  const jobs = [...runWithLateJob(45, 81), markedLate("nkey time-writing", 3, 70, 30)];
+  const result = evaluate(started, jobs, { mode: "enforce", now: at(83) });
+  // With only the wait for a runner taken off, the latest job to end is nkey time-writing at 70 s and the status could have been written at 72 s (11 s before the
+  // 83 s). Its last step ended at 40 s, so it counts as ended at 45 s, the latest is nkey counts at 51 s and the status could have come at 53 s: 19 s more.
+  assert.deepEqual([result.total, result.counted, result.waited, result.markedLate], [83, 53, 11, 19]);
+  assert.equal(result.waited + result.markedLate, result.total - result.counted);
 });
 
 test("shards of one size name no slow shard, and one shard over 1.5 times the mean of the others is named", () => {
@@ -236,26 +329,26 @@ test("a cancelled job is given a grace before the result stands, once, so a canc
 
 test("the status is success when every other job succeeded or was skipped, and says how many jobs, how long and how much of it was waiting for a runner", () => {
   const jobs = [open("result"), ended("check"), ended("start", "skipped"), ended("test shard 1")];
-  assert.deepEqual(statusOf(jobs, "result", { total: 48, waited: 0, fail: false }), { state: "success", description: "full CI success (3 jobs, 48 s, 0 s of it waiting for a runner)" });
-  assert.equal(statusOf(jobs, "result", { total: 71, waited: 14, fail: false }).description, "full CI success (3 jobs, 71 s, 14 s of it waiting for a runner)");
+  assert.deepEqual(statusOf(jobs, "result", { total: 48, waited: 0, markedLate: 0, fail: false }), { state: "success", description: "full CI success (3 jobs, 48 s, 0 s of it waiting for a runner, 0 s of it GitHub marking jobs complete late)" });
+  assert.equal(statusOf(jobs, "result", { total: 71, waited: 14, markedLate: 6, fail: false }).description, "full CI success (3 jobs, 71 s, 14 s of it waiting for a runner, 6 s of it GitHub marking jobs complete late)");
 });
 
 test("the status is failure when a job did not succeed, naming up to four of them, whatever the gate says", () => {
   const jobs = [open("result"), ended("check", "failure"), ended("no-tmp-workflow", "cancelled"), ended("nkey counts", "failure"), ended("test shard 1")];
-  const status = statusOf(jobs, "result", { total: 70, waited: 0, fail: true });
+  const status = statusOf(jobs, "result", { total: 70, waited: 0, markedLate: 0, fail: true });
   assert.equal(status.state, "failure");
   assert.equal(status.description, "full CI failure (check, no-tmp-workflow, nkey counts not green)");
   const many = [open("result"), ...Array.from({ length: 6 }, (_, i) => ended(`test shard ${i + 1}`, "failure"))];
-  assert.equal(statusOf(many, "result", { total: 40, waited: 0, fail: false }).description, "full CI failure (test shard 1, test shard 2, test shard 3, test shard 4 and 2 more not green)");
+  assert.equal(statusOf(many, "result", { total: 40, waited: 0, markedLate: 0, fail: false }).description, "full CI failure (test shard 1, test shard 2, test shard 3, test shard 4 and 2 more not green)");
   // A job with no conclusion has not succeeded.
-  assert.equal(statusOf([open("result"), { ...ended("check"), conclusion: null }], "result", { total: 40, waited: 0, fail: false }).state, "failure");
+  assert.equal(statusOf([open("result"), { ...ended("check"), conclusion: null }], "result", { total: 40, waited: 0, markedLate: 0, fail: false }).state, "failure");
 });
 
 test("a red gate makes the status failure with the time and the wait in its description, and a description is cut at 140 characters", () => {
   const jobs = [open("result"), ended("check"), ended("test shard 1")];
-  assert.deepEqual(statusOf(jobs, "result", { total: 75, waited: 10, fail: true }), { state: "failure", description: "full CI failure (time gate: 75 s, 10 s of it waiting for a runner)" });
+  assert.deepEqual(statusOf(jobs, "result", { total: 75, waited: 10, markedLate: 20, fail: true }), { state: "failure", description: "full CI failure (time gate: 75 s, 10 s of it waiting for a runner, 20 s of it GitHub marking jobs complete late)" });
   const long = [open("result"), ended("a".repeat(80), "failure"), ended("b".repeat(80), "failure")];
-  assert.equal(statusOf(long, "result", { total: 40, waited: 0, fail: false }).description.length, 140);
+  assert.equal(statusOf(long, "result", { total: 40, waited: 0, markedLate: 0, fail: false }).description.length, 140);
 });
 
 // ---- the whole script against a stand-in for the Actions API ----
@@ -265,11 +358,14 @@ const SCRIPT = fileURLToPath(new URL("../scripts/ci-time-gate.ts", import.meta.u
 /** Runs scripts/ci-time-gate.ts as a runner would, against a local server that answers as the API does for a run that started 50 s ago whose jobs have all
  * ended: `check` ended at 40 s after a wait of 3 s, `test shard 1` waited 33 s and ended at 48 s, and the job that reads has just started. The server
  * keeps the statuses it is sent. `broken` makes it answer the list of jobs with an error. */
-async function runScript(options: { mode: string; checkConclusion?: string; broken?: boolean }) {
+async function runScript(options: { mode: string; checkConclusion?: string; broken?: boolean; checkMarkedAfter?: number }) {
   const t0 = Math.floor(Date.now() / 1000) * 1000 - 50_000;
   const iso = (s: number) => new Date(t0 + s * 1000).toISOString().replace(".000Z", "Z");
   const apiJob = (name: string, from: number, to: number | null, conclusion: string | null): Job => ({ name, status: to === null ? "in_progress" : "completed", conclusion, created_at: iso(0), started_at: iso(from), completed_at: to === null ? null : iso(to) });
-  const jobs = [apiJob("check", 3, 40, options.checkConclusion ?? "success"), apiJob("test shard 1", 33, 48, "success"), apiJob("result", 3, null, null)];
+  const check = apiJob("check", 3, 40, options.checkConclusion ?? "success");
+  // `checkMarkedAfter` gives `check` a last step that ended that many seconds before GitHub marked it complete.
+  if (options.checkMarkedAfter !== undefined) check.steps = [{ name: "tests", started_at: iso(3), completed_at: iso(40 - options.checkMarkedAfter) }];
+  const jobs = [check, apiJob("test shard 1", 33, 48, "success"), apiJob("result", 3, null, null)];
   const statuses: { path: string; body: { state: string; context: string; description: string; target_url: string } }[] = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -308,10 +404,18 @@ test("enforced, the script writes the status with the total and the wait for a r
   assert.equal(statuses[0]!.body.context, "full-ci");
   // The status comes a moment after the 50 s of the run. Served as soon as the quickest job, test shard 1 would have ended at 18 s and check, at 40 s, would have
   // ended last: 8 s before the 48 s at which the last job did.
-  assert.match(statuses[0]!.body.description, /^full CI success \(2 jobs, (5\d) s, 8 s of it waiting for a runner\)$/);
+  assert.match(statuses[0]!.body.description, /^full CI success \(2 jobs, (5\d) s, 8 s of it waiting for a runner, 0 s of it GitHub marking jobs complete late\)$/);
   assert.match(statuses[0]!.body.target_url, /\/owner\/repo\/actions\/runs\/7$/);
   assert.match(output, /written=true\n/);
   assert.match(output, /verdict=ok\ntotal=5\d\nwaited=8\n/);
+});
+
+test("enforced, a job marked complete 20 s after its last step is counted at 5 s after it, and the status and the output say how much was taken off", async () => {
+  const { code, statuses, output } = await runScript({ mode: "enforce", checkMarkedAfter: 20 });
+  assert.equal(code, 0);
+  // check's last step ended at 20 s, so it counts as ended at 25 s and not 40 s: 15 s off, beside the 8 s of waiting for a runner.
+  assert.match(statuses[0]!.body.description, /^full CI success \(2 jobs, (5\d) s, 8 s of it waiting for a runner, 15 s of it GitHub marking jobs complete late\)$/);
+  assert.match(output, /verdict=ok\ntotal=5\d\nwaited=8\nmarked_late=15\n/);
 });
 
 test("enforced, a job that did not succeed makes the status failure and the script fail", async () => {
