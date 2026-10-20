@@ -13,3 +13,44 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run check
       - run: node --test test/deploy.test.ts test/deploy-service.test.ts test/service-config.test.ts test/test-shard.test.ts
+  # The tests must fail on code with one part of the change spoiled; each job edits one line and expects the tests to be red. A job whose
+  # edit changed nothing fails by itself.
+  red:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # bootstrap without waiting until launchd has let go of the service
+          - { name: no-wait, file: scripts/deploy.ts, from: 'while (await loaded()) {', to: 'while (false) {', tests: test/deploy-service.test.ts }
+          # the old text is not kept, so going back has nothing to write
+          - { name: no-restore, file: src/deploy.ts, from: 'pending.config = service.previous; ', to: '', tests: test/deploy-service.test.ts }
+          # the values taken from the job's own node and not from the installed file
+          - { name: job-values, file: src/deploy.ts, from: '...installedValues(previous), HOME', to: '...installedValues(previous), NODE: process.execPath, HOME', tests: test/deploy-service.test.ts }
+          # a deploy of a live commit still moves and builds code, and goes back through the checkout
+          - { name: in-place-builds, file: src/deploy.ts, from: 'if (!pending.inPlace) {', to: 'if (true) {', tests: test/deploy-service.test.ts }
+          # kickstart in place of the replacement: the file launchd holds is kept
+          - { name: kickstart-only, file: src/deploy.ts, from: 'await restartAndWait(pending, service.next);', to: 'await restartAndWait(pending);', tests: test/deploy-service.test.ts }
+          # a template that renders to the same text is replaced all the same
+          - { name: always-replace, file: src/deploy.ts, from: 'return next === previous ? undefined : { previous, next };', to: 'return { previous, next };', tests: test/deploy-service.test.ts }
+          # the installer's own fill-in leaves a placeholder no value fills as it stands
+          - { name: unknown-placeholder, file: src/service-config.ts, from: 'if (!(PLACEHOLDERS as readonly string[]).includes(name!)) throw', to: 'if (false) throw', tests: 'test/service-config.test.ts test/deploy-service.test.ts' }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - env:
+          FILE: ${{ matrix.file }}
+          FROM: ${{ matrix.from }}
+          TO: ${{ matrix.to }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync(process.env.FILE, "utf8");
+            if (!text.includes(process.env.FROM)) { console.log("the text to edit is not in " + process.env.FILE); process.exit(1); }
+            fs.writeFileSync(process.env.FILE, text.replace(process.env.FROM, () => process.env.TO));
+          '
+          git diff --stat
+      - run: |
+          if node --test ${{ matrix.tests }}; then echo "the tests passed on code spoiled as ${{ matrix.name }}"; exit 1; fi
