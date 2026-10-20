@@ -1,12 +1,15 @@
-// What the tests of the deploy job share (test/deploy.test.ts, test/deploy-service.test.ts): real git repositories, the job's outside world as
-// fakes, and the stand-in for `gh` that scripts/deploy.ts is run against.
+// What the deploy job's test files share (test/deploy.test.ts, deploy-recover.test.ts, deploy-script.test.ts, deploy-service.test.ts):
+// real git repositories (a bare origin, the checkout the daemon runs from, and a clone that plays the merges), the fake npm, launchd and
+// daemon around src/deploy.ts, a stand-in for `gh`, and the checks GitHub may report.
+
+import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deployOnce } from "../src/deploy.ts";
-import type { DeployDeps, DeployState, Push } from "../src/deploy.ts";
+import type { DeployDeps, DeployOutcome, DeployState, Push } from "../src/deploy.ts";
 import type { Checks } from "../src/github.ts";
 
 export const BRANCH = "main";
@@ -126,4 +129,23 @@ cat "$STUB_GH_ANSWER"
   const answer = (...nodes: object[]) => writeFileSync(answerFile, JSON.stringify({ data: { repository: { object: { oid: "x", statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes } } } } } }));
   answer(check("test", "COMPLETED", "SUCCESS"));
   return { env: { STUB_GH_CALLS: calls, STUB_GH_ANSWER: answerFile }, calls, answerFile, check, answer };
+}
+
+export const GREEN: Checks = { state: "success", failed: [] }, RUNNING: Checks = { state: "pending", failed: [] }, NONE: Checks = { state: "none", failed: [] };
+export const RED = (...failed: string[]): Checks => ({ state: "failure", failed });
+/** Nothing was moved, built, restarted or pushed. */
+export const untouched = (r: Awaited<ReturnType<typeof repos>>, w: ReturnType<typeof world>["w"]) =>
+  assert.deepEqual({ head: r.head(), builds: w.builds, restarts: w.restarts, posts: w.posts }, { head: r.first, builds: [], restarts: 0, posts: [] });
+
+
+export type Repos = Awaited<ReturnType<typeof repos>>;
+/** A deploy that did not end: git refuses its merge (a stale index.lock), going back is refused too, and the daemon still answers.
+ * The checkout is on `first` with the lock gone and a pending record in the state; returns the commit that was being deployed. */
+export async function leftUnfinished(r: Repos, deploy: () => Promise<DeployOutcome>) {
+  const sha = r.land({ "src/a.ts": "a" }, "A");
+  const lock = join(r.checkout, ".git/index.lock");
+  writeFileSync(lock, "");
+  assert.equal(await deploy(), "stuck");
+  rmSync(lock);
+  return sha;
 }

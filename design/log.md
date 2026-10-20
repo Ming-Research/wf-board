@@ -8,6 +8,18 @@ Nodes: daemon/memory
 
 Summary: The node described `--max-semi-space-size=4` as each half of the young generation being at most 4 MB. A GC trace of the memory-flags test's probe (docs/design.md, section 4, Memory beyond the heap) shows that the flag sets the size the young generation is brought back to at a collection, and that it grew to 12.75 to 21.75 MB between two collections while the old generation was being marked (28.5 MB in the daemon in one paired run). The node now says that. The choice (the two flags and their values), its reason (the V8 pages at 0.55 times the defaults') and the refused alternatives are unchanged.
 
+## 2026-10-20 Leave GitHub's late completion marks out of the time gate
+
+Nodes: testing/ci-time-gate
+
+Summary: The time gate took each job's `completed_at` as its end, and GitHub writes that second after processing the runner's completion report, so a backlog there made finished jobs end late: in run 39327317254 (the head commit of ci-gate-45, 10-19, 21:25) 30 of 39 jobs ended their last step by 35 seconds and were marked 47 to 76 seconds later, and the gate judged 108 seconds (109 in all) and was red with every test green (2 of the 240 full CIs of 10-19, 0.8%; the other 238 have a delay of median 2 and 99th percentile 4 seconds over 6,431 jobs, three over 5). A job's end now also moves back by the part of that delay beyond 5 seconds, and the description and the summary give it apart from the wait for a runner; a fixed number is taken from the measurement because the usual delay is tight, and the options of taking off the delay beyond the quickest job's, all of it, starting the run again and doing nothing are rejected with their reasons (docs/design.md, section 11, The late completion mark).
+
+## 2026-10-19 Thirty test shards, and the image's own Node for the jobs of the full CI
+
+Nodes: testing/ci-shards, testing/ci-job-setup, testing/ci-time-gate
+
+Summary: With twenty shards the time gate judged eleven full CIs at 45 to 59 seconds (median 50) against its line of 60, so a slow set-up turned a run red. The suite is bound by the processor (951 seconds of CPU for 789 of wall time; a shard running four files was no quicker than one running three), so only more shards shorten a shard's step, and only up to its largest file. The script tests now run as thirty shards, with the files over about 15 seconds split, Node's compile cache for the test processes, three test files no longer held 10 seconds after their last test by a deadline's timer, and the store's write starting one git process where it started two; the two largest n-key parts are split in two each. The jobs take Node 24 from the runner image's tool cache instead of `setup-node`, whose print of the versions took up to 7.2 seconds, and run their scripts with `node --run`, since the first start of npm read its own files for up to 14 seconds. Seven full CIs of one commit were judged 40 to 47 seconds (median 42). Twenty shards, thirty without the splits and a larger runner are recorded as refused in `testing/ci-shards`, whose refusal of twenty-four now says it was measured with the large files whole; `setup-node` in every job and `npm run` in `testing/ci-job-setup`; `testing/ci-time-gate` no longer counts the jobs or the shards of a run, which are 40 and 30 now. The numbers are in docs/design.md, section 11, Sharding the script tests and The set-up of a job.
+
 ## 2026-10-19 Replace the daemon's service file in the deploy job
 
 Nodes: deploy/service-config

@@ -89,7 +89,10 @@ test("stopping ends the push that runs, tells nobody and starts no other", async
   const running = backup.round();
   while (w.pushes.length === 0) await new Promise(resolve => setImmediate(resolve));
   backup.stop();
-  await Promise.race([running, new Promise((_resolve, reject) => setTimeout(() => reject(new Error("the round did not end after stop()")), 3000))]);
+  // The deadline's timer goes once the round ends: left running, it would hold the file's process, and its shard, until it fires.
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try { await Promise.race([running, new Promise((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("the round did not end after stop()")), 3000); })]); }
+  finally { clearTimeout(deadline); }
   assert.deepEqual(frames(), [], "a push stopped by the shutdown is no failure of the copy");
   await round(130);
   assert.equal(w.pushes.length, 1, "no push is started after the stop");

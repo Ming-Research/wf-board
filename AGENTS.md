@@ -144,8 +144,8 @@ matches what the artifact board offered.
   for `press-n-report.e2e.ts`, which reports the time of n in a real browser and judges nothing, and for the n-key lane (design section 11,
   The browser file). `test/nkey/`
   holds the n-key lane (`*.nkey.ts`, not picked by `npm test`; design section 11, The n-key lane): the real page in jsdom on that board,
-  the counts of one press of n and its time against the page of the base, in four files (`counts`, `witnesses`, `time-quiet`,
-  `time-writing`) that are four jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
+  the counts of one press of n and its time against the page of the base, in six files (`counts`, `counts-out`, `late-rows`, `witnesses`,
+  `time-quiet`, `time-writing`) that are six jobs of the full CI; `lane.ts` is what they share, `press.ts` the tape of recorded answers, the virtual clock
   and the pairs, `stats.ts` the interval and the verdict (`stats.test.ts` runs in `npm test`). `test/dom/` holds the DOM
   layer: the bundled page in jsdom against the real server on the same generated board (`page.ts` the window,
   its shims and the small tools a person has; `styles.ts` the stylesheet's cascade for the style checks; `checks.ts`
@@ -189,11 +189,11 @@ matches what the artifact board offered.
   11). It reads only added lines, paths, commit messages and the pull request's
   title and body, and prints the rule and place, never the matched text.
 - `scripts/test-shard.ts` with `test/shard-costs.json`, `scripts/test-times-reporter.ts`
-  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 20
+  and `scripts/ci-time-gate.ts`: how the full CI shares the test files among its 30
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
   summary, and the job `result`, which starts with the run, waits for the other jobs, reads the time gate (the time without
-  the wait for a runner that a job had beyond the quickest job's) and writes the status `full-ci`; on a push to the main line it only
+  the wait for a runner that a job had beyond the quickest job's and without GitHub's late completion marks) and writes the status `full-ci`; on a push to the main line it only
   records the table and writes no status (design section 11, Sharding the script tests, The time gate; no job of `ci.yml` may use
   `needs`, `test/ci-workflow.test.ts`).
 - `.github/actions/node-modules/action.yml`: Node 24 and `node_modules` restored from a cache keyed by
@@ -204,7 +204,7 @@ matches what the artifact board offered.
 
 - `npm run check` (TypeScript 7, strict, erasable syntax only: Node 24 runs
   the sources directly), `npm run build:web`, `npm test`. The full CI runs all
-  three on every main-line merge (`npm test` as 20 shards at once), with the four jobs of the n-key lane beside them, and on a pull
+  three on every main-line merge (`npm test` as 30 shards at once), with the six jobs of the n-key lane beside them, and on a pull
   request when the engineer starts it (`gh workflow run ci.yml --ref <branch>`);
   pushes in between are
   checked by a temporary `tmp-*.yml` workflow that runs what
@@ -212,7 +212,7 @@ matches what the artifact board offered.
   file is added, renamed or becomes much slower, bring `test/shard-costs.json` up
   to date from the per-file table in the shards' summaries; the time gate names a
   shard that runs over 1.5 times the others.
-- `npm run test:nkey` runs the n-key lane (all four files, one after the other; CI runs each as a job of its own, `node --test
+- `npm run test:nkey` runs the n-key lane (all six files, one after the other; CI runs each as a job of its own, `node --test
   test/nkey/<part>.nkey.ts`, with `NKEY_BASE` naming the commit whose page the time layer compares with, the merge base or the commit before a
   push to the main line). It needs no browser but is made for hosted runners: a timing run on the owner's Mac says nothing about them.
 - `npm run test:e2e` builds the page and runs the browser file in headless Chromium,
@@ -222,7 +222,7 @@ matches what the artifact board offered.
   in the full CI. They need a Playwright browser and are never run on the owner's Mac.
 - Four test layers, each catching what the one before cannot (design
   section 11): unit and server tests; the page in a fake DOM
-  (`test/web.test.ts`), fast but without CSS or layout; the page in jsdom against
+  (`test/web-cases.ts`, run in two parts by `test/web-1.test.ts` and `web-2.test.ts`), fast but without CSS or layout; the page in jsdom against
   the real server on a generated board (`test/dom`, run by `npm test`), for every
   check that needs no layout; the page in a real browser on the same board
   (`test/e2e`), for what needs a layout. A page bug gets its test in the lowest
@@ -230,7 +230,7 @@ matches what the artifact board offered.
 - Every page fix gets a witness in the lowest layer that can see its bug: a run
   on the page with the fix reversed (a literal text edit, `test/e2e/variant.ts`)
   that reports the bug (`test/dom/witnesses.ts` and the scenario files, or
-  `test/web.test.ts` for the page's update). A fact only a real browser shows goes
+  `test/web-cases.ts` for the page's update). A fact only a real browser shows goes
   into the browser file (`test/e2e/browser.e2e.ts`: at most 15 tests, no
   reversed-fix variants of its own); a test added or changed there is shown to
   fail once on a page with the thing it guards spoiled, and its pull request
@@ -253,7 +253,7 @@ The shared rules' design-tree section applies; this is how it maps here.
   data a node's reason cites, which a node links to the heading that holds them
   (a bold lead-in such as "Storage" has no anchor, so the link goes to its
   section). Tests slice `docs/design.md` by heading (`test/wake.test.ts`,
-  `test/web.test.ts`): renaming or moving a heading they name breaks them.
+  `test/web-cases.ts`): renaming or moving a heading they name breaks them.
   Deferred work is an item on the board, never a file here.
 - A node records only what is in force on `main`. A change to a decision changes
   its node in the same pull request, with a new entry in `design/log.md`; a

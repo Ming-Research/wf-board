@@ -2,4 +2,4 @@
 
 import { pageTests } from "./page-families.ts";
 
-pageTests("the owner's page lands every click on what it claims: project filters on a page kept open while writes land, the second part of the projects", ["filters"], { passes: ["after"], projects: { part: 1, of: 2 } });
+pageTests("the owner's page lands every click on what it claims: project filters on a page kept open while writes land, the second part of the projects", ["filters"], { passes: ["after"], projects: { part: 1, of: 3 } });

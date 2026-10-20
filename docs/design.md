@@ -326,7 +326,7 @@ observers of the change (`listeners`) and the rest of the call. The steps are co
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
 limits), its ordinary log line carries them after a semicolon:
-`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git add 14 ms, git commit 2400 ms, ...`.
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git commit 2400 ms, ...`.
 A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
@@ -941,8 +941,10 @@ derivation design that replaced this:
   runner's 95% interval within 0.410–0.459, the twin against the base within ±1.8 to
   ±4.0%), 26.0 to 35.5 ms of CPU against 60.3 to 84.9 ms, the highest upper bound of a
   95% interval 36.4 ms (board-cpu-usage).
-- A write starts two git processes: `git add` of its paths and `git commit --only` of
-  the same paths, which commits exactly them whatever else is staged, so a file staged
+- A write starts one or two git processes: `git add` of the paths new to the head, when
+  it has any, and `git commit --only` of all its paths, which commits exactly them whatever
+  else is staged (it takes a path the head has, changed or deleted, as the working tree
+  holds it, and refuses one git does not know, hence the `git add` of new files), so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
   checked the index with `git diff --cached` and refused). The commit's summary line
   names the new commit in full (`core.abbrev=no`), and its author time is read through
@@ -953,7 +955,12 @@ derivation design that replaced this:
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
   the store's own code around them. The process costs here were taken from the profile of that
-  first version, with its heap; they were not measured again after the fix.
+  first version, with its heap; they were not measured again after the fix. The cost of
+  starting a process grows with the size of the process that starts it: on a hosted
+  runner, `git --version` started 200 times took 2.7, 3.6 and 5.9 ms a start with the
+  starting process at 73, 330 and 903 MB, 1.4, 2.3 and 3.7 ms of that process's CPU
+  (ci-gate-45); this is why a write that changes only documents the head has skips the
+  `git add`.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
@@ -5462,7 +5469,7 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
    the board rules, the file format, writes and their checks, the HTTP and
    MCP surfaces, each against synthetic fixtures.
-2. **The page in a fake DOM** (`test/web.test.ts`): the bundled page runs
+2. **The page in a fake DOM** (`test/web-cases.ts`): the bundled page runs
    against a hand-written DOM with modeled geometry and a small synthetic
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
@@ -5576,7 +5583,7 @@ own and short enough to be dealt out to the shards (the longest of the layer's
 run side by side.
 
 Diagrams are checked in two places. The page's own doing runs in the DOM layer
-(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`) against the stand-in library:
+(`test/dom/mermaid-page.test.ts`, `mermaid-redraw.test.ts`, `mermaid-view.test.ts`, `mermaid-toolbar.test.ts`) against the stand-in library:
 a block in a head and one in a log are drawn; a block that does not parse shows its code
 and the error while the blocks after it are drawn; the library is asked for when a block is
 shown and only once, and with the strict security level and the diagram's text whole; the
@@ -5634,7 +5641,7 @@ so no test reads the repository's history. In the DOM layer `test/dom/witnesses.
 (run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
 (agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
 naming the reason it must fail for; the fixes of the page's update run in the
-fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+fake-DOM layer (`test/web-cases.ts`, whose `page` takes the fixes to reverse),
 because a window has no page reload. A witness whose edit no longer matches
 the current file fails and is updated or retired on purpose. The browser file
 keeps no witness: a test of a fact that needs a box is shown to fail once, when
@@ -5810,15 +5817,18 @@ judged against the current page when it differs from the base, else against the 
 the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
 15 ms more per draw ×1.005 (board-cpu-usage).
 
-**Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
-(the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two
-time phases. The jobs take 30 to 55 s including the 10 to 17 s the runner needs before the tests start. `test/nkey/stats.test.ts` holds the arithmetic and the
+**Parts.** The lane is six files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
+(the current page's counts quiet and while writing, and the pages that redo their work at every write), counts-out (the changes of a quiet press taken out one at a
+time), late-rows (the rows around the target that answer late), witnesses (all three changes taken out, m), and the two time phases. The jobs took 30 to 55 s
+including the 10 to 17 s the runner needs before the tests start while the lane was four files; with counts and witnesses each split in two (ci-gate-45), when the
+counts job ended last in a full CI at 43 s with a test step of 25 s (its start, seeding and the first walk, about 9 s, then seven walks of 1 to 2.5 s each), the six
+jobs took 23 to 27 s, test steps 10 to 20 s, in one run (39321571725). `test/nkey/stats.test.ts` holds the arithmetic and the
 verdict on made-up pairs whose answer is known.
 
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the start of the run
+`test` in 30 shards, `nkey` in 6 parts and `result`) is meant to take a minute from the start of the run
 to the status `full-ci` (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml`, `ci-mark.yml` and the
@@ -5940,7 +5950,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 20 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split), each in a job of its own, beside the type check, which is a
+full CI as 30 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split, 20 until ci-gate-45), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -5951,7 +5961,7 @@ seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
 a file is the seconds of its own entry in the runner's report, from the start of
 its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
 not the sum of the file's tests, which leaves out loading the file and its hooks:
-`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+`shutdown.test.ts` was 8.5 seconds of tests and 19.7 as a file (10 of the difference a timer that held its process after its last test, With 30 shards below). A file the table
 does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
 a new test file is run from its first push and never missed. The table is brought
 up to date from the table of seconds per file that every shard writes to its job
@@ -6056,6 +6066,34 @@ for one run of the 20 shards (run 39255686754, removed again) found 34 of the 35
 files 49%. Copying a seeded board would save about 6% at most; opening a page has no such cheap cut. Bringing the slowest of 100 samples to 20
 seconds needs the mean near 13, the sum per shard near 23 seconds, which is a cut of the total by about 55%, or a faster runner.
 
+**With 30 shards** (hosted runners, 19 October 2026, ci-gate-45): after the table was brought up to date and the n-key time
+parts were bounded, eleven full CIs on the main line were judged 45 to 59 seconds by the time gate (median 50), the last job a test
+shard in most, so the gate's line of 60 had no margin for a slow set-up. The suite is bound by the processor, not by waiting: the 126
+test files run one at a time took 789 seconds of wall time and 951 of CPU (23% of it in the kernel), and a shard running four files
+at a time was no quicker than one running three (mean step 22.4 against 22.7 seconds), so a four-core runner gives about 2.5 cores
+and a shard's step is about its files' CPU divided by 2.5. A profile of the main threads (607 seconds sampled) put about 40% in the
+page in jsdom, 12% in the oracle of the `rules-reuse` files and 87 seconds in starting git processes, whose cost grows with the
+parent's memory (2.7, 3.6 and 5.9 ms a start at 73, 330 and 903 MB resident; Write cost, section 4). Thirty shards alone made the mean
+step 17 seconds against 22.7 but left the longest at 26, the floor of one file (`deploy.test.ts`), and the run at 46. What brought it
+under: the files over about 15 seconds split as before (`deploy`, the `rules-reuse` seeds in three parts each, the page witnesses in
+ten, the agent list, the diagrams, the project filters, the badges apart from the waits, and the fake DOM's tests in two parts that
+each take every other test of `test/web-cases.ts` through `test/deal.ts`), Node's compile cache for the test processes (`NODE_COMPILE_CACHE`, about 8%
+less CPU on a warm run of the same files, 55 against 50 seconds), the store's write starting one git process where it started two, and
+three test files that held their process 10 seconds after their last test (a deadline raced against a daemon's exit whose timer stayed
+referenced: `shutdown`, `push` and `stateless`, 12 to 20 seconds as files for 2 to 10 of tests). A probe that logged, for each of the
+139 files of one run, the time from its last test to its process's exit found one more such timer (`backup-push`, 3 seconds) and
+nothing over 0.1 second in the rest; the probe was removed again. Two full CIs of the result (runs 39320840092 and 39321571725, push
+mode) were judged 45 and 44 seconds, the steps `tests` 11 to 23 seconds and the sums of the files' seconds 984 and 1,120; the job that
+ended last was once an n-key part, since split (The n-key lane, Parts), and once a shard whose `npm run build:web` took 14 seconds
+before esbuild started, npm's own files being read from the image's disk for the first time (The set-up of a job). Seven full CIs
+of the finished change, started by hand one after another on one commit (runs 39326783189, 39327040354, 39327949685, 39328216893,
+39328960700, 39329245774 and 39329512784), were judged 40 to 47 seconds (median 42); the one at 47 ended with the n-key part
+`time-writing` on a slower runner (its step 27 seconds against 15 to 23 in the others, its set-up 5 against 2 to 4), within that part's
+time budget (The n-key lane, The time budget). One more run of the same commit (39327317254) was judged 108 seconds, though every
+job's last step had ended by 35 seconds: GitHub marked 30 of its jobs complete 47 to 76 seconds after their last step, a delay the
+gate does not leave out. A file
+of more than about 15 seconds is the sign to split it: the time gate names a shard that runs over 1.5 times the others.
+
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
 nothing would run it, which the table with a default cost cannot do.
@@ -6067,12 +6105,14 @@ jobs. `scripts/ci-time-gate.ts` in it reads the run's jobs through the Actions A
 every 2 seconds while more than 4 jobs are open and every second after that, until
 every job but its own has ended; then it puts into the run's summary the seconds
 from the start of the run to now (the status is written a moment later), the time
-that is judged (The wait for a runner, below), the end of the job that ended last,
-a table with the wait for a runner, the part of it beyond the quickest job's, the run
-and the end of each job, and the table of the shards. On a run started by hand it
+that is judged (The wait for a runner and The late completion mark, below), the end of
+the job that ended last, a table with the wait for a runner, the part of it beyond the
+quickest job's, the run, the end and the seconds GitHub took to mark each job complete
+after its last step, and the table of the shards. On a run started by hand it
 writes the status `full-ci`: success when every job succeeded or was skipped and the
 judged time is not red, else failure with the jobs that were not green, or the
-time; the description gives the total and how much of it was waiting for a runner.
+time; the description gives the total, how much of it was waiting for a runner and how
+much was GitHub marking jobs complete late.
 On a push to the main line the script runs in the mode `record`: the same summary,
 no status (the checks of a push are listed on the commit) and no failure whatever
 it finds, and the step cannot fail the job, so that a report does not turn the main
@@ -6105,7 +6145,7 @@ between 10-18 23:00 and 10-19 09:00. The waits come from two causes, neither of
 them the change. (1) The organization's jobs running at once reached the limit.
 GitHub's page of usage limits gives 60 concurrent jobs of the standard hosted
 runners for the Team plan, and the most jobs running at one moment in these data
-was exactly 60. A run has 28 jobs; of the 9 runs that started while more than 32
+was exactly 60. A run had 28 jobs (40 since ci-gate-45); of the 9 runs that started while more than 32
 jobs of the organization were running, 8 had jobs that started late, 6 of them by
 more than 20 seconds (48 at most) and with 25 to 27 jobs late at once; they were
 runs started by several engineers within a minute (4 between 08:07 and 08:08). The
@@ -6127,6 +6167,58 @@ is red for the wait (the engineer waits twice and the second run's 28 jobs queue
 the same runners), and fewer jobs in a run (it cures only the limit, not the
 assignment of a runner, and slows the run, [Sharding the script
 tests](#sharding-the-script-tests)).
+
+**The late completion mark.** The time of a job's last step is stamped by the runner;
+the job's `completed_at` in the API is written by GitHub's server after it has processed
+the runner's completion report. The judged time takes that second as the end of the job,
+so a backlog in the processing moves the end of every job that finished during it,
+though the job was done. The seconds from the end of a job's last step (the step that
+ended latest, in whatever order the steps are listed) to its `completed_at` were read
+from the Actions API for the 240 full CIs of 10-19 (00:51 to 22:21 UTC, cancelled runs
+left out). In 238 runs and 6,431 jobs the delay has median 2 seconds, 90th percentile 3,
+99th percentile 4 and longest 10; three jobs are over 5 seconds (6, 7 and 10). Two runs
+are different, 0.8% of the 240 (95% interval 0.2% to 3.0%). Run 39327317254, started by
+hand on the head commit of ci-gate-45 at 21:25: the 9 jobs that ended first were marked
+2 to 3 seconds after their last step; the other 30 ended their last step 24 to 35
+seconds after the start of the run and were marked 47 to 76 seconds after it, so the
+last mark came at 105 seconds, and the gate judged 108 seconds (109 in all) and was red
+with every test green. Run 39277936189, a push to the main line at 15:26 (mode
+`record`): 17 of its 26 jobs were marked 20 to 246 seconds late; the design and
+private-content workflows of the same push, usually done in about fifteen seconds, took
+about nine minutes. GitHub's status page announced an Actions availability incident at
+15:49 (closed at 16:56), 23 minutes after that push; for the 21:25 run it showed none.
+In both runs the jobs that finished first were marked in time and all later ones late,
+so the delay is a backlog and not a property of a job.
+
+The judged time therefore also leaves out the part of each job's delay beyond
+`MARK_ALLOWANCE_SECONDS`, 5 seconds: a job's end is moved back by it together with its
+extra wait for a runner, before the latest end is taken. The status description and the
+summary give the two parts apart: the first is what the wait for a runner takes off, the
+second what the late marking takes off beyond that. A job with no step that has ended
+has no delay (its cell in the table is `-`), and a delay below 0 counts as 0. The wait
+for a runner swung between 3 and 48 seconds, so any fixed number for it would have been
+wrong; the usual delay is tight (all but three of 6,431 jobs are within 5 seconds), so a
+fixed number taken from the measurement fits. It is one day's measurement and has to be
+taken again when the usual delay changes: the table of every run shows each job's delay,
+and every merge to the main line leaves one. A job that is itself slow ends its last
+step late and stays counted in full, and a delay that holds back every job from the
+start of the run comes off too. Recomputed for the 240 runs from the saved jobs
+(`evaluate` of the script before and after this rule, the end of the last step of the
+job that reads standing for the moment of the status), exactly the two runs above
+change, 276 to 44 seconds and 109 to 44 seconds (the 44 still holds the 5 seconds that
+are allowed); the 238 others come to the same second.
+
+Ways not taken: taking off the delay beyond the quickest job's in the run, as for the
+wait for a runner (the quickest job is marked 1 to 2 seconds after its last step and the
+others 3 to 4, so 136 of the 238 usual runs would be judged 1 to 3 seconds lower, which
+moves the line the 50 and 60 were set at, and a backlog that holds back every job from
+the start leaves no job marked in time to compare with, so nothing would come off);
+taking off all of the delay (the 240 runs would be judged a median 2 seconds lower);
+starting the full CI again from the job when it is red and every test is green (the
+engineer waits twice, the second run's 40 jobs meet the same backlog, and the incident
+of 10-19 lasted 67 minutes; the job would also need the right to start runs and a limit
+on repeats); and no change (one of the two runs was started by hand and cost its
+acceptance another full CI).
 
 **Why the job waits instead of using `needs`.** A job that needs the others
 starts 2 to 3 seconds after the last of them ends, and sets itself up then
@@ -6216,7 +6308,7 @@ it again; the pending that `start` wrote is not written again then.
 
 ### The set-up of a job
 
-Every job of the full CI starts the same way, and 28 jobs run at once, so the
+Every job of the full CI starts the same way, and 40 jobs run at once (28 before ci-gate-45), so the
 set-up is in the time of the job that ends last: the runner's wait (3 to 4
 seconds), `Set up job` (about 1), `checkout` (about 1; 2 for the n-key parts, which
 fetch the history for the base page), Node and the packages (8 to 9 with the cache
@@ -6240,8 +6332,17 @@ between the two), `npm ci` on a miss, with `restore` and `save` of the cache as 
 and from the main line; a change of the packages makes one miss on its branch, as
 slow as before. Both paths of the action were run once on the branch (run 39210292901): with the caches of
 the key deleted from the branch first, the job found none, `npm ci` added 259 packages in 8 seconds, the cache
-was saved (65 MB, 2.2 seconds) and a second job restored it. The Node that the runner has already is 22, and the project runs on
-24, so the step `setup-node` stays (0 to 1 second without a cache). A history
+was saved (65 MB, 2.2 seconds) and a second job restored it. The Node on the runner's path is 22, and the project runs on
+24, so the step `setup-node` was kept (0 to 1 second without a cache). It also prints the
+versions of node, npm and yarn, which took 1.1 seconds on average and up to 7.2 (15 of 72 jobs
+over 2 seconds in three runs, ci-gate-45); the image carries Node 24 in its tool cache, so the
+action now puts that on the path, a step of no measurable time, and runs `setup-node` only on an
+image without it. The first start of npm in a job then reads npm's own files from the image's disk:
+`npm run build:web` took 3 to 14 seconds in 13 of 60 shards over two runs before esbuild started
+(0 to 2 seconds in every shard of two main-line runs, where `setup-node` had started npm before),
+so the jobs run their scripts with `node --run`, and a job that found the cache of `node_modules`
+starts no npm at all. The download of that cache took 2.7 seconds on average and up to 9 in the same
+three runs (6 of 72 jobs over 4 seconds, stalled on the last block), which is left as it is. A history
 without the file contents (`filter: blob:none`) for the n-key parts was not
 measurably faster (one run of 3 jobs each: checkout 1 to 3 seconds against 2 to 4),
 and a base that differs from the checkout would read its changed files from the
