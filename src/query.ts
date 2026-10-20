@@ -1,11 +1,15 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Difficulty, PlanRow, PlanStep, Project, ItemTarget, Message, Note, Snapshot, Status } from "./model.ts";
+import type { Difficulty, PlanRow, PlanStep, ItemTarget, Message, Note, Snapshot, Status } from "./model.ts";
 import { STATUSES, numRef, tagApplies, boardTags } from "./model.ts";
 import type { Check, Rules } from "./rules.ts";
 import { rules as makeRules, planChanged, targetLine, targetsChanged, changesSection, countedPulls, isOpenMergeStep, checkKey } from "./rules.ts";
 import type { CommitInfo, DocKind, Store } from "./store.ts";
 import { ValidationError } from "./store.ts";
 import { allowRange } from "./budget.ts";
+import { knownRepos, pullsIn, prKey, references } from "./pull-refs.ts";
+import type { PrId, PrRef } from "./pull-refs.ts";
+export { knownRepos, pullsIn, prKey, references };
+export type { PrId, PrRef };
 
 export type Kind = "item" | "card" | "note";
 export interface Row { kind: Kind; id: string; num?: number; title: string; status: string | undefined; record?: boolean; standing?: boolean; area: string; areaId: string; group: string; tags?: string[]; difficulty?: Difficulty; plan?: string[]; targets?: string[] }
@@ -323,54 +327,6 @@ function documentText(s: Snapshot, kind: Kind, id: string): string {
     text.push(...it.links.map(l => `${l.label} ${l.url}`), it.ask?.url ?? "");
   }
   return text.join("\n");
-}
-/** Repositories the board knows, lowercased: the configured projects' and those its items link to (github.com/Ming-Research/<repo>).
- * These are the names a `Repo#N` or `Repo #N` reference may use. */
-export function knownRepos(s: Snapshot): Set<string> {
-  const out = new Set<string>(), urls: string[] = [];
-  for (const project of s.board.projects) if (project.repo) out.add(project.repo.split("/").pop()!.toLowerCase());
-  for (const it of Object.values(s.items)) urls.push(...it.links.map(l => l.url), it.ask?.url ?? "");
-  for (const url of urls) { const m = /github\.com\/Ming-Research\/([A-Za-z0-9_.-]+)/i.exec(url); if (m) out.add(m[1]!.toLowerCase()); }
-  return out;
-}
-/** A PR a text names. `owner` is set only when the text wrote it: `Owner/Repo#N` or a pull request URL. */
-export interface PrRef { repo: string; number: number; owner?: string }
-/** PR references in prose. A bare name before `#N` counts as a repository only when the board knows that repository, so "see #341" stays unknown.
- * `Owner/Repo#N` and a pull request URL name the repository themselves. */
-export function references(text: string, repos: Set<string>) {
-  const qualified: PrRef[] = [], unknown: number[] = [], ranges: Array<[number, number]> = [];
-  const patterns = [
-    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi,
-    /(?<![A-Za-z0-9_.\/#-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
-    /(?<![A-Za-z0-9_.\/#-])()([A-Za-z0-9_.-]+)(?: PR)? ?#(\d+)\b/gi,
-  ];
-  for (const [i, pattern] of patterns.entries()) for (const match of text.matchAll(pattern)) {
-    const owner = match[1]!, repo = match[2]!, number = Number(match[3]);
-    if (i === 2 && !repos.has(repo.toLowerCase())) continue;
-    ranges.push([match.index, match.index + match[0].length]);
-    if (!qualified.some(p => p.repo.toLowerCase() === repo.toLowerCase() && p.number === number)) qualified.push(owner ? { repo, number, owner } : { repo, number });
-  }
-  for (const match of text.matchAll(/#(\d+)\b/g)) if (!ranges.some(([a, b]) => match.index >= a && match.index < b) && !unknown.includes(Number(match[1]))) unknown.push(Number(match[1]));
-  return { qualified, unknown };
-}
-/** A PR as the board watches it: `repo` is the `Owner/Name` a project configures. */
-export interface PrId { repo: string; number: number }
-export const prKey = (p: PrId): string => `${p.repo.toLowerCase()}#${p.number}`;
-/** The configured repository a reference names, or none: `Owner/Repo` must match a project's repo, a bare `Repo` exactly one. */
-function repoOf(projects: readonly Project[], ref: PrRef): string | undefined {
-  const repos = projects.flatMap(p => p.repo ? [p.repo] : []);
-  if (ref.owner) return repos.find(repo => repo.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase());
-  const named = repos.filter(repo => repo.split("/").pop()!.toLowerCase() === ref.repo.toLowerCase());
-  return named.length === 1 ? named[0] : undefined;
-}
-/** The PRs a text names that belong to a configured repository. */
-export function pullsIn(s: Snapshot, text: string, repos: Set<string> = knownRepos(s)): PrId[] {
-  const out = new Map<string, PrId>();
-  for (const ref of references(text, repos).qualified) {
-    const repo = repoOf(s.board.projects, ref);
-    if (repo) out.set(prKey({ repo, number: ref.number }), { repo, number: ref.number });
-  }
-  return [...out.values()];
 }
 /** The PRs a step of item `id` is the merge row of: none unless it is an open merge row (rules isOpenMergeStep) and names PRs its item's 改动 section names too. */
 export function mergeRowPulls(s: Snapshot, id: string, step: PlanStep, repos: Set<string> = knownRepos(s)): PrId[] {

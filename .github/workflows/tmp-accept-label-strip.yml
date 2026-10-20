@@ -1,0 +1,16 @@
+name: tmp-accept-label-strip
+# Temporary quick workflow for accept-label-strip: runs the tests this change touches on each push. Removed before the branch is ready.
+on:
+  push:
+    branches: [accept-label-strip]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/accept-label.test.ts test/watch.test.ts test/query.test.ts test/ops.test.ts test/mcp.test.ts

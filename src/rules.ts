@@ -4,6 +4,7 @@ import { liveDispatches } from "./agents.ts";
 import { worksOnItem } from "./dispatch.ts";
 import type { AgentTouch, Decision, Item, PlanStep, PlanRow, PlanRowInput, ItemTarget, ItemTargetInput, Note, Project, Snapshot, StateStart, Status } from "./model.ts";
 import { PROCESS_WRITERS, RETIRED_LEVEL, mayRunProcess, planRowId, tagsRequired } from "./model.ts";
+import { knownRepos, prKey, pullsIn } from "./pull-refs.ts";
 
 /** Project list order is page order; only the architect may place a project after another. */
 export function projectOrderAfter(projects: readonly Project[], name: string, after: string, who: { author: string; session?: string }): Project[] {
@@ -118,10 +119,14 @@ export function changedItemPlan(before: readonly PlanRow[] = [], after: readonly
 export function planChanged(before: readonly PlanRow[] = [], after: readonly PlanRow[] = []): boolean {
   return before.length !== after.length || before.some((row, i) => !sameRow(row, after[i]!));
 }
+/** The label the page puts in front of an acceptance step (the page's 验收 tag); a text that starts with it is stored without it. */
+const ACCEPT_LABEL = /^\s*\[验收\]\s*/;
 /** Retain earlier transition dates, stamp only entry into the current state. */
 export function stampPlanRow(input: PlanRowInput, previous: PlanRow | undefined, at: string): PlanRow {
   if (!("text" in input)) return { ...structuredClone(input), id: planRowId(input) };
   const step: PlanStep = structuredClone(input), old = previous && "text" in previous ? previous : undefined;
+  // Kept as written when nothing is left after the label, so a step never has an empty text.
+  if (step.accept && step.text.replace(ACCEPT_LABEL, "").trim()) step.text = step.text.replace(ACCEPT_LABEL, "");
   for (const field of ["doneAt", "since", "droppedAt"] as const) if (old?.[field] !== undefined) step[field] = old[field];
   const date = input.state === "done" ? "doneAt" : input.state === "doing" ? "since" : input.state === "dropped" ? "droppedAt" : undefined;
   if (date && (old?.state !== input.state || !step[date])) step[date] = at;
@@ -252,6 +257,7 @@ export const CHECK_KINDS = {
   "unowned-but-awaited": { refused: true },
   "waits-on-standing": { refused: true },
   "no-acceptance": { refused: true },
+  "merge-pr-unlisted": {},
   "plan-provisional": { label: "待重写" },
   "acceptance-pending": {},
   "only-acceptance-left": {},
@@ -1308,6 +1314,13 @@ export function rules(s: RulesInput, now = Date.now(), { activity: activityOptio
         const acceptance = rows.filter(({ row }) => "text" in row && row.accept), others = rows.filter(({ row }) => !("text" in row && row.accept));
         if (acceptance.some(({ row }) => "text" in row && row.text === "（转换时没找到完成条件，待补）")) out.push(check("acceptance-pending", "验收步骤待补"));
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push(check("only-acceptance-left", "只差验收：其它行都已完成"));
+        // A merge row is done when a pull request it names merges, but only those 改动 names count (docs/design.md, Watching GitHub, Merge
+        // rows). A row that names none of them can never be done, so the item would wait without a sign: flag it until 改动 names one.
+        const repos = knownRepos(s), listed = new Set(pullsIn(s, changesSection(it.head), repos).map(prKey));
+        for (const row of it.plan.flatMap(r => isOpenMergeStep(r, it.plan) ? [r] : [])) {
+          const named = pullsIn(s, row.text, repos);
+          if (named.length && !named.some(pr => listed.has(prKey(pr)))) out.push(check("merge-pr-unlisted", `合入行点名的 ${named.map(pr => `${pr.repo}#${pr.number}`).join("、")} 不在「改动」一节里，合入后不会打勾：在「改动」里补上这个 PR 的链接`));
+        }
         if (isOpenWork(id) && parent && ended(parent)) out.push(check("owner-closed", "拥有它的条目已关闭", { kind: "item", id: parent }));
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push(check("stalled", "进行中但 1 小时（活跃时间）没有动静"));
         // An engineer's plan has the big steps the engineer rules name, in order: the board reads progress and the current step from them.
