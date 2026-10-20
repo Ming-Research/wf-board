@@ -178,6 +178,8 @@ matches what the artifact board offered.
 - `design/`: the design tree, one Markdown file per node and the change log
   `design/log.md`; `design/skill` is the Design-skill submodule that checks it.
   `Makefile` holds the two targets that run the check. Section "Design tree".
+- `ops/`: the plists of the two launchd jobs, written by `scripts/install-service.ts`; `wf-board.plist` carries the daemon's V8 flags
+  (design section 4, Memory beyond the heap), which `test/memory-flags.test.ts` holds.
 - `scripts/check-private-content.ts`, with its rules in
   `scripts/private-content-rules.ts`: the CI check that a push or a pull
   request adds nothing private to this public repository (design section
@@ -307,6 +309,12 @@ Install once, after the PR that adds the job has been deployed by hand (the
 merge does not install it):
 `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts deploy`
 writes the plist and prints the `launchctl bootstrap` command to run.
+
+A change to `ops/wf-board.plist`, the daemon's service file (it carries the V8 flags that keep its memory down: `docs/design.md`,
+section 4, Memory beyond the heap), reaches the live service only when the service is installed again; the deploy job's restart keeps
+the arguments launchd already holds. Write the file with `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts`,
+then run `launchctl bootout gui/$(id -u)/org.ming-research.wf-board` and the `launchctl bootstrap` command the script printed. The
+`startup memory` line of the service log names the node options in force (`node options none` means the old file is still loaded).
 
 By hand, when the job is off, its own script broke, or `gh` cannot read the checks: fast-forward
 `~/dev/wf/wf-board` to the merged head of `main` and run

@@ -517,10 +517,10 @@ document at 2 bytes of heap for each byte of file. The 64 MB bound stays and let
 hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
 resident memory is mostly not documents: on the live-shape board the process held 311.0 MB
 after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (item `board-heap-study`),
-the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
-has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
+the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the
+heap; Memory beyond the heap, below, takes it apart. The start prints one line, `startup memory`, after the server listens: the time
 of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 12 ms (heap 56.6 MB in use after a
-full collection, rss 264.7 MB)`); the live check of the heap reads it. The live board's heap also holds what its
+full collection, rss 264.7 MB, node options none)`); the live check of the heap reads it. The live board's heap also holds what its
 33,000 commits of history add to the startup cache's contents, which the synthetic boards (one commit) do not.
 
 *Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
@@ -534,6 +534,99 @@ with it, and the library would be replaced for the reader while the writer stays
 the weight of the cache releases nothing. A cache of source bytes as Buffers (0.7 MB of heap, 48.7 MB
 outside it) parses again on each hit (2,286 ms for the whole board) and does not reach the store's
 own documents.
+
+**Memory beyond the heap.** The memory the owner sees for the daemon is its physical footprint (Activity Monitor's
+memory column, `vmmap`'s "Physical footprint"), and it is several times the heap. On the live board (macOS,
+no V8 flags, Node 24.21) the start log says `heap 60.4 MB in use after a full collection, rss 259.7 MB`, and 1 hour 13
+minutes after that start `vmmap -summary` read a footprint of 450.7 MB (peak 539.1 MB): 343.6 MB resident in the pages
+V8 maps for itself (the region type "App-Specific Tag 16", V8's mapping tag 255), about 37 MB in malloc's zones, 37.3 MB of
+kernel page tables, the rest small. So the part beyond the live heap is mostly V8's own pages that hold garbage or are
+free but not returned, not Buffers: `process.memoryUsage()`'s `external` stayed at 12 to 14 MB and `arrayBuffers`
+averaged 2 to 9 MB in every run below.
+
+It was taken apart in CI on the GitHub-hosted `macos-latest` (Apple silicon, 3 cores, macOS 26.6, Node 24.21.0; the live
+Mac is the same architecture and OS family) and `ubuntu-latest`, with the real daemon (`src/main.ts`) on a synthetic board of
+the live board's shape (1,942 items, 839 cards, 1,210 notes, long texts as block scalars). A preload in the process answered a
+signal with `process.memoryUsage()`, `v8.getHeapStatistics()`, the heap spaces, the CPU time and the collections' time; the system
+side was `vmmap -summary` (macOS) or `/proc/<pid>/status` (Linux). A script replayed requests against it: first each kind alone
+(1,500 of the unread list, of its steps, of `context`, ...), then the live board's mix at its pace. The mix is counted in the
+live service log over 73 minutes (about 26,000 `GET /api/unread`, 18,000 `/api/step`, 2,000 `/api/snapshot`, 3,200 tool
+calls and about 2,700 writes of the owner and the sessions): 45% unread list, 31% steps, 3% snapshot, 7% `context`,
+3% each of `list`, `notes` and `messages`, 1% `changes`, 4% `append_log` writes, at 18 requests a second with 8 in flight, for 8
+minutes, and a sample of the process every 15 seconds. The runner has 3 slower cores than the live Mac, so requests queue more
+there and the absolute figures are larger than the live ones; the comparison between variants is what is read.
+
+With node's defaults the pages V8 held (the dirty pages of its regions, mean of the sampled series, 7 runs) were 584 MB, with
+a spread of 85 MB between runs, in three parts:
+- The young generation, which holds the objects a request makes and drops, grows to 128 MB (two halves of 64 MB), on Linux
+  and macOS alike, and its pages stay mapped.
+- The old generation averaged 260 MB where its live data was 85 to 100 MB, 2.7 times: V8 lets it grow far before the next full
+  collection (the largest factor V8 allows with a 4 GB limit is 4, from reading its source; not checked).
+- Pages V8 has freed are not returned at once: after a full collection the pages were still 160 to 180 MB more than the
+  heap's total.
+
+malloc held a further 150 to 450 MB under this load (the cache of freed large blocks, `MALLOC_LARGE (empty)`, filled by
+the 15 MB snapshot bodies and large reads in flight together), a figure that varies by 300 MB between runs of one variant;
+the live service held 3.3 MB there, since its requests seldom overlap, so the V8 pages are what is compared.
+
+| variant (V8 flags) | runs | V8 pages MB (sd) | CPU ms a request | full collections | p95 latency ms | start log rss MB |
+|---|---|---|---|---|---|---|
+| none | 7 | 584 (85) | 18.2 | 72 | 244 | 333 |
+| `--max-semi-space-size=4` | 3 | 375 (30) | 19.0 | 266 | 204 | 240 |
+| `--max-semi-space-size=4 --heap-growing-percent=50` | 5 | 269 (23) | 19.2 | 167 | 227 | 224 |
+| `--max-semi-space-size=4 --max-old-space-size=512` | 2 | 231 (4) | 20.7 | 324 | 220 | 238 |
+| `--heap-growing-percent=50` set at run time | 3 | 381 (10) | 17.0 | 101 | 199 | 321 |
+| `--max-semi-space-size=4 --heap-growing-percent=50` set at run time | 3 | 370 (12) | 17.9 | 101 | 210 | 329 |
+| `--optimize-for-size` | 3 | 118 (3) | 34.4 | 920 | 307 | 200 |
+
+The table is the mean of single runs on different runners and rounds, for comparing the variants with each other; the paired run below decides the two flags against the defaults.
+
+Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request), `--memory-balancer` (328 MB, 41.1 ms) and a
+2 MB half (409 MB); the other sizes of half with the growing percentage at 50 (2 MB, 8 MB) held 281 and 297 MB, within the
+spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
+defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
+
+The two flags are the choice: the half at 4 MB takes the configured ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
+and the growing percentage at 50 makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
+so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
+running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
+minutes) per run. A ratio is the run with the flags (or the twin) over the defaults of the same round; the table gives the
+geometric mean of the 12 ratios and its 95% interval (t distribution on the logarithms, 11 degrees of freedom). The twin differs
+from the defaults only by chance, so its ratio is this measurement's noise. No noise floor was recorded beforehand: each job of
+the hosted macOS runners lands on a different machine, so a floor cannot be taken for each machine, and the reading rests on the
+twin of the same measurement. The CPU figures are from shared CI runners, not timings on the 14900K.
+
+| metric | defaults (mean of 12) | twin | two flags | twin / defaults | two flags / defaults |
+|---|---|---|---|---|---|
+| V8 pages MB | 479 | 550 | 260 | 1.16 (0.96 to 1.40) | **0.55 (0.48 to 0.64)** |
+| physical footprint MB (with malloc's cache) | 718 | 754 | 406 | 1.06 (0.91 to 1.24) | 0.58 (0.51 to 0.65) |
+| CPU ms a request | 15.7 | 15.1 | 17.6 | 0.97 (0.93 to 1.01) | **1.13 (1.04 to 1.22)** |
+| p95 latency ms | 147 | 131 | 140 | 0.92 (0.79 to 1.07) | 0.98 (0.78 to 1.24) |
+| collection time s in 4 minutes | 3.0 | 2.7 | 5.9 | 0.93 (0.82 to 1.06) | 2.03 (1.63 to 2.53) |
+| full collections in 4 minutes | 39 | 33 | 93 | 0.86 (0.64 to 1.15) | 2.56 (2.01 to 3.25) |
+| start log rss MB | 330 | 328 | 229 | 0.99 (0.97 to 1.02) | 0.69 (0.67 to 0.72) |
+
+The V8 pages were lower with the flags in all 12 rounds (249 to 276 MB against 305 to 604 for the defaults), an improvement.
+The CPU was higher in 11 of 12 rounds: a detected regression of 13%, 4% to 22%, about 2 ms a request, which at 18 requests a second
+is about 3% of one core (deduced; the live Mac has faster cores, so less); the lower end is as large as the twin's own spread, so
+the size is less certain than the sign. The p95 latency shows no detected change, and its interval is too wide to exclude 20% either
+way. The flags are accepted at that CPU cost on a design card (item `board-offheap`).
+
+`--optimize-for-size` goes further
+but at twice the CPU. Flags set from the code after the process has started do not do it: the size of a half is fixed when
+the process starts, so only the growing percentage takes effect, and the pages stay at 381 MB (the table above), 112 MB more than with both flags
+set at the start. Hence the flags are arguments of the
+service file `ops/wf-board.plist`.
+
+A change of the service file reaches the running service only when the service is installed again (`scripts/install-service.ts`
+writes the file; `launchctl bootout` and `bootstrap` load it): the deploy job's restart (`launchctl kickstart -k`) starts the
+process with the arguments launchd already holds. The `startup memory` line therefore names the options node was started
+with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), and `test/memory-flags.test.ts` holds that
+node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
+(128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
+halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 MB in one run of the sweep and
+28.5 MB in one of the 12 paired runs, and the same probe written as a top-level script read 15 to 29 MB with the same flags. V8 lets
+the young generation hold more than two halves for a while; the cause was not looked into.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
