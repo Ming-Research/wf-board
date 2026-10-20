@@ -121,3 +121,18 @@ test("a wait for an event is drawn with the event and its wake time, and turns a
   assert.equal(chip().classList.contains("overdue"), false);
   assert.deepEqual(bp.errors, []);
 });
+
+test("the review session of work the runner holds is drawn with that work, not as another session, and the heading counts the rows drawn", async t => {
+  const board = await startBoard(t), bp = await DomPage.open(t, board), { id, runner } = target(board);
+  const base = bp.changes();
+  await board.ops.dispatchStart({ ...runner, id, role: "工程师", level: 2, model: "Sonnet", effort: "xhigh", agent: id, agentId: `${id}-1` });
+  await board.ops.dispatchStart({ ...runner, id, role: "审查", level: 3, model: "Opus", effort: "high", agent: `${id}-review`, agentId: `${id}-review-1` });
+  await board.ops.reportState({ ...runner, id, state: "running", note: "第 1 轮", turns: 1, cost: 0.5 });
+  await bp.waitChanges(base + 3);
+  assert.ok(rowOf(bp, id), "the job has its row in the runner's block");
+  assert.equal(bp.$$("#agents .agent").some(r => r.dataset.agent === `${id}-review`), false, "the review session has no row of its own");
+  assert.equal(bp.$("#agents .agents-toggle")!.textContent, "▾ 代理 1", "the heading counts the one row drawn, not the review session as another");
+  assert.equal(bp.$$("#agents .agent").length, 1, "and that is the only row");
+  assert.equal(bp.$("#agents .agents-others-toggle"), null, "no line of folded sessions either");
+  assert.deepEqual(bp.errors, []);
+});

@@ -1,9 +1,10 @@
 import { tagApplies, difficultyText } from "../src/model.ts";
-import { agentRows } from "../src/agents.ts";
+import { agentList, poolsLine } from "../src/agent-list.ts";
 import type { AgentRow } from "../src/agents.ts";
-import { runnerRows, runnerLine } from "../src/runner-rows.ts";
+import { runnerLine } from "../src/runner-rows.ts";
 import type { RunnerRow } from "../src/runner-rows.ts";
 import type { LiveEntry } from "../src/live.ts";
+import type { PoolsEntry } from "../src/runner-pools.ts";
 import { wholeView, spanText, BUCKETS, BUCKET_TEXT, BUCKET_ROWS, EXPANDED_ROWS } from "../src/whole-view.ts";
 import type { Bucket, WholeRow, ParkedRow } from "../src/whole-view.ts";
 import { lineOfAgent, clockText, drawLength, totalsText, LONG_SEGMENT_MS, SEGMENT_KINDS, SEGMENT_TEXT } from "../src/timeline.ts";
@@ -1844,10 +1845,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000)), hours = Math.floor(minutes / 60), rest = minutes % 60;
     return hours ? hours + " 小时" + (rest ? " " + rest + " 分钟" : "") + "前" : minutes ? minutes + " 分钟前" : "不到 1 分钟前";
   }
-  function agentRowsNow() { return cached("agentRows", () => agentRows(snapshot, Date.now(), state.items)); }
   // What the runner says of the turns running now (src/live.ts): the event stream sends the whole list when it opens and after every beat.
   let liveBeats: LiveEntry[] = [];
-  function runnerRowsNow() { return cached("runnerRows", () => runnerRows(state.items, derived, liveBeats, Date.now())); }
+  // The runner's slots from its last heartbeat that carried them (src/runner-pools.ts): the event stream sends the last report when it opens and with every report.
+  let poolsEntry: PoolsEntry | undefined;
+  // The list as one value (src/agent-list.ts), the one the architect's look prints: the runner's rows, the other sessions running and the heading's number.
+  function agentListNow() { return cached("agentList", () => agentList(snapshot, derived, state.items, liveBeats, Date.now())); }
   // The level as a reader says it: 「2 级」, and 「审查 3 级」 for a reviewer.
   function agentLevel(r: AgentRow) { return (r.role === "审查" ? "审查 " : "") + r.level + " 级"; }
   const AGENT_STATE_TITLES: Record<string, string> = {
@@ -2006,7 +2009,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
   }
   function renderAgents() {
     const host = get("agents"); if (!host) return;
-    const rows = agentRowsNow(), running = rows.filter(r => r.running), others = rows.filter(r => !r.running), runner = runnerRowsNow(), now = Date.now();
+    const { runner, running, others, count } = agentListNow(), rowCount = running.length + others.length, now = Date.now(), slots = poolsLine(poolsEntry, now);
     // An unfolded cell draws item rows below it, each with what the tree's row shows (its tags, checks, counts, new-content
     // chip, and its own sub-items when unfolded), so each drawn row's presentation joins the list's signature.
     const drawn = (prefix: string, id: string): unknown => [id, presentationSignature(derived, snapshot.decisions, id), freshShown(index().byId.get(id)!), below.fresh[id] || 0, !!pendingExplain("it:" + id),
@@ -2020,16 +2023,22 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     // The runner's rows: what each says, in the units it is drawn in (minutes), and the title it draws.
     const runnerShown = (x: RunnerRow) => [x.item, x.agent, x.level, x.model, x.effort, x.state, x.label, x.needsPerson, x.overdue, runnerLine(x, now, runnerName),
       spanText(now - runnerStateSince(x)), spanText(now - x.started), x.turns, x.cost, index().byId.get(x.item)?.title ?? null, timelineShown(x, now)];
-    const signature = JSON.stringify([agentsOpen, othersOpen, runner.map(runnerShown), running.map(shown), othersOpen ? others.map(shown) : others.length]);
+    const signature = JSON.stringify([agentsOpen, othersOpen, slots, runner.map(runnerShown), running.map(shown), othersOpen ? others.map(shown) : others.length]);
     if (signature === agentsSignature) return;
     agentsSignature = signature;
-    host.hidden = !rows.length && !runner.length;
+    host.hidden = !rowCount && !runner.length && !slots;
     host.innerHTML = "";
-    if (!rows.length && !runner.length) return;
-    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + (running.length + runner.length));
+    if (!rowCount && !runner.length && !slots) return;
+    const toggle = el("button", "agents-toggle", (agentsOpen ? "▾ " : "▸ ") + "代理 " + count);
     toggle.type = "button"; toggle.setAttribute("aria-expanded", String(agentsOpen)); toggle.title = agentsOpen ? "收起代理列表" : "展开代理列表";
     toggle.addEventListener("click", () => { agentsOpen = !agentsOpen; try { localStorage.setItem("board-agents", agentsOpen ? "open" : "closed"); } catch (e) {} renderNow("agents"); });
     host.appendChild(el("h2", "agents-head")).appendChild(toggle);
+    // The free slots stand under the heading whether the list is open or not: a pool left idle is what the owner must see without opening anything.
+    if (slots) {
+      const line = el("p", "agents-slots" + (slots.idle ? " idle" : "") + (slots.stale ? " stale" : ""), esc(slots.text));
+      line.title = "执行程序心跳里报的名额：空着 = 名额 − 占着的；「没有能开工的活已…」是派活队列里没有一件能开工的活，从什么时候起。空过 1 小时会通知你一次";
+      host.appendChild(line);
+    }
     if (!agentsOpen) return;
     if (runner.length) {
       host.appendChild(el("h3", "agents-sub", "执行程序手上的 " + runner.length + " 件")).title = "执行程序对每件活的最新报告；一轮在跑时，「在做或在等」一列放它每 30 秒报的动作。超过状态该有的时间标琥珀色，和全貌的时限一样";
@@ -2041,7 +2050,7 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
       runner.forEach(x => held.appendChild(runnerRowEl(x, now)));
       host.appendChild(held);
     }
-    if (!rows.length) return;
+    if (!rowCount) return;
     if (runner.length) host.appendChild(el("h3", "agents-sub", "其他会话"));
     host.appendChild(el("p", "agents-note", "正在跑的会话：派活记录没收尾、会话还活着的（工程师和审查一样），各带它最近碰过的 2 个条目。派活已收尾的会话折在最后；没有派活记录的会话不列。状态是从进行中的行和多久没写推出来的，不是看到的；只读不写的时候（读代码、等 CI）这里看不出。"));
     const list = el("ul", "agent-list");
@@ -3357,6 +3366,12 @@ interface FreshStop { key: string; step: string; doc: Step["docs"][number]; kind
     next.addEventListener("live", event => {
       if (!active()) return;
       liveBeats = JSON.parse((event as MessageEvent).data) as LiveEntry[];
+      scheduleRender("agents");
+    });
+    // The runner's slots: the last report replaces the one the page held.
+    next.addEventListener("pools", event => {
+      if (!active()) return;
+      poolsEntry = JSON.parse((event as MessageEvent).data) as PoolsEntry;
       scheduleRender("agents");
     });
     next.addEventListener("owner", event => {

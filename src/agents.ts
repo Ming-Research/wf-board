@@ -2,7 +2,7 @@
 // touched last, and what that suggests about it. Everything here is read from the board's own data (the activity index and
 // the items), never from the machine the board runs on. docs/design.md, section "Agent list", gives the reasons for each rule.
 
-import { openDispatches, worksOnItem } from "./dispatch.ts";
+import { openDispatches, openDispatchesOf, worksOnItem } from "./dispatch.ts";
 import { AGENT_TOUCHES, isArchitectSession } from "./model.ts";
 import type { AgentTouch, Dispatch, Item, Snapshot } from "./model.ts";
 
@@ -77,6 +77,15 @@ export function runnerHolds(it: Pick<Item, "runner"> | undefined, d: Dispatch): 
   return !!report && d.role === "工程师" && d.finish === undefined && Math.abs(Date.parse(d.started) - Date.parse(report.started)) <= RUNNER_START_GRACE_MS;
 }
 
+/**
+ * Whether the runner holds the review session of a dispatch: it is a review's, not ended, on an item whose engineer the runner holds
+ * (`runnerHolds`). The runner starts the review of an engineer's pull request and ends its dispatch only when the work ends, so
+ * the record stays open through the wait for CI and the merge; the session belongs to that job and is drawn with it, not as another session.
+ */
+export function runnerHoldsReview(it: Pick<Item, "runner" | "dispatches"> | undefined, d: Dispatch): boolean {
+  return d.role === "审查" && d.finish === undefined && openDispatchesOf(it).some(held => runnerHolds(it, held));
+}
+
 /** An item with its key: the page already holds the board's items so (`ViewItem` in web/app.ts). */
 export type ListedItem = Pick<Item, "dispatches"> & { id: string };
 
@@ -86,7 +95,8 @@ const doingSteps = (it: Item | undefined) => (it?.plan ?? []).flatMap(row => "st
 /**
  * The rows of the list at `now`, newest activity first. A session is listed when a dispatch record names it and it wrote to the
  * board or was started by that record within AGENT_WINDOW_MS, except the architect's, and except one whose newest
- * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds.
+ * dispatch record has ended with no write since (the name is reused by the next session on the item), and except one the runner holds
+ * (an engineer's session, or the review of its pull request: `runnerHolds`, `runnerHoldsReview`).
  * A session no dispatch record names is no programmer the board sent out (the runner, the board itself, a hand-started session, a name
  * written by mistake) and is not listed; the architect's turns have records (they draw the architect's line, src/timeline.ts) but are the
  * runner's, drawn from its reports, so a record of that role names no row. The items come as a list with their keys, as the page holds them, not as the
@@ -117,7 +127,7 @@ export function agentRows(s: Pick<Snapshot, "items"> & { activity?: Snapshot["ac
     const finish = newest.dispatch.finish;
     const review = newest.dispatch.role === "审查";
     if (finish && !(lastWrite > Date.parse(finish.ended) + FINISH_GRACE_MS)) continue;
-    if (runnerHolds(s.items[newest.item], newest.dispatch)) continue;
+    if (runnerHolds(s.items[newest.item], newest.dispatch) || runnerHoldsReview(s.items[newest.item], newest.dispatch)) continue;
     const last = Math.max(lastWrite, lastStart);
     if (!(now - last <= AGENT_WINDOW_MS)) continue;
     // The items it touched: what it wrote to, and what a dispatch record started it on; the later time of an item wins.
