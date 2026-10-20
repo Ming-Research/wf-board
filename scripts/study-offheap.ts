@@ -295,6 +295,7 @@ try {
     const startupLine = daemon.startup();
     results.push({ variant: variant.name, round, flags: variant.flags, env: variant.env, startupLine, samples, loads, series });
     console.log(`STUDY ${JSON.stringify(results.at(-1))}`);
+    console.log(`finished ${variant.name} round ${round}`);
     rmSync(dir, { recursive: true, force: true });
   }
 } finally { rmSync(root, { recursive: true, force: true }); }

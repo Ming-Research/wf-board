@@ -21,3 +21,9 @@ jobs:
         run: |
           node scripts/study-offheap.ts $(jq -r '.args | join(" ")' study-config.json) --variants "$(jq -c .variants study-config.json)" | tee study-output.txt
           grep -v '^STUDY ' study-output.txt >> "$GITHUB_STEP_SUMMARY"
+      # The log of the first paired run lost every line after the first; the file is kept as well.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: study-output-${{ matrix.runner }}
+          path: study-output.txt
