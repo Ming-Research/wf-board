@@ -94,7 +94,7 @@ async function main() {
         if (error) throw error;
         console.info("shutdown: server closed");
         await store.flushOwner("owner");
-        console.info("shutdown: owner state saved");
+        console.info("shutdown: owner state saved"); console.info("shutdown: resources " + process.getActiveResourcesInfo().join(","));
       })().catch(error => { console.error(error); process.exitCode = 1; });
     });
   }

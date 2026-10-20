@@ -55,7 +55,7 @@ async function one(lane: number, n: number) {
     const took = Date.now() - stopped;
     await mcp.close().catch(() => {});
     const stamps = Object.fromEntries([...log.slice(mark).matchAll(/^(\S+Z) shutdown: (.+)$/gm)].map(m => [m[2], Date.parse(m[1]!) - stopped]));
-    console.log(`MEASURE lane=${lane} run=${n} took=${took} code=${code} signal=${signal} ${JSON.stringify(stamps)}${took >= 1000 ? "\n" + log.slice(mark) : ""}`);
+    console.log(`MEASURE lane=${lane} run=${n} took=${took} code=${code} signal=${signal} ${JSON.stringify(stamps)}${took >= 300 ? "\n" + log.slice(mark) : ""}`);
   } finally {
     await Promise.all([data, remote].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
   }
