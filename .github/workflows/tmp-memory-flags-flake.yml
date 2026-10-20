@@ -1,53 +1,71 @@
 name: tmp-memory-flags-flake
-# Temporary (item memory-flags-flake): readings of the memory-flags test's probe, quiet, loaded and beside the files of the shard
-# that went red. Removed before the pull request is ready.
+# Temporary (item memory-flags-flake): readings of the memory-flags test's probe: with the GC traced, in three ways of reading, under
+# busy cores and beside the files of the shard that went red. Removed before the pull request is ready.
 on:
   push:
     branches: [memory-flags-flake]
 jobs:
-  quiet:
+  trace:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: |
-          nproc; node --version; node -p "process.versions.v8"
-          flags="--max-semi-space-size=4 --heap-growing-percent=50"
-          for run in $(seq 1 40); do
-            out=$(node $flags tmp-memory-flags/series.cjs)
-            peak=$(node -p "JSON.parse(process.argv[1]).peak" "$out")
-            echo "with flags run $run: $peak"
-            if node -p "JSON.parse(process.argv[1]).peak > 10 ? 0 : 1" "$out" | grep -q 0; then echo "  series: $out"; fi
-          done | tee /tmp/quiet.txt
-          grep -v series /tmp/quiet.txt | awk '{print $NF}' | sort -n | uniq -c
-          for run in 1 2 3 4 5; do echo "without flags run $run: $(node -p "JSON.parse(process.argv[1]).peak" "$(node tmp-memory-flags/series.cjs)")"; done
-  loaded:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        busy: [3, 4, 8]
+        busy: [4, 8]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: |
-          nproc; node --version
           pids=""
           for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
           flags="--max-semi-space-size=4 --heap-growing-percent=50"
-          for run in $(seq 1 40); do
-            out=$(node $flags tmp-memory-flags/series.cjs)
-            peak=$(node -p "JSON.parse(process.argv[1]).peak" "$out")
-            echo "with flags, ${{ matrix.busy }} busy loops, run $run: $peak"
-            if node -p "JSON.parse(process.argv[1]).peak > 10 ? 0 : 1" "$out" | grep -q 0; then echo "  series: $out"; fi
-          done | tee /tmp/loaded.txt
+          mkdir -p /tmp/traces
+          for run in $(seq 1 60); do
+            node --trace-gc --trace-incremental-marking $flags tmp-memory-flags/series.cjs > /tmp/traces/$run.txt 2>&1
+            node tmp-memory-flags/row.cjs sync flags < /tmp/traces/$run.txt | sed "s/^ROW/ROW run $run/" | tee -a /tmp/rows.txt
+          done
           kill $pids
-          grep -v series /tmp/loaded.txt | awk '{print $NF}' | sort -n | uniq -c
-  shard:
+          awk '{print $5}' /tmp/rows.txt | sort -n | uniq -c
+          shown=0
+          for run in $(awk '$5 > 10 {print $3}' /tmp/rows.txt | head -2); do
+            echo "=================== trace of run $run"
+            cut -c1-230 /tmp/traces/$run.txt
+          done
+          echo "=================== trace of a run that stayed at 8"
+          run=$(awk '$5 <= 8.25 {print $3}' /tmp/rows.txt | head -1)
+          cut -c1-230 /tmp/traces/$run.txt
+  variants:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        busy: [0, 4, 8]
+        variant: [sync, gcafter, yield]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          pids=""
+          for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
+          flags="--max-semi-space-size=4 --heap-growing-percent=50"
+          case "${{ matrix.variant }}" in sync) file=series; extra="";; gcafter) file=gcafter; extra="--expose-gc";; yield) file=yield; extra="";; esac
+          for run in $(seq 1 60); do
+            node $flags $extra tmp-memory-flags/$file.cjs | node tmp-memory-flags/row.cjs ${{ matrix.variant }} flags
+          done > /tmp/rows.txt
+          for run in 1 2 3 4; do
+            node $extra tmp-memory-flags/$file.cjs | node tmp-memory-flags/row.cjs ${{ matrix.variant }} none
+          done >> /tmp/rows.txt
+          kill $pids
+          echo "busy loops: ${{ matrix.busy }}, nproc $(nproc)"
+          node tmp-memory-flags/summarize.cjs < /tmp/rows.txt
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -55,8 +73,8 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - name: the files of the shard that went red, with the diagnostic test in place of the memory-flags test
         run: |
-          for round in $(seq 1 12); do
-            echo "=== round $round"
-            node --test --test-timeout=40000 --test-reporter=spec \
-              test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts tmp-memory-flags/diag.test.ts test/find.test.ts test/fresh.test.ts 2>&1 | grep -E "^DIAG|^# (pass|fail)|✖" || true
-          done
+          for round in $(seq 1 15); do
+            node --test --test-timeout=60000 --test-reporter=spec \
+              test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts tmp-memory-flags/diag.test.ts test/find.test.ts test/fresh.test.ts 2>&1 | grep -E "^ROW|^# (pass|fail)|✖" || true
+          done | tee /tmp/shard-rows.txt
+          node tmp-memory-flags/summarize.cjs < /tmp/shard-rows.txt
