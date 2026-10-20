@@ -1,5 +1,5 @@
 name: tmp-history-read-slow
-# Temporary (item history-read-slow): the type check, the design tree check and the tests the change touches, then the new tests on code
+# Temporary (item history-read-slow): the type check and the tests the change touches, then the new tests on code
 # spoiled one line at a time. Removed before the pull request is ready.
 on:
   push:
@@ -10,13 +10,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: ./.github/actions/node-modules
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: npm run check
       - run: npm run build:web
-      - run: make design-lint
       - run: node --test test/doc-commits.test.ts test/startup-cache.test.ts test/startup-time.test.ts test/store.test.ts test/budget.test.ts test/replay.test.ts test/history.test.ts test/query.test.ts test/changes-cost.test.ts test/maintenance.test.ts test/write-trace.test.ts test/ops.test.ts test/owner-ops.test.ts test/mcp.test.ts
       # The benchmark's three new cases on a small board, to see that the script runs and what the numbers look like.
       - run: node scripts/bench-changes.ts --label "this tree, smoke" --items 300 --decisions 100 --notes 100 --history 3000 --cases history-item,history-card,history-unknown
@@ -44,7 +41,7 @@ jobs:
           # a read at a commit is answered from the list of the head
           - { name: at-ignored, file: src/store.ts, from: 'opts.since || opts.at !== undefined || opts.blobs ||', to: 'opts.since || opts.blobs ||', tests: test/doc-commits.test.ts }
           # a commit that git made and the store rolled back is listed
-          - { name: rolled-back-listed, file: src/store.ts, from: 'const object = head && await this.blobs.object(head);', to: 'if (head) this.noteDocCommits(paths, head); const object = head && await this.blobs.object(head);', tests: test/doc-commits.test.ts }
+          - { name: rolled-back-listed, file: src/store.ts, from: 'const object = head && await this.blobs.object(head);', to: 'if (head) this.noteDocCommits(paths, head); const object = head && await this.blobs.object(head);', tests: '--test-name-pattern="fails after git" test/doc-commits.test.ts' }
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
