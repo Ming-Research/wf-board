@@ -625,10 +625,18 @@ with `launchctl bootout` and `bootstrap` is the same by hand. The `startup memor
 with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), so that a service still on the old file shows,
 and `test/memory-flags.test.ts` holds that
 node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
-(128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
-halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 MB in one run of the sweep and
-28.5 MB in one of the 12 paired runs, and the same probe written as a top-level script read 15 to 29 MB with the same flags. V8 lets
-the young generation hold more than two halves for a while; the cause was not looked into.
+(128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the daemon's samples with the flags read 8 MB in most
+runs but also 10.8 MB in one run of the sweep and 28.5 MB in one of the 12 paired runs. The flags set the size the young generation
+returns to at a collection, not a ceiling between collections. A GC trace of the probe (`--trace-gc --trace-incremental-marking`, hosted
+runner, 4 cores kept busy by 4 loops, run 39372874244, job `trace (4)`) shows when it runs past: the old generation reaches its limit
+(the growing percentage of 50 puts that early), V8 starts incremental marking, and no young-generation collection runs from then until
+the marking ends 164 to 268 ms later (the new space read 8.5, 10.8, 13.0 and 15.3 MB in that window), after which the next collection
+returns it to 8 MB. On a quiet machine the same marking ends within tens of milliseconds and the reading is 8 or 8.25 MB. The first
+version of the test took the largest size over its readings; beside the files of the CI shard that went red it read more than 12 MB
+in 20 of 150 runs (13%), and by the probe alone 6 of 156 readings did (12.75 to 21.75 MB). The probe now collects the young generation
+(`gc({ type: "minor" })`, with `--expose-gc`) before each reading, so that it reads the size the flags set: 8 MB in all 240 probes with 4
+or 8 cores busy and beside the shard's files, 128 MB without the flags in all 68, and 0 red in 150 runs of the test beside those files.
+Letting the probe give the event loop a turn after each reading was worse (21 to 36 of 60 readings over 12 MB with cores busy).
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts

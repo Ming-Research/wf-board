@@ -1,6 +1,5 @@
 name: tmp-memory-flags-flake
-# Temporary (item memory-flags-flake): the checks of the change to the memory-flags test, the GC trace of a probe that read past two
-# halves, and the old and the new test in turn beside the files of the shard that went red. Removed before the pull request is ready.
+# Temporary (item memory-flags-flake): the checks of the change to the memory-flags test. Removed before the full CI.
 on:
   push:
     branches: [memory-flags-flake]
@@ -39,64 +38,3 @@ jobs:
           cat /tmp/out.txt
           [ "$code" -ne 0 ] || { echo "the test passed on a service file with the flags spoiled: ${{ matrix.spoil }}"; exit 1; }
           grep -q "✖ node accepts the service's flags" /tmp/out.txt || { echo "the readings test did not fail"; exit 1; }
-  # Where the readings test goes wrong when the probe itself is spoiled: no collection before the reading is the old probe.
-  trace:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        busy: [4, 8]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: |
-          pids=""
-          for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
-          flags="--max-semi-space-size=4 --heap-growing-percent=50"
-          mkdir -p /tmp/traces
-          for run in $(seq 1 120); do
-            node --trace-gc --trace-incremental-marking $flags tmp-memory-flags/series.cjs > /tmp/traces/$run.txt 2>&1
-            node tmp-memory-flags/row.cjs sync flags < /tmp/traces/$run.txt | sed "s/^ROW/ROW run $run/" >> /tmp/rows.txt
-          done
-          kill $pids
-          echo "busy loops: ${{ matrix.busy }}; peaks:"
-          awk '{print $6}' /tmp/rows.txt | sort -n | uniq -c
-          for run in $(awk '$6 > 10 {print $3}' /tmp/rows.txt | head -2); do
-            echo "=================== run $run"
-            node tmp-memory-flags/window.cjs /tmp/traces/$run.txt
-          done
-          echo "=================== a run that stayed at 8, around its readings 1350k to 1550k"
-          run=$(awk '$6 <= 8 {print $3}' /tmp/rows.txt | head -1)
-          grep -E "ms: " /tmp/traces/$run.txt | sed -n 100,125p | cut -c1-200
-  # The old test and the new one in the shard that went red (the same six files, in the same order, with the test swapped), 15 times
-  # each in turn, in 10 jobs.
-  burst:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: npm run build:web
-      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - run: |
-          for round in $(seq 1 15); do
-            for which in old new; do
-              if [ $which = old ]; then t=tmp-memory-flags/old.test.ts; else t=test/memory-flags.test.ts; fi
-              set +e
-              node --test --test-timeout=60000 --test-reporter=spec \
-                test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts $t test/find.test.ts test/fresh.test.ts > /tmp/out.txt 2>&1
-              set -e
-              if grep -q "✖ node accepts the service's flags" /tmp/out.txt; then
-                echo "RED $which round $round: $(grep -m1 -E 'it stays within|grows past' /tmp/out.txt)"
-              else
-                echo "GREEN $which round $round"
-              fi
-              grep -E "✖" /tmp/out.txt | grep -v "node accepts the service's flags" || true
-            done
-          done | tee /tmp/burst.txt
-          echo "old: $(grep -c '^RED old' /tmp/burst.txt) red of $(grep -c ' old round' /tmp/burst.txt); new: $(grep -c '^RED new' /tmp/burst.txt) red of $(grep -c ' new round' /tmp/burst.txt)"
