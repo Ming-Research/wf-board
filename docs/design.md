@@ -2027,6 +2027,7 @@ registry, and a test raises every registered kind on one board.
 | `unowned-but-awaited` | 同项目有条目在等它，却没有条目拥有它 (a standing item's shared row for a standing item does not count as waiting) | yes |
 | `waits-on-standing` | 拥有一个常设条目，它不会完成 / 等着一个常设条目，它不会完成 (a row of an ordinary item that owns or shares a standing item, pointing at it; a record and a standing item are not asked) | yes |
 | `no-acceptance` | 没有计划：至少要有一个验收步骤 (not for a record or a standing item) | yes |
+| `merge-pr-unlisted` | 合入行点名的 PR 都不在「改动」一节里，合入后不会打勾 (an open merge row none of whose named pull requests the head's 改动 section names; the row can then never be done, so it is flagged until 改动 names one) | no |
 | `plan-provisional` | 计划待重写 (label `待重写`: the plan is still the conversion's provisional plan, below) | no; conversion only |
 | `acceptance-pending` | 验收步骤待补 (the acceptance text is the conversion placeholder) | no; conversion only |
 | `dep-item-cancelled` | 依赖的条目已取消 (shared row to a cancelled item) | no |
@@ -4568,7 +4569,9 @@ holds only 合入 and the pull request that delivers the item, so the start is
 enough, and a row that waits (等 … 合入后合入 …) is none.
 An open merge row (`isOpenMergeStep`), not done and not dropped, counts the pull
 requests it names, in the forms above, which the item's own 改动 section names
-as well (`mergeRowPulls` in `src/query.ts`). A line that waits for another pull
+as well (`mergeRowPulls` in `src/query.ts`). An open merge row none of whose named
+pull requests 改动 names can never be done, so the item carries `merge-pr-unlisted`
+until 改动 names one (`src/rules.ts`). A line that waits for another pull
 request to merge names it too, and that one is not the item's own, so it does
 not count and a line naming only such pull requests is no merge row. When GitHub
 reports every pull request that

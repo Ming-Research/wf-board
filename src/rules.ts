@@ -1316,10 +1316,14 @@ export function rules(s: RulesInput, now = Date.now(), { activity: activityOptio
         if (acceptance.some(row => row.state !== "resolved") && others.every(row => row.state === "resolved")) out.push(check("only-acceptance-left", "只差验收：其它行都已完成"));
         // A merge row is done when a pull request it names merges, but only those 改动 names count (docs/design.md, Watching GitHub, Merge
         // rows). A row that names none of them can never be done, so the item would wait without a sign: flag it until 改动 names one.
-        const repos = knownRepos(s), listed = new Set(pullsIn(s, changesSection(it.head), repos).map(prKey));
-        for (const row of it.plan.flatMap(r => isOpenMergeStep(r, it.plan) ? [r] : [])) {
-          const named = pullsIn(s, row.text, repos);
-          if (named.length && !named.some(pr => listed.has(prKey(pr)))) out.push(check("merge-pr-unlisted", `合入行点名的 ${named.map(pr => `${pr.repo}#${pr.number}`).join("、")} 不在「改动」一节里，合入后不会打勾：在「改动」里补上这个 PR 的链接`));
+        // Most items have no open merge row, so the repositories are read only for the ones that do: knownRepos reads the whole board.
+        const merges = it.plan.flatMap(r => isOpenMergeStep(r, it.plan) ? [r] : []);
+        if (merges.length) {
+          const repos = knownRepos(s), listed = new Set(pullsIn(s, changesSection(it.head), repos).map(prKey));
+          for (const row of merges) {
+            const named = pullsIn(s, row.text, repos);
+            if (named.length && !named.some(pr => listed.has(prKey(pr)))) out.push(check("merge-pr-unlisted", `合入行点名的 ${named.map(pr => `${pr.repo}#${pr.number}`).join("、")} 不在「改动」一节里，合入后不会打勾：在「改动」里补上这个 PR 的链接`));
+          }
         }
         if (isOpenWork(id) && parent && ended(parent)) out.push(check("owner-closed", "拥有它的条目已关闭", { kind: "item", id: parent }));
         if (st === "wip" && it.plan.some(row => "text" in row && row.state === "doing") && stalled(id)) out.push(check("stalled", "进行中但 1 小时（活跃时间）没有动静"));

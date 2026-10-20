@@ -34,3 +34,22 @@ test("a merge row naming pull requests that 改动 does not name is flagged unti
   assert.equal(flags().length, 0, "once 改动 names it, the flag goes");
   assert.deepEqual(mergeRows(store.snapshot(), rules(store.snapshot())).filter(m => m.item === "ship").map(m => m.prs.map(p => p.number)), [[74]], "the merge row counts #74 again");
 });
+
+// The flag is for an open merge row none of whose pull requests 改动 names. A row that names one that is listed, a step that is not a merge row, and a
+// done row are not flagged; a row of a plan with no merge stage row that names an unlisted pull request is.
+test("the flag covers only an open merge row that names no pull request 改动 lists", async t => {
+  const { store, op } = await board(t);
+  const flagged = (id: string) => rules(store.snapshot()).checks(id).some(c => c.id === "merge-pr-unlisted");
+  const make = async (key: string, head: string, rows: Array<Record<string, unknown>>) => {
+    await op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, head, accept: "验收通过" });
+    await op.setPlan({ ...asArchitect, id: key, rows: [...rows, { id: "acc", accept: true, text: "验收通过", state: "todo" }] } as never);
+  };
+  await make("two", "**问题**：x\n\n## 改动\n\nMing-Research/Whitefoot#75", [{ id: "ship", text: "合入 Ming-Research/Whitefoot#74 和 Ming-Research/Whitefoot#75", state: "todo" }]);
+  await make("verify", "**问题**：x\n\n## 改动\n\n- 改了 a.ts", [{ id: "online", text: "合入后线上验证 Ming-Research/Whitefoot#74", state: "todo" }]);
+  await make("done", "**问题**：x\n\n## 改动\n\n- 改了 a.ts", [{ id: "ship", text: "合入 Ming-Research/Whitefoot#74", state: "done" }]);
+  await make("legacy", "**问题**：x\n\n## 改动\n\n- 改了 a.ts", [{ id: "ship", text: "合入 Ming-Research/Whitefoot#74", state: "todo" }]);
+  assert.equal(flagged("two"), false, "#75 is listed, so the row counts a pull request");
+  assert.equal(flagged("verify"), false, "a step that starts with 合入后 is no merge row");
+  assert.equal(flagged("done"), false, "a done merge row is no longer open");
+  assert.equal(flagged("legacy"), true, "a plan with no merge stage row: a 合入 row naming an unlisted pull request is flagged");
+});

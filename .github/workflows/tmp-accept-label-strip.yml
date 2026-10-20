@@ -13,4 +13,4 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: npm run check
-      - run: node --test test/accept-label.test.ts test/watch.test.ts test/query.test.ts test/ops.test.ts test/mcp.test.ts
+      - run: node --test test/accept-label.test.ts test/watch.test.ts test/query.test.ts test/ops.test.ts test/mcp.test.ts test/rules.test.ts
