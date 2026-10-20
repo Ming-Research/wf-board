@@ -1,6 +1,6 @@
-// What the deploy job's three test files share (test/deploy.test.ts, deploy-recover.test.ts, deploy-script.test.ts): real git
-// repositories (a bare origin, the checkout the daemon runs from, and a clone that plays the merges), the fake npm, launchd and daemon
-// around src/deploy.ts, a stand-in for `gh`, and the checks GitHub may report.
+// What the deploy job's test files share (test/deploy.test.ts, deploy-recover.test.ts, deploy-script.test.ts, deploy-service.test.ts):
+// real git repositories (a bare origin, the checkout the daemon runs from, and a clone that plays the merges), the fake npm, launchd and
+// daemon around src/deploy.ts, a stand-in for `gh`, and the checks GitHub may report.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -19,6 +19,24 @@ export const identity = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.inv
 export const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }).trim();
 export type After = { after(fn: () => void | Promise<void>): void };
 
+export const HOME = "/Users/me";
+/** The daemon's service file as the repository holds it (ops/wf-board.plist): `args` are the arguments between the node and the script. */
+export const template = (args: string) => `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.ming-research.wf-board</string>
+  <key>ProgramArguments</key><array><string>{{NODE}}</string>${args}<string>{{REPO}}/src/main.ts</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{{PATH}}</string><key>WF_BOARD_DATA</key><string>{{DATA}}</string></dict>
+  <key>WorkingDirectory</key><string>{{REPO}}</string>
+  <key>StandardOutPath</key><string>{{HOME}}/Library/Logs/wf-board.log</string>
+</dict></plist>
+`;
+/** The installed file for that template: the values an installer chose, written out by hand (the PATH has an & and the data directory a
+ * < and a >, which an XML file spells out), the home being the job's own. */
+export const installedFor = (args: string, home = HOME) => template(args)
+  .replaceAll("{{NODE}}", "/opt/homebrew/opt/node@24/bin/node").replaceAll("{{REPO}}", "/Users/me/dev/wf-board")
+  .replaceAll("{{PATH}}", "/opt/homebrew/bin:/usr/bin:/a&amp;b").replaceAll("{{DATA}}", "/Users/me/data &lt;1&gt;").replaceAll("{{HOME}}", home);
+export const FLAGS = "<string>--max-semi-space-size=4</string>";
+
 /** A bare origin, the checkout the daemon runs from, and `seed`, the clone a merge is made in and pushed from. */
 export async function repos(t: After) {
   const dir = await mkdtemp(join(tmpdir(), "wf-board-deploy-"));
@@ -31,7 +49,7 @@ export async function repos(t: After) {
   const publish = (message: string) => { sh(seed, "add", "-A"); sh(seed, "commit", "-q", "-m", message); sh(seed, "push", "-q", "origin", BRANCH); return sh(seed, "rev-parse", "HEAD"); };
   /** One merged pull request: these files change on the main line. */
   const land = (files: Record<string, string>, message: string) => { write(seed, files); return publish(message); };
-  const first = land({ "src/main.ts": "run", "web/index.html": "page", "docs/design.md": "doc", "test/a.test.ts": "test", "package-lock.json": "lock 1", "README.md": "readme" }, "first");
+  const first = land({ "src/main.ts": "run", "web/index.html": "page", "docs/design.md": "doc", "test/a.test.ts": "test", "package-lock.json": "lock 1", "README.md": "readme", "ops/wf-board.plist": template("") }, "first");
   sh(dir, "clone", "-q", "-b", BRANCH, origin, checkout);
   return { dir, origin, repo: REPO, seed, checkout, first, land, publish, write, head: () => sh(checkout, "rev-parse", "HEAD"), short: (sha: string) => sh(seed, "rev-parse", "--short", sha) };
 }
@@ -48,6 +66,9 @@ export function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<De
     verdict: (() => ({ state: "success", failed: [] })) as (commit: string) => Checks, asked: [] as Array<[string, string]>,
     daemon: { pid: 100 as number | undefined, ok: true, flap: false, takes: true },
     saved: { outbox: [] } as DeployState,
+    // The daemon's installed service file (none until a test installs one) and the texts the job wrote there, in order; `breakNext`
+    // makes the next replacement fail after the file is written, as a launchctl that refuses to load it does.
+    service: { installed: undefined as string | undefined, replaced: [] as string[], breakNext: false },
   };
   const git: DeployDeps["git"] = async args => {
     try { return execFileSync("git", args, { cwd: r.checkout, encoding: "utf8", env: { ...process.env, ...identity }, stdio: ["ignore", "pipe", "pipe"] }); }
@@ -69,6 +90,17 @@ export function world(r: Awaited<ReturnType<typeof repos>>, override: Partial<De
     restart: async () => {
       const code = readFileSync(join(r.checkout, "src/main.ts"), "utf8");
       w.restarts++; w.daemon.pid = (w.daemon.pid ?? 100) + 1000; w.daemon.ok = !code.includes("BROKEN"); w.daemon.flap = code.includes("CRASH LOOP");
+    },
+    // A service file holding BROKEN CONFIG is one under which the daemon never answers; kickstart keeps the file launchd holds.
+    service: {
+      installed: async () => w.service.installed,
+      home: HOME,
+      replace: async text => {
+        w.service.replaced.push(text); w.service.installed = text;
+        if (w.service.breakNext) { w.service.breakNext = false; throw new Error("Bootstrap failed: 5: Input/output error"); }
+        const code = readFileSync(join(r.checkout, "src/main.ts"), "utf8");
+        w.daemon.pid = (w.daemon.pid ?? 100) + 1000; w.daemon.ok = !code.includes("BROKEN") && !text.includes("BROKEN CONFIG"); w.daemon.flap = code.includes("CRASH LOOP");
+      },
     },
     healthy: async () => { if (w.flaky > 0) { w.flaky--; return false; } return w.daemon.ok && w.daemon.pid !== undefined; },
     checks: async (repo, commit) => { w.asked.push([repo, commit]); return w.verdict(commit); },

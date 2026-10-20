@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>org.ming-research.wf-board</string>
-  <key>ProgramArguments</key><array><string>{{NODE}}</string><string>{{REPO}}/src/main.ts</string></array>
+  <!-- The two V8 flags keep the resident memory down (docs/design.md, section 4, Memory beyond the heap); a change here reaches the service only when it is installed again. -->
+  <key>ProgramArguments</key><array><string>{{NODE}}</string><string>--max-semi-space-size=4</string><string>--heap-growing-percent=50</string><string>{{REPO}}/src/main.ts</string></array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>{{PATH}}</string><key>WF_BOARD_DATA</key><string>{{DATA}}</string></dict>
   <key>WorkingDirectory</key><string>{{REPO}}</string>
   <key>RunAtLoad</key><true/>

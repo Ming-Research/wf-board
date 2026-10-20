@@ -43,20 +43,24 @@ test("a stopwatch reports the time since its previous call under each step", asy
   assert.doesNotThrow(() => stopwatch()("nobody listens"));
 });
 
-test("the startup memory line gives the time of a full collection, then the heap after it and the resident set", () => {
+test("the startup memory line gives the time of a full collection, then the heap after it, the resident set and the options node started with", () => {
   const seen: Array<[string, number, string | undefined]> = [];
   let collections = 0;
-  startupMemory((step, ms, detail) => seen.push([step, ms, detail]), { collect: () => { collections++; }, heapUsed: () => 55.75 * 1024 * 1024, rss: () => 275.04 * 1024 * 1024 });
+  startupMemory((step, ms, detail) => seen.push([step, ms, detail]), { collect: () => { collections++; }, heapUsed: () => 55.75 * 1024 * 1024, rss: () => 275.04 * 1024 * 1024, options: () => ["--max-semi-space-size=4", "--heap-growing-percent=50"] });
   assert.equal(collections, 1, "the heap is read after a collection, not before");
   assert.equal(seen.length, 1);
-  assert.deepEqual([seen[0]![0], seen[0]![2]], ["memory", "heap 55.8 MB in use after a full collection, rss 275.0 MB"]);
+  assert.deepEqual([seen[0]![0], seen[0]![2]], ["memory", "heap 55.8 MB in use after a full collection, rss 275.0 MB, node options --max-semi-space-size=4 --heap-growing-percent=50"]);
   const lines: string[] = [];
   startupLogger(line => lines.push(line))(...seen[0]!);
-  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap 55\.8 MB in use after a full collection, rss 275\.0 MB\)$/);
+  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap 55\.8 MB in use after a full collection, rss 275\.0 MB, node options --max-semi-space-size=4 --heap-growing-percent=50\)$/);
+  // A process started without options says so, so that a service not installed again after the flags changed shows on the line.
+  const bare: string[] = [];
+  startupMemory((step, ms, detail) => bare.push(detail!), { collect: () => {}, heapUsed: () => 0, rss: () => 0, options: () => [] });
+  assert.match(bare[0]!, /, node options none$/);
 });
 
 test("the startup memory line is a real reading: the process's own heap and resident set, after a collection that runs", () => {
   const lines: string[] = [];
   startupMemory(startupLogger(line => lines.push(line)));
-  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap [1-9]\d*\.\d MB in use after a full collection, rss [1-9]\d*\.\d MB\)$/);
+  assert.match(lines[0]!, /^startup memory: \d+ ms \(heap [1-9]\d*\.\d MB in use after a full collection, rss [1-9]\d*\.\d MB, node options .+\)$/);
 });

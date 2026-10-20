@@ -1,4 +1,4 @@
-// Three of the five scenarios of the agent list on the page, the other two in agents-fold.test.ts; each also runs on a page with one
+// Three of the six scenarios of the agent list on the page, the other three in agents-fold.test.ts; each also runs on a page with one
 // thing spoiled in agents-spoiled-*.test.ts (test/dom/agents-scenarios.ts holds the scenarios and the spoilings).
 
 import { test } from "node:test";

@@ -30,6 +30,9 @@ matches what the artifact board offered.
   (design section 4, Storage). `src/backup-push.ts`: the rounds of pushes to the
   remote, their log lines, ending the push on shutdown, and the push to the
   architect when the remote copy stays behind for an hour.
+- `src/service-config.ts`: the launchd job files (`ops/*.plist`) as templates: filling one in (`renderPlist`, used by
+  `scripts/install-service.ts` and by the deploy job) and reading back from the installed daemon file the node, checkout, PATH and data
+  directory it holds (`installedValues`), which the deploy job fills the template with again (design section 4, Deploying).
 - `src/budget.ts`: the budget of one request's reads of the board's history (bytes
   read, whole old boards rebuilt, the process heap), held in the request's async
   context; `src/read-cache.ts`: the caches of historical documents, diffs and the one
@@ -57,8 +60,21 @@ matches what the artifact board offered.
 - `src/agents.ts`: the agent list at the top of the page: how the per-session
   index of the last two items written is advanced, and the rows (who is listed,
   who is running, the state word, the level) derived from it, the steps in
-  progress and the dispatch records. Imported by the server and bundled into
+  progress and the dispatch records; a review session of work the runner holds is
+  none of them (`runnerHoldsReview`). Imported by the server and bundled into
   the page.
+- `src/agent-list.ts`: the agent list as one value (`agentList`: the runner's rows, the other
+  sessions running, the rest behind the fold, the heading's number = the rows drawn open), the line
+  about the runner's free slots (`poolsLine`) and the lines the `look` tool prints (`agentListLines`).
+  Imported by the server and bundled into the page, so the heading's number cannot differ between them
+  (design section 7, Agent list, One list for the page and the tool).
+- `src/runner-pools.ts`: the runner's pools of slots from its heartbeat (`report_heartbeat`'s `pools`):
+  the check of a report, the last report kept in memory only, the listener the page's event follows,
+  and the notice to the owner after an hour with a free slot and nothing to start (design section 8,
+  The runner's heartbeat).
+- `src/under.ts`: what stands under an item: the open and ruled cards on the items it owns, the pull
+  requests its open parts name in 改动 and the sessions at work; `context` lists the cards, the replies
+  of `set_pause` and of a cancelling `set_status` list all three (design section 6, Lean replies).
 - `src/candidates.ts`: the items an engineer could be started on and the working engineers of the two pools, read from the
   whole board (the `candidates` tool), and, apart from them, the paused work and the backlog work with a written start condition
   of each pool: the board lists and holds no limit, the architect compares the count with the owner's numbers and chooses
@@ -70,13 +86,13 @@ matches what the artifact board offered.
 - `src/timeline.ts`: the line of an agent (one dispatch record, one session): the state starts the store derives from the runner's `report_state` commits
   (`activity.states`), the segments `lineOf` cuts from them to the span of the dispatch, with the item's pause spans, the longest waits and the text of the
   `timeline` tool; imported by the server and bundled into the page, which draws the line as a bar in each row of the runner's block (design section 7, Agent list).
-- `src/look.ts`: the look: every open work item in one answer as the tree the owner's board shows, in a budget of lines, and the memory of what each session saw at its last look (daemon memory only), printed by the `look` tool (design section 6, The look).
+- `src/look.ts`: the look: every open work item in one answer as the tree the owner's board shows, in a budget of lines, and the memory of what each session saw at its last look (daemon memory only), printed by the `look` tool, whose lines carry the owner's card counts and whose answer ends with the agent list (design section 6, The look).
 - `src/live.ts`: the runner's beats for the turns running now (the turn's number, its length, the last action), kept in the
   daemon's memory only and sent to the page as the event `live`; `src/runner-rows.ts`: the runner's block of the agent list, one row
   for each piece of work the runner holds, read from its report on the item, the dispatch record and the beats (design section 7,
   Agent list, The live view of a turn). Imported by the server and bundled into the page.
 - `src/runner-heartbeat.ts`: the time of the runner's last heartbeat (`report_heartbeat`), kept in memory and in a local file, and the minute check
-  that tells the architect once when none has come for 10 minutes (design section 8, The runner's heartbeat). The board accepts it from the same writers as `report_state`.
+  that tells the architect once when none has come for 10 minutes (design section 8, The runner's heartbeat). The board accepts it from the same writers as `report_state`; the pools it may carry are kept by `src/runner-pools.ts`.
 - `src/dispatch.ts`: dispatch records (the agent sessions the architect or the runner
   started on items, kept on the item as `dispatches`): reading them across the
   board, the tallies, and the log lines the two write tools append.
@@ -165,6 +181,8 @@ matches what the artifact board offered.
 - `design/`: the design tree, one Markdown file per node and the change log
   `design/log.md`; `design/skill` is the Design-skill submodule that checks it.
   `Makefile` holds the two targets that run the check. Section "Design tree".
+- `ops/`: the plists of the two launchd jobs, written by `scripts/install-service.ts`; `wf-board.plist` carries the daemon's V8 flags
+  (design section 4, Memory beyond the heap), which `test/memory-flags.test.ts` holds.
 - `scripts/check-private-content.ts`, with its rules in
   `scripts/private-content-rules.ts`: the CI check that a push or a pull
   request adds nothing private to this public repository (design section
@@ -290,10 +308,22 @@ changes to tracked files or has a commit the main line lacks, and pushes
 `deployFailed` once; fix the checkout and the next run deploys. Checks it cannot read
 (`gh` signed out, GitHub not answering) hold the deploy the same way and are pushed once.
 
+The same job keeps the daemon's service file, `~/Library/LaunchAgents/org.ming-research.wf-board.plist`, equal to what the template
+`ops/wf-board.plist` of the main line's head renders to (with the node, PATH, data directory and checkout the installed file holds):
+when the two differ it writes the new file, stops the service with `launchctl bootout`, loads it with `launchctl bootstrap`, waits for it
+as after any restart, and writes the old text back if it does not come up. So a change to that template (a node flag, say)
+goes live with the merge, nobody installs it by hand and no agent stops the live service. The log line `deploying <commit> over
+<commit>, replacing the service file` and the `startup memory` line of the daemon's log (its end names the node options in force)
+show it; a head that is live already but has another file than the installed one gets it replaced on the next run
+(`docs/design.md`, section 4, Deploying).
+
 Install once, after the PR that adds the job has been deployed by hand (the
 merge does not install it):
 `WF_BOARD_NODE=/opt/homebrew/opt/node@24/bin/node WF_BOARD_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin node scripts/install-service.ts deploy`
-writes the plist and prints the `launchctl bootstrap` command to run.
+writes the plist and prints the `launchctl bootstrap` command to run. The daemon's own file is written the same way
+(`node scripts/install-service.ts` with the same two variables, no argument), when the deploy job is off: then run
+`launchctl bootout gui/$(id -u)/org.ming-research.wf-board` and the `bootstrap` command it prints. The `startup memory` line of the
+service log names the node options in force (`node options none` means a file without the flags is still loaded).
 
 By hand, when the job is off, its own script broke, or `gh` cannot read the checks: fast-forward
 `~/dev/wf/wf-board` to the merged head of `main` and run

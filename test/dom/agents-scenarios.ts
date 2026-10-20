@@ -150,6 +150,39 @@ export async function othersFold(t: Hooks, reverts: Revert[] = []) {
   assert.deepEqual(bp.errors, []);
 }
 
+/**
+ * The runner's free slots stand under the heading whether the list is open or folded, even when no session has a row; a pool that has had a free
+ * slot and nothing to start for an hour is marked, and the owner is told once. The text is src/agent-list.ts `poolsLine`'s, tested on plain data in
+ * test/agent-list.test.ts; this is where it lies on the page and when it is drawn.
+ */
+export async function slotsLine(t: Hooks, reverts: Revert[] = []) {
+  const board = await startBoard(t), bp = await open(t, board, reverts);
+  const slots = () => bp.$("#agents .agents-slots");
+  assert.equal(bp.visible(bp.$("#agents")), false, "the runner has reported no slots yet: no list");
+  board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 2, dryForSeconds: 600 }]);
+  await bp.waitFor(() => !!slots(), "the line about the free slots", 5_000);
+  assert.match(slots()!.textContent!, /^名额：1 级 空着 8 个（共 10），派活队列里没有能开工的活已 10 分钟$/);
+  assert.equal(bp.visible(bp.$("#agents")), true, "the slots alone make the list appear");
+  assert.equal(slots()!.classList.contains("idle"), false, "ten minutes with nothing to start does not mark the line");
+  assert.equal(bp.$("#agents .agents-toggle")!.textContent, "▾ 代理 0", "no session runs: the heading counts none");
+  assert.equal(board.told.length, 0, "and the owner is told nothing");
+  // An hour and a minute of nothing to start: the line is marked, and the owner is told once.
+  board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 2, dryForSeconds: 3660 }]);
+  await bp.waitFor(() => /已 1 小时 1 分$/.test(slots()?.textContent ?? ""), "the line to count past the hour", 5_000);
+  assert.equal(slots()!.classList.contains("idle"), true, "an hour with nothing to start marks the line");
+  assert.deepEqual(board.told.map((x: { title: string }) => x.title), ["名额空着 · 1 级"], "the owner is told once");
+  // The line stays under the heading when the list is folded: it is what the owner must see without opening anything.
+  bp.click(bp.$("#agents .agents-toggle"), "the heading");
+  await bp.settle();
+  assert.equal(bp.$("#agents .agents-toggle")!.textContent, "▸ 代理 0");
+  assert.ok(slots(), "the line about the slots stays under the heading when the list is folded");
+  // All the slots taken: the line says full, and is not marked.
+  board.pools.put([{ pool: "1", label: "1 级", slots: 10, running: 10, dryForSeconds: 3700 }]);
+  await bp.waitFor(() => /满 10\/10/.test(slots()?.textContent ?? ""), "the line to say the pool is full", 5_000);
+  assert.equal(slots()!.classList.contains("idle"), false, "a full pool is not idle");
+  assert.deepEqual(bp.errors, []);
+}
+
 /** With nothing selected and a cell of the list unfolded, a key command (c) asks for the item on screen: a row of the tree, not a row of
  * the list, whose element id is not an item's. */
 export async function keyWithListUnfolded(t: Hooks, reverts: Revert[] = []) {
@@ -208,7 +241,19 @@ const WITNESSES: Array<{ bug: string; scenario: (t: Hooks, reverts: Revert[]) =>
   },
   {
     bug: "the heading counted every session, not only the running ones",
-    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (running.length + runner.length)', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (rows.length + runner.length)')], reason: /nothing runs: the heading counts none/,
+    scenario: othersFold, reverts: [app("the heading counts all rows", '(agentsOpen ? "▾ " : "▸ ") + "代理 " + count', '(agentsOpen ? "▾ " : "▸ ") + "代理 " + (rowCount + runner.length)')], reason: /nothing runs: the heading counts none/,
+  },
+  {
+    bug: "the line about the runner's free slots was drawn only when a session had a row",
+    scenario: slotsLine, reverts: [app("the slots alone draw no list", 'host.hidden = !rowCount && !runner.length && !slots;\n    host.innerHTML = "";\n    if (!rowCount && !runner.length && !slots) return;', 'host.hidden = !rowCount && !runner.length;\n    host.innerHTML = "";\n    if (!rowCount && !runner.length) return;')], reason: /the line about the free slots/,
+  },
+  {
+    bug: "the line about the runner's free slots did not mark a pool idle for an hour",
+    scenario: slotsLine, reverts: [app("the idle mark is gone", '"agents-slots" + (slots.idle ? " idle" : "")', '"agents-slots" + ""')], reason: /an hour with nothing to start marks the line/,
+  },
+  {
+    bug: "the line about the runner's free slots vanished when the list was folded",
+    scenario: slotsLine, reverts: [app("the slots are drawn only when the list is open", 'if (slots) {\n      const line = el("p", "agents-slots"', 'if (slots && agentsOpen) {\n      const line = el("p", "agents-slots"')], reason: /stays under the heading when the list is folded/,
   },
   {
     bug: "a key command with nothing selected took the first item row it found, an unfolded row of the agent list, for a tree row (agent list, review of wf-board#37)",
