@@ -1,0 +1,37 @@
+name: tmp-shutdown-contention
+# TEMPORARY (item shutdown-test-contention): where the time between SIGTERM and the daemon's exit goes, with and without load.
+on:
+  push:
+    branches: [shutdown-test-contention]
+permissions:
+  contents: read
+jobs:
+  measure:
+    name: measure ${{ matrix.load }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        load: [quiet, files, burn, lanes]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: node --run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: measure
+        run: |
+          nproc; cat /proc/loadavg
+          case "${{ matrix.load }}" in
+            quiet) node scripts/tmp-shutdown-measure.ts 40 1 ;;
+            lanes) node scripts/tmp-shutdown-measure.ts 25 4 ;;
+            burn)
+              for i in 1 2 3 4; do (while :; do :; done) & done
+              node scripts/tmp-shutdown-measure.ts 40 1 ;;
+            files)
+              # the files the red shard ran beside the test, started again as soon as they end
+              (while :; do node --test test/rules-reuse-a-3.test.ts > /dev/null 2>&1; done) &
+              (while :; do node --test test/dom/page-chips.test.ts > /dev/null 2>&1; done) &
+              node scripts/tmp-shutdown-measure.ts 40 1 ;;
+          esac
+          cat /proc/loadavg
