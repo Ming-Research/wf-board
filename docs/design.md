@@ -579,15 +579,38 @@ the live service held 3.3 MB there, since its requests seldom overlap, so the V8
 | `--max-semi-space-size=4 --heap-growing-percent=50` set at run time | 3 | 370 (12) | 17.9 | 101 | 210 | 329 |
 | `--optimize-for-size` | 3 | 118 (3) | 34.4 | 920 | 307 | 200 |
 
+The table is the mean of single runs on different runners and rounds, for comparing the variants with each other; the paired run below decides the two flags against the defaults.
+
 Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request), `--memory-balancer` (328 MB, 41.1 ms) and a
 2 MB half (409 MB); the other sizes of half with the growing percentage at 50 (2 MB, 8 MB) held 281 and 297 MB, within the
 spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
 defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
 
 The two flags are the choice: the half at 4 MB takes the young generation from 128 MB to 8 MB, and the growing percentage at 50
-makes the old generation get a full collection at 1.5 times its live data. Together they hold the pages at 46% of the
-defaults for 5% more CPU a request (inside the spread of the defaults' own runs, 12 to 24 ms), at the same latency, with
-2.3 times the full collections (collection time 14.7 s against 10.6 s in the 8 minutes). `--optimize-for-size` goes further
+makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
+so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
+running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
+minutes) per run. A ratio is the run with the flags (or the twin) over the defaults of the same round; the table gives the
+geometric mean of the 12 ratios and its 95% interval (t distribution on the logarithms, 11 degrees of freedom). The twin differs
+from the defaults only by chance, so its ratio is this measurement's noise.
+
+| metric | defaults (mean of 12) | twin | two flags | twin / defaults | two flags / defaults |
+|---|---|---|---|---|---|
+| V8 pages MB | 479 | 550 | 260 | 1.16 (0.96 to 1.40) | **0.55 (0.48 to 0.64)** |
+| physical footprint MB (with malloc's cache) | 718 | 754 | 406 | 1.06 (0.91 to 1.24) | 0.58 (0.51 to 0.65) |
+| CPU ms a request | 15.7 | 15.1 | 17.6 | 0.97 (0.93 to 1.01) | **1.13 (1.04 to 1.22)** |
+| p95 latency ms | 147 | 131 | 140 | 0.92 (0.79 to 1.07) | 0.98 (0.78 to 1.24) |
+| collection time s in 4 minutes | 3.0 | 2.7 | 5.9 | 0.93 (0.82 to 1.06) | 2.03 (1.63 to 2.53) |
+| full collections in 4 minutes | 39 | 33 | 93 | 0.86 (0.64 to 1.15) | 2.56 (2.01 to 3.25) |
+| start log rss MB | 330 | 328 | 229 | 0.99 (0.97 to 1.02) | 0.69 (0.67 to 0.72) |
+
+The V8 pages were lower with the flags in all 12 rounds (249 to 276 MB against 305 to 604 for the defaults), an improvement.
+The CPU was higher in 11 of 12 rounds: a detected regression of 13%, 4% to 22%, about 2 ms a request, which at 18 requests a second
+is about 3% of one core (deduced; the live Mac has faster cores, so less); the lower end is as large as the twin's own spread, so
+the size is less certain than the sign. The p95 latency shows no detected change, and its interval is too wide to exclude 20% either
+way. The flags are accepted at that CPU cost on a design card (item `board-offheap`).
+
+`--optimize-for-size` goes further
 but at twice the CPU. Flags set from the code after the process has started do not do it: the size of a half is fixed when
 the process starts, so only the growing percentage takes effect, for a saving of 28%. Hence the flags are arguments of the
 service file `ops/wf-board.plist`.
