@@ -463,14 +463,15 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    `history` tool asks for 20 unless told otherwise and a version conflict asks for one
    commit for each version the writer is behind, but no measurement says how many commits
    readers ask for; a read for more goes to git as before, and the count is raised if the
-   service log shows such reads, each as slow as the length of the history, often enough to
-   matter. The start's replay adds every commit it replays, a commit adds itself once git
+   slow `history` and version-conflict lines of the service log (a read line names neither
+   the document nor the limit) show such reads, each as slow as the length of the history,
+   often enough to matter. The start's replay adds every commit it replays, a commit adds itself once git
    has made it (one that is rolled back does not), and the startup cache holds the lists (format 5; the first start with it
    scans the history once). `Store.log` for the newest `limit` commits of one document from
    the head, with no `since` or `blobs` (`at` only when it is the hash of the head the store
    holds, which the owner's read marks name), takes the hashes from the list and asks git
    for those commits alone: `git log --no-walk=unsorted <hashes> -- <path>` printed
-   the same bytes as the path-limited walk, in 0.02 s on the same clone. A document with
+   the same bytes as the path-limited walk, in 0.02 s for 20 commits on the first run's clone (under 10 ms in the repeat). A document with
    no list was never committed and is decided without git; a read for more than the list
    holds, the kinds of document without a list and the reads with a range go to git as
    before. The cost is a list of at most 100 hashes for each file (43,000 hashes on the clone
@@ -482,14 +483,14 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    commits and fails when the median of nine reads passes 200 ms.
 
    *Rejected.* Git's changed-path Bloom filters (`git commit-graph write --changed-paths`):
-   the same walk took 0.75 s against 3.17 s on the clone without a graph, but it still
-   passes all 38,881 commits, and 7,695 of them were judged possibly changed
+   in the first run the same walk took 0.75 s against 3.17 s on the clone without a graph,
+   but it still passes all 38,881 commits, and 7,695 of them were judged possibly changed
    (7,689 wrongly, since the filter of a commit that changes one file is a few bytes), so the
    cost still follows the history, about 0.1 s more for each day's 5,000 commits (inferred);
    writing the graph from nothing took 4.2 s. Bounding the walk by the document, with its
    revision (`--max-count` of `rev`, as `versionAt` does) or its creation time (`--since`):
-   only an item created recently gains, since 1,937 of the 1,996 item files have their
-   oldest commit more than 5,000 commits back, most of them from the import at the start.
+   only an item created recently gains, since in the first run 1,937 of the 1,996 item
+   files had their oldest commit more than 5,000 commits back, most of them from the import at the start.
 
 The history caches are bounded by the heap they are estimated to hold: parsed
 documents 64 MB (2 bytes of heap per byte of file, as the flat whole-board figures
