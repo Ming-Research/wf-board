@@ -145,7 +145,7 @@ test("the run that was red for 83 s because one shard waited for a runner is wit
 
 // ---- GitHub marking a job complete late ----
 
-// The jobs of the full CI run 39327317254 on 10-19 (hosted runners), run by hand on the head commit of ci-gate-45, which the time gate turned red for 109 s
+// The jobs of the full CI run 39327317254 on 10-19 (hosted runners), run by hand on the head commit of ci-gate-45, which the time gate turned red for 108 s (109 s in all)
 // with every test green: the 39 jobs other than `result` all ended their last step by 35 s, and 30 of them were marked complete only between 77 and 105 s,
 // 47 to 76 s after it (the other 9 within 3 s).
 // [name, seconds after the run started that the job started, its last step ended, GitHub marked it complete]; every job was created at 2 s. The job that reads,
@@ -165,14 +165,19 @@ const lagRunJobs = (): Job[] => [
   { name: "result", status: "in_progress", conclusion: null, created_at: at(2), started_at: at(5), completed_at: null },
 ];
 
-test("the run that was red for 109 s because GitHub marked 30 jobs complete 47 to 76 s after their last step is counted at 44 s, with the late marking written apart", () => {
+test("the run that was red for 108 s because GitHub marked 30 jobs complete 47 to 76 s after their last step is counted at 44 s, with the late marking written apart", () => {
   const jobs = lagRunJobs();
+  // The moment of the status is taken as the end of the last step of `result`, 110 s, as the recomputation of the 240 runs in docs/design.md does; the
+  // status of the real run came at 109 s (below).
   const result = evaluate(started, jobs, { mode: "enforce", now: at(110) });
   // The latest job to end its last step is nkey time-writing, at 35 s; it counts as ended 5 s later, and the status came 5 s after the last job was marked.
   assert.deepEqual([result.total, result.counted, result.waited, result.markedLate, result.verdict, result.fail], [110, 44, 1, 65, "ok", false]);
-  // Without the late marking the same jobs read 109 s, as the gate judged them.
+  // Without the late marking the same jobs read 109 s at that moment, red.
   assert.equal(result.counted + result.markedLate, 109);
   assert.equal(verdictOf(109), "red");
+  // At the moment of the real status, 109 s, they read the 108 s that the gate judged (its log: "108 s without the wait for a runner (109 s in all)") and now 43 s.
+  const real = evaluate(started, jobs, { mode: "enforce", now: at(109) });
+  assert.deepEqual([real.total, real.counted + real.markedLate, real.counted, real.verdict], [109, 108, 43, "ok"]);
   assert.deepEqual(statusOf(jobs, "result", result), { state: "success", description: "full CI success (39 jobs, 110 s, 1 s of it waiting for a runner, 65 s of it GitHub marking jobs complete late)" });
   assert.match(result.markdown, /\*\*44 s\*\* from the start of the run to the status, without the wait for a runner and the late marking of jobs complete: within the limit/);
   assert.match(result.markdown, /65 s of it is GitHub marking jobs complete more than 5 s after their last step; test shard 15 was marked 76 s after its last step\./);
