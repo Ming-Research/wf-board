@@ -1,13 +1,48 @@
 name: tmp-memory-flags-flake
-# Temporary (item memory-flags-flake): readings of the memory-flags test's probe: with the GC traced, in three ways of reading, under
-# busy cores and beside the files of the shard that went red. Removed before the pull request is ready.
+# Temporary (item memory-flags-flake): the checks of the change to the memory-flags test, the GC trace of a probe that read past two
+# halves, and the old and the new test in turn beside the files of the shard that went red. Removed before the pull request is ready.
 on:
   push:
     branches: [memory-flags-flake]
 jobs:
+  green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/memory-flags.test.ts
+  # The test must fail on each way the flags can be wrong, and on the second test (the readings), not only on the first.
+  red:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        spoil: [no-flags, misspelled, half-8, half-64, only-growing-percent]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          case "${{ matrix.spoil }}" in
+            no-flags) sed -i 's#<string>--max-semi-space-size=4</string><string>--heap-growing-percent=50</string>##' ops/wf-board.plist;;
+            misspelled) sed -i 's#--max-semi-space-size=4#--max-semi-space-sise=4#' ops/wf-board.plist;;
+            half-8) sed -i 's#--max-semi-space-size=4#--max-semi-space-size=8#' ops/wf-board.plist;;
+            half-64) sed -i 's#--max-semi-space-size=4#--max-semi-space-size=64#' ops/wf-board.plist;;
+            only-growing-percent) sed -i 's#<string>--max-semi-space-size=4</string>##' ops/wf-board.plist;;
+          esac
+          grep -n -A8 ProgramArguments ops/wf-board.plist | head -12
+          set +e
+          node --test --test-reporter=spec test/memory-flags.test.ts > /tmp/out.txt 2>&1
+          code=$?
+          cat /tmp/out.txt
+          [ "$code" -ne 0 ] || { echo "the test passed on a service file with the flags spoiled: ${{ matrix.spoil }}"; exit 1; }
+          grep -q "✖ node accepts the service's flags" /tmp/out.txt || { echo "the readings test did not fail"; exit 1; }
+  # Where the readings test goes wrong when the probe itself is spoiled: no collection before the reading is the old probe.
   trace:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -20,61 +55,48 @@ jobs:
           for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
           flags="--max-semi-space-size=4 --heap-growing-percent=50"
           mkdir -p /tmp/traces
-          for run in $(seq 1 60); do
+          for run in $(seq 1 120); do
             node --trace-gc --trace-incremental-marking $flags tmp-memory-flags/series.cjs > /tmp/traces/$run.txt 2>&1
-            node tmp-memory-flags/row.cjs sync flags < /tmp/traces/$run.txt | sed "s/^ROW/ROW run $run/" | tee -a /tmp/rows.txt
+            node tmp-memory-flags/row.cjs sync flags < /tmp/traces/$run.txt | sed "s/^ROW/ROW run $run/" >> /tmp/rows.txt
           done
           kill $pids
-          awk '{print $5}' /tmp/rows.txt | sort -n | uniq -c
-          shown=0
-          for run in $(awk '$5 > 10 {print $3}' /tmp/rows.txt | head -2); do
-            echo "=================== trace of run $run"
-            cut -c1-230 /tmp/traces/$run.txt
+          echo "busy loops: ${{ matrix.busy }}; peaks:"
+          awk '{print $6}' /tmp/rows.txt | sort -n | uniq -c
+          for run in $(awk '$6 > 10 {print $3}' /tmp/rows.txt | head -2); do
+            echo "=================== run $run"
+            node tmp-memory-flags/window.cjs /tmp/traces/$run.txt
           done
-          echo "=================== trace of a run that stayed at 8"
-          run=$(awk '$5 <= 8.25 {print $3}' /tmp/rows.txt | head -1)
-          cut -c1-230 /tmp/traces/$run.txt
-  variants:
+          echo "=================== a run that stayed at 8, around its readings 1350k to 1550k"
+          run=$(awk '$6 <= 8 {print $3}' /tmp/rows.txt | head -1)
+          grep -E "ms: " /tmp/traces/$run.txt | sed -n 100,125p | cut -c1-200
+  # The old test and the new one in the shard that went red (the same six files, in the same order, with the test swapped), 15 times
+  # each in turn, in 10 jobs.
+  burst:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        busy: [0, 4, 8]
-        variant: [sync, gcafter, yield]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/node-modules
-      - run: |
-          pids=""
-          for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
-          flags="--max-semi-space-size=4 --heap-growing-percent=50"
-          case "${{ matrix.variant }}" in sync) file=series; extra="";; gcafter) file=gcafter; extra="--expose-gc";; yield) file=yield; extra="";; esac
-          for run in $(seq 1 60); do
-            node $flags $extra tmp-memory-flags/$file.cjs | node tmp-memory-flags/row.cjs ${{ matrix.variant }} flags
-          done > /tmp/rows.txt
-          for run in 1 2 3 4; do
-            node $extra tmp-memory-flags/$file.cjs | node tmp-memory-flags/row.cjs ${{ matrix.variant }} none
-          done >> /tmp/rows.txt
-          kill $pids
-          echo "busy loops: ${{ matrix.busy }}, nproc $(nproc)"
-          node tmp-memory-flags/summarize.cjs < /tmp/rows.txt
-  shard:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [1, 2, 3, 4]
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
       - run: npm run build:web
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
-      - name: the files of the shard that went red, with the diagnostic test in place of the memory-flags test
-        run: |
+      - run: |
           for round in $(seq 1 15); do
-            node --test --test-timeout=60000 --test-reporter=spec \
-              test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts tmp-memory-flags/diag.test.ts test/find.test.ts test/fresh.test.ts 2>&1 | grep -E "^ROW|^# (pass|fail)|✖" || true
-          done | tee /tmp/shard-rows.txt
-          node tmp-memory-flags/summarize.cjs < /tmp/shard-rows.txt
+            for which in old new; do
+              if [ $which = old ]; then t=tmp-memory-flags/old.test.ts; else t=test/memory-flags.test.ts; fi
+              set +e
+              node --test --test-timeout=60000 --test-reporter=spec \
+                test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts $t test/find.test.ts test/fresh.test.ts > /tmp/out.txt 2>&1
+              set -e
+              if grep -q "✖ node accepts the service's flags" /tmp/out.txt; then
+                echo "RED $which round $round: $(grep -m1 -E 'it stays within|grows past' /tmp/out.txt)"
+              else
+                echo "GREEN $which round $round"
+              fi
+              grep -E "✖" /tmp/out.txt | grep -v "node accepts the service's flags" || true
+            done
+          done | tee /tmp/burst.txt
+          echo "old: $(grep -c '^RED old' /tmp/burst.txt) red of $(grep -c ' old round' /tmp/burst.txt); new: $(grep -c '^RED new' /tmp/burst.txt) red of $(grep -c ' new round' /tmp/burst.txt)"
