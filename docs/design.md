@@ -586,7 +586,7 @@ Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request),
 spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
 defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
 
-The two flags are the choice: the half at 4 MB takes the configured ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
+The two flags are the choice: the half at 4 MB takes the size the young generation is brought back to at a collection from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
 and the growing percentage at 50 makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
 so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
 running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
@@ -629,9 +629,10 @@ node accepts the file's flags and that with them the young generation stays with
 runs but also 10.8 MB in one run of the sweep and 28.5 MB in one of the 12 paired runs. The flags set the size the young generation
 returns to at a collection, not a ceiling between collections. A GC trace of the probe (`--trace-gc --trace-incremental-marking`, hosted
 runner, 4 cores kept busy by 4 loops, run 39372874244, job `trace (4)`) shows when it runs past: the old generation reaches its limit
-(the growing percentage of 50 puts that early), V8 starts incremental marking, and no young-generation collection runs from then until
+(the growing percentage of 50 presumably puts that early; deduced from what the flag means, no trace was taken without it), V8 starts incremental marking, and no young-generation collection runs from then until
 the marking ends 164 to 268 ms later (the new space read 8.5, 10.8, 13.0 and 15.3 MB in that window), after which the next collection
-returns it to 8 MB. On a quiet machine the same marking ends within tens of milliseconds and the reading is 8 or 8.25 MB. The first
+returns it to 8 MB. On a quiet machine 40 probes read 8 MB (37) or 8.25 MB (3) (run 39371355047, job `quiet`); no trace was taken there, so how long
+the marking lasts on a quiet machine is not known (presumably it ends sooner, inferred). The first
 version of the test took the largest size over its readings; beside the files of the CI shard that went red it read more than 12 MB
 in 20 of 150 runs (13%), and by the probe alone 6 of 156 readings did (12.75 to 21.75 MB). The probe now collects the young generation
 (`gc({ type: "minor" })`, with `--expose-gc`) before each reading, so that it reads the size the flags set: 8 MB in all 240 probes with 4
