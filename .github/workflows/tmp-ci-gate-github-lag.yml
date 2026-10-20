@@ -46,7 +46,9 @@ jobs:
           git diff --stat -- scripts/ci-time-gate.ts
       - name: the tests must fail
         run: |
-          if node --test --test-reporter=spec test/ci-time-gate.test.ts > "$RUNNER_TEMP/spoiled.txt" 2>&1; then
+          if node --test --test-reporter=tap test/ci-time-gate.test.ts > "$RUNNER_TEMP/spoiled.txt" 2>&1; then
             echo "the tests passed on the spoiled script"; exit 1
           fi
-          grep -E '^\s+✖' "$RUNNER_TEMP/spoiled.txt" | sort -u
+          # Which tests failed, and the first lines of why.
+          grep -E '^\s*not ok' "$RUNNER_TEMP/spoiled.txt" || { echo "no failing test is named:"; tail -n 40 "$RUNNER_TEMP/spoiled.txt"; exit 1; }
+          grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/spoiled.txt"
