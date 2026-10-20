@@ -165,6 +165,9 @@ h1 { font-family: var(--font-head); font-size: 28px; line-height: 1.25; margin: 
 .agents-head { margin: 0; font-size: 15px; }
 .agents-toggle { font: inherit; font-weight: 700; background: none; border: 0; padding: 0; color: var(--ink); cursor: pointer; }
 .agents-note { margin: 0; font-size: 12px; color: var(--muted); max-width: 68ch; }
+.agents-slots { margin: 0; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.agents-slots.stale { color: var(--muted); }
+.agents-slots.idle { padding: 0 6px; border-radius: 4px; background: var(--amber-soft); color: var(--amber); font-weight: 600; }
 .agent-list, .agent-items { list-style: none; margin: 0; padding: 0; }
 .agent-list { display: flex; flex-direction: column; gap: 8px; }
 .agent { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
