@@ -6096,12 +6096,14 @@ jobs. `scripts/ci-time-gate.ts` in it reads the run's jobs through the Actions A
 every 2 seconds while more than 4 jobs are open and every second after that, until
 every job but its own has ended; then it puts into the run's summary the seconds
 from the start of the run to now (the status is written a moment later), the time
-that is judged (The wait for a runner, below), the end of the job that ended last,
-a table with the wait for a runner, the part of it beyond the quickest job's, the run
-and the end of each job, and the table of the shards. On a run started by hand it
+that is judged (The wait for a runner and The late completion mark, below), the end of
+the job that ended last, a table with the wait for a runner, the part of it beyond the
+quickest job's, the run, the end and the seconds GitHub took to mark each job complete
+after its last step, and the table of the shards. On a run started by hand it
 writes the status `full-ci`: success when every job succeeded or was skipped and the
 judged time is not red, else failure with the jobs that were not green, or the
-time; the description gives the total and how much of it was waiting for a runner.
+time; the description gives the total, how much of it was waiting for a runner and how
+much was GitHub marking jobs complete late.
 On a push to the main line the script runs in the mode `record`: the same summary,
 no status (the checks of a push are listed on the commit) and no failure whatever
 it finds, and the step cannot fail the job, so that a report does not turn the main
@@ -6156,6 +6158,58 @@ is red for the wait (the engineer waits twice and the second run's 28 jobs queue
 the same runners), and fewer jobs in a run (it cures only the limit, not the
 assignment of a runner, and slows the run, [Sharding the script
 tests](#sharding-the-script-tests)).
+
+**The late completion mark.** The time of a job's last step is stamped by the runner;
+the job's `completed_at` in the API is written by GitHub's server after it has processed
+the runner's completion report. The judged time takes that second as the end of the job,
+so a backlog in the processing moves the end of every job that finished during it,
+though the job was done. The seconds from the end of a job's last step (the step that
+ended latest, in whatever order the steps are listed) to its `completed_at` were read
+from the Actions API for the 240 full CIs of 10-19 (00:51 to 22:21 UTC, cancelled runs
+left out). In 238 runs and 6,431 jobs the delay has median 2 seconds, 90th percentile 3,
+99th percentile 4 and longest 10; three jobs are over 5 seconds (6, 7 and 10). Two runs
+are different, 0.8% of the 240 (95% interval 0.2% to 3.0%). Run 39327317254, started by
+hand on the head commit of ci-gate-45 at 21:25: the 9 jobs that ended first were marked
+2 to 3 seconds after their last step; the other 30 ended their last step 24 to 35
+seconds after the start of the run and were marked 47 to 76 seconds after it, so the
+last mark came at 105 seconds, and the gate judged 108 seconds (109 in all) and was red
+with every test green. Run 39277936189, a push to the main line at 15:26 (mode
+`record`): 17 of its 26 jobs were marked 20 to 246 seconds late; the design and
+private-content workflows of the same push, usually done in about fifteen seconds, took
+about nine minutes. GitHub's status page announced an Actions availability incident at
+15:49 (closed at 16:56), 23 minutes after that push; for the 21:25 run it showed none.
+In both runs the jobs that finished first were marked in time and all later ones late,
+so the delay is a backlog and not a property of a job.
+
+The judged time therefore also leaves out the part of each job's delay beyond
+`MARK_ALLOWANCE_SECONDS`, 5 seconds: a job's end is moved back by it together with its
+extra wait for a runner, before the latest end is taken. The status description and the
+summary give the two parts apart: the first is what the wait for a runner takes off, the
+second what the late marking takes off beyond that. A job with no step that has ended
+has no delay (its cell in the table is `-`), and a delay below 0 counts as 0. The wait
+for a runner swung between 3 and 48 seconds, so any fixed number for it would have been
+wrong; the usual delay is tight (all but three of 6,431 jobs are within 5 seconds), so a
+fixed number taken from the measurement fits. It is one day's measurement and has to be
+taken again when the usual delay changes: the table of every run shows each job's delay,
+and every merge to the main line leaves one. A job that is itself slow ends its last
+step late and stays counted in full, and a delay that holds back every job from the
+start of the run comes off too. Recomputed for the 240 runs from the saved jobs
+(`evaluate` of the script before and after this rule, the end of the last step of the
+job that reads standing for the moment of the status), exactly the two runs above
+change, 276 to 44 seconds and 109 to 44 seconds (the 44 still holds the 5 seconds that
+are allowed); the 238 others come to the same second.
+
+Ways not taken: taking off the delay beyond the quickest job's in the run, as for the
+wait for a runner (the quickest job is marked 1 to 2 seconds after its last step and the
+others 3 to 4, so 136 of the 238 usual runs would be judged 1 to 3 seconds lower, which
+moves the line the 50 and 60 were set at, and a backlog that holds back every job from
+the start leaves no job marked in time to compare with, so nothing would come off);
+taking off all of the delay (the 240 runs would be judged a median 2 seconds lower);
+starting the full CI again from the job when it is red and every test is green (the
+engineer waits twice, the second run's 40 jobs meet the same backlog, and the incident
+of 10-19 lasted 67 minutes; the job would also need the right to start runs and a limit
+on repeats); and no change (one of the two runs was started by hand and cost its
+acceptance another full CI).
 
 **Why the job waits instead of using `needs`.** A job that needs the others
 starts 2 to 3 seconds after the last of them ends, and sets itself up then

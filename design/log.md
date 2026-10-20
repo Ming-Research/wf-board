@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-20 Leave GitHub's late completion marks out of the time gate
+
+Nodes: testing/ci-time-gate
+
+Summary: The time gate took each job's `completed_at` as its end, and GitHub writes that second after processing the runner's completion report, so a backlog there made finished jobs end late: in run 39327317254 (the head commit of ci-gate-45, 10-19, 21:25) 30 of 39 jobs ended their last step by 35 seconds and were marked 47 to 76 seconds later, and the gate judged 108 seconds (109 in all) and was red with every test green (2 of the 240 full CIs of 10-19, 0.8%; the other 238 have a delay of median 2 and 99th percentile 4 seconds over 6,431 jobs, three over 5). A job's end now also moves back by the part of that delay beyond 5 seconds, and the description and the summary give it apart from the wait for a runner; a fixed number is taken from the measurement because the usual delay is tight, and the options of taking off the delay beyond the quickest job's, all of it, starting the run again and doing nothing are rejected with their reasons (docs/design.md, section 11, The late completion mark).
+
 ## 2026-10-19 Thirty test shards, and the image's own Node for the jobs of the full CI
 
 Nodes: testing/ci-shards, testing/ci-job-setup, testing/ci-time-gate
