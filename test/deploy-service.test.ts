@@ -107,6 +107,20 @@ test("a replacement the job died in the middle of is finished first on the next 
   assert.match(String(w.posts[0]!.reason), /interrupted/);
 });
 
+test("a replacement of the file of a live commit that the job died in the middle of is finished first: the old text is written again, and no code is touched", async t => {
+  const r = await repos(t), { w, deploy } = world(r);
+  const sha = r.land({ "ops/wf-board.plist": template(FLAGS) }, "Add the flags");
+  sh(r.checkout, "fetch", "-q", "origin");
+  sh(r.checkout, "merge", "-q", "--ff-only", sha);
+  w.service.installed = NEW_FILE;
+  w.saved.pending = { target: sha, to: sha, restarted: true, heads: [sha], inPlace: true, config: OLD_FILE };
+  assert.equal(await deploy(), "rolledBack");
+  assert.equal(r.head(), sha, "the checkout stays on the commit that is live");
+  assert.deepEqual(w.service.replaced, [OLD_FILE]);
+  assert.deepEqual({ builds: w.builds.length, restarts: w.restarts }, { builds: 0, restarts: 0 });
+  assert.equal(w.saved.pending, undefined);
+});
+
 test("a commit that is live already gets its service file replaced when only the file differs: nothing is moved, built or pushed", async t => {
   const r = await repos(t), { w, deploy } = world(r);
   // The template reached the checkout in an earlier deploy, run by a job that did not replace service files yet.
