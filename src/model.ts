@@ -78,14 +78,21 @@ export type PlanRow = z.infer<typeof PlanRow>;
 
 /** Both input and stored plans use target keys for reference-row ids. */
 export function planRowId(row: PlanRowInput): string { return "item" in row ? row.item : "card" in row ? row.card : row.id; }
-/** The first problem in a plan, named by its row number and id; undefined when the plan is valid. */
-function planProblem(rows: readonly PlanRowInput[]): string | undefined {
+/**
+ * The first problem in a plan, named by its row number and id; undefined when the plan is valid. A row that names in `after` a row
+ * that is not before it says which of the two it is, since the fix differs: reorder the rows (`reorder` says how, for the tool that
+ * cannot do it by itself), or name a row that exists.
+ */
+export function planProblem(rows: readonly PlanRowInput[], reorder = "reorder the rows so that it comes first"): string | undefined {
   const earlier = new Set<string>();
   for (const [index, row] of rows.entries()) {
     const id = planRowId(row), at = `row ${index + 1} "${id}"`;
     if (earlier.has(id)) return `${at}: Plan ids must be unique; an earlier row already has "${id}"`;
     const missing = row.after?.find(target => !earlier.has(target));
-    if (missing !== undefined) return `${at}: after must name earlier rows, but "${missing}" is not one`;
+    if (missing !== undefined) {
+      const fix = rows.some(other => planRowId(other) === missing) ? `it stands at this row or below it; ${reorder}, or take it out of after` : "the plan has no row with that id";
+      return `${at}: after must name earlier rows, but "${missing}" is not one; ${fix}`;
+    }
     earlier.add(id);
   }
   return undefined;

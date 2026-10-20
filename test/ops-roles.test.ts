@@ -558,7 +558,7 @@ test("a project card ruling may complete an unwritten paused dependent without c
   const { store, op, dir } = await board(t);
   await op.createItem({ ...asArchitect, key: "pause-card-dependent", group: author, title: "Paused card dependent", accept: "Result passes" });
   await op.writeCard({ confidence: conf, author, key: "pause-card", item: "pause-card-dependent", kind: "design", question: "Proceed?", blocks: "The dependent waits", options: [opt("Yes")] });
-  await op.setPlan({ author, id: "pause-card-dependent", row: { id: "accept", accept: true, text: "Result passes", state: "done" } });
+  await op.setPlan({ author, id: "pause-card-dependent", row: { id: "acc", accept: true, text: "Result passes", state: "done" } });
   await op.setPause({ ...asArchitect, id: "pause-card-dependent", paused: true, reason: "Owner chose to wait" });
   const before = store.snapshot(), count = (await store.log()).length;
   const result = await op.ruleCard({ author, key: "pause-card", choice: "A" });
