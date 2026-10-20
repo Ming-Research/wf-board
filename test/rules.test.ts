@@ -1123,8 +1123,11 @@ test("every kind of check is registered once under a fixed id, and a board that 
     promise: { standing: true, plan: [] }, waitsForPromise: { plan: workPlan([shared("promise")]) },
     // A card ruled after the head was written.
     ruledLater: { created: T0 },
+    // A merge row that names a pull request its head's 改动 section does not name.
+    unlisted: { plan: [step("merge", "todo", { text: "合入 Ming-Research/Whitefoot#74" }), accept()] },
   }, { "loose-card": { item: "cards" }, "ruled-later": ruledAt("ruledLater", T1) });
   s.items.noPlan!.plan = [];
+  s.board.projects[0] = { ...s.board.projects[0]!, repo: "Ming-Research/Whitefoot" };
   s.board.tags = [{ name: "标签", meaning: "For the second project", projects: ["Second"] }];
   s.activity = { writes: Array.from({ length: 7 }, (_, i) => timeAt(i / 2)), items: { quiet: T0 } };
   const r = rules(s, start + 3 * hour), raised = Object.keys(s.items).flatMap(id => r.checks(id));
