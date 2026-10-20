@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { Item } from "../src/model.ts";
 import type { PauseSignature } from "../src/pauses.ts";
 import { Store, ConflictError, ValidationError, RETIRE_NOTICES_MESSAGE, type ChangedDoc } from "../src/store.ts";
+import { processes, readTrace, traceGit } from "./git-trace.ts";
 
 const exec = promisify(execFile);
 const at = "2026-10-11T01:02:03Z";
@@ -398,6 +399,26 @@ test("preexisting staged files cannot enter a board transaction", async t => {
   assert.equal(await git(dir, "diff", "--cached", "--name-only"), "unrelated.txt", "what was staged by hand stays staged");
   const [stamp] = (await git(dir, "show", "-s", "--format=%aI", commit)).split("\n");
   assert.deepEqual(ats, [new Date(stamp!).toISOString()], "the write's time is its commit's author time");
+});
+
+test("a write adds only the files new to the head; a change or a deletion of a document the head has is committed without git add", async t => {
+  const { dir, store } = await setup(t);
+  const trace = await traceGit(t);
+  const adds = async () => processes(await readTrace(trace), argv => argv.includes("add")).map(p => p.argv.slice(p.argv.indexOf("--") + 1));
+  await store.commit({ author: "a", message: "Create", puts: [put("a", item()), put("b", item())] });
+  assert.deepEqual(await adds(), [["items/a.yaml", "items/b.yaml", "numbers.yaml"]], "the new files are added");
+  // A version of a, staged by hand, must neither enter the board's commit nor stop the write.
+  await writeFile(join(dir, "items/a.yaml"), "title: staged by hand\n");
+  await git(dir, "add", "items/a.yaml");
+  await writeFile(join(dir, "items/a.yaml"), await git(dir, "show", "HEAD:items/a.yaml") + "\n");
+  const before = (await adds()).length;
+  const { revs } = await store.commit({ author: "a", message: "Change a, delete b, create c", puts: [put("a", item("Changed"), 1), put("c", item())], deletes: [{ kind: "item", id: "b", expectRev: 1 }] });
+  assert.deepEqual((await adds()).slice(before), [["items/c.yaml"]], "only the new file is added: the numbers file is in the head since the first write");
+  assert.equal(revs.a, 2);
+  assert.equal(await git(dir, "show", "--name-status", "--no-renames", "--format=", "HEAD"), "M\titems/a.yaml\nD\titems/b.yaml\nA\titems/c.yaml\nM\tnumbers.yaml");
+  assert.equal(parse(await git(dir, "show", "HEAD:items/a.yaml")).title, "Changed", "the board's version of a is committed, not the one staged by hand");
+  assert.equal(await git(dir, "status", "--porcelain"), "", "the index and the working tree are the head's");
+  assert.deepEqual((await Store.open(dir)).snapshot(), store.snapshot());
 });
 
 test("a board document changed by hand is refused at the next start, unless a board write to it came first", async t => {

@@ -326,7 +326,7 @@ observers of the change (`listeners`) and the rest of the call. The steps are co
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
 limits), its ordinary log line carries them after a semicolon:
-`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git add 14 ms, git commit 2400 ms, ...`.
+`tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git commit 2400 ms, ...`.
 A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
@@ -517,10 +517,10 @@ document at 2 bytes of heap for each byte of file. The 64 MB bound stays and let
 hold files of about 32 MB, where the former figure of 16 let it hold 4 MB. The daemon's
 resident memory is mostly not documents: on the live-shape board the process held 311.0 MB
 after a collection (peak 413.3 MB) before the change, of which 83.8 MB was heap; a small board of about 100 documents held 153 to 163 MB (item `board-heap-study`),
-the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the heap and
-has not been taken apart. The start prints one line, `startup memory`, after the server listens: the time
+the fixed part of Node and its modules. The rest, about 88 MB that grows with the board, is outside the
+heap; Memory beyond the heap, below, takes it apart. The start prints one line, `startup memory`, after the server listens: the time
 of a full collection and, in the detail, the heap in use after it and the resident set (on the live shape `startup memory: 12 ms (heap 56.6 MB in use after a
-full collection, rss 264.7 MB)`); the live check of the heap reads it. The live board's heap also holds what its
+full collection, rss 264.7 MB, node options none)`); the live check of the heap reads it. The live board's heap also holds what its
 33,000 commits of history add to the startup cache's contents, which the synthetic boards (one commit) do not.
 
 *Rejected.* A JSON startup cache of the validated documents (written in 128 ms, read in 42 ms and
@@ -534,6 +534,101 @@ with it, and the library would be replaced for the reader while the writer stays
 the weight of the cache releases nothing. A cache of source bytes as Buffers (0.7 MB of heap, 48.7 MB
 outside it) parses again on each hit (2,286 ms for the whole board) and does not reach the store's
 own documents.
+
+**Memory beyond the heap.** The memory the owner sees for the daemon is its physical footprint (Activity Monitor's
+memory column, `vmmap`'s "Physical footprint"), and it is several times the heap. On the live board (macOS,
+no V8 flags, Node 24.21) the start log says `heap 60.4 MB in use after a full collection, rss 259.7 MB`, and 1 hour 13
+minutes after that start `vmmap -summary` read a footprint of 450.7 MB (peak 539.1 MB): 343.6 MB resident in the pages
+V8 maps for itself (the region type "App-Specific Tag 16", V8's mapping tag 255), about 37 MB in malloc's zones, 37.3 MB of
+kernel page tables, the rest small. So the part beyond the live heap is mostly V8's own pages that hold garbage or are
+free but not returned, not Buffers: `process.memoryUsage()`'s `external` stayed at 12 to 14 MB and `arrayBuffers`
+averaged 2 to 9 MB in every run below.
+
+It was taken apart in CI on the GitHub-hosted `macos-latest` (Apple silicon, 3 cores, macOS 26.6, Node 24.21.0; the live
+Mac is the same architecture and OS family) and `ubuntu-latest`, with the real daemon (`src/main.ts`) on a synthetic board of
+the live board's shape (1,942 items, 839 cards, 1,210 notes, long texts as block scalars). A preload in the process answered a
+signal with `process.memoryUsage()`, `v8.getHeapStatistics()`, the heap spaces, the CPU time and the collections' time; the system
+side was `vmmap -summary` (macOS) or `/proc/<pid>/status` (Linux). A script replayed requests against it: first each kind alone
+(1,500 of the unread list, of its steps, of `context`, ...), then the live board's mix at its pace. The mix is counted in the
+live service log over 73 minutes (about 26,000 `GET /api/unread`, 18,000 `/api/step`, 2,000 `/api/snapshot`, 3,200 tool
+calls and about 2,700 writes of the owner and the sessions): 45% unread list, 31% steps, 3% snapshot, 7% `context`,
+3% each of `list`, `notes` and `messages`, 1% `changes`, 4% `append_log` writes, at 18 requests a second with 8 in flight, for 8
+minutes, and a sample of the process every 15 seconds. The runner has 3 slower cores than the live Mac, so requests queue more
+there and the absolute figures are larger than the live ones; the comparison between variants is what is read.
+
+With node's defaults the pages V8 held (the dirty pages of its regions, mean of the sampled series, 7 runs) were 584 MB, with
+a spread of 85 MB between runs, in three parts:
+- The young generation, which holds the objects a request makes and drops, grows to 128 MB (two halves of 64 MB), on Linux
+  and macOS alike, and its pages stay mapped.
+- The old generation averaged 260 MB where its live data was 85 to 100 MB, 2.7 times: V8 lets it grow far before the next full
+  collection (the largest factor V8 allows with a 4 GB limit is 4, from reading its source; not checked).
+- Pages V8 has freed are not returned at once: after a full collection the pages were still 160 to 180 MB more than the
+  heap's total.
+
+malloc held a further 150 to 450 MB under this load (the cache of freed large blocks, `MALLOC_LARGE (empty)`, filled by
+the 15 MB snapshot bodies and large reads in flight together), a figure that varies by 300 MB between runs of one variant;
+the live service held 3.3 MB there, since its requests seldom overlap, so the V8 pages are what is compared.
+
+| variant (V8 flags) | runs | V8 pages MB (sd) | CPU ms a request | full collections | p95 latency ms | start log rss MB |
+|---|---|---|---|---|---|---|
+| none | 7 | 584 (85) | 18.2 | 72 | 244 | 333 |
+| `--max-semi-space-size=4` | 3 | 375 (30) | 19.0 | 266 | 204 | 240 |
+| `--max-semi-space-size=4 --heap-growing-percent=50` | 5 | 269 (23) | 19.2 | 167 | 227 | 224 |
+| `--max-semi-space-size=4 --max-old-space-size=512` | 2 | 231 (4) | 20.7 | 324 | 220 | 238 |
+| `--heap-growing-percent=50` set at run time | 3 | 381 (10) | 17.0 | 101 | 199 | 321 |
+| `--max-semi-space-size=4 --heap-growing-percent=50` set at run time | 3 | 370 (12) | 17.9 | 101 | 210 | 329 |
+| `--optimize-for-size` | 3 | 118 (3) | 34.4 | 920 | 307 | 200 |
+
+The table is the mean of single runs on different runners and rounds, for comparing the variants with each other; the paired run below decides the two flags against the defaults.
+
+Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request), `--memory-balancer` (328 MB, 41.1 ms) and a
+2 MB half (409 MB); the other sizes of half with the growing percentage at 50 (2 MB, 8 MB) held 281 and 297 MB, within the
+spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
+defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
+
+The two flags are the choice: the half at 4 MB takes the configured ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
+and the growing percentage at 50 makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
+so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
+running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
+minutes) per run. A ratio is the run with the flags (or the twin) over the defaults of the same round; the table gives the
+geometric mean of the 12 ratios and its 95% interval (t distribution on the logarithms, 11 degrees of freedom). The twin differs
+from the defaults only by chance, so its ratio is this measurement's noise. No noise floor was recorded beforehand: each job of
+the hosted macOS runners lands on a different machine, so a floor cannot be taken for each machine, and the reading rests on the
+twin of the same measurement. The CPU figures are from shared CI runners, not timings on the 14900K.
+
+| metric | defaults (mean of 12) | twin | two flags | twin / defaults | two flags / defaults |
+|---|---|---|---|---|---|
+| V8 pages MB | 479 | 550 | 260 | 1.16 (0.96 to 1.40) | **0.55 (0.48 to 0.64)** |
+| physical footprint MB (with malloc's cache) | 718 | 754 | 406 | 1.06 (0.91 to 1.24) | 0.58 (0.51 to 0.65) |
+| CPU ms a request | 15.7 | 15.1 | 17.6 | 0.97 (0.93 to 1.01) | **1.13 (1.04 to 1.22)** |
+| p95 latency ms | 147 | 131 | 140 | 0.92 (0.79 to 1.07) | 0.98 (0.78 to 1.24) |
+| collection time s in 4 minutes | 3.0 | 2.7 | 5.9 | 0.93 (0.82 to 1.06) | 2.03 (1.63 to 2.53) |
+| full collections in 4 minutes | 39 | 33 | 93 | 0.86 (0.64 to 1.15) | 2.56 (2.01 to 3.25) |
+| start log rss MB | 330 | 328 | 229 | 0.99 (0.97 to 1.02) | 0.69 (0.67 to 0.72) |
+
+The V8 pages were lower with the flags in all 12 rounds (249 to 276 MB against 305 to 604 for the defaults), an improvement.
+The CPU was higher in 11 of 12 rounds: a detected regression of 13%, 4% to 22%, about 2 ms a request, which at 18 requests a second
+is about 3% of one core (deduced; the live Mac has faster cores, so less); the lower end is as large as the twin's own spread, so
+the size is less certain than the sign. The p95 latency shows no detected change, and its interval is too wide to exclude 20% either
+way. The flags are accepted at that CPU cost on a design card (item `board-offheap`).
+
+`--optimize-for-size` goes further
+but at twice the CPU. Flags set from the code after the process has started do not do it: the size of a half is fixed when
+the process starts, so only the growing percentage takes effect, and the pages stay at 381 MB (the table above), 112 MB more than with both flags
+set at the start. Hence the flags are arguments of the
+service file `ops/wf-board.plist`.
+
+A change of the service file reaches the running service only when the service is loaded again: a restart by `launchctl kickstart -k`
+starts the process with the arguments launchd already holds. The deploy job therefore replaces the installed file itself when the
+template renders to another text (Deploying, The daemon's service file follows its template), and `scripts/install-service.ts`
+with `launchctl bootout` and `bootstrap` is the same by hand. The `startup memory` line names the options node was started
+with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), so that a service still on the old file shows,
+and `test/memory-flags.test.ts` holds that
+node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
+(128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
+halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 MB in one run of the sweep and
+28.5 MB in one of the 12 paired runs, and the same probe written as a top-level script read 15 to 29 MB with the same flags. V8 lets
+the young generation hold more than two halves for a while; the cause was not looked into.
 
 **Deploying.** A second launchd agent, `org.ming-research.wf-board-deploy`,
 runs `scripts/deploy.ts` every five minutes (`scripts/install-service.ts
@@ -603,6 +698,44 @@ within the five minutes are one deploy and one restart.
   page). A deploy by hand (`AGENTS.md`, Deploy) that changes only the page tells
   the pages that connect afterwards, not the open ones: restarting the daemon
   tells them too, since their streams reconnect.
+- **The daemon's service file follows its template.** launchd reads a service's
+  arguments and environment only when it loads the service, so `kickstart -k`
+  restarts the daemon on what launchd already holds, and a change to
+  `ops/wf-board.plist` (the template `scripts/install-service.ts` fills in) would
+  reach the live board only when someone installed the file by hand. Each run
+  therefore renders the template of the commit it leaves live (`git show
+  <commit>:ops/wf-board.plist`; the commit is the fetched head, which is the
+  checkout's own when nothing newer exists) and compares it with the file
+  installed (`~/Library/LaunchAgents/<label>.plist`, or the file `WF_BOARD_PLIST`
+  names). The values are the ones the installed file holds, read back by
+  what launchd takes each for (`installedValues` in `src/service-config.ts`):
+  the node is the first of its `ProgramArguments`, the checkout its
+  `WorkingDirectory`, the PATH and the data directory two of its environment
+  variables; only `{{HOME}}` is the job's own. A job that took them from its own
+  environment would put its own PATH and node into the daemon's file. When the
+  texts differ the replacement is the deploy's restart, in place of `kickstart`:
+  the file is written (to a temporary name, then renamed), `launchctl bootout`
+  stops the service, the job waits until `launchctl list <label>` no longer
+  finds it, and `launchctl bootstrap` loads the file and starts the daemon
+  (`RunAtLoad`); then the health judgment of the next bullet applies as it
+  does to a restart. The wait is for launchd to let go, not for `bootout` to
+  return: with a throwaway service on the Mac that takes 4 seconds to
+  exit, `bootout` returned at once and an immediate `bootstrap` failed with exit
+  status 5 (input/output error) while the old process was still there; with a service
+  that exits at once the immediate `bootstrap` worked three times in a row. A
+  `bootout` of a service launchd does not hold fails (exit status 3) and is
+  taken for nothing to stop. The comparison is made on every run, also when the
+  checkout is on the main line's head already (the outcome `reconfigured`): the
+  template may have reached the checkout in a deploy run by a job that did not
+  replace files yet (a deploy of the job's own code is that), and then it would
+  wait for the next merge. Such a run moves, builds and pushes nothing (`inPlace`
+  in the pending record; the commit went live on its checks), and its failure
+  goes to the architect as any `deployFailed` that names no item. An installed
+  file that lacks one of the values, or a template with a placeholder no value
+  fills, is not replaced: the run ends as a failure of the job itself (`error`,
+  pushed once) with the checkout where it was, since a guess would change what the
+  daemon runs under. Without an installed file (`launchd` does not hold the
+  daemon, as in the job's tests) nothing is compared.
 - The restart is `launchctl kickstart -k` on the daemon's own label, never a
   kill by process name. The daemon is healthy when launchd reports a process
   other than the one before, `/health` answers, and 5 seconds later the same
@@ -618,7 +751,12 @@ within the five minutes are one deploy and one restart.
   the lock file differs) and the page are built again from that code, and the
   daemon restarts and is waited for if a restart was begun for the deploy or it
   does not answer; a daemon that still answers on the process that served before
-  is left alone. A commit that failed after it was in the checkout is not tried
+  is left alone. A deploy that replaced the daemon's service file also puts the
+  old text of the file back: the pending record keeps the text the file had
+  (`config`) from the moment the replacement begins, and going back writes it
+  again and loads the service again (a daemon that cannot start under the new
+  file is not brought back by the old code alone); a deploy that fails before
+  that, in the build say, writes nothing. A commit that failed after it was in the checkout is not tried
   again until the main line has a newer commit; one that git refused to merge is
   not marked, since that says nothing about it. A `deployFailed` push says what
   happened.
@@ -794,8 +932,10 @@ derivation design that replaced this:
   runner's 95% interval within 0.410–0.459, the twin against the base within ±1.8 to
   ±4.0%), 26.0 to 35.5 ms of CPU against 60.3 to 84.9 ms, the highest upper bound of a
   95% interval 36.4 ms (board-cpu-usage).
-- A write starts two git processes: `git add` of its paths and `git commit --only` of
-  the same paths, which commits exactly them whatever else is staged, so a file staged
+- A write starts one or two git processes: `git add` of the paths new to the head, when
+  it has any, and `git commit --only` of all its paths, which commits exactly them whatever
+  else is staged (it takes a path the head has, changed or deleted, as the working tree
+  holds it, and refuses one git does not know, hence the `git add` of new files), so a file staged
   by hand stays out of the board's commit and the write goes on (before, the write
   checked the index with `git diff --cached` and refused). The commit's summary line
   names the new commit in full (`core.abbrev=no`), and its author time is read through
@@ -806,7 +946,12 @@ derivation design that replaced this:
   24.7 ms of its 51 ms of CPU to starting its five processes (the four of the commit and
   the `git log` of the unread list's new commits), about 5 ms each, against 0.6 ms in
   the store's own code around them. The process costs here were taken from the profile of that
-  first version, with its heap; they were not measured again after the fix.
+  first version, with its heap; they were not measured again after the fix. The cost of
+  starting a process grows with the size of the process that starts it: on a hosted
+  runner, `git --version` started 200 times took 2.7, 3.6 and 5.9 ms a start with the
+  starting process at 73, 330 and 903 MB, 1.4, 2.3 and 3.7 ms of that process's CPU
+  (ci-gate-45); this is why a write that changes only documents the head has skips the
+  `git add`.
 
 `scripts/bench-writes.ts` measures this path on a synthetic board of the live
 board's size (CPU and garbage collection per write, bytes per change event,
@@ -2459,7 +2604,7 @@ instructions within the limit and free of rule text.
 | Tool | Answers | Returns |
 |---|---|---|
 | `search(query, filters)` | Where is X mentioned? | Hits across item heads, plan rows (step and acceptance text), targets (goal, target value, current value and comparison baseline) and logs, cards and notes: id, kind, title, status, area, the matching line with its time. Filters: group, area subtree, status, kind, since. Substring matching, which handles Chinese without a tokenizer |
-| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows other than acceptance steps folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
+| `context(id, log?, section?, full?)` | What is this and how did it get here? | The item with its owner chain (each with status); its target lines; its head as the first paragraph of each section; its plan, one compact line per row (below), finished rows other than acceptance steps folded into a count; the items holding a shared row for it, each with its status; its cards (an open card with its `rev`, its question and its option names, a ruled or withdrawn card as its question, the pick and its text); for an item that owns others, the open and ruled cards on the items below it, apart from its own (Lean replies, below); its recent notes; flags; links and at most five PR references; the last five log entries, cut. What is cut or folded, and how to get it whole, is under Lean replies below |
 | `graph(id, direction, depth)` | What does this wait on, what waits on it? | The item rows around the item as an indented list, each edge marked owned or shared, marking blocked chains and cycles |
 | `history(id, limit?)` | How did this change? | Commits touching the item or card: time, author, summary |
 | `diff(id, from, to?)` | What exactly changed? | The textual diff of the file between two commits or times |
@@ -2473,7 +2618,7 @@ instructions within the limit and free of rule text.
 | `brief(project)` | What does this project need now? | Sent notes, checks, owner cards, WIP (status wip with a step in progress or a live session), next TODOs (what `canStart` allows and has a rating: status todo or idle, in the order of `candidates`), paused work, outgoing work (open items of other projects its open items wait on) and its glossary terms; paused items stay out of actionable WIP and TODO queues; each item row carries its plan's unresolved rows and a count of resolved ones; blocked items that only wait for their turn in their owner's plan are not listed but counted per owner in `queued`; the standing items that are not paused are listed under 进展 with the records and the blocked work |
 | `candidates(under?)` | Which items could an engineer be started on, and how many engineers are working in each pool? | Every project's startable items nobody holds, in a default order, and the two engineer pools with their working engineers and candidates (below) |
 | `whole_view(bucket?, project?)` | Where does every open work item stand? | Every open work item that is not in a backlog (unless the runner reports on it), in one of five kinds (waiting too long, nobody's, being worked on, waiting, set aside), from the runner's report, a live session and the plan: the totals, a few rows per kind with the rest counted, and what each project has left; `bucket` lists one kind (up to 40 rows), `project` narrows (below, The whole view) |
-| `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look) |
+| `look(projects?, rows?, expand?)` | Where does all the open work stand, from the roots down? | Each project's top items and the items they own as the lines of a tree, in a budget of lines (80 unless `rows` says otherwise), the subtrees that need a reader opened first and the rest counted on their lines; `expand` opens items by name; with a `session` or a credential, what changed, is new or finished since that session's last look is marked (below, The look); after the tree, the agent list as the page draws it (section 7, Agent list) |
 | `timeline(id?, limit?)` | Where did the time of an agent go? | An agent is a dispatch record; its line is what the runner reported while the session lasted: segments in order (kind, start, length, what it waited for) and the totals for each kind; an engineer's line is cut from what the runner reported, a review's is one stretch of work. With `id`: the lines of the agents that item went through, oldest first (the newest 12 agents, at most 6000 characters, the earliest segments folded); without: the agents running, the agents whose line ended in the last 24 hours (up to 10) and the longest waits among the running ones, longest first, with how long each has gone on (section 7, Agent list) |
 | `glossary(project?)` | What does a project's word mean? | Terms with definitions: one project's, or every project's that has terms |
 | `messages(filters?)` | Who told whom what? | The messages between agents, newest first, one line each (time, sender with its project → recipient, item, text), by recipient, sender, item and time (`since` inclusive, `until` exclusive); at most 50 unless `limit` says otherwise |
@@ -2723,6 +2868,15 @@ not call it.
   session never saw), so it does not hide their changes, new items or finishes. The memory holds at most 16
   sessions, the newest last, and is lost when the daemon restarts: the first look after that, or after the session was pushed out of the 16,
   marks nothing, and so does a call with neither a session nor a credential, which is not remembered; the header says so.
+- *The cards of a row.* A line carries `卡：挡事 N · 不挡事 M` before its check flags, the two numbers the owner's page shows on the
+  row of the item (`blockingBelow` and `nonBlockingBelow` of `src/rules.ts`: the cards waiting for the owner on the item and below it, those
+  that block work and those that block nothing), and no `卡` part when there are none. Before, the page showed these and no tool did.
+- *The agent list.* After the tree, outside its budget of lines, the answer prints the agent list as the page draws it, for the whole board
+  whatever `projects` says (the page lists every project's sessions too): the heading's number, the runner's free slots when it has reported
+  them, a line for each piece of work the runner holds and for each other session that is running, and how many sit behind the page's fold.
+  It is `agentList` of `src/agent-list.ts`, the function the page calls (section 7, Agent list, One list for the page and the tool), so the
+  two cannot count differently. The architect reads `look` as the picture of the board, and a list that only the page showed was what the
+  owner saw first and the architect saw last.
 - *Cost.* One pass over the items: the whole view's pass, the checks of each item and the tree. `test/look.test.ts` checks on a
   generated board of the live board's size (about 1,600 items) that the look takes under 2,000 milliseconds; the measured values
   go in the item's acceptance rows, from the CI log.
@@ -2822,6 +2976,19 @@ name is also given, and a name that matches none stays unknown and is refused as
 tool's parameters; so `move_item` given a `reason` (only the tools that log a reason take it) is
 told it has none and shown what it has, and the other writes are not changed to take one.
 
+**What stands under an item.** Whoever sets work aside or reads a part of it needs to see what the owned items hold, and each of these
+was found only by reading every owned item one by one (`src/under.ts`).
+
+- `context` of an item that owns others ends its own cards with the open and ruled cards on the items it owns, at any depth, apart from its
+  own, each under its item (`cards on the items it owns`); a withdrawn card holds nothing and is left out, a leaf has no such part, and a
+  card, a section or the whole head read on its own is answered as before. At most 20 cards are listed, then the number of the rest.
+- The reply of `set_pause` (a pause that changes something; a resume sets nothing aside) and of a `set_status` that cancels carries a `note`
+  with the same cards, the pull requests named in the 改动 section of the item and its open owned items whose merge row is not done, and the
+  sessions at work (the unfinished dispatches of an engineer or a review; an architect's turn is no session at work). The cancel's note
+  describes the state before the write, the cards it is about to withdraw included, since that is what the caller must see.
+- The pull requests are read from the board and not from GitHub, so a merged one the board has not yet ticked is still listed, which errs
+  towards telling more.
+
 **Measured** (a copy of the live board's snapshot on 17 October 2026, computed once by the
 engineer outside the repository; "whole" is the answer before this change, "default" the
 answer now):
@@ -2888,11 +3055,11 @@ authors `总管` and `PM` is refused by every tool.
 | `dispatch_start(id, role, level, model, effort?, agent, agentId, worktree?, startedAt?, did?)` | Issues the session's credential (answered once, only its hash kept; none for the role `架构师`, which is a record only) and records a session started on the item and appends `起：会话 …（号 …），角色，N 级 模型，推理强度，工作树，时间` to its log. `startedAt` is UTC to the minute or in full, the server's clock when omitted | Project ownership (the author is the item's project, as for `append_log`); `role` and `level` from the fixed options; `agentId` unused anywhere on the board; no revision, a concurrent write is retried |
 | `dispatch_finish(id, agentId, result, usage, cost, reports?, kickbacks?, rounds?, waited?, signals?, note?, endedAt?, replace?)` | Completes the dispatch with its result, counts, usage, cost, failure signals and note, and appends `收：…` with every column to the item's log | The `agentId` is on the item (the error lists the item's own); an engineer needs `reports` and `kickbacks` and refuses `rounds`, a review the reverse, an architect neither; `result` (the four results or `放下等待`, and `轮次结束` for an architect dispatch alone) and each signal kind from the fixed options, a kind at most once; token counts non-negative integers; `cost` non-negative, rounded to thousandths; `endedAt` not before the start; an ended dispatch is changed only with `replace: true`, which states the whole record again and logs `收（更正）：…` |
 | `report_state(id, state, to?, cards?, items?, what?, until?, note?, turns?, cost?, startedAt?)` | Reports the runner's state on an item: it replaces the item's last report, the board stamps `since` and `at`, and a report that changes nothing writes no commit | Only the architect (`item.runner`), and without a credential the session `执行程序`; not a record; `state` one of `running`, `ci`, `ask`, `items`, `run`, `wait`, `ready`, `exception`, `done`; `ask` needs `to` (and `cards` for `owner`), `items` needs `items`, `wait` needs `what` and takes `until` (a UTC time, kept in full), and none carries another's fields; `note` one line of at most 120 characters; `cost` non-negative, rounded to thousandths; `startedAt` not later than the report |
-| `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes no other argument |
+| `report_heartbeat()` | Reports that the runner is there: the board keeps the time of the call in its memory and in a local file that git does not track, and pushes `runner-stopped` once to the architect when no call has come for 10 minutes after one has (section 8, The runner's heartbeat). It makes no commit and does not wait in the write queue | The same writers as `report_state` (`item.runner`): the architect, and without a credential the session `执行程序`; `author` is any configured project; it takes one argument besides, `pools` (optional): the runner's pools of slots, kept in memory only (section 8, The runner's heartbeat) |
 | `journal_entry(text)` | Adds one timed entry to today's architect journal: the record `architect-journal-YYYY-MM-DD` (local date, server clock) under `architect-notes`, created with the 协作流程 tag on the day's first call; the entry goes to the end of its head as `**HH:MM** text` | Only `Architect`; the day's key must not be a non-record item; text nonempty |
 | `update_item(id, rev, fields, sections?, replace?, reason?, accept?)` | Changes title, head (whole, or in parts with `sections` and `replace`, below), links, `data`, `order` (top items only), record mode or standing mode | `rev` is the current one, or none of the fields the write replaces changed since (the answer's `note` says what did); switching record mode needs the current one; a changed title, and turning a cancelled item into a record, only by the architect; a changed head requires `reason`, which becomes a log entry, and is refused when it holds the line a cut `context` answer writes (Lean replies); `sections` and `replace` are a head write for `rev`, for the credential's part `item.head` and for `reason`, and are refused together with `head` (A head changed in parts, below); `record: true` removes all acceptance steps and logs their texts; `record: false` requires `accept`; `standing: true` (the architect only; refused for a record, a done or cancelled item, and while an ordinary item owns or waits for the item) removes the acceptance steps and the difficulty and logs them, `standing: false` requires `accept`; the two modes never hold together |
-| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required |
-| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared |
+| `set_status(id, status, log)` | Cancels a work item (`cancelled`) or undoes a cancellation (`open`), with a log line; every other status is derived from the plan | Only the architect; never records; cancelling refused while an owned row's target is open, naming them; the log line is required; a cancel's reply lists what stood under the item before it (Lean replies, below) |
+| `set_pause(author, id, paused, reason?)` | Sets or clears only this item's pause marker; same-project owned descendants inherit it; plan rows stay unchanged; server time and a log entry in one commit | Only the architect, at the owner's request in a comment; reason required when pausing; never records; closed work refuses pausing but an existing inactive marker can be cleared; a pause's reply lists what stands under the item (Lean replies, below) |
 | `move_item(id, owner?, after?)` | Changes ownership: removes the item's owned row from its current owner's plan and adds one to `owner`'s plan, placed as `create_item` places an owned row (before its first acceptance step, or right behind the latest row `after` names when that row stands at or beyond that place); a log line on the item and on both owners names the move. Without `owner` the item becomes a top item of its project | Same project; no cycle (the new owner is not the item or below it); without `owner`, the move is refused when an open item of the same project still waits on it through a shared row, naming them |
 | `move_item_project(id, project)` | Moves the item and every item it owns, at any depth and in any state, to another project in one commit: each gets the new `group` and a log line. An owned row to a moved item in the plan of an item left behind (the item's owner, a backlog record included) becomes a shared row in the same place, with a log line on that owner. The item arrives as a top item of the new project. Key, number, history, notes and cards stay with it | Only the architect, before any ownership check; the project is configured and differs from the item's; every moved item belongs to that project and none is owned across projects (the existing 跨项目拥有 check, named); every tag of a moved item applies to the new project; refused, naming the items and the way out, while the move would leave an open waiter and no owner in the new project: an open item of the new project waits on the item through a shared row, or a moved item's plan holds a shared row to a top item of the new project that nothing owns (the existing 同项目有条目在等它，却没有条目拥有它 check, read after the write; a violation that was already there does not stop the move); work leaving a paused chain is allowed, because the architect can resume it |
 | `clear_ask(id, log)` | Removes a legacy ask after the project has replaced it with a decision card or settled it | Every owner wait is a decision card with options; a yes or no uses option A (do it) and option B (don't). Agents cannot create new asks |
@@ -3456,7 +3623,11 @@ level, and whether that someone is working, waiting or has gone quiet.
   dispatch alive within six hours, which would fold a job that waits for the
   owner overnight, and a job waiting for CI, a card or the architect is what the
   owner opens the list to see. The older rows leave out the sessions the runner
-  holds, so no session is drawn twice. The whole view is not changed: it answers
+  holds, so no session is drawn twice. The review session of work the runner holds is one of them: the
+  runner starts it with the job and the record stays open until the item ends (`runnerHoldsReview`,
+  `src/agents.ts`: an unfinished review dispatch on an item that has an unfinished engineer dispatch the
+  runner holds), so it is drawn with the job's row and is not counted as another session; counted apart it made the
+  heading one more than the rows listed. The whole view is not changed: it answers
   what is left and who has nobody, by item, and the architect reads it too; the
   two repeat a job on purpose. Rejected: folding the runner's rows by the older
   six-hour rule; dropping the whole view's rows that the block repeats, which two
@@ -3547,7 +3718,7 @@ level, and whether that someone is working, waiting or has gone quiet.
   running ones were hard to find. Only running rows are drawn in full; the
   others are one last line, 「其他 N 个」, that opens them in the same order and form
   (the choice is kept in the browser like the list's own fold). The heading
-  counts the running rows. A row is running when the session has an unfinished
+  counts the rows drawn open: the runner's rows and the running rows (`AgentList.count`). A row is running when the session has an unfinished
   dispatch record, of an engineer or a review, and is alive, meaning it started or wrote
   within the list's window (`liveDispatches`, the reading that rule 6 of Status
   uses for a session working on an item, either role and the same window, not
@@ -3678,6 +3849,31 @@ level, and whether that someone is working, waiting or has gone quiet.
   leaves the day's work a pixel wide; drawing every segment the same width,
   because the longest wait would not look longest; a block of lines apart from
   the table, because the title and its line would stand in two places.
+
+**One list for the page and the tool.** `agentList` (`src/agent-list.ts`) gives the list as one value:
+the runner's rows, the other sessions that are running, the rest behind the fold, and the heading's number
+(`count`, the rows drawn open, a test checks it equals them). The page and the `look` tool (section 6, The look)
+both call it, and `agentListLines` prints it for the tool, so the number the owner reads and the number the
+architect reads are one. The page did the counting in its own code before, and the first time the numbers
+differed (a review session counted as another session) the owner saw it before the architect.
+Every other number on the page was audited against the tools on the same occasion. The agent list's counts are now in
+`look`; the whole view is the same function in the page and `whole_view`; the status bar's open items and
+project counts are `projects` and `overview`; the blocking and decision card counts are in `brief`, and the card
+counts of a row are in each line of `look`; the comments count is `notes`. What is left is the owner's own read position (the
+unread, new and read-all counts of the lists and of messages), which exists only for the person who reads and which
+no agent needs. Rejected: a tool of its own for the agent list, because the architect has to remember to call it and the lesson was
+what the architect does not look at; changing only the page's number, because two algorithms stay, and the next difference is again
+found by the owner first; keeping the review session listed and counting only the runner's rows in the heading, because a
+session alive would then be missing from the number that is meant to count them.
+
+**The runner's free slots.** The line `名额：…` stands under the heading, whether the list is open or folded and also when
+no session has a row, one part for each pool the runner reported (`1 级 空着 8 个（共 10），派活队列里没有能开工的活已 10 分钟`, or
+`满 10/10`). It is `poolsLine` of `src/agent-list.ts`, drawn from the last report in the board's memory
+(section 8, The runner's heartbeat), marked amber when a pool has had a free slot and nothing to start for an hour (the
+time the owner is told) and greyed with the report's age when the runner has not repeated it for three minutes
+(`POOLS_FRESH_MS`). The page gets the last report when its event stream opens and with each report (the event
+`pools`), and counts the idle time forward from the report's arrival, so the figure moves without a new report.
+Rejected: a line shown only when the list is open, because the case it is for is the owner not opening anything.
 
 ### The live view of a turn
 
@@ -4455,7 +4651,7 @@ item stops with it and nothing on the board says so: its reports on the items st
 beats of the turns running (section 7, The live view of a turn) stop, which the agent list shows as
 silence on each turn separately. The board therefore watches the runner itself, by one call.
 
-- *The call.* `report_heartbeat` takes no argument besides the writer. The runner calls it at every round of its
+- *The call.* `report_heartbeat` takes no argument besides the writer, except the optional `pools` below. The runner calls it at every round of its
   loop, whether or not a turn is running, at least once a minute. The writers are those of `report_state`
   (the part `item.runner`, section 9, The runner): the runner from its own session, and the architect.
   It makes no commit and does not wait in the write queue (`RunnerHeartbeat` in `src/runner-heartbeat.ts`).
@@ -4474,6 +4670,22 @@ silence on each turn separately. The board therefore watches the runner itself, 
   heartbeat), and the next heartbeat ends the silence, so a later one is told again. A restart in the same
   silence tells nothing, since the file says it was told; the push is made before the mark is written, so a
   stop between the two repeats the push and does not lose it.
+- *The pools.* The heartbeat may carry `pools`, a list of at most 8 objects `{pool, label, slots, running, dryForSeconds?}`:
+  a pool's key and short name (at most 20 characters each, keys distinct), its slots, how many are taken, and how long the dispatch
+  queue has had nothing to start for it, in seconds, when it has been so (the runner knows its own start check; the board does not
+  copy it). A report that does not hold is refused whole, with the beat, so a runner that only ever sent bad pools is missed. The
+  board keeps the last report with its arrival time in the daemon's memory only (`RunnerPools`, `src/runner-pools.ts`): not in a
+  commit, and not in the heartbeat's file, because a figure that is a minute old after a restart is no loss and a restart before the
+  next beat is the only time it is unknown. A heartbeat without `pools` leaves the last report as it was. The page and `look` draw it
+  (section 7, Agent list, The runner's free slots).
+- *The notice.* A pool with a free slot and `dryForSeconds` counted forward from the arrival of at least one hour
+  (`IDLE_TELL_MS`) is told once to the owner, with the title `名额空着 · <label>`, through `Wake.tell`, the route a blocking card
+  takes, which reaches the pages open with notification permission. The mark that it was told clears when the pool has no free
+  slot, when the queue has something to start for it, or when a report does not name it, so the next such stretch tells again;
+  a notice that fails is logged and costs the report nothing. After a restart the board knows no pools until the next heartbeat,
+  which comes within a minute, and a pool still idle then is told again. The hour is a starting value, set from the more than six hours
+  during which slots stood empty on 2026-10-19 and not measured; reopen it if an hour proves too often or too late. An owner
+  with no page open is not told, as with a blocking card.
 - *Only after a first heartbeat.* Nothing is told until a heartbeat has been kept, here or in the run before, so a board
   deployed before the runner calls the tool does not tell of a runner that never promised it.
 - *The limit.* 10 minutes (`RUNNER_SILENT_MS`) is a starting value: the runner's loop was not measured, and the
@@ -4494,6 +4706,13 @@ The decision is the node `design/daemon/runner-heartbeat.md`. Rejected:
   at one in 10 minutes only to record a time that the board may lose with a restart at the cost of one
   interval.
 - The board reading the runner's process or answering to its port: rejected for the reason above.
+- A separate write tool for the pools: rejected because the beat and the pools could then arrive one without the other, and the runner
+  would make another call every round for what the heartbeat already carries.
+- The board counting the free slots itself from `candidates` and the engineers working: rejected because the slots are in the
+  runner's configuration, which the board does not have, and a candidate is not the same as something the runner's start check lets
+  start, so the two would disagree, the kind of difference this change removes.
+- The line on the page without a notice: rejected because on 2026-10-19 slots stood empty for more than six hours with the owner away from the page,
+  and a line nobody reads is no line.
 
 ### The PM is retired
 
@@ -5241,7 +5460,7 @@ below cannot see, and a page bug gets its test in the lowest layer that can.
 1. **Rules, store and server** (`test/*.test.ts` other than the page test):
    the board rules, the file format, writes and their checks, the HTTP and
    MCP surfaces, each against synthetic fixtures.
-2. **The page in a fake DOM** (`test/web.test.ts`): the bundled page runs
+2. **The page in a fake DOM** (`test/web-cases.ts`): the bundled page runs
    against a hand-written DOM with modeled geometry and a small synthetic
    board. It is fast and checks controls, render scopes and scrolling, but it
    computes no CSS and no real layout, and its fixtures hold few of the real
@@ -5355,7 +5574,7 @@ own and short enough to be dealt out to the shards (the longest of the layer's
 run side by side.
 
 Diagrams are checked in two places. The page's own doing runs in the DOM layer
-(`test/dom/mermaid-page.test.ts`, `mermaid-view.test.ts`) against the stand-in library:
+(`test/dom/mermaid-page.test.ts`, `mermaid-redraw.test.ts`, `mermaid-view.test.ts`, `mermaid-toolbar.test.ts`) against the stand-in library:
 a block in a head and one in a log are drawn; a block that does not parse shows its code
 and the error while the blocks after it are drawn; the library is asked for when a block is
 shown and only once, and with the strict security level and the diagram's text whole; the
@@ -5413,7 +5632,7 @@ so no test reads the repository's history. In the DOM layer `test/dom/witnesses.
 (run by `witnesses-*.test.ts`) holds one per page check, and each scenario file
 (agents, messages, styles, mermaid, changed-blocks, width-caps) its own, each
 naming the reason it must fail for; the fixes of the page's update run in the
-fake-DOM layer (`test/web.test.ts`, whose `page` takes the fixes to reverse),
+fake-DOM layer (`test/web-cases.ts`, whose `page` takes the fixes to reverse),
 because a window has no page reload. A witness whose edit no longer matches
 the current file fails and is updated or retired on purpose. The browser file
 keeps no witness: a test of a fact that needs a box is shown to fail once, when
@@ -5589,15 +5808,18 @@ judged against the current page when it differs from the base, else against the 
 the reference alone the witness passed on a page much faster than its base: with the continued unread list a quiet press cost ×0.661 of the base, and the same page with
 15 ms more per draw ×1.005 (board-cpu-usage).
 
-**Parts.** The lane is four files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
-(the current page's counts quiet and while writing, and the changes taken out one at a time), witnesses (the late rows, all three changes taken out, m), and the two
-time phases. The jobs take 30 to 55 s including the 10 to 17 s the runner needs before the tests start. `test/nkey/stats.test.ts` holds the arithmetic and the
+**Parts.** The lane is six files, each a job of the full CI that seeds the board and records its own tape, so they take the time of the longest, not the sum: counts
+(the current page's counts quiet and while writing, and the pages that redo their work at every write), counts-out (the changes of a quiet press taken out one at a
+time), late-rows (the rows around the target that answer late), witnesses (all three changes taken out, m), and the two time phases. The jobs took 30 to 55 s
+including the 10 to 17 s the runner needs before the tests start while the lane was four files; with counts and witnesses each split in two (ci-gate-45), when the
+counts job ended last in a full CI at 43 s with a test step of 25 s (its start, seeding and the first walk, about 9 s, then seven walks of 1 to 2.5 s each), the six
+jobs took 23 to 27 s, test steps 10 to 20 s, in one run (39321571725). `test/nkey/stats.test.ts` holds the arithmetic and the
 verdict on made-up pairs whose answer is known.
 
 ### Fast checks while writing, and the full CI at the end
 
 The full CI (`.github/workflows/ci.yml`: `start`, `no-tmp-workflow`, `check`,
-`test` in 20 shards, `nkey` in 4 parts and `result`) is meant to take a minute from the start of the run
+`test` in 30 shards, `nkey` in 6 parts and `result`) is meant to take a minute from the start of the run
 to the status `full-ci` (The time gate), and the browser tests are not in it; a change under way
 is pushed many times. A push to a pull request branch therefore does not
 start it. A project that adopts this scheme copies `ci.yml`, `ci-mark.yml` and the
@@ -5719,7 +5941,7 @@ tried; both are rejected on those grounds.
 ### Sharding the script tests
 
 The script tests (`npm test`: every `*.test.ts` file under `test/`) run in the
-full CI as 20 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split), each in a job of its own, beside the type check, which is a
+full CI as 30 shards (8 until the checks of the browser moved into the suite, 16 until the largest files were split, 20 until ci-gate-45), each in a job of its own, beside the type check, which is a
 job of its own too. One runner took 82 to 118 seconds for the suite, and the type
 check ahead of it added to that.
 
@@ -5730,7 +5952,7 @@ seconds: three shards measured 21.6, 47.5 and 39.8 seconds of tests. The cost of
 a file is the seconds of its own entry in the runner's report, from the start of
 its process to its end, on a hosted runner, kept in `test/shard-costs.json`. It is
 not the sum of the file's tests, which leaves out loading the file and its hooks:
-`shutdown.test.ts` is 8.5 seconds of tests and 19.7 as a file. A file the table
+`shutdown.test.ts` was 8.5 seconds of tests and 19.7 as a file (10 of the difference a timer that held its process after its last test, With 30 shards below). A file the table
 does not name costs a default (`DEFAULT_COST`) and is dealt out like the rest, so
 a new test file is run from its first push and never missed. The table is brought
 up to date from the table of seconds per file that every shard writes to its job
@@ -5835,6 +6057,34 @@ for one run of the 20 shards (run 39255686754, removed again) found 34 of the 35
 files 49%. Copying a seeded board would save about 6% at most; opening a page has no such cheap cut. Bringing the slowest of 100 samples to 20
 seconds needs the mean near 13, the sum per shard near 23 seconds, which is a cut of the total by about 55%, or a faster runner.
 
+**With 30 shards** (hosted runners, 19 October 2026, ci-gate-45): after the table was brought up to date and the n-key time
+parts were bounded, eleven full CIs on the main line were judged 45 to 59 seconds by the time gate (median 50), the last job a test
+shard in most, so the gate's line of 60 had no margin for a slow set-up. The suite is bound by the processor, not by waiting: the 126
+test files run one at a time took 789 seconds of wall time and 951 of CPU (23% of it in the kernel), and a shard running four files
+at a time was no quicker than one running three (mean step 22.4 against 22.7 seconds), so a four-core runner gives about 2.5 cores
+and a shard's step is about its files' CPU divided by 2.5. A profile of the main threads (607 seconds sampled) put about 40% in the
+page in jsdom, 12% in the oracle of the `rules-reuse` files and 87 seconds in starting git processes, whose cost grows with the
+parent's memory (2.7, 3.6 and 5.9 ms a start at 73, 330 and 903 MB resident; Write cost, section 4). Thirty shards alone made the mean
+step 17 seconds against 22.7 but left the longest at 26, the floor of one file (`deploy.test.ts`), and the run at 46. What brought it
+under: the files over about 15 seconds split as before (`deploy`, the `rules-reuse` seeds in three parts each, the page witnesses in
+ten, the agent list, the diagrams, the project filters, the badges apart from the waits, and the fake DOM's tests in two parts that
+each take every other test of `test/web-cases.ts` through `test/deal.ts`), Node's compile cache for the test processes (`NODE_COMPILE_CACHE`, about 8%
+less CPU on a warm run of the same files, 55 against 50 seconds), the store's write starting one git process where it started two, and
+three test files that held their process 10 seconds after their last test (a deadline raced against a daemon's exit whose timer stayed
+referenced: `shutdown`, `push` and `stateless`, 12 to 20 seconds as files for 2 to 10 of tests). A probe that logged, for each of the
+139 files of one run, the time from its last test to its process's exit found one more such timer (`backup-push`, 3 seconds) and
+nothing over 0.1 second in the rest; the probe was removed again. Two full CIs of the result (runs 39320840092 and 39321571725, push
+mode) were judged 45 and 44 seconds, the steps `tests` 11 to 23 seconds and the sums of the files' seconds 984 and 1,120; the job that
+ended last was once an n-key part, since split (The n-key lane, Parts), and once a shard whose `npm run build:web` took 14 seconds
+before esbuild started, npm's own files being read from the image's disk for the first time (The set-up of a job). Seven full CIs
+of the finished change, started by hand one after another on one commit (runs 39326783189, 39327040354, 39327949685, 39328216893,
+39328960700, 39329245774 and 39329512784), were judged 40 to 47 seconds (median 42); the one at 47 ended with the n-key part
+`time-writing` on a slower runner (its step 27 seconds against 15 to 23 in the others, its set-up 5 against 2 to 4), within that part's
+time budget (The n-key lane, The time budget). One more run of the same commit (39327317254) was judged 108 seconds, though every
+job's last step had ended by 35 seconds: GitHub marked 30 of its jobs complete 47 to 76 seconds after their last step, a delay the
+gate does not leave out. A file
+of more than about 15 seconds is the sign to split it: the time gate names a shard that runs over 1.5 times the others.
+
 **Rejected**: Node's `--test-shard` (positional, uneven, above). A hand-kept
 list of the files of each shard: a new test file would belong to no shard and
 nothing would run it, which the table with a default cost cannot do.
@@ -5884,7 +6134,7 @@ between 10-18 23:00 and 10-19 09:00. The waits come from two causes, neither of
 them the change. (1) The organization's jobs running at once reached the limit.
 GitHub's page of usage limits gives 60 concurrent jobs of the standard hosted
 runners for the Team plan, and the most jobs running at one moment in these data
-was exactly 60. A run has 28 jobs; of the 9 runs that started while more than 32
+was exactly 60. A run had 28 jobs (40 since ci-gate-45); of the 9 runs that started while more than 32
 jobs of the organization were running, 8 had jobs that started late, 6 of them by
 more than 20 seconds (48 at most) and with 25 to 27 jobs late at once; they were
 runs started by several engineers within a minute (4 between 08:07 and 08:08). The
@@ -5995,7 +6245,7 @@ it again; the pending that `start` wrote is not written again then.
 
 ### The set-up of a job
 
-Every job of the full CI starts the same way, and 28 jobs run at once, so the
+Every job of the full CI starts the same way, and 40 jobs run at once (28 before ci-gate-45), so the
 set-up is in the time of the job that ends last: the runner's wait (3 to 4
 seconds), `Set up job` (about 1), `checkout` (about 1; 2 for the n-key parts, which
 fetch the history for the base page), Node and the packages (8 to 9 with the cache
@@ -6019,8 +6269,17 @@ between the two), `npm ci` on a miss, with `restore` and `save` of the cache as 
 and from the main line; a change of the packages makes one miss on its branch, as
 slow as before. Both paths of the action were run once on the branch (run 39210292901): with the caches of
 the key deleted from the branch first, the job found none, `npm ci` added 259 packages in 8 seconds, the cache
-was saved (65 MB, 2.2 seconds) and a second job restored it. The Node that the runner has already is 22, and the project runs on
-24, so the step `setup-node` stays (0 to 1 second without a cache). A history
+was saved (65 MB, 2.2 seconds) and a second job restored it. The Node on the runner's path is 22, and the project runs on
+24, so the step `setup-node` was kept (0 to 1 second without a cache). It also prints the
+versions of node, npm and yarn, which took 1.1 seconds on average and up to 7.2 (15 of 72 jobs
+over 2 seconds in three runs, ci-gate-45); the image carries Node 24 in its tool cache, so the
+action now puts that on the path, a step of no measurable time, and runs `setup-node` only on an
+image without it. The first start of npm in a job then reads npm's own files from the image's disk:
+`npm run build:web` took 3 to 14 seconds in 13 of 60 shards over two runs before esbuild started
+(0 to 2 seconds in every shard of two main-line runs, where `setup-node` had started npm before),
+so the jobs run their scripts with `node --run`, and a job that found the cache of `node_modules`
+starts no npm at all. The download of that cache took 2.7 seconds on average and up to 9 in the same
+three runs (6 of 72 jobs over 4 seconds, stalled on the last block), which is left as it is. A history
 without the file contents (`filter: blob:none`) for the n-key parts was not
 measurably faster (one run of 3 jobs each: checkout 1 to 3 seconds against 2 to 4),
 and a base that differs from the checkout would read its changed files from the

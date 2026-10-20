@@ -1,7 +1,7 @@
 // The mermaid checks of the browser layer (test/e2e/browser.e2e.ts): what only the real diagram library and a real layout show of the
 // mermaid blocks on the owner's page (web/mermaid.ts), in headless Chromium against the real server. The page's own doing with a block
 // (its states, errors, toolbar, zoom arithmetic, drag, theme, laziness, repaint, ids and the stylesheet rules it relies on) is checked in
-// a DOM library against a stand-in for the library (test/dom/mermaid-page.test.ts, mermaid-view.test.ts). Here: the real library draws a
+// a DOM library against a stand-in for the library (test/dom/mermaid-page.test.ts, mermaid-redraw.test.ts, mermaid-view.test.ts, mermaid-toolbar.test.ts). Here: the real library draws a
 // diagram with its Chinese labels and a size, a block that does not parse shows the library's error and leaves the rest alone; the
 // library's strict security level leaves nothing of a hostile text that runs; a diagram drawn twice has no id twice and the visible copy's
 // line markers are its own, which depends on how the real library names its ids; the settings in a diagram's own frontmatter win over the

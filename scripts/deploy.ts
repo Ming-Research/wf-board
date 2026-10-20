@@ -2,10 +2,12 @@
 // scripts/install-service.ts deploy). The logic is src/deploy.ts; this wires it to git, gh (the checks of the commit to deploy), npm,
 // launchctl, the daemon's HTTP port and the owner's notifications. It reads the checkout it lives in, so it deploys the checkout the daemon runs from.
 // Environment (each with the live board's value as default): WF_BOARD_REPO (the checkout), WF_BOARD_PORT, WF_BOARD_LABEL (the daemon's launchd label),
-// WF_BOARD_DEPLOY_STATE (the state file), WF_BOARD_DEPLOY_WAIT_MS and WF_BOARD_DEPLOY_STABLE_MS (the health wait),
-// WF_BOARD_DEPLOY_NET_CAP_MS (the longest a fetch may run) and WF_BOARD_DEPLOY_FETCH_RETRY_MS (the wait between its tries); tests shorten them.
+// WF_BOARD_DEPLOY_STATE (the state file), WF_BOARD_PLIST (the daemon's installed service file), WF_BOARD_DEPLOY_WAIT_MS and
+// WF_BOARD_DEPLOY_STABLE_MS (the health wait), WF_BOARD_DEPLOY_NET_CAP_MS (the longest a fetch may run), WF_BOARD_DEPLOY_FETCH_RETRY_MS
+// (the wait between its tries) and WF_BOARD_DEPLOY_UNLOAD_MS (the longest to wait for a stopped service to be gone); tests shorten them.
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -20,6 +22,8 @@ const env = process.env;
 const repo = env.WF_BOARD_REPO ?? dirname(dirname(fileURLToPath(import.meta.url)));
 const port = Number(env.WF_BOARD_PORT ?? 7417), label = env.WF_BOARD_LABEL ?? "org.ming-research.wf-board";
 const stateFile = env.WF_BOARD_DEPLOY_STATE ?? join(homedir(), "Library/Application Support/wf-board/deploy.json");
+// The file `install-service.ts` wrote for the daemon, where launchd reads its configuration from.
+const plistFile = env.WF_BOARD_PLIST ?? join(homedir(), "Library/LaunchAgents", `${label}.plist`);
 const base = `http://127.0.0.1:${port}`;
 // The node this job runs under is the last resort for finding npm, when the PATH launchd gives has none.
 const childEnv = { ...env, PATH: `${env.PATH ?? "/usr/bin:/bin"}:${dirname(process.execPath)}` };
@@ -34,6 +38,27 @@ function exec(command: string, args: string[]): Promise<string> {
   });
 }
 
+/** Whether launchd holds the daemon's service: `launchctl list <label>` fails once it is gone, and a service that was told to stop is held until its process has exited. */
+const loaded = () => exec("launchctl", ["list", label]).then(() => true, () => false);
+
+/** Replace the daemon's service: write the file, stop the service, wait until launchd has let go of it, load it again from the file.
+ * `bootstrap` right after `bootout` fails (exit 5) while the old process is still shutting down, which the daemon's graceful stop can take
+ * seconds to do, so the wait is for the service to be gone, not for the command to return. */
+async function replaceService(text: string) {
+  mkdirSync(dirname(plistFile), { recursive: true });
+  writeFileSync(plistFile + ".tmp", text); renameSync(plistFile + ".tmp", plistFile);
+  const domain = `gui/${process.getuid!()}`;
+  // A service that is not loaded (the daemon was stopped by hand) makes bootout fail, and there is nothing to stop then.
+  try { await exec("launchctl", ["bootout", `${domain}/${label}`]); }
+  catch (error) { if (await loaded()) throw error; }
+  const until = Date.now() + Number(env.WF_BOARD_DEPLOY_UNLOAD_MS ?? 30_000);
+  while (await loaded()) {
+    if (Date.now() >= until) throw new Error(`launchd still holds ${label} after it was told to stop`);
+    await sleep(500);
+  }
+  await exec("launchctl", ["bootstrap", domain, plistFile]);
+}
+
 await deployOnce({
   branch: "main", remote: "origin",
   git: args => exec("git", args),
@@ -45,6 +70,11 @@ await deployOnce({
     return match ? Number(match[1]) : undefined;
   },
   restart: async () => { await exec("launchctl", ["kickstart", "-k", `gui/${process.getuid!()}/${label}`]); },
+  service: {
+    installed: () => readFile(plistFile, "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }),
+    home: homedir(),
+    replace: replaceService,
+  },
   healthy: async () => {
     try { const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) }); return res.ok && ((await res.json()) as { ok?: unknown }).ok === true; }
     catch { return false; }

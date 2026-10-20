@@ -11,6 +11,7 @@ import { createMcpServer } from "./mcp.ts";
 import { Wake } from "./wake.ts";
 import { LiveStore } from "./live.ts";
 import { RunnerHeartbeat } from "./runner-heartbeat.ts";
+import { RunnerPools } from "./runner-pools.ts";
 import { LookMemory } from "./look.ts";
 import { ghSource } from "./github.ts";
 import { GithubWatch } from "./watch.ts";
@@ -49,8 +50,10 @@ async function main() {
   // The time of the runner's last heartbeat is kept in memory and in a local file; a minute timer tells the architect once when it has
   // been silent for too long (docs/design.md, section 8, The runner's heartbeat).
   const heartbeat = new RunnerHeartbeat({ tell: (lastBeat, limitMs) => { wake.push("runner-stopped", { lastBeat, limitMs }); }, file: await store.localFile("state/runner-heartbeat.json") });
+  // The runner's slots, from its heartbeat, live in memory only too; a pool with a free slot and nothing to start for an hour is told to the owner as a card that blocks is (design section 8, The runner's heartbeat).
+  const pools = new RunnerPools({ tell: (title, message) => wake.tell(title, message) });
   // A message may go to the session of any long-lived credential (docs/design.md, Messages).
-  const op = ops(store, undefined, { live, heartbeat, sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
+  const op = ops(store, undefined, { live, heartbeat, pools, sessions: () => { const read = credentialFile.read(); return "entries" in read ? read.entries.map(c => c.session) : []; } });
   // The file of the PM's retired stream (item board-retire-pm-stream): nothing reads it now. Delete this line once it has run on the live board.
   await rm(await store.localFile("state/wake.jsonl"), { force: true });
   // The look at GitHub every five minutes, kept across restarts: a red main line goes to the session holding the item that delivered it, else to the architect; a merged PR marks its merge row done.
@@ -64,7 +67,7 @@ async function main() {
   const credentials = new Credentials(credentialFile);
   // What each session saw at its last `look` lives in the daemon's memory only (docs/design.md, section 6, The look); a server object serves one request, so the one memory is handed to each.
   const looks = new LookMemory();
-  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential, looks }) });
+  const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, pools, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential, looks, live, pools }) });
   lap("create wake, watch and server");
   server.once("listening", () => {
     startup("listening", process.uptime() * 1000, "since the process started");

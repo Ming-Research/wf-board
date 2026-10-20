@@ -103,6 +103,9 @@ export async function startLiveBoard(t: { after(fn: () => unknown): void }): Pro
   lap("unread commits worked out");
   await seeded.store.flushOwner("owner");
   seeded.store.stopMaintenance();
+  // The startup cache of the seeded head, as a daemon that wrote the board leaves it: the start below replays only the commits made
+  // beside the store, and not the whole history of the seeding, which took about 2.5 of its 4.7 seconds.
+  await seeded.store.saveStartupCache();
   await commitTail(dir, writes);
   lap("unread commits made");
   // The store that wrote the board does not know the commits made beside it: the board is opened again, as a daemon starts.

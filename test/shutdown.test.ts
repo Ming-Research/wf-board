@@ -198,7 +198,7 @@ test("an MCP tool call running when the shutdown began finishes, and nothing els
 // The daemon itself, in a process of its own: the part main.ts adds to the server (the owner's reading state, no push).
 test("the daemon stopped by SIGTERM exits at once, saves the owner's reading state in a local commit and does not push; its first push comes after a delay from the start and is timed in the log", async t => {
   const data = await mkdtemp(join(tmpdir(), "wf-board-daemon-")), remote = await mkdtemp(join(tmpdir(), "wf-board-remote-"));
-  t.after(() => Promise.all([data, remote].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
+  cleanup(t, () => Promise.all([data, remote].map(dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))));
   await git("git", ["init", "--bare", "-b", "main", remote]);
   // A board with one item and no GitHub repository, so the daemon asks nobody on the network.
   const seed = await Store.open(data, { init: true, board: { title: "Daemon test", projects: [{ name: "Test" }] } });
@@ -216,7 +216,8 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-  t.after(() => { if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL"); });
+  // The daemon goes before the board's directory: it would go on writing to a directory being removed.
+  cleanup(t, async () => { if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGKILL"); await exited; } });
   for (let waited = 0; ; waited += 100) {
     assert.ok(waited < 15_000, "the daemon did not answer within 15 s");
     if (await fetch(url + "/health").then(r => r.ok, () => false)) break;
@@ -245,7 +246,9 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   assert.equal((await fetch(url + "/api/read", { ...json, body: JSON.stringify({ through: written }) })).status, 200);
   const stopped = Date.now();
   daemon.kill("SIGTERM");
-  const [code, signal] = await Promise.race([exited, sleep(10_000).then(() => { throw new Error("the daemon was still running 10 s after SIGTERM"); })]);
+  // The deadline's timer does not hold the process: the daemon's exit ends the race, and a timer left running would keep the
+  // file's process, and its shard, waiting the full 10 seconds after the last test.
+  const [code, signal] = await Promise.race([exited, sleep(10_000, undefined, { ref: false }).then(() => { throw new Error("the daemon was still running 10 s after SIGTERM"); })]);
   const took = Date.now() - stopped;
   assert.deepEqual([code, signal], [0, null], "it exits by itself and does not need a SIGKILL");
   assert.ok(took < 2000, `it exited ${took} ms after SIGTERM`);

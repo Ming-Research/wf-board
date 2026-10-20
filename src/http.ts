@@ -35,6 +35,8 @@ import type { BudgetLimits } from "./budget.ts";
 import { pageVersion, stampPage } from "./page-version.ts";
 import { LiveStore } from "./live.ts";
 import type { LiveEntry } from "./live.ts";
+import { RunnerPools } from "./runner-pools.ts";
+import type { PoolsEntry } from "./runner-pools.ts";
 
 /** How many of the newest messages the page is sent with the board; the messages tool finds older ones (docs/design.md, Messages). */
 export const PAGE_MESSAGES = 200;
@@ -52,7 +54,7 @@ const MAX_EXTERNAL_PUSH = 16 * 1024;
 /** Once the server is closing, a request still running has this long to finish before its connection is closed (design section 4, "Stopping"). */
 export const SHUTDOWN_GRACE_MS = 2000;
 
-export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits; live?: LiveStore }): http.Server {
+export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: OwnerOps; webDir: string; createMcp: (credential?: Resolved) => McpServer; credentials?: Credentials; now?: () => number; checkIntervalMs?: number; maxStreamBytes?: number; wake?: Wake; architectTimedWakeMs?: number; watch?: GithubWatch; ci?: CiWatch; shutdownGraceMs?: number; slow?: SlowOps; budget?: BudgetLimits; live?: LiveStore; pools?: RunnerPools }): http.Server {
   const { store, ownerOps } = deps, now = deps.now ?? Date.now;
   // Times every page request (docs/design.md, section 4, Time limits). Without one given, requests are logged with their time and never told.
   const slow = deps.slow ?? new SlowOps({ now });
@@ -99,6 +101,9 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const pageEvent = (version: string) => "event: page\ndata: " + JSON.stringify({ version }) + "\n\n";
   // The event that sends them: all of them every time, since the list is a few entries.
   const liveEvent = (entries: readonly LiveEntry[]) => "event: live\ndata: " + JSON.stringify(entries) + "\n\n";
+  // The runner's slots from its last heartbeat that carried them (src/runner-pools.ts): sent when a page connects and with every report; none until one has come.
+  const pools = deps.pools ?? new RunnerPools({ tell: () => {} });
+  const poolsEvent = (entry: PoolsEntry | undefined) => entry === undefined ? "" : "event: pools\ndata: " + JSON.stringify(entry) + "\n\n";
   // The reads run one after another, in the order asked: a page that connects is told what was on disk when it joined, and no
   // announcement made after that read passes it.
   let reading: Promise<unknown> = Promise.resolve();
@@ -178,7 +183,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
         // Read before the headers go out, so joining the stream and the first write happen in one step. Only this stream is told.
         const version = await readPage(false);
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version)) + liveEvent(live.all())); streams.add(res);
+        res.write(": connected\n\n" + (version === undefined ? "" : pageEvent(version)) + liveEvent(live.all()) + poolsEvent(pools.get())); streams.add(res);
         res.on("close", () => streams.delete(res)); return;
       }
       // With `since`, the version of the list the page holds, only what changed after it (docs/design.md, section 7, The page).
@@ -306,6 +311,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   // The owner's notices go to each open page as they happen. A page that connects later gets only what follows its connection.
   const unsubscribeTold = wake.onTell(told => writeStreams("event: owner\ndata: " + JSON.stringify(told) + "\n\n"));
   const unsubscribeLive = live.onChange(entries => writeStreams(liveEvent(entries)));
+  const unsubscribePools = pools.onChange(entry => writeStreams(poolsEvent(entry)));
   /** Whether a socket reads this agent's stream now: a stream in use is never dropped, or the socket would keep the old one. */
   const connected = (name: string) => [...connections].some(c => c.stream?.name === name);
   /** Send a frame to the sockets reading one agent's stream. */
@@ -430,7 +436,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   server.close = callback => {
     if (closing) return close(callback);
     closing = true;
-    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.ci?.stop(); off(); unsubscribeAgents(); unsubscribeTold(); unsubscribeLive();
+    clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.ci?.stop(); off(); unsubscribeAgents(); unsubscribeTold(); unsubscribeLive(); unsubscribePools();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.
     for (const stream of streams) stream.end();

@@ -1,9 +1,13 @@
 import type { Checks } from "./github.ts";
 import type { Notify } from "./notify.ts";
+import { installedValues, renderPlist } from "./service-config.ts";
+
+/** The daemon's service file as the repository holds it: a template (docs/design.md, section 4, Deploying). */
+const SERVICE_TEMPLATE = "ops/wf-board.plist";
 
 /** The paths whose change needs no restart, the one place this is defined. The daemon loads src/ and the packages at its start and
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html, and the
- * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
+ * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy-script.test.ts guards both claims. A change to any other path, listed here
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
 export const NO_RESTART = ["docs/", "design/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".gitmodules", "Makefile", ".github/"];
 
@@ -31,6 +35,10 @@ export interface Pending {
   /** Where the checkout's HEAD may be if only the job has moved it: where the job put it last, and, while it is moving it, where
    * it is about to. Anywhere else was someone's doing, even on the deploy's target or the commit to go back to. */
   heads: string[];
+  /** The target is the commit the checkout already holds: only the service file changes, so going back moves and builds no code. */
+  inPlace?: boolean;
+  /** The installed service file as it was before this deploy replaced it: set when the replacement begins, written back when going back. */
+  config?: string;
 }
 
 /** The kinds of standing problem that are pushed once: the fetch fails, a refusal to move the checkout, a rollback that did not
@@ -53,6 +61,17 @@ export interface DeployState {
   outbox: Push[];
 }
 
+/** The daemon's installed service file, which the job keeps equal to what the checkout's template renders to. */
+export interface ServiceDeps {
+  /** The text of the installed file, or undefined when none is installed: the daemon is then not one the job configures. */
+  installed(): Promise<string | undefined>;
+  /** What the installer's `{{HOME}}` took: the home of the user the file is installed for. */
+  home: string;
+  /** Write the file, stop the service and load it again from the file, which starts the daemon (launchctl bootout, bootstrap: `kickstart`
+   * does not read the file again); rejects when launchctl does. */
+  replace(text: string): Promise<void>;
+}
+
 export interface DeployDeps {
   branch: string;
   remote: string;
@@ -67,6 +86,8 @@ export interface DeployDeps {
   pid(): Promise<number | undefined>;
   /** launchctl kickstart -k on the daemon's own label: it restarts that service and nothing else. */
   restart(): Promise<void>;
+  /** The daemon's service file; without it the job leaves the file alone. */
+  service?: ServiceDeps;
   /** Whether /health answers. */
   healthy(): Promise<boolean>;
   /** The checks GitHub holds on a commit of the repository (`Owner/Name`), read as the board's look at the main line reads them
@@ -89,8 +110,9 @@ export interface DeployDeps {
 }
 
 /** `stuck`: going back did not finish but the daemon answers; `down`: it does not answer either; `error`: the job itself failed;
- * `waiting`: the checks of the main line's head have not finished; `held`: one of them failed; `unchecked`: they could not be read. */
-export type DeployOutcome = "current" | "deployed" | "rolledBack" | "stuck" | "down" | "refused" | "skipped" | "unreachable" | "waiting" | "held" | "unchecked" | "error";
+ * `waiting`: the checks of the main line's head have not finished; `held`: one of them failed; `unchecked`: they could not be read;
+ * `reconfigured`: the commit was already live and only the service file was replaced. */
+export type DeployOutcome = "current" | "deployed" | "reconfigured" | "rolledBack" | "stuck" | "down" | "refused" | "skipped" | "unreachable" | "waiting" | "held" | "unchecked" | "error";
 
 /** The most commits one deploy push lists; the rest are counted. */
 const MAX_CHANGES = 20;
@@ -104,8 +126,9 @@ const FETCH_TRIES = 3;
 const line = (text: string) => text.trim();
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().split("\n").slice(0, 3).join(" ").slice(0, 300);
 
-/** One run of the deploy job: move the checkout to the main line's head and restart the daemon on it when that is needed, go back to
- * the last healthy commit when the daemon does not come up, and tell the engineer holding the item either way, the architect when none does (docs/design.md, Running). */
+/** One run of the deploy job: move the checkout to the main line's head and restart the daemon on it when that is needed, replace the
+ * daemon's service file when the head's template renders to another text, go back to the last healthy commit (and the old file) when the
+ * daemon does not come up, and tell the engineer holding the item either way, the architect when none does (docs/design.md, Running). */
 export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
   const state = d.load();
   const save = () => d.save(state);
@@ -159,11 +182,13 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     if (lockChanged) await d.run("npm", ["ci"]);
     await d.run("npm", ["run", "-s", "build:web"]);
   }
-  async function restartAndWait(pending: Pending) {
+  /** Restart the daemon and wait for it to answer from a new process: with `install`, by replacing its service file by that text
+   * (and, for going back, the service file is the one `pending.config` kept), else by kickstart, which keeps the file launchd holds. */
+  async function restartAndWait(pending: Pending, install?: string) {
     const before = await d.pid();
-    // Recorded first: from the kickstart on, the daemon may run the target's code whatever happens to this run.
+    // Recorded first: from the restart on, the daemon may run the target's code (and the new service file) whatever happens to this run.
     pending.restarted = true; save();
-    await d.restart();
+    if (install === undefined) await d.restart(); else await d.service!.replace(install);
     const deadline = d.now() + d.waitMs;
     while (d.now() < deadline) {
       const pid = await d.pid();
@@ -181,11 +206,14 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
    * packages whatever the lock file says: a rollback that failed part way may have left them half there. */
   async function goBack(pending: Pending, thorough: boolean) {
     pending.heads = [...new Set([...pending.heads, pending.to])]; save();
-    await d.git(["reset", "--keep", pending.to]);
-    pending.heads = [pending.to]; save();
-    const differs = (await d.git(["diff", "--no-renames", "--name-only", pending.target, pending.to])).split("\n").includes("package-lock.json");
-    await build(thorough || differs);
-    if (pending.restarted || !await answers(SETTLE_MS)) await restartAndWait(pending);
+    // A deploy that moved no code has none to put back: it is the service file that goes back, below.
+    if (!pending.inPlace) {
+      await d.git(["reset", "--keep", pending.to]);
+      pending.heads = [pending.to]; save();
+      const differs = (await d.git(["diff", "--no-renames", "--name-only", pending.target, pending.to])).split("\n").includes("package-lock.json");
+      await build(thorough || differs);
+    }
+    if (pending.restarted || !await answers(SETTLE_MS)) await restartAndWait(pending, pending.config);
   }
   /** The owner is told on the Mac: the board does not answer, and a board that does not answer cannot push. */
   async function alarm(message: string) {
@@ -254,6 +282,16 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     return "waiting";
   }
 
+  /** What the daemon's installed service file must become for `target`: the template of that commit, filled in with the values the
+   * installed file holds (and the job's own home), when that renders to another text; undefined when it renders to the same text or no
+   * file is installed. Throws when the installed file does not hold the values: a file the job cannot read is not one it may replace. */
+  async function serviceChange(target: string): Promise<{ previous: string; next: string } | undefined> {
+    const previous = await d.service?.installed();
+    if (previous === undefined) return undefined;
+    const next = renderPlist(await d.git(["show", `${target}:${SERVICE_TEMPLATE}`]), { ...installedValues(previous), HOME: d.service!.home });
+    return next === previous ? undefined : { previous, next };
+  }
+
   async function run(): Promise<DeployOutcome> {
     await flush();
     // A deploy or rollback left unfinished is finished first: nothing below may build on a checkout in an unknown state. When
@@ -288,7 +326,9 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       }
     }
     const target = line(await d.git(["rev-parse", `refs/remotes/${ref}`]));
-    if (target === head) { calm(); return "current"; }
+    // The template may have reached the checkout before the job could replace the file (a job that deploys its own code does so one run late).
+    const service = await serviceChange(target);
+    if (target === head && !service) { calm(); return "current"; }
     if (target === state.failed) { d.log(`${target} failed before; waiting for a newer commit`); return "skipped"; }
 
     // The refusals are about the checkout, not the commit: someone's edit or commit there is not ours to move or undo.
@@ -304,23 +344,31 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
     const behind = await d.git(["merge-base", "--is-ancestor", head, target]).then(() => true, (error: { code?: number }) => { if (error.code === 1) return false; throw error; });
     if (!behind) return refuse("ahead", `the checkout's ${head} is not an ancestor of ${target}: it has commits the main line lacks`);
 
-    const held = await gate(target, head, running);
-    if (held) return held;
+    // The code of the head is live already when only the service file differs: its checks passed when it went live.
+    const inPlace = target === head && rollbackTo === head;
+    if (target !== head) {
+      const held = await gate(target, head, running);
+      if (held) return held;
+    }
 
     const changed = (await d.git(["diff", "--no-renames", "--name-only", head, target])).split("\n").filter(Boolean);
-    const restart = !up || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
+    const restart = !up || service !== undefined || changed.some(path => !NO_RESTART.some(entry => entry.endsWith("/") ? path.startsWith(entry) : path === entry));
     const changes = await commitsBetween(head, target);
 
-    d.log(`deploying ${target} over ${head}${restart ? ", restarting" : ", without a restart"}`);
+    d.log(`deploying ${target} over ${head}${service ? ", replacing the service file" : restart ? ", restarting" : ", without a restart"}`);
     const pending: Pending = { target, to: rollbackTo, restarted: false, heads: [head, target] };
+    if (inPlace) pending.inPlace = true;
     state.pending = pending; save();
     // A target is marked failed only once its code was in the checkout: a merge that git refused says nothing about the commit.
     let merged = false;
     try {
-      await d.git(["merge", "--ff-only", target]);
-      merged = true; pending.heads = [target]; save();
-      await build(changed.includes("package-lock.json"));
-      if (restart) await restartAndWait(pending);
+      if (!inPlace) {
+        await d.git(["merge", "--ff-only", target]);
+        merged = true; pending.heads = [target]; save();
+        await build(changed.includes("package-lock.json"));
+      } else merged = true;
+      if (service) { pending.config = service.previous; await restartAndWait(pending, service.next); }
+      else if (restart) await restartAndWait(pending);
       else if (!await answers(d.waitMs)) throw new Error("the daemon stopped answering");
     } catch (error) {
       const reason = reasonOf(error);
@@ -330,6 +378,8 @@ export async function deployOnce(d: DeployDeps): Promise<DeployOutcome> {
       return wentBack(pending, reason);
     }
     delete state.pending; delete state.failed; state.healthy = target; calm(); save();
+    // Nothing was deployed that anyone waits to hear of: the code of the commit was live before.
+    if (inPlace) { d.log(`the service file of ${target} was replaced and the daemon answers`); return "reconfigured"; }
     await tell({ event: "deployed", version: target, previous: head, changes, restarted: restart, repo: await repoName() });
     return "deployed";
   }

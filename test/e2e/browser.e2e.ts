@@ -1,6 +1,6 @@
 // The browser layer: what only a real browser shows of the owner's page, in headless Chromium against the real server on a generated board
 // (docs/design.md, section 11, The browser file). A box's width and place, what a browser hides, hit-testing, scrolling, and what the real
-// diagram library draws. Every other check of the page runs in the DOM layer (test/dom) or the fake DOM (test/web.test.ts) with its
+// diagram library draws. Every other check of the page runs in the DOM layer (test/dom) or the fake DOM (test/web-cases.ts) with its
 // fix-reversed witnesses; this file has none, and it is kept small: one browser, one board, one page, at most 15 tests (the unit test
 // test/browser-limits.test.ts holds the count) and 90 seconds (the workflow's `timeout`), run after a merge to the main line and every
 // night (.github/workflows/browser.yml). A test is added here only when a script cannot see the fact, and the pull request says why.
