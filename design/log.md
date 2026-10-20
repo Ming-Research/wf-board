@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-20 Name the commits of one document instead of searching the history for them
+
+Nodes: storage/history-reads
+
+Summary: The `history` tool took 3 to 4 seconds at times because `git log --max-count=20 -- <path>` ends only at the first commit of the history for a document with fewer than 20 commits, the same fault the retry check had, and most documents are of that kind (1,380 of 1,996 item files have fewer than 20 commits). The store now keeps the hashes of each item, card and note file's newest 100 commits in the startup cache and asks git for those commits by name, so the read costs the commits asked for and not the length of the history, and an id nobody wrote is decided without git, the owner's read marks included. The 100 is provisional (the default read asks for 20, a version conflict for one commit for each version the writer is behind, and nothing measures more), so a read for more goes to git as before and the count reopens if such reads show in the slow lines of the service log often enough to matter. The refused alternatives (Bloom filters in the commit-graph, a walk bounded by the document's revision or creation time) are in the node; the measurements are in docs/design.md, section 4, Request budgets.
+
 ## 2026-10-20 Say what the young generation's flag bounds
 
 Nodes: daemon/memory

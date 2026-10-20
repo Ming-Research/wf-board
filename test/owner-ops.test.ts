@@ -259,6 +259,16 @@ test("document reads persist with the next data write and compact the completed 
   assert.deepEqual((await unreadSteps(store, store.snapshot().owner.cursor, store.snapshot().owner.readMarks)).map(s => s.id), [next.commit], "the later unseen update remains unread");
 });
 
+test("a read mark of a document nobody wrote is refused without a walk of the history, and a deleted document can still be marked", async t => {
+  const { store } = await board(t), own = ownerOps(store);
+  const spawned = t.mock.method(store as unknown as { git(args: string[]): Promise<string> }, "git");
+  await assert.rejects(own.read({ doc: "item:missing" }), /Unknown read document item:missing/);
+  await assert.rejects(own.read({ doc: "note:missing" }), /Unknown read document note:missing/);
+  assert.equal(spawned.mock.calls.length, 0, "the list of commits decides it, and git is not asked");
+  await store.commit({ author, message: "Delete", deletes: [{ kind: "item", id: "other", expectRev: store.snapshot().items.other!.rev }] });
+  await own.read({ doc: "item:other" });
+});
+
 test("cursor reads prune marks while invalid and backward document marks are refused", async t => {
   const { store, op } = await board(t), own = ownerOps(store), cursor = store.snapshot().head;
   await own.read({ through: cursor });
