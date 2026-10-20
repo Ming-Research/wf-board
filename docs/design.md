@@ -443,14 +443,21 @@ the live one the same rebuild kept 56 MB, and 30 MB once documents are parsed fl
    `history` tool made that read, and so did the error for an id nobody wrote (the
    same tool, `diff`, the `under` filter and the owner's read marks look the document up
    the same way) and a version conflict going back over an old item's versions
-   (`versionAt`). Measured on a clone of the live data repository (38,881 commits, git
-   2.56, one MacBook, single runs): 2.79 s for an item with 1 commit, 3.01 s for an id
-   nobody wrote, 0.37 s and 0.16 s for items whose 20 newest commits are recent. Of the
-   1,996 item files, 1,381 have fewer than 20 commits and 1,951 have their 20th newest
-   (the oldest, when fewer) more than 5,000 commits back, so most items cost nearly the
-   whole history. The service log of 10-16 to 10-20 holds 259 `history` calls: 53 under 100
-   ms, 43 over 500 ms, 9 over 3 s, mean 408 ms; a read line has no item id and no segments,
-   so a single call cannot be matched to its document, only to the command's time. The
+   (`versionAt`). Measured on a clone of the live data repository (git 2.56, one MacBook,
+   single runs). First run, 38,881 commits: 2.79 s for an item with 1 commit, 3.01 s for an
+   id nobody wrote, 0.37 s and 0.16 s for items whose 20 newest commits are recent. Repeated
+   later in the day on 39,042 commits, by when the first run's figures did not come again
+   (the load of the machine in the first run was not recorded): 0.32 s for an item with 2
+   commits created 360 commits before the head, 2.26 to 2.36 s for an item with 5 commits
+   created at the 17,208th, 1.65 s for an id nobody wrote. So the walk costs the distance
+   back to the document's first commit, the whole history for an id nobody wrote, and the
+   same commits named took under 10 ms and printed the same bytes (the whole record of
+   each commit, with its files). Of the 1,996 item files, 1,380 have fewer than 20 commits
+   and 1,938 have their 20th newest (the oldest, when fewer) more than 5,000 commits back
+   (the first run counted 1,381 and 1,951), so most items cost nearly the whole history.
+   The service log of 10-16 to 10-20 holds 259 `history` calls: 53 under 100 ms, 43 over
+   500 ms, 9 over 3 s, mean 408 ms; a read line has no item id and no segments, so a
+   single call cannot be matched to its document, only to the command's time. The
    store keeps, for each item, card and note file, the hashes of its newest
    `DOC_COMMITS_KEPT` (100) commits, newest first (`docCommits`). The 100 is provisional: the
    `history` tool asks for 20 unless told otherwise and a version conflict asks for one
