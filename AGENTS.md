@@ -193,7 +193,7 @@ matches what the artifact board offered.
   shards (each file to the lightest shard by the seconds it takes; a file the table
   does not name is still run), the table of seconds per file every shard writes to its
   summary, and the job `result`, which starts with the run, waits for the other jobs, reads the time gate (the time without
-  the wait for a runner that a job had beyond the quickest job's) and writes the status `full-ci`; on a push to the main line it only
+  the wait for a runner that a job had beyond the quickest job's and without GitHub's late completion marks) and writes the status `full-ci`; on a push to the main line it only
   records the table and writes no status (design section 11, Sharding the script tests, The time gate; no job of `ci.yml` may use
   `needs`, `test/ci-workflow.test.ts`).
 - `.github/actions/node-modules/action.yml`: Node 24 and `node_modules` restored from a cache keyed by
