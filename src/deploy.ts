@@ -7,7 +7,7 @@ const SERVICE_TEMPLATE = "ops/wf-board.plist";
 
 /** The paths whose change needs no restart, the one place this is defined. The daemon loads src/ and the packages at its start and
  * reads nothing else of the checkout except the page files, which it reads from disk on each request (web/index.html, and the
- * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy.test.ts guards both claims. A change to any other path, listed here
+ * bundle web/dist/app.js and diagram library web/dist/mermaid.js the deploy builds); test/deploy-script.test.ts guards both claims. A change to any other path, listed here
  * or not, restarts the daemon. An entry ending in "/" is a directory and matches every path under it; any other entry is one exact path. */
 export const NO_RESTART = ["docs/", "design/", "test/", "web/", "README.md", "LICENSE", "AGENTS.md", ".gitmodules", "Makefile", ".github/"];
 

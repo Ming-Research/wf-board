@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { Store } from "../src/store.ts";
 import { netGit, netGitReason } from "../src/net-git.ts";
 import { fakeSsh } from "./fake-ssh.ts";
+import { cleanup } from "./cleanup.ts";
 
 // The board's push to its remote (docs/design.md, Storage). The remote is a bare repository on this machine reached through a fake
 // ssh (test/fake-ssh.ts), which can delay a connection or never answer it: what the real network does that a local path cannot.
@@ -22,14 +23,19 @@ const at = "2026-10-16T01:02:03Z";
 const item = (n: number) => ({ title: `Item ${n}`, group: "Test", head: "h".repeat(200), plan: [{ id: "accept", text: "Accepted", state: "todo" as const, accept: true as const }], updated: at });
 let counter = 0;
 const write = (store: Store) => { const n = ++counter; return store.commit({ author: "push-test", message: `Write ${n}`, puts: [{ kind: "item", id: `i${n}`, doc: item(n), expectRev: null }] }); };
-/** `promise`, or a failure after `ms`: with the push in the write queue a write never ends, and the test must say so and not hang. */
-const within = <T>(promise: Promise<T>, ms: number, what: string) => Promise.race([promise, sleep(ms).then((): never => { throw new Error(`${what} did not end within ${ms} ms`); })]);
+/** `promise`, or a failure after `ms`: with the push in the write queue a write never ends, and the test must say so and not hang.
+ * The timer goes when the promise ends first: a timer left running holds the file's process, and its shard, until it fires. */
+const within = async <T>(promise: Promise<T>, ms: number, what: string) => {
+  const deadline = new AbortController();
+  try { return await Promise.race([promise, sleep(ms, undefined, { signal: deadline.signal }).then((): never => { throw new Error(`${what} did not end within ${ms} ms`); })]); }
+  finally { deadline.abort(); }
+};
 
 /** A board with a bare remote behind the fake ssh. The fake's environment is set for this process while the test runs, since the
  * store runs git with the process's environment. */
 async function fixture(t: After) {
   const base = await mkdtemp(join(tmpdir(), "wf-board-push-"));
-  t.after(() => rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  cleanup(t, () => rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const ssh = await fakeSsh(t);
   const remote = join(base, "remote.git");
   await git(base, "init", "-q", "--bare", "-b", "main", remote);
@@ -188,7 +194,8 @@ test("the daemon's writes go on while its push waits on a silent connection, and
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-  t.after(() => { if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL"); });
+  // The daemon goes before the board's directory: it would go on writing to a directory being removed.
+  cleanup(t, async () => { if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGKILL"); await exited; } });
   await f.ssh.opened(1, 20_000);
   // The push is in flight: a write through the daemon is made at once.
   const started = performance.now();

@@ -172,9 +172,10 @@ test("a tool call that takes long says where it went; the writes behind it say h
   for (const line of writes) assert.match(line, /^tool append_log ok \d+ ms; /);
   for (const line of steps) {
     assert.ok((stepMs(line, "git commit") ?? 0) >= 550, line);
-    // An append also reads the item's log (git log) before it commits; the commit's own commands come in this order.
-    assert.deepEqual(stepNames(line).filter(name => ["git add", "git commit"].includes(name)), ["git add", "git commit"], line);
-    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git add") || stepMs(line, "ops queue") === undefined, line);
+    // An append also reads the item's log (git log) before it commits. It changes a document the head has, so its commit is one git
+    // command: nothing is added first.
+    assert.deepEqual(stepNames(line).filter(name => ["git add", "git commit"].includes(name)), ["git commit"], line);
+    assert.ok(stepNames(line).indexOf("ops queue") < stepNames(line).indexOf("git commit") || stepMs(line, "ops queue") === undefined, line);
   }
   const waited = steps.map(line => stepMs(line, "ops queue") ?? 0);
   assert.ok(Math.max(...waited) >= 550, `the second call waited for the first's commit: ${steps.join(" | ")}`);
@@ -208,7 +209,18 @@ test("a quick write is logged as before, with no steps", async t => {
   const slow = new SlowOps(), mcp = createMcpServer({ store, ops: op, slow }), client = new Client({ name: "Quick trace test", version: "1" }), [st, ct] = InMemoryTransport.createLinkedPair();
   await mcp.connect(st); await client.connect(ct);
   t.after(async () => { await client.close(); await mcp.close(); });
-  const { info } = await logged(async () => { await client.callTool({ name: "append_log", arguments: { author, id: "a", text: "quick" } }); });
-  assert.equal(info.length, 1, info.join("\n"));
-  assert.match(info[0]!, /^tool append_log ok \d+ ms$/);
+  // A write is quick by the clock, which a busy machine can slow: once a write took 826 ms (its git commit 612 ms) and rightly
+  // carried its steps. So up to five writes, until one is under the line; each line has its steps exactly when its time is over it.
+  const lines: string[] = [];
+  const msOf = (line: string) => Number(/^tool append_log ok (\d+) ms/.exec(line)?.[1]);
+  for (let n = 0; n < 5 && !lines.some(line => msOf(line) < STEPS_FROM_MS); n++) {
+    const { info } = await logged(async () => { await client.callTool({ name: "append_log", arguments: { author, id: "a", text: `quick ${n}` } }); });
+    assert.equal(info.length, 1, info.join("\n"));
+    lines.push(info[0]!);
+  }
+  for (const line of lines) {
+    if (msOf(line) < STEPS_FROM_MS) assert.match(line, /^tool append_log ok \d+ ms$/);
+    else assert.match(line, /^tool append_log ok \d+ ms; .*git commit/);
+  }
+  assert.ok(lines.some(line => msOf(line) < STEPS_FROM_MS), `no write of five was quick: ${lines.join(" | ")}`);
 });

@@ -1,4 +1,6 @@
-import { test } from "node:test";
+// The page in a fake DOM (docs/design.md, section 11, Four test layers), run as two parts: test/web-1.test.ts and test/web-2.test.ts
+// each take every other test of this module (test/deal.ts).
+import { test } from "./deal.ts";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { runInNewContext } from "node:vm";
