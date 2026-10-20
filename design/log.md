@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-19 Replace the daemon's service file in the deploy job
+
+Nodes: deploy/service-config
+
+Summary: The deploy job restarted the daemon with `kickstart`, which keeps the arguments launchd read when the service was loaded, so a change to the service file's template (a node flag added to `ops/wf-board.plist`) reached the live daemon only when someone installed the file by hand on the machine. The job now renders the template of the commit it leaves live, with the node, checkout, PATH and data directory the installed file already holds and its own home, compares the text with the installed file, and when they differ replaces the file (write, `bootout`, wait until launchd has let go, `bootstrap`) as the deploy's restart; the comparison is made on every run, so a template that reached the checkout before the job could replace files is installed on the next run and not at the next merge. A deploy that fails after the replacement begins writes the old text back, which the pending record keeps, and an installed file or template the job cannot read is a failure of the job itself and not a guess. The waiting for launchd is measured: with a service that takes 4 seconds to exit, `bootout` returned at once and an immediate `bootstrap` failed with exit status 5. The refused alternatives (replacing only when the diff names the template, filling the template from the job's own environment, `kickstart` after writing, loading as soon as `bootout` returns, a daemon that starts itself again with the flags) are in the node; the mechanism is in docs/design.md, section 4, Deploying.
+
 ## 2026-10-19 Bound the n-key time parts by a time budget
 
 Nodes: testing/press-n

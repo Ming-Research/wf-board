@@ -1,0 +1,15 @@
+name: tmp-deploy-service
+# Temporary (item deploy-reinstall-service): the type check and the tests the change touches. Removed before the pull request is ready.
+on:
+  push:
+    branches: [deploy-reinstall-service]
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: npm run check
+      - run: node --test test/deploy.test.ts test/deploy-service.test.ts test/service-config.test.ts test/test-shard.test.ts
