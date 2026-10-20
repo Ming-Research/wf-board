@@ -1,0 +1,62 @@
+name: tmp-memory-flags-flake
+# Temporary (item memory-flags-flake): readings of the memory-flags test's probe, quiet, loaded and beside the files of the shard
+# that went red. Removed before the pull request is ready.
+on:
+  push:
+    branches: [memory-flags-flake]
+jobs:
+  quiet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          nproc; node --version; node -p "process.versions.v8"
+          flags="--max-semi-space-size=4 --heap-growing-percent=50"
+          for run in $(seq 1 40); do
+            out=$(node $flags tmp-memory-flags/series.cjs)
+            peak=$(node -p "JSON.parse(process.argv[1]).peak" "$out")
+            echo "with flags run $run: $peak"
+            if node -p "JSON.parse(process.argv[1]).peak > 10 ? 0 : 1" "$out" | grep -q 0; then echo "  series: $out"; fi
+          done | tee /tmp/quiet.txt
+          grep -v series /tmp/quiet.txt | awk '{print $NF}' | sort -n | uniq -c
+          for run in 1 2 3 4 5; do echo "without flags run $run: $(node -p "JSON.parse(process.argv[1]).peak" "$(node tmp-memory-flags/series.cjs)")"; done
+  loaded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        busy: [3, 4, 8]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: |
+          nproc; node --version
+          pids=""
+          for i in $(seq 1 ${{ matrix.busy }}); do node -e "for(;;){}" & pids="$pids $!"; done
+          flags="--max-semi-space-size=4 --heap-growing-percent=50"
+          for run in $(seq 1 40); do
+            out=$(node $flags tmp-memory-flags/series.cjs)
+            peak=$(node -p "JSON.parse(process.argv[1]).peak" "$out")
+            echo "with flags, ${{ matrix.busy }} busy loops, run $run: $peak"
+            if node -p "JSON.parse(process.argv[1]).peak > 10 ? 0 : 1" "$out" | grep -q 0; then echo "  series: $out"; fi
+          done | tee /tmp/loaded.txt
+          kill $pids
+          grep -v series /tmp/loaded.txt | awk '{print $NF}' | sort -n | uniq -c
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run build:web
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: the files of the shard that went red, with the diagnostic test in place of the memory-flags test
+        run: |
+          for round in $(seq 1 12); do
+            echo "=== round $round"
+            node --test --test-timeout=40000 --test-reporter=spec \
+              test/dom/agents-spoiled-2.test.ts test/dom/page-waits.test.ts test/slow-ops.test.ts tmp-memory-flags/diag.test.ts test/find.test.ts test/fresh.test.ts 2>&1 | grep -E "^DIAG|^# (pass|fail)|✖" || true
+          done
