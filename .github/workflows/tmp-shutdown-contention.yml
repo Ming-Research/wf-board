@@ -1,5 +1,5 @@
 name: tmp-shutdown-contention
-# TEMPORARY (item shutdown-test-contention): where the time between SIGTERM and the daemon's exit goes, with and without load.
+# TEMPORARY (item shutdown-test-contention): the fixed tests in the red shard's conditions, and the tests on a daemon made to stop slowly.
 on:
   push:
     branches: [shutdown-test-contention]
@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        load: [cache-a, cache-b, cache-c, cache-d, cache-e, cache-f, cache-g, cache-h, nocache-a, nocache-b, nocache-c, nocache-d, nocache-e, nocache-f, nocache-g, nocache-h]
+        load: [fixed-a, fixed-b, fixed-c, fixed-d, fixed-e, fixed-f, fixed-g, fixed-h, fixed-i, fixed-j, fixed-k, fixed-l, fixed-m, fixed-n, fixed-o, fixed-p, push-a, push-b, broken]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node-modules
@@ -24,15 +24,34 @@ jobs:
           NODE_COMPILE_CACHE_DIR: ${{ runner.temp }}/node-compile-cache
         run: |
           nproc; cat /proc/loadavg
-          # cache-*: the red shard's step as ci.yml runs it (flags, reporters, compile cache for every process), its files, a cold cache each time
-          # nocache-*: the same, but the daemon the test starts is given no compile cache
-          for i in $(seq 1 24); do
+          # the tests print the time they measured (done here, on the runner's copy, not in the repository)
+          sed -i 's|^  const took = Date.now() - stopped;|&\n  console.log(`SHUTDOWN-TOOK ${took}`);|' test/shutdown.test.ts test/push.test.ts
+          grep -c "SHUTDOWN-TOOK" test/shutdown.test.ts test/push.test.ts
+          step() {
+            # the red shard's step as ci.yml runs it: its flags, reporters and compile cache (cold each time)
             rm -rf "$NODE_COMPILE_CACHE_DIR"
-            case "${{ matrix.load }}" in nocache-*) export DAEMON_NO_CACHE=1 ;; esac
             NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" timeout 60 node --test --test-timeout=40000 \
               --test-reporter=spec --test-reporter-destination=stdout \
-              --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md \
-              test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
-            grep -A12 "SHUTDOWN-TOOK" shard.log | head -14
-          done
+              --test-reporter=./scripts/test-times-reporter.ts --test-reporter-destination=test-times.md "$@"
+          }
+          case "${{ matrix.load }}" in
+            fixed-*)
+              for i in $(seq 1 24); do
+                step test/rules-reuse-a-3.test.ts test/shutdown.test.ts test/dom/page-chips.test.ts test/check-private-content.test.ts test/notify.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
+                grep "SHUTDOWN-TOOK" shard.log
+              done ;;
+            push-*)
+              for i in $(seq 1 12); do
+                step test/rules-reuse-a-3.test.ts test/push.test.ts test/dom/page-chips.test.ts > shard.log 2>&1 || { echo "RED-RUN $i"; tail -n 40 shard.log; }
+                grep "SHUTDOWN-TOOK" shard.log
+              done ;;
+            broken)
+              # a daemon that takes 3 s longer to exit: both tests must go red for that reason, and nothing else may
+              test "$(grep -c 'await store.flushOwner("owner");' src/main.ts)" = 1
+              sed -i 's|await store.flushOwner("owner");|await store.flushOwner("owner"); await new Promise(resolve => setTimeout(resolve, 3000));|' src/main.ts
+              for file in test/shutdown.test.ts test/push.test.ts; do
+                if step $file > broken.log 2>&1; then echo "NOT-RED $file"; else echo "RED $file"; fi
+                grep -E "exited [0-9]+ ms after SIGTERM|SHUTDOWN-TOOK|^ℹ (pass|fail)" broken.log
+              done ;;
+          esac
           cat /proc/loadavg

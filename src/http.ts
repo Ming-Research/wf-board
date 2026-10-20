@@ -435,7 +435,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
   const close = server.close.bind(server);
   server.close = callback => {
     if (closing) return close(callback);
-    closing = true; server.getConnections((_e, n) => console.info(`shutdown: connections ${n}`));
+    closing = true;
     clearInterval(heartbeat); clearInterval(checker); deps.watch?.stop(); deps.ci?.stop(); off(); unsubscribeAgents(); unsubscribeTold(); unsubscribeLive(); unsubscribePools();
     // The long-lived streams end now, so their clients start to reconnect and are refused. A tool call running on an MCP
     // request is not one of them: it answers on its own request.

@@ -12,6 +12,7 @@ import { Store } from "../src/store.ts";
 import { netGit, netGitReason } from "../src/net-git.ts";
 import { fakeSsh } from "./fake-ssh.ts";
 import { cleanup } from "./cleanup.ts";
+import { daemonEnv } from "./daemon-env.ts";
 
 // The board's push to its remote (docs/design.md, Storage). The remote is a bare repository on this machine reached through a fake
 // ssh (test/fake-ssh.ts), which can delay a connection or never answer it: what the real network does that a local path cannot.
@@ -190,7 +191,7 @@ test("the daemon's writes go on while its push waits on a silent connection, and
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const url = `http://127.0.0.1:${port}`;
-  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: f.dir, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: daemonEnv({ WF_BOARD_DATA: f.dir, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "0" }), stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;

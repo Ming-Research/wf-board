@@ -88,17 +88,14 @@ async function main() {
   // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
   // what this run left. A maintenance step that is running ends first (at most about a second); none is started after the signal.
   function shutdown() {
-    if (stopping) return; stopping = true; console.info("shutdown: signal"); clearInterval(timer); clearInterval(heartbeatTimer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
+    if (stopping) return; stopping = true; clearInterval(timer); clearInterval(heartbeatTimer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
     server.close(error => {
       void (async () => {
         if (error) throw error;
-        console.info("shutdown: server closed");
         await store.flushOwner("owner");
-        console.info("shutdown: owner state saved"); console.info("shutdown: resources " + process.getActiveResourcesInfo().join(","));
       })().catch(error => { console.error(error); process.exitCode = 1; });
     });
   }
-  process.on("exit", () => console.info("shutdown: exit"));
   process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
   server.on("error", error => { console.error(error); process.exitCode = 1; clearInterval(timer); });
   server.listen(port, "127.0.0.1", () => {
