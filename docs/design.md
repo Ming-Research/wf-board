@@ -586,7 +586,7 @@ Three more variants ran once: `--memory-saver-mode` (122 MB, 38.4 ms a request),
 spread of 4 MB's 269. On Linux (one run each, the anonymous resident set) the order was the same: 825 and 725 MB for the
 defaults, 473 for 4 MB, 238 for `--optimize-for-size`.
 
-The two flags are the choice: the half at 4 MB takes the ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
+The two flags are the choice: the half at 4 MB takes the configured ceiling of the young generation from 128 MB (two halves of 64 MB) to 8 MB (two halves of 4 MB),
 and the growing percentage at 50 makes the old generation get a full collection at 1.5 times its live data. The runs above are single runs on different runners,
 so the comparison with the defaults was made again as a paired run: 12 rounds (3 hosted runners, 4 rounds each), each round
 running the defaults, an identical twin of the defaults and the two flags one after the other, 4,320 requests at 18 a second (4
@@ -624,7 +624,7 @@ process with the arguments launchd already holds. The `startup memory` line ther
 with (`node options --max-semi-space-size=4 --heap-growing-percent=50`, or `none`), and `test/memory-flags.test.ts` holds that
 node accepts the file's flags and that with them the young generation stays within 12 MB where without them it grows past that
 (128 MB). The 12 MB is a limit on that test's probe, not a bound on the daemon: the probe, written as a function, read 8 MB (two
-halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 and 12.3 MB in the sweep and
+halves of 4 MB) on every run, and the daemon's samples with the flags read 8 MB in most runs but also 10.8 MB in one run of the sweep and
 28.5 MB in one of the 12 paired runs, and the same probe written as a top-level script read 15 to 29 MB with the same flags. V8 lets
 the young generation hold more than two halves for a while; the cause was not looked into.
 
