@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { board } from "./helpers.ts";
 import { cleanup } from "./cleanup.ts";
+import { daemonEnv } from "./daemon-env.ts";
 import { Store } from "../src/store.ts";
 import { ownerOps } from "../src/owner-ops.ts";
 import { createHttpServer } from "../src/http.ts";
@@ -212,7 +213,7 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const url = `http://127.0.0.1:${port}`;
   // The first push is delayed by 4 s here (60 s by default), long enough to see that nothing is pushed before it.
-  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: { ...process.env, WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "4000" }, stdio: ["ignore", "pipe", "pipe"] });
+  const daemon = spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env: daemonEnv({ WF_BOARD_DATA: data, WF_BOARD_PORT: String(port), WF_BOARD_FIRST_PUSH_MS: "4000" }), stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   daemon.stdout.on("data", chunk => { log += chunk; }); daemon.stderr.on("data", chunk => { log += chunk; });
   const exited = once(daemon, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
@@ -255,4 +256,17 @@ test("the daemon stopped by SIGTERM exits at once, saves the owner's reading sta
   const subject = (await git("git", ["-C", data, "log", "-1", "--format=%s"])).stdout.trim();
   assert.equal(subject, "Save owner reading state", "the owner's reading state was saved in a local commit");
   assert.equal(await pushed(), seeded, "nothing was pushed while stopping");
+});
+
+test("the daemon a test starts gets the test's environment with the extra variables and without the compile cache", () => {
+  const before = process.env.NODE_COMPILE_CACHE;
+  process.env.NODE_COMPILE_CACHE = "/tmp/a-compile-cache";
+  try {
+    const env = daemonEnv({ WF_BOARD_PORT: "1234", NODE_COMPILE_CACHE: "/tmp/another" });
+    assert.equal("NODE_COMPILE_CACHE" in env, false, "the daemon writes no compile cache as it exits");
+    assert.equal(env.WF_BOARD_PORT, "1234");
+    assert.equal(env.PATH, process.env.PATH);
+  } finally {
+    if (before === undefined) delete process.env.NODE_COMPILE_CACHE; else process.env.NODE_COMPILE_CACHE = before;
+  }
 });
