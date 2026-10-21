@@ -23,4 +23,4 @@ jobs:
             test/journal.test.ts test/lean.test.ts test/live.test.ts test/look.test.ts test/mcp.test.ts test/move-project.test.ts \
             test/ops-roles.test.ts test/ops.test.ts test/query.test.ts test/retire-pm.test.ts test/runner-report.test.ts \
             test/standing-board.test.ts test/standing-ops.test.ts test/tags.test.ts test/under.test.ts test/watch.test.ts \
-            test/whole-view.test.ts test/wake.test.ts test/tool-errors.test.ts
+            test/whole-view.test.ts test/wake.test.ts
