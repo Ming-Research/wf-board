@@ -254,11 +254,11 @@ test("an engineer makes sub-items inside its subtree, rated and tagged, and cann
   const { op, store } = await board(t);
   for (const [name, meaning] of Object.entries(vocabulary)) await op.setTag({ ...asArchitect, name, meaning });
   const who = { author: "Whitefoot", session: "eng", access: engineer(["a"]) };
-  const make = { title: "子条目", accept: "通过", tags: ["健全性"], difficulty: 2 as const };
+  const make = { title: "子条目", accept: "通过", tags: ["健全性"], difficulty: 2 as const, difficultyReason: "测试用的评级" };
   await op.createItem({ ...who, ...make, key: "sub", owner: "a" });
   const sub = store.snapshot().items.sub!;
   assert.deepEqual([sub.group, sub.difficulty, sub.tags], ["Whitefoot", 2, ["健全性"]], "it is in the engineer's project, rated and tagged");
-  assert.deepEqual(sub.log.map(l => [l.by, l.text]), [["Whitefoot", "难度：未评 → 2，理由：建条目时评"]], "the rating is logged as the first rating, by the project");
+  assert.deepEqual(sub.log.map(l => [l.by, l.text]), [["Whitefoot", "难度：未评 → 2，理由：测试用的评级"]], "the rating is logged as the first rating, by the project");
   assert.ok(store.snapshot().items.a!.plan.some(row => "item" in row && row.item === "sub" && row.own), "the owner's plan owns it");
   // The subtree holds it from then on, at any depth.
   await op.appendLog({ ...who, id: "sub", text: "inside now" });
@@ -288,7 +288,7 @@ test("an engineer rates and tags the items of its subtree and no others", async 
   await op.setTagsMany({ ...who(["area"]), items: [{ id: "a", tags: ["报错信息"] }, { id: "b", tags: ["健全性"] }] });
   assert.deepEqual([store.snapshot().items.a!.tags, store.snapshot().items.b!.tags], [["报错信息"], ["健全性"]]);
   // Outside the subtree: the sibling b of a for tags, an item of a tree of its own for ratings; one entry of a list refuses the whole list.
-  await op.createItem({ ...asArchitect, key: "solo", title: "另一棵树", group: "Whitefoot", accept: "通过", tags: ["健全性"], difficulty: 2 });
+  await op.createItem({ ...asArchitect, key: "solo", title: "另一棵树", group: "Whitefoot", accept: "通过", tags: ["健全性"], difficulty: 2, difficultyReason: "测试用的评级" });
   const head = store.snapshot().head;
   const calls: Array<[string, () => Promise<unknown>, string, string]> = [
     ["set_difficulty", () => op.setDifficulty({ ...who(["area"]), id: "solo", difficulty: 5, reason: "r" }), "solo", "area"],
@@ -331,7 +331,7 @@ test("an engineer cannot rate the item it was started on, only the items below i
   assert.equal(store.snapshot().items.area!.difficulty, 2, "the level it was started at stays");
   // Below the root, at any depth, including a sub-item it has just made.
   await op.setDifficulty({ ...who, id: "a", difficulty: 5, reason: "r" });
-  await op.createItem({ ...who, key: "sub", owner: "a", title: "子条目", accept: "通过", tags: ["健全性"], difficulty: 3 });
+  await op.createItem({ ...who, key: "sub", owner: "a", title: "子条目", accept: "通过", tags: ["健全性"], difficulty: 3, difficultyReason: "测试用的评级" });
   await op.setDifficulty({ ...who, id: "sub", difficulty: 4, reason: "r" });
   assert.deepEqual(["a", "sub"].map(id => store.snapshot().items[id]!.difficulty), [5, 4]);
   // The tags of the root are the engineer's to write, as the rest of its head.

@@ -48,7 +48,7 @@ test("a standing item is created with no acceptance step and no difficulty, only
 
 test("update_item marks an item standing and ordinary again, logging what it takes away, and keeps record and standing apart", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ ...asArchitect, key: "perf", group: author, title: "Hold the budget", accept: "Budget holds", difficulty: 2 });
+  await op.createItem({ ...asArchitect, key: "perf", group: author, title: "Hold the budget", accept: "Budget holds", difficulty: 2, difficultyReason: "test rating" });
   await op.createItem({ ...asArchitect, key: "log", group: author, title: "A log", record: true });
   const rev = store.snapshot().items.perf!.rev, recordRev = store.snapshot().items.log!.rev;
   await refusedAll(store, dir, [
@@ -90,9 +90,9 @@ test("update_item marks an item standing and ordinary again, logging what it tak
 
 test("a done or cancelled item cannot become standing; a standing item can be cancelled, reopened and paused", async t => {
   const { store, op, dir } = await board(t);
-  await op.createItem({ ...asArchitect, key: "fin", group: author, title: "Finished work", accept: "Done", difficulty: 2 });
+  await op.createItem({ ...asArchitect, key: "fin", group: author, title: "Finished work", accept: "Done", difficulty: 2, difficultyReason: "test rating" });
   await op.setPlan({ author, id: "fin", row: { id: "acc", accept: true, text: "Done", state: "done" } });
-  await op.createItem({ ...asArchitect, key: "gone", group: author, title: "Dropped work", accept: "Never", difficulty: 2 });
+  await op.createItem({ ...asArchitect, key: "gone", group: author, title: "Dropped work", accept: "Never", difficulty: 2, difficultyReason: "test rating" });
   await op.setStatus({ ...asArchitect, id: "gone", status: "cancelled", log: "Dropped" });
   assert.equal(rules(store.snapshot()).statusOf("fin"), "done");
   await refusedAll(store, dir, [

@@ -35,7 +35,7 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   const op = ops(store, () => iso(clock));
   /** Runs `fn` with the board's clock at `at`: what it writes is stamped then. */
   const at = async <T>(time: number, fn: () => Promise<T>): Promise<T> => { const was = clock; clock = time; try { return await fn(); } finally { clock = was; } };
-  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
+  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, difficultyReason: "测试用的评级", ...extra } as Parameters<typeof op.createItem>[0]);
   const child = (key: string, owner: string, extra: Record<string, unknown> = {}) => item(key, { owner, after: [], ...extra });
   /** The runner's report on `id`, written at `time`. */
   const report = (id: string, time: number, args: Record<string, unknown>) => at(time, () => op.reportState({ ...asArchitect, id, ...args } as Parameters<typeof op.reportState>[0]));
@@ -84,7 +84,7 @@ test("each open work item falls into the one kind its situation gives, and what 
   await b.item("shelf"); await b.child("shelf-1", "shelf"); await b.child("shelf-2", "shelf");
   await b.op.setPause({ ...asArchitect, id: "shelf", paused: true, reason: "等主人定方向" });
   await b.report("shelf-1", base - 5 * MIN, { state: "running" });
-  await b.item("bk", { record: true, accept: undefined, difficulty: undefined }); await b.child("bk-1", "bk");
+  await b.item("bk", { record: true, accept: undefined, difficulty: undefined, difficultyReason: undefined }); await b.child("bk-1", "bk");
   // A parent with open sub-items is its sub-items' business; one a session works on itself is a row of its own.
   await b.item("parent"); await b.child("kid", "parent");
   await b.item("parent-held"); await b.child("kid-2", "parent-held"); await b.session("parent-held", "worker-2", base - 5 * MIN);
@@ -122,7 +122,7 @@ test("each open work item falls into the one kind its situation gives, and what 
 test("a backlog item the runner reports on is listed with the working; a backlog item nobody reports on stays counted apart", async t => {
   const b = await empty(t), { base } = b;
   // Two items under a record's backlog: one an engineer has taken up and the runner reports, one nobody has started.
-  await b.item("pool", { record: true, accept: undefined, difficulty: undefined });
+  await b.item("pool", { record: true, accept: undefined, difficulty: undefined, difficultyReason: undefined });
   await b.child("taken", "pool"); await b.child("waiting-pool", "pool");
   await b.report("taken", base - 50 * MIN, { state: "running", turns: 1, cost: 0.5, startedAt: iso(base - 50 * MIN), note: "第 1 轮" });
   const { v, kind } = b.view(base), row = (id: string) => v.rows.find(x => x.id === id);

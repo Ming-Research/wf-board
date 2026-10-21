@@ -123,8 +123,8 @@ async function served(t: { after(fn: () => void | Promise<void>): void }) {
 test("look ends with the agent list of the whole board, whatever projects it is asked for, and carries the cards on each item's line", async t => {
   const b = await served(t);
   const { op } = b;
-  await op.createItem({ ...asArchitect, key: "job", group: "Whitefoot", title: "the job", accept: "通过", difficulty: 2 } as Parameters<typeof op.createItem>[0]);
-  await op.createItem({ ...asArchitect, key: "sub", owner: "job", after: [], group: "Whitefoot", title: "a part", accept: "通过", difficulty: 2 } as Parameters<typeof op.createItem>[0]);
+  await op.createItem({ ...asArchitect, key: "job", group: "Whitefoot", title: "the job", accept: "通过", difficulty: 2, difficultyReason: "测试用的评级" } as Parameters<typeof op.createItem>[0]);
+  await op.createItem({ ...asArchitect, key: "sub", owner: "job", after: [], group: "Whitefoot", title: "a part", accept: "通过", difficulty: 2, difficultyReason: "测试用的评级" } as Parameters<typeof op.createItem>[0]);
   await op.dispatchStart({ ...asArchitect, id: "job", role: "工程师", level: 2, model: "Sonnet", agent: "job", agentId: "job-1" });
   await op.reportState({ author: "Whitefoot", session: "执行程序", id: "job", state: "ci", note: "等 CI" });
   await op.dispatchStart({ ...asArchitect, id: "job", role: "审查", level: 3, model: "Opus", agent: "job-review", agentId: "job-review-1" });

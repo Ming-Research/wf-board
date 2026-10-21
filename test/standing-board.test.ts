@@ -40,8 +40,8 @@ test("marking the rule items standing changes nothing about any other item of a 
     await make(key, { owner: "rule-root", after: [] });
     await op.setPlan({ ...asArchitect, id: key, row: { id: "write", text: `Write ${key}`, state: "done" } });
   }
-  await make("perf", { difficulty: 2 });
-  await make("perf-child", { owner: "perf", after: [], difficulty: 2 });
+  await make("perf", { difficulty: 2, difficultyReason: "test rating" });
+  await make("perf-child", { owner: "perf", after: [], difficulty: 2, difficultyReason: "test rating" });
   await op.setPlan({ ...asArchitect, id: gen.witness.unpaused, row: { item: "perf-child", own: false, after: [] } });
   const marked = new Set(["rule-root", "block-a", "block-b", "perf"]), before = store.snapshot(), beforeSeen = seen(before, marked);
   const was = rules(before);

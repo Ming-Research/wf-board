@@ -95,7 +95,7 @@ export function sample(s: Json): unknown {
 
 /** Calls written by hand for the tools that are refused most; every other tool gets the sample its schema builds. */
 const EXAMPLES: Record<string, unknown> = {
-  create_item: { key: "my-item", title: "让 X 能做 Y", head: "**问题**：……", accept: "测试 T 通过", owner: "parent-item", difficulty: 2, tags: ["看板"] },
+  create_item: { key: "my-item", title: "让 X 能做 Y", head: "**问题**：……", accept: "测试 T 通过", owner: "parent-item", difficulty: 2, difficultyReason: "为什么是这一级", tags: ["看板"] },
   set_plan: { id: "my-item", row: { id: "step-1", text: "做 X", state: "doing", waits: "CI" } },
   update_item: { id: "my-item", rev: 3, head: "**问题**：……", reason: "为什么改正文" },
   write_card: {
