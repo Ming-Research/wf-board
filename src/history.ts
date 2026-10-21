@@ -233,7 +233,8 @@ export const descriptionsMade = (store: Store): number => descriptionsOf(store).
 
 /** Ends the walks that run under it, at their next commit. A walk over thousands of commits runs for tens of seconds and the service has
  * seconds to stop (docs/design.md, section 4, Stopping), but a request that is running may finish in the grace period, so only the
- * daemon's own rounds run under one (src/unread-warm.ts). A request that joins a walk a round started ends with it. */
+ * daemon's own rounds run under one (src/unread-warm.ts). A request for the same head that joins a walk a round started ends with it;
+ * one for a newer head, whose base walk has ended, walks on its own, outside the signal. */
 export class WalkStop {
   private stopped = false;
   get isStopped(): boolean { return this.stopped; }

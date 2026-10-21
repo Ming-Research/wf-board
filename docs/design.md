@@ -1087,7 +1087,8 @@ stays away longest finds the longest wait.
 5. *Stopping ends the round's walk, not a request's.* A cold walk takes tens of seconds, and the service has 5 seconds to
    stop (Stopping), of which running requests may use two. The round runs under a `WalkStop`, which `stop()` sets; the walk
    and `finish` end with an error at the next commit, and no further round starts. A request is under no such signal and may
-   finish in the grace period; one that joined a walk the round started (below) ends with it.
+   finish in the grace period; one for the same head that joined the round's walk (below) ends with it, and one for a newer
+   head, whose base walk has ended, walks on from the cursor by itself, outside the signal, as any request does.
 
 Checked in CI (`test/unread-restart.test.ts`), on a board of 11,800 commits after the cursor whose files are 1/32 of the live
 board's, with the budget scaled the same (so a walk reads 3.3 times what a request may, as live). In two runs on hosted
