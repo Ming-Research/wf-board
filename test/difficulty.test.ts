@@ -392,21 +392,27 @@ test("piecesOf leaves a first rating and the cleared retired level out and keeps
   assert.deepEqual(pieces(null, { ...base, difficulty: 2 }).other, 1, "a new item is new, rated or not");
 });
 
-test("create_item rates the new item, logs it as the first rating, and refuses a bad value, a record and any other writer", async t => {
+test("create_item rates the new item, logs the reason it was given as the first rating, and refuses a bad value, a missing reason, a record and any other writer", async t => {
   const { store, op } = await withArchitect(t);
   // Only the architect creates items, in any project, so the same call rates an item of any project.
   const create = { key: "n1", group: author, title: "新条目", accept: "通过" };
-  await op.createItem({ ...asArchitect, ...create, difficulty: 3 });
+  await op.createItem({ ...asArchitect, ...create, difficulty: 3, difficultyReason: "要定一个新的判据，不止改一处" });
   const n1 = store.snapshot().items.n1!;
-  assert.equal(n1.difficulty, 3); assert.deepEqual(n1.log.map(l => l.text), ["难度：未评 → 3，理由：建条目时评"]);
+  assert.equal(n1.difficulty, 3); assert.deepEqual(n1.log.map(l => l.text), ["难度：未评 → 3，理由：要定一个新的判据，不止改一处"], "the log says the reason the caller gave, nothing written for it");
   assert.equal(rules(store.snapshot()).checks("n1").filter(c => c.label === "缺难度").length, 0, "rated at birth, no check");
+  await op.createItem({ ...asArchitect, ...create, key: "n2", difficulty: 1, difficultyReason: "  只改一行  " });
+  assert.deepEqual(store.snapshot().items.n2!.log.map(l => l.text), ["难度：未评 → 1，理由：只改一行"], "the reason is logged without the blanks around it");
   await op.createItem({ ...asArchitect, ...create, key: "n3" });
-  assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored");
+  assert.equal(store.snapshot().items.n3!.difficulty, undefined, "no difficulty given, none stored"); assert.deepEqual(store.snapshot().items.n3!.log, [], "and no rating logged");
   const before = store.snapshot(), count = (await store.log()).length;
-  await refuses(op.createItem({ author, key: "x1", group: author, title: "别人建的", accept: "通过", difficulty: 2 }), rx`only ${PROCESS_WRITERS} may create items`);
-  await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never }), /difficulty: give an integer 1–5$/);
-  await refuses(op.createItem({ ...asArchitect, ...create, key: "x4", difficulty: "architect" as never }), /difficulty: give an integer 1–5$/);
-  await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2 }), /a record has no difficulty/);
+  const reason = "有理由";
+  await refuses(op.createItem({ author, key: "x1", group: author, title: "别人建的", accept: "通过", difficulty: 2, difficultyReason: reason }), rx`only ${PROCESS_WRITERS} may create items`);
+  await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never, difficultyReason: reason }), /difficulty: give an integer 1–5$/);
+  await refuses(op.createItem({ ...asArchitect, ...create, key: "x4", difficulty: "architect" as never, difficultyReason: reason }), /difficulty: give an integer 1–5$/);
+  await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2, difficultyReason: reason }), /a record has no difficulty/);
+  // A rating with no reason, a blank one or one that is not text is refused, as set_difficulty refuses it, and the message says what to add.
+  for (const bad of [undefined, "", "   ", 3 as never, null as never]) await refuses(op.createItem({ ...asArchitect, ...create, key: "x5", difficulty: 2, ...(bad === undefined ? {} : { difficultyReason: bad }) }), /difficultyReason: say why the difficulty is this, for the log$/);
+  await refuses(op.createItem({ ...asArchitect, ...create, key: "x6", difficultyReason: reason }), /difficultyReason: given without a difficulty; give both or neither$/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
 });
 
@@ -418,13 +424,19 @@ test("the MCP create_item takes difficulty and brief says what its todo lists", 
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
   assert.ok("difficulty" in tools.find(x => x.name === "create_item")!.inputSchema.properties!);
+  assert.ok("difficultyReason" in tools.find(x => x.name === "create_item")!.inputSchema.properties!, "the reason has a parameter of its own");
+  assert.match(tools.find(x => x.name === "create_item")!.description!, /A difficulty requires difficultyReason/, "the tool says a rating needs its reason");
   assert.match(tools.find(x => x.name === "brief")!.description!, /next tasks \(only items rated 1–5/);
   for (const name of ["create_item", "set_difficulty"]) assert.match(tools.find(x => x.name === name)!.description!, /engineer\b.*own subtree/, `${name} says where an engineer may use it`);
   assert.match(tools.find(x => x.name === "set_difficulty")!.description!, /never that item itself/, "set_difficulty says the root is not the engineer's to rate");
   assert.match((tools.find(x => x.name === "reply_note")!.inputSchema.properties!.replace as { description: string }).description, rx`Only author ${PROCESS_WRITERS} replaces a reply it did not write; everyone else replaces only their own`, "reply_note says whose reply replace may overwrite");
   const call = async (name: string, args: Record<string, unknown>) => { const r = await client.callTool({ name, arguments: args }); return { error: r.isError === true, text: (r.content as Array<{ text: string }>).map(c => c.text).join("\n") }; };
-  const made = await call("create_item", { ...asArchitect, key: "m1", group: author, title: "经工具建的", accept: "通过", difficulty: 2 });
+  const made = await call("create_item", { ...asArchitect, key: "m1", group: author, title: "经工具建的", accept: "通过", difficulty: 2, difficultyReason: "改一个参数，没有新决定" });
   assert.equal(made.error, false); assert.match(made.text, /经工具建的 · 难度 2 · Whitefoot/);
-  const refused = await call("create_item", { author, key: "m2", group: author, title: "别人建的", accept: "通过", difficulty: 2 });
+  assert.deepEqual(store.snapshot().items.m1!.log.map(l => l.text), ["难度：未评 → 2，理由：改一个参数，没有新决定"], "the reason that came through the tool is the one logged");
+  const unexplained = await call("create_item", { ...asArchitect, key: "m3", group: author, title: "没写理由的", accept: "通过", difficulty: 2 });
+  assert.equal(unexplained.error, true); assert.match(unexplained.text, /difficultyReason: say why the difficulty is this, for the log/);
+  assert.equal(store.snapshot().items.m3, undefined, "the refused call created nothing");
+  const refused = await call("create_item", { author, key: "m2", group: author, title: "别人建的", accept: "通过", difficulty: 2, difficultyReason: "有理由" });
   assert.equal(refused.error, true); assert.match(refused.text, rx`only ${PROCESS_WRITERS} may create items`);
 });

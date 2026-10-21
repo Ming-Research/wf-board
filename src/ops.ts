@@ -44,7 +44,7 @@ export interface Ops {
   createProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; after?: string }): Promise<Result>;
   updateProject(a: { author: string; session?: string; access?: Access; name: string; repo?: string; mainline?: string | null; after?: string }): Promise<Result>;
   closeNote(a: { author: string; session?: string; access?: Access; id: string; log: string }): Promise<Result>;
-  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; standing?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty }): Promise<Result>;
+  createItem(a: { author: string; session?: string; access?: Access; key: string; owner?: string; after?: string[]; title: string; head?: string; accept?: string; record?: boolean; standing?: boolean; plan?: PlanRowInput[]; links?: Link[]; data?: string; group?: string; order?: number; children?: string[]; tags?: string[]; difficulty?: Difficulty; difficultyReason?: string }): Promise<Result>;
   appendLog(a: { author: string; session?: string; access?: Access; id: string; text: string }): Promise<Result>;
   /** The GitHub watch's write (docs/design.md, Watching GitHub): marks a merge row done and logs it in one commit, if the row is still open and every PR that counts for it is among `merged`; otherwise writes nothing. */
   markMerged(a: { author: string; session?: string; access?: Access; id: string; row: string; merged: Array<{ repo: string; number: number }>; log: string }): Promise<Result>;
@@ -186,6 +186,11 @@ function onlyProcessOrRunnerWithoutCredential(who: Writer, what: string): void {
 const levelText = (difficulty: Difficulty | undefined): string => difficulty === undefined ? "未评" : String(difficulty);
 /** The log line for a change of difficulty: from what to what, and why. */
 const difficultyLogText = (from: Difficulty | undefined, to: Difficulty, reason: string): string => `难度：${levelText(from)} → ${levelText(to)}，理由：${reason}`;
+/** The reason a rating is logged with: nonempty text, the rule every way of rating shares. `name` is the parameter the caller gave it in. */
+function difficultyReasonOf(reason: unknown, name: string): string {
+  if (typeof reason !== "string" || !reason.trim()) throw new OpError(`${name}: say why the difficulty is this, for the log`);
+  return reason.trim();
+}
 const TAG_VOCABULARY = "change the tag vocabulary, and only after the owner approves the change on a decision card";
 
 /** The architect's daily journal: one record per local day, kept under the notes item and tagged for process. */
@@ -536,9 +541,9 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
     if (!difficulty.success) throw new OpError("difficulty: give an integer 1–5");
     if (it.record) throw new OpError("difficulty: a record has no difficulty");
     if (it.standing) throw new OpError("difficulty: a standing item has no difficulty");
-    if (typeof reason !== "string" || !reason.trim()) throw new OpError("reason: say why the difficulty is this, for the log");
+    const why = difficultyReasonOf(reason, "reason");
     if (it.difficulty === difficulty.data) return it;
-    return { ...it, difficulty: difficulty.data, updated: at, log: [...it.log, entry(author, at, difficultyLogText(it.difficulty, difficulty.data, reason.trim()))] };
+    return { ...it, difficulty: difficulty.data, updated: at, log: [...it.log, entry(author, at, difficultyLogText(it.difficulty, difficulty.data, why))] };
   }
   /** The id of the acceptance step a call appends: `acc`, not `accept`, which is the id of the stage row of that name (the engineer's plan stages, `STAGES`). */
   function acceptId(rows: readonly { id?: string; item?: string; card?: string }[]): string {
@@ -673,15 +678,16 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       if (a.standing !== undefined) onlyProcessWithoutCredential(a, "create a standing item");
       if (a.standing && a.record) throw new OpError("standing: a record cannot be standing");
       if (Object.hasOwn(a, "status")) throw new OpError("status: create_item has no status argument");
-      // Whoever creates an item may rate it as it is made, as in set_difficulty.
-      let difficulty: Difficulty | undefined;
+      // Whoever creates an item may rate it as it is made, as in set_difficulty: the same reason is required and is what the log says.
+      let difficulty: Difficulty | undefined, difficultyReason: string | undefined;
       if (a.difficulty !== undefined) {
         const given = Difficulty.safeParse(a.difficulty);
         if (!given.success) throw new OpError("difficulty: give an integer 1–5");
         if (a.record) throw new OpError("difficulty: a record has no difficulty");
         if (a.standing) throw new OpError("difficulty: a standing item has no difficulty");
+        difficultyReason = difficultyReasonOf(a.difficultyReason, "difficultyReason");
         difficulty = given.data;
-      }
+      } else if (a.difficultyReason !== undefined) throw new OpError("difficultyReason: given without a difficulty; give both or neither");
       newKey(s, a.key);
       const owner = a.owner ? ownedItem(s, a.owner, a, "owner") : undefined;
       const group = a.group ?? owner?.group;
@@ -698,7 +704,7 @@ export function ops(store: Store, now = () => new Date().toISOString().replace(/
       for (const id of children) { ownedItem(s, id, a, "children"); if (inputs.some(row => rowId(row) === id)) throw new OpError(`children ${id}: already named in plan`); inputs.push({ item: id, own: true }); }
       if (!a.record && !a.standing) inputs.push({ id: acceptId(inputs), accept: true, text: a.accept!, state: "todo" });
       const tags = checkedTags(s, group, a.tags, true);
-      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, "建条目时评"))] }), head: a.head, record: a.record, ...(a.standing ? { standing: true } : {}), links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
+      const doc = parse(Item, { title: a.title, ...(tags ? { tags } : {}), ...(difficulty === undefined ? {} : { difficulty, log: [entry(a.author, at, difficultyLogText(undefined, difficulty, difficultyReason!))] }), head: a.head, record: a.record, ...(a.standing ? { standing: true } : {}), links: a.links, data: a.data, group, order: a.order, plan: stamped(inputs, [], at), created: at, updated: at, rev: 1 });
       const puts: Put[] = [{ kind: "item", id: a.key, doc, expectRev: null }];
       for (const id of children) {
         const old = rulesOf(s).parentOf(id);

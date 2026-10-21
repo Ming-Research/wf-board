@@ -116,7 +116,7 @@ async function served(t: { after(fn: () => void | Promise<void>): void }) {
   await Promise.all([server.connect(st), client.connect(ct)]);
   t.after(async () => { await client.close(); await server.close(); });
   const text = (r: Awaited<ReturnType<typeof client.callTool>>) => (r.content as Array<{ text: string }>).map(c => c.text).join("\n");
-  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: `title of ${key}`, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
+  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: `title of ${key}`, accept: "通过", difficulty: 2, difficultyReason: "测试用的评级", ...extra } as Parameters<typeof op.createItem>[0]);
   const call = async (name: string, args: Record<string, unknown> = {}) => { const r = await client.callTool({ name, arguments: { ...args } }); assert.equal(r.isError, undefined, text(r)); return text(r); };
   return { store, op, item, call };
 }

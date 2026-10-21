@@ -36,7 +36,7 @@ async function empty(t: { after(fn: () => void | Promise<void>): void }) {
   const at = async <T>(time: number, fn: () => Promise<T>): Promise<T> => { const was = clock; clock = time; try { return await fn(); } finally { clock = was; } };
   let agents = 0;
   /** A work item of Whitefoot, rated 2 unless told otherwise; a top item nobody waits on is a root. */
-  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, ...extra } as Parameters<typeof op.createItem>[0]);
+  const item = (key: string, extra: Record<string, unknown> = {}) => op.createItem({ ...asArchitect, key, group: "Whitefoot", title: key, accept: "通过", difficulty: 2, difficultyReason: "测试用的评级", ...extra } as Parameters<typeof op.createItem>[0]);
   /** An item under `owner` that starts at once (the rows before it are not waited for). */
   const child = (key: string, owner: string, extra: Record<string, unknown> = {}) => item(key, { owner, after: [], ...extra });
   const root = (key: string, extra: Record<string, unknown> = {}) => item(key, extra);
@@ -175,7 +175,7 @@ test("an item is a candidate only when a root needs it, it can start, it is rate
   await b.root("r");
   await b.child("ok", "r");
   // Not rated.
-  await b.child("unrated", "r", { difficulty: undefined });
+  await b.child("unrated", "r", { difficulty: undefined, difficultyReason: undefined });
   // Paused, and what hangs under a paused root.
   await b.child("paused", "r"); await b.op.setPause({ ...asArchitect, id: "paused", paused: true, reason: "先放一放" });
   await b.root("rp"); await b.child("under-paused", "rp"); await b.op.setPause({ ...asArchitect, id: "rp", paused: true, reason: "先放一放" });
@@ -305,7 +305,7 @@ test("what is not an item an engineer could be started on is not listed as set a
   // Held: an open engineer dispatch is on it, even a quiet one.
   await b.child("held", "r"); await b.engineer("held", 2, STALE); await b.pause("held", "先放一放");
   // Not rated: nobody could be started on it, whatever the pool.
-  await b.child("unrated", "r", { difficulty: undefined }); await b.pause("unrated", "先放一放");
+  await b.child("unrated", "r", { difficulty: undefined, difficultyReason: undefined }); await b.pause("unrated", "先放一放");
   // A parent with open sub-items is its sub-items' business: only the sub-item is a row.
   await b.child("parent", "r"); await b.child("sub", "parent"); await b.pause("parent", "先放一放");
   // Blocked on another item, with a 何时 section: the plan says what it waits on, not the condition.
