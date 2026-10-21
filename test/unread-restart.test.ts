@@ -108,6 +108,11 @@ test("after a restart the first request for the unread list is answered from the
   assert.ok(answer.ms < 10_000, `${Math.round(answer.ms)} ms`);
   assert.deepEqual(answer.data.steps, JSON.parse(JSON.stringify(before)), "the list is the one the run before derived from the history");
   assert.equal(compared.mock.callCount(), 0, "and no document was read from the history to make it");
+  // The round that follows has nothing to add: what it exports is the text of the file it loaded, so it writes nothing.
+  const kept = await stat(join(files, "descriptions.json"));
+  await run2.warmer.warm();
+  assert.deepEqual(run2.lines.filter(line => line.startsWith("unread warm-up:")), []);
+  assert.equal((await stat(join(files, "descriptions.json"))).mtimeMs, kept.mtimeMs);
 
   // Without the file, which is how it was before: a restart reads what a walk reads and a request cannot.
   const third = await Store.open(dir, { requireBudget: true });
@@ -186,14 +191,24 @@ test("a round writes the file only when the walk made descriptions, and a restar
   run.warmer.stop();
 });
 
-test("a service that is stopping ends the walk that is running and starts none", async t => {
+test("stopping ends the walk of the round that is running and starts no other, and leaves the walk of a request to finish", async t => {
   const { store, op } = await board(t), files = await folder(t), cursor = store.snapshot().head;
+  store.setOwner({ cursor });
   await op.setPlan({ author, id: "a", row: { id: "one", state: "todo", text: "One" } });
-  const run = warmer(store, files);
-  run.warmer.stop();
-  await assert.rejects(unreadSteps(store, cursor), /service is stopping/);
+  await op.setPlan({ author, id: "b", row: { id: "two", state: "todo", text: "Two" } });
+  const run = warmer(store, files), describe = store.comparisonDocuments.bind(store);
+  // The signal comes while the round describes its first commit.
+  t.mock.method(store, "comparisonDocuments", async (...args: Parameters<typeof store.comparisonDocuments>) => { run.warmer.stop(); return describe(...args); });
   await run.warmer.warm();
-  assert.match(run.warnings[0]!, /unread warm-up failed/);
+  assert.deepEqual(run.warnings, [], "the end of a round by the stop is no failure");
+  assert.equal(descriptionsMade(store), 1, "the round ended at its second commit");
+  await assert.rejects(stat(join(files, "descriptions.json")), "and wrote nothing");
+  // A request of the same reading state is not under the signal: its walk finishes.
+  assert.equal((await unreadSteps(store, cursor)).length, 2);
+  assert.equal(descriptionsMade(store), 2);
+  // No round starts after the stop.
+  await run.warmer.warm();
+  assert.deepEqual([run.lines, run.warnings], [[], []]);
 });
 
 test("the descriptions the file keeps read as they did when DESCRIPTION_VERSION was set", async t => {

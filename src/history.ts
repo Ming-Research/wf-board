@@ -2,6 +2,7 @@ import { PLAN_CONVERSION_MESSAGE } from "./convert-plans.ts";
 import { stringify } from "yaml";
 import { z } from "zod";
 import { setImmediate } from "node:timers/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { changedItemSteps, stepsChanged } from "./legacy-rules.ts";
 import type { Item as LegacyItem } from "./legacy-model.ts";
@@ -230,12 +231,19 @@ export function importDescriptions(store: Store, text: string): number {
 /** How many descriptions this run of the store has made: what changed since a file was written. */
 export const descriptionsMade = (store: Store): number => descriptionsOf(store).added;
 
-// A walk that has to describe a long range runs for minutes, and a service that is stopping has five seconds (docs/design.md, section 4,
-// Stopping): once told, the walks that are running end at their next commit and none begins.
-const halted = new WeakSet<Store>();
-export function haltUnread(store: Store): void { halted.add(store); }
-function notHalted(store: Store): void {
-  if (halted.has(store)) throw new Error("The unread list was not finished: the service is stopping");
+/** Ends the walks that run under it, at their next commit. A walk over thousands of commits runs for tens of seconds and the service has
+ * seconds to stop (docs/design.md, section 4, Stopping), but a request that is running may finish in the grace period, so only the
+ * daemon's own rounds run under one (src/unread-warm.ts). A request that joins a walk a round started ends with it. */
+export class WalkStop {
+  private stopped = false;
+  get isStopped(): boolean { return this.stopped; }
+  stop(): void { this.stopped = true; }
+  /** Runs `run`, and everything it awaits, under this signal. */
+  run<T>(run: () => T): T { return walkStop.run(this, run); }
+}
+const walkStop = new AsyncLocalStorage<WalkStop>();
+function notStopped(): void {
+  if (walkStop.getStore()?.isStopped) throw new Error("The unread list was not finished: the service is stopping");
 }
 
 /** A stop as the walk builds it, before its documents are described. The walk changes only its last stop, and only on a copy. */
@@ -284,7 +292,7 @@ async function walkOver(store: Store, from: Walk, commits: readonly CommitInfo[]
     // Cached blobs and summaries can otherwise chain only microtasks and starve
     // page/MCP requests throughout a long cold history walk.
     await setImmediate();
-    notHalted(store);
+    notStopped();
     // An owner action breaks consecutiveness even though it is not a step.
     // Format migrations (the plan conversion, numbering existing documents, moving the cards into the plans) are not news to the owner.
     if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE || commit.message === NUMBERING_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE) { previous = undefined; continue; }
@@ -341,7 +349,7 @@ async function finish(store: Store, walk: Walk): Promise<Step[]> {
       // Cache coalesced endpoints separately from individual commit visibility. A new head
       // only describes its new commits and the stops it creates or extends.
       await setImmediate();
-      notHalted(store);
+      notStopped();
       const docs: Step["docs"] = [];
       for (const doc of raw.docs) {
         // A stop of one commit is that commit's change, already described by the walk.
