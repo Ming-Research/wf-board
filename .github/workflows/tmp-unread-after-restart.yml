@@ -1,0 +1,21 @@
+name: tmp-unread-after-restart
+# TEMPORARY (item unread-after-restart): the type check and the tests that walk the unread list, read the budget or start the daemon.
+on:
+  push:
+    branches: [unread-after-restart]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: node --run check
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - name: tests
+        run: |
+          node --test --test-timeout=600000 \
+            test/unread-restart.test.ts test/history.test.ts test/budget.test.ts test/http.test.ts test/owner-ops.test.ts \
+            test/shutdown.test.ts test/push.test.ts test/stateless.test.ts

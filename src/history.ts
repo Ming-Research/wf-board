@@ -1,5 +1,6 @@
 import { PLAN_CONVERSION_MESSAGE } from "./convert-plans.ts";
 import { stringify } from "yaml";
+import { z } from "zod";
 import { setImmediate } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { changedItemSteps, stepsChanged } from "./legacy-rules.ts";
@@ -172,7 +173,70 @@ export async function inHistory(store: Store, ref: string, at: string): Promise<
   return from !== undefined && to !== undefined ? from <= to : !!(await store.inHistory(ref, at));
 }
 
-const described = new WeakMap<Store, Map<string, { summary: string; pieces: Pieces }>>();
+/** What one document's change reads as to the owner: the text of its summary and what in it is visible. */
+interface Description { summary: string; pieces: Pieces }
+/** The descriptions made so far, by `commitKey` or `stepKey`, and how many this run made (`added`; the ones loaded from the file do not count). */
+interface Descriptions { byKey: Map<string, Description>; added: number }
+const described = new WeakMap<Store, Descriptions>();
+function descriptionsOf(store: Store): Descriptions {
+  let known = described.get(store);
+  if (!known) described.set(store, known = { byKey: new Map(), added: 0 });
+  return known;
+}
+function remember(known: Descriptions, key: string, description: Description): Description {
+  known.byKey.set(key, description);
+  known.added++;
+  return description;
+}
+// The key of a document's change at one commit, and at a stop that spans several (its parent, its last commit). Both name the end
+// commit second, which is how the file keeps only those of the commits after the cursor (`exportDescriptions`). A stop of one
+// commit is that commit's change, so it has no key of its own.
+const commitKey = (commit: string, doc: { kind: string; id: string }) => "commit|" + commit + "|" + doc.kind + "|" + doc.id;
+const stepKey = (parent: string | null, end: string, doc: { kind: string; id: string }) => (parent ?? "") + "|" + end + "|" + doc.kind + "|" + doc.id;
+
+/** The format of the file the descriptions are kept in between runs (docs/design.md, section 4, The unread list across a restart).
+ * Change it whenever `ownerSummary` or `piecesOf`, or what they read (`describeChanges`, `comparisonDocuments`, the plan and target
+ * comparisons), give another result for the same two documents: a file of another version is ignored, and the next walk describes
+ * the commits again. `test/unread-restart.test.ts` pins the descriptions of sample documents beside this number. */
+export const DESCRIPTION_VERSION = 1;
+const SavedDescriptions = z.object({
+  version: z.literal(DESCRIPTION_VERSION),
+  // 0: nothing in it the owner can see; otherwise the summary and the three counts of `Pieces`.
+  entries: z.record(z.string(), z.union([z.literal(0), z.tuple([z.string(), z.number().int().nonnegative(), z.number().int().nonnegative(), z.number().int().nonnegative()])])),
+}).strict();
+
+/** The descriptions of the changes at `commits` (those of a stop of several commits go with its last), as the file keeps them. Only these
+ * are written: the file holds what the walk after the cursor needs, and no description of what the owner has read. */
+export function exportDescriptions(store: Store, commits: ReadonlySet<string>): { text: string; entries: number } {
+  const entries: Record<string, 0 | [string, number, number, number]> = {};
+  for (const [key, { summary, pieces }] of descriptionsOf(store).byKey) {
+    if (!commits.has(key.split("|")[1]!)) continue;
+    entries[key] = hasPieces(pieces) ? [summary, pieces.progress, pieces.reply, pieces.other] : 0;
+  }
+  return { text: JSON.stringify({ version: DESCRIPTION_VERSION, entries }), entries: Object.keys(entries).length };
+}
+/** Adds the descriptions a file written by `exportDescriptions` holds to the store's, keeping those it has; the number added. Throws when
+ * the text is not such a file of the current version. */
+export function importDescriptions(store: Store, text: string): number {
+  const saved = SavedDescriptions.parse(JSON.parse(text)), known = descriptionsOf(store);
+  let added = 0;
+  for (const [key, entry] of Object.entries(saved.entries)) {
+    if (known.byKey.has(key)) continue;
+    known.byKey.set(key, entry === 0 ? { summary: "", pieces: { progress: 0, reply: 0, other: 0 } } : { summary: entry[0], pieces: { progress: entry[1], reply: entry[2], other: entry[3] } });
+    added++;
+  }
+  return added;
+}
+/** How many descriptions this run of the store has made: what changed since a file was written. */
+export const descriptionsMade = (store: Store): number => descriptionsOf(store).added;
+
+// A walk that has to describe a long range runs for minutes, and a service that is stopping has five seconds (docs/design.md, section 4,
+// Stopping): once told, the walks that are running end at their next commit and none begins.
+const halted = new WeakSet<Store>();
+export function haltUnread(store: Store): void { halted.add(store); }
+function notHalted(store: Store): void {
+  if (halted.has(store)) throw new Error("The unread list was not finished: the service is stopping");
+}
 
 /** A stop as the walk builds it, before its documents are described. The walk changes only its last stop, and only on a copy. */
 interface RawStep { id: string; commits: string[]; parent: string | null; author: string; at: string; docs: Array<{ kind: "item" | "decision" | "note"; id: string }> }
@@ -210,8 +274,7 @@ async function continueWalk(store: Store, earlier: Walk, head: string): Promise<
 }
 
 async function walkOver(store: Store, from: Walk, commits: readonly CommitInfo[], head: string): Promise<Walk> {
-  let cache = described.get(store);
-  if (!cache) { cache = new Map(); described.set(store, cache); }
+  const known = descriptionsOf(store);
   const steps = from.steps.slice();
   // The open stop is copied before the first commit extends it, so the earlier walk stays as it was even when this one fails
   // halfway (a read of history refused by the budget), and the next head can still continue from it.
@@ -221,6 +284,7 @@ async function walkOver(store: Store, from: Walk, commits: readonly CommitInfo[]
     // Cached blobs and summaries can otherwise chain only microtasks and starve
     // page/MCP requests throughout a long cold history walk.
     await setImmediate();
+    notHalted(store);
     // An owner action breaks consecutiveness even though it is not a step.
     // Format migrations (the plan conversion, numbering existing documents, moving the cards into the plans) are not news to the owner.
     if (commit.author === "owner" || commit.message === PLAN_CONVERSION_MESSAGE || commit.message === NUMBERING_MESSAGE || commit.message === CARD_MIGRATION_MESSAGE) { previous = undefined; continue; }
@@ -242,13 +306,12 @@ async function walkOver(store: Store, from: Walk, commits: readonly CommitInfo[]
       if (position <= (from.marks.get(`${doc.kind}:${doc.id}`) ?? -1)) continue;
       // Ignore each invisible commit before grouping: a log append must not advance an unread
       // stop's id or move the baseline of the next visible change.
-      const key = "commit|" + commit.commit + "|" + doc.kind + "|" + doc.id;
-      let hit = cache.get(key);
+      const key = commitKey(commit.commit, doc);
+      let hit = known.byKey.get(key);
       if (!hit) {
         const { before, after } = await store.comparisonDocuments(doc.kind, doc.id, commit.parents[0] ?? null, commit.commit);
         const summary = ownerSummary(before, after, doc.kind);
-        hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
-        cache.set(key, hit);
+        hit = remember(known, key, { summary, pieces: piecesOf(before, after, doc.kind, summary) });
       }
       if (hasPieces(hit.pieces)) unreadDocs.push(doc);
     }
@@ -270,8 +333,7 @@ async function walkOver(store: Store, from: Walk, commits: readonly CommitInfo[]
  * two heads share the stops neither changed. */
 const finished = new WeakMap<RawStep, { id: string; step: Step }>();
 async function finish(store: Store, walk: Walk): Promise<Step[]> {
-  const cache = described.get(store) ?? new Map<string, { summary: string; pieces: Pieces }>();
-  described.set(store, cache);
+  const known = descriptionsOf(store);
   const steps: Step[] = [];
   for (const raw of walk.steps) {
     let done = finished.get(raw);
@@ -279,15 +341,16 @@ async function finish(store: Store, walk: Walk): Promise<Step[]> {
       // Cache coalesced endpoints separately from individual commit visibility. A new head
       // only describes its new commits and the stops it creates or extends.
       await setImmediate();
+      notHalted(store);
       const docs: Step["docs"] = [];
       for (const doc of raw.docs) {
-        const key = (raw.parent ?? "") + "|" + raw.id + "|" + doc.kind + "|" + doc.id;
-        let hit = cache.get(key);
+        // A stop of one commit is that commit's change, already described by the walk.
+        const key = raw.commits.length === 1 ? commitKey(raw.id, doc) : stepKey(raw.parent, raw.id, doc);
+        let hit = known.byKey.get(key);
         if (!hit) {
           const { before, after } = await store.comparisonDocuments(doc.kind, doc.id, raw.parent, raw.id);
           const summary = ownerSummary(before, after, doc.kind);
-          hit = { summary, pieces: piecesOf(before, after, doc.kind, summary) };
-          cache.set(key, hit);
+          hit = remember(known, key, { summary, pieces: piecesOf(before, after, doc.kind, summary) });
         }
         // A document whose change holds nothing the owner can see (times, revisions, a status that became derived) is not unread.
         if (hasPieces(hit.pieces)) docs.push({ kind: doc.kind, id: doc.id, summary: hit.summary, pieces: { ...hit.pieces } });

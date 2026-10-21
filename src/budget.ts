@@ -20,6 +20,12 @@ export const REQUEST_LIMITS: BudgetLimits = { bytes: 64 * MB, bytesPerCommit: 32
  * more per commit than a request, and it converts no old board. */
 export const STARTUP_LIMITS: BudgetLimits = { bytes: 256 * MB, bytesPerCommit: 64 * KB, boards: 0, heapShare: 0.75 };
 
+/** The daemon's own walk of the unread list to the head (src/unread-warm.ts), which describes each commit after the owner's read
+ * cursor once, so it reads whole files where a request, after the first walk, reads none. 256 KB a commit is about 2.4 times what a
+ * walk of the live board's 12,621 commits read, 107 KB each (before and after versions of the changed item files; docs/design.md,
+ * section 4, The unread list across a restart). */
+export const WARM_LIMITS: BudgetLimits = { bytes: 256 * MB, bytesPerCommit: 256 * KB, boards: 1, heapShare: 0.75 };
+
 export interface HeapUse { used: number; limit: number }
 export type HeapSource = () => HeapUse;
 const processHeap: HeapSource = () => {
