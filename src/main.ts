@@ -18,6 +18,7 @@ import { GithubWatch } from "./watch.ts";
 import { ghToken, restSource } from "./ci-source.ts";
 import { CiWatch } from "./ci-watch.ts";
 import { BackupPush } from "./backup-push.ts";
+import { UnreadWarmer } from "./unread-warm.ts";
 import { startupLogger, startupMemory, stopwatch, timestampLogs } from "./log.ts";
 import { SlowOps } from "./slow-ops.ts";
 import { watchLoop } from "./loop-watch.ts";
@@ -65,6 +66,11 @@ async function main() {
   // Tells when the event loop was held for long, which a write's slow git command may be the sign of (src/loop-watch.ts).
   watchLoop();
   const credentials = new Credentials(credentialFile);
+  // What each commit after the owner's read cursor changed, as the owner reads it, is kept in a file of the daemon's own and loaded before the first
+  // request, so the unread list after a restart describes only the commits made since; a round every few minutes carries it to the head
+  // (docs/design.md, section 4, The unread list across a restart).
+  const unread = new UnreadWarmer({ store, dir: await store.localFile("state/unread") });
+  await unread.load();
   // What each session saw at its last `look` lives in the daemon's memory only (docs/design.md, section 6, The look); a server object serves one request, so the one memory is handed to each.
   const looks = new LookMemory();
   const server = createHttpServer({ store, ops: op, ownerOps: ownerOps(store), webDir: join(dirname(fileURLToPath(import.meta.url)), "../web"), wake, watch, ci, slow, credentials, live, pools, createMcp: credential => createMcpServer({ store, ops: op, wake, slow, credential, looks, live, pools }) });
@@ -88,7 +94,7 @@ async function main() {
   // locally and nothing is pushed, a push that is running is killed with its ssh, and the first push after the next start sends
   // what this run left. A maintenance step that is running ends first (at most about a second); none is started after the signal.
   function shutdown() {
-    if (stopping) return; stopping = true; clearInterval(timer); clearInterval(heartbeatTimer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance();
+    if (stopping) return; stopping = true; clearInterval(timer); clearInterval(heartbeatTimer); clearTimeout(firstPush); backup.stop(); store.stopMaintenance(); unread.stop();
     server.close(error => {
       void (async () => {
         if (error) throw error;
@@ -102,6 +108,7 @@ async function main() {
     console.info(`wf-board http://127.0.0.1:${port}`);
     firstPush = setTimeout(() => { void push().catch(console.error); }, firstPushMs);
     firstPush.unref();
+    unread.start();
   });
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });

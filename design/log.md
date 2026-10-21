@@ -2,6 +2,12 @@
 
 Newest first. One entry for each pull request that changes the tree: a dated title, `Nodes:` naming every node added, changed or retired, and `Summary:`.
 
+## 2026-10-21 Keep the unread descriptions across a restart
+
+Nodes: storage/unread-descriptions
+
+Summary: After a restart the first request for the unread list described every commit after the owner's read cursor again, because the description of a commit (its summary and what in it the owner can see) lived only in memory: on the live board that was 11,725 commits at about 107 KB read each, 3.3 times what a request may read, and about 80 seconds over five requests, two of them refused by the budget. The descriptions of the commits after the cursor are now kept in a file of the daemon's own that git leaves out, loaded before the daemon serves, and a round at the start and every five minutes carries the unread list to the head under a budget of its own and writes the file. The file has a version, raised whenever a description reads differently. The refused alternatives (the startup cache, a walk after each start with the page waiting, the walked list, describing at each write) are in the node; the measurements are in docs/design.md, section 4.
+
 ## 2026-10-20 Name the commits of one document instead of searching the history for them
 
 Nodes: storage/history-reads

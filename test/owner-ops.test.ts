@@ -387,6 +387,8 @@ test("a write another session commits during a read neither restarts the read no
   await own.read({ through: cursor });
   const first = await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "read through here" } });
   const second = await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "same author and document, so one step until a mark splits it" } });
+  // The later half is two commits: a stop of one commit is described by its commit alone, which the walk has done already.
+  const third = await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "and a third, so the later half has endpoints of its own" } });
   const s = store.snapshot();
   await unreadSteps(store, s.owner.cursor, s.owner.readMarks, s.head);
   const log = store.log.bind(store), show = store.show.bind(store);
@@ -409,7 +411,7 @@ test("a write another session commits during a read neither restarts the read no
   const owner = store.snapshot().owner;
   assert.equal(owner.cursor, first.commit, "compaction stops before the still-unread later half of the step");
   assert.equal(owner.readMarks, undefined, "the mark the cursor covers is removed");
-  assert.deepEqual((await unreadSteps(store, owner.cursor, owner.readMarks)).map(step => step.commits), [[second.commit], [concurrent]], "the change written during the read stays unread");
+  assert.deepEqual((await unreadSteps(store, owner.cursor, owner.readMarks)).map(step => step.commits), [[second.commit, third.commit], [concurrent]], "the change written during the read stays unread");
 });
 
 test("editDraft changes the exact unsent note while preserving its identity and metadata", async t => {

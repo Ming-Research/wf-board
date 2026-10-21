@@ -459,8 +459,9 @@ test("the incremental unread list equals the from-scratch computation through wr
   await same("reads interleaved with concurrent writes");
   const b1 = await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "first half" } });
   await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "second half" } });
+  await op.setPlan({ author, id: "b", row: { id: "progress", state: "todo", text: "third part" } });
   await same("a new coalesced step");
-  // A write that lands while a read describes the later half of the step it splits.
+  // A write that lands while a read describes the later half of the step it splits (two commits, so that it has endpoints no walk has described).
   const show = store.show.bind(store);
   let landed: string | undefined;
   const mocked = t.mock.method(store, "show", async (...args: Parameters<typeof store.show>) => {

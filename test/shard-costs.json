@@ -145,6 +145,7 @@
   "test/threads.test.ts": 0.2,
   "test/timeline.test.ts": 1.6,
   "test/under.test.ts": 3.2,
+  "test/unread-restart.test.ts": 10.0,
   "test/update.test.ts": 0.1,
   "test/wake-agents.test.ts": 2,
   "test/wake.test.ts": 5.7,
