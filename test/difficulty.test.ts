@@ -410,8 +410,10 @@ test("create_item rates the new item, logs the reason it was given as the first 
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x2", difficulty: 9 as never, difficultyReason: reason }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x4", difficulty: "architect" as never, difficultyReason: reason }), /difficulty: give an integer 1–5$/);
   await refuses(op.createItem({ ...asArchitect, key: "x3", group: author, record: true, title: "记录", difficulty: 2, difficultyReason: reason }), /a record has no difficulty/);
-  // A rating with no reason, a blank one or one that is not text is refused, as set_difficulty refuses it, and the message says what to add.
-  for (const bad of [undefined, "", "   ", 3 as never, null as never]) await refuses(op.createItem({ ...asArchitect, ...create, key: "x5", difficulty: 2, ...(bad === undefined ? {} : { difficultyReason: bad }) }), /difficultyReason: say why the difficulty is this, for the log$/);
+  // A rating with no reason or one that is not text is refused, as set_difficulty refuses it, and the message says what to add.
+  for (const bad of [undefined, 3 as never, null as never]) await refuses(op.createItem({ ...asArchitect, ...create, key: "x5", difficulty: 2, ...(bad === undefined ? {} : { difficultyReason: bad }) }), /difficultyReason: say why the difficulty is this, for the log$/);
+  // A blank one is refused by the check every write has for blank text, which names the parameter too.
+  for (const blank of ["", "   "]) await refuses(op.createItem({ ...asArchitect, ...create, key: "x5", difficulty: 2, difficultyReason: blank }), /input\.difficultyReason: provide nonempty text after trimming$/);
   await refuses(op.createItem({ ...asArchitect, ...create, key: "x6", difficultyReason: reason }), /difficultyReason: given without a difficulty; give both or neither$/);
   assert.deepEqual(store.snapshot(), before); assert.equal((await store.log()).length, count, "a refusal makes no commit");
 });
