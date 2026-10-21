@@ -47,6 +47,10 @@ matches what the artifact board offered.
   `Store.log` names the commits of one document and does not search the history for them); `src/log.ts`: timestamps on every service log
   line, the start-up step timings and the start-up memory line (the heap in use
   after a full collection and the resident set).
+- `src/unread-warm.ts`: the file of the owner's unread descriptions (`state/unread/descriptions.json`, a file of the daemon's own that git leaves
+  out: what each commit after the read cursor changed, as the owner reads it, which `src/history.ts` makes and exports and imports), loaded before the
+  daemon serves, and the round at the start and every five minutes that carries the unread list to the head under the budget `WARM_LIMITS`
+  and writes the file (design section 4, The unread list across a restart).
 - `src/rules.ts`: derived board rules (plan status and frontier, ownership,
   parallel groups, checks and freshness).
   Imported by the server and bundled into the page, so agents and the owner
