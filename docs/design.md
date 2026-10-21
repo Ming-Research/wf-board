@@ -1040,6 +1040,66 @@ each of four runners, every pair was faster, the `set_tags` 90th percentile goin
 to 28.7–44.6 ms and the log event's from 21.3–33.6 to 18.4–32.2 ms (board-cpu-usage). Before this
 item, one run gave 53.1 and 32.0 ms.
 
+**The unread list across a restart.** The owner's unread list is a walk over the commits after the
+read cursor, and the first thing the walk does for a commit is to describe what it changed in each document as the owner
+reads it (the summary, and how much of it is progress, reply or other). That depends only on the commit, which never
+changes, and it read the document's file before and after the commit; but it lived only in the daemon's memory, so after a
+restart the first request described every commit after the cursor again. Measured on the live data repository, from the
+cursor at the time (12,621 commits, 11,969 of them changing a document): the two versions of each changed document come
+to 1,346 MB, 107 KB a commit on average (median 90, 90th percentile 227, 99th 309 KB), and 676 MB (54 KB a commit) when a
+version shared by two commits is counted once. An item's file is 45 to 55 KB, and its log keeps growing. A request may
+read 64 MB and 32 KB more for each commit (Request budgets), so the walk read 3.3 times what a commit is allowed (1.7
+times with each version counted once), and over the 11,725 commits the cursor then lay behind it the first request was
+refused for its bytes. The daemon's log of 21 October shows what that looked like: five requests over about 80 seconds,
+one abandoned by the page at 32 s, two refused, the last finished in 37 s; the four restarts of the day before had read
+116 to 150 MB before they were refused and were finished by the retries. How long it takes follows the distance of the cursor and nothing else, and the owner who
+stays away longest finds the longest wait.
+
+1. *The descriptions are kept in a file of the daemon's own.* `state/unread/descriptions.json` in the data directory, left
+   out of git as the other state files are (`Store.localFile`). Its key is the commit and the document for the stop of one
+   commit (`commit|<commit>|<kind>|<id>`), and the parent of the stop's first commit, its last commit and the document for
+   a stop of several, whose summary can differ from those of its commits; its value is the summary and the three counts, or
+   the number 0 for a change with nothing the owner can read. It holds only the commits after the cursor (`exportDescriptions`
+   keeps a key when the commit it names, or the stop's last commit, is among them), so it follows the cursor forward and
+   does not grow with the history; for the live board's 12,000 commits it comes to about 1.5 to 2 MB (deduced from the form:
+   a key of about 80 bytes and a value of about 25; the restart test prints the size for its board), and it is written
+   whole by a temporary file and a rename.
+2. *It carries a version.* `DESCRIPTION_VERSION` in `src/history.ts` goes up with any change that makes a description of the
+   same two documents read differently; a file of another version is ignored, as is a file that is missing or does not
+   parse, and the next walk describes the commits again, which is the situation before this change. A test pins sample
+   descriptions beside the number, so a change to the wording of a summary fails it until the version is raised. A key of a
+   commit that is no longer in the history is never read, so a rewritten history cannot give a wrong description.
+3. *It is loaded before the daemon serves, and a round of its own keeps it up to date.* `src/unread-warm.ts`: `main.ts` loads
+   the file before the server listens, so the first request after a restart finds the descriptions of the commits up to the
+   last round and describes only those made since (a few minutes' worth, about 8 ms each). A round runs once when the daemon
+   listens and every 5 minutes after it: it takes the owner's reading state at that moment, carries the unread list to the
+   head under `WARM_LIMITS` (256 MB and 256 KB for each commit, 2.4 times the mean the walk read; one board rebuild; the same
+   75% line for the heap) and writes the file if it made any description. A round that finds the descriptions all in
+   memory reads nothing and writes nothing. Rounds do not overlap, a failure is a warning and the next round tries again,
+   and the 5 minutes is a provisional choice: the cost of a round follows the commits of the interval, and nothing measured
+   favors another. The same round does what the open page would do on its first request after a long absence, so the owner
+   who returns after a week finds the walk done.
+4. *A stop of one commit uses the description of its commit.* `finish` described it again from the same two files; now it
+   uses what the walk made, so such a stop is described once and the file's key for a single commit covers it.
+5. *Stopping ends the walk.* A walk over 12,000 commits takes tens of seconds, and the service has 5 seconds to stop
+   (Stopping); `haltUnread` makes the walk, and `finish`, end with an error at the next commit once the service has begun to
+   stop.
+
+Checked in CI (`test/unread-restart.test.ts`), on a board of 11,800 commits after the cursor whose files are 1/32 of the live
+board's, with the budget scaled the same (so a walk reads 3.3 times what a request may, as live): a cold walk takes 10,958 ms
+and makes 13,767 descriptions; a store opened on the same data after loading the file answers the first
+`GET /api/unread` in 547 ms with the same list and reads no document from the history, and one that has no file is refused
+with 413 as the daemon was. The first deploy that carries this has no file, so its first round is the cold walk, once and in the
+background (about 80 seconds on the live board), under a budget for it, not as five requests that fail; a request that comes
+during it finds what the walk has described by then and describes the rest under its own budget, as before this change.
+
+Rejected, and why (the grounds are in the design node): keeping the descriptions in the startup cache, whose only failure
+mode is a scan of the whole history and whose description format changes oftener than its replay does; walking once
+after each start with the page waiting, which costs about 80 seconds after every merge of board code; storing the walked
+list, which depends on the cursor and read marks that move whenever the owner reads; describing a commit when it is written,
+which makes every write pay for the owner's reading; reading each version once in the cold walk, which halves it (54 KB a commit,
+about 50 seconds) and leaves it after every restart.
+
 **Connecting.** `claude mcp add --scope user --transport http wf-board
 http://127.0.0.1:7417/mcp` once for Claude Code, and the equivalent entry in
 `~/.codex/config.toml` for Codex. Whether the desktop app's Code sessions read

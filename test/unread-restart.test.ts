@@ -91,7 +91,9 @@ test("after a restart the first request for the unread list is answered from the
   const { head: tip, owner } = first.snapshot();
   const before = await unreadSteps(first, owner.cursor, owner.readMarks ?? {}, tip);
   assert.ok(before.length > 3000 && before.some(step => step.commits.length === 2), `the walk has stops of one and of two commits (${before.length})`);
-  assert.ok((await stat(join(files, "descriptions.json"))).size > 0, "and the file is written");
+  const written = await stat(join(files, "descriptions.json"));
+  t.diagnostic(`the file: ${written.size} bytes`);
+  assert.ok(written.size > 0, "and the file is written");
 
   // The restart: a store opened on the same data with nothing in memory, and the file loaded as the daemon does before it serves.
   const second = await Store.open(dir, { requireBudget: true }), run2 = warmer(second, files);
