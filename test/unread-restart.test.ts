@@ -2,6 +2,9 @@
 // description of what each commit changed (its summary and what in it the owner can see) is made once and kept in the daemon's memory; a
 // restart lost it, and a walk over the 11,725 commits the live board had after the cursor read 3.3 times what a request may read and ran
 // for about 80 seconds. The descriptions are now kept in a file (src/unread-warm.ts) and the first request after a restart finds them.
+// The board here has 6,000 commits after the cursor: once the walk is past the fixed part of the budget it is refused whatever the count
+// (the control below shows it), and a test file of 25 seconds, which the 11,800 commits of the first version took, runs a shard of the
+// full CI over the time gate (docs/design.md, section 11, The time gate).
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -39,7 +42,7 @@ const warmer = (store: Store, dir: string, extra: { everyMs?: number } = {}) => 
 // live data repository). Here the same ratio on a board 1/32 the size: files of about 1.5 KB read 3 KB a commit against 1 KB.
 const SCALE = 32;
 const SMALL: BudgetLimits = { ...REQUEST_LIMITS, bytes: REQUEST_LIMITS.bytes / SCALE, bytesPerCommit: REQUEST_LIMITS.bytesPerCommit / SCALE };
-const COMMITS = 11_800, ITEMS = 120, START = 1_790_000_000;
+const COMMITS = 6_000, ITEMS = 120, START = 1_790_000_000;
 const sentence = "看板服务读历史时只读需要的文件 and keeps the cost bounded by the range. ";
 const head = sentence.repeat(Math.ceil(1500 / Buffer.byteLength(sentence)));
 const revs = new Map<string, number>();
@@ -72,17 +75,21 @@ async function serve(t: TestContext, store: Store, budget: BudgetLimits) {
 
 test("after a restart the first request for the unread list is answered from the file of the run before, within the budget of a request", async t => {
   quiet(t);
+  const began = performance.now(), lap = (what: string) => t.diagnostic(`${what}: ${Math.round(performance.now() - began)} ms since the start`);
   const { dir } = await board(t);
   await appendCommits(dir, [{ at: START - 1, message: "Seed items", files: Object.fromEntries(Array.from({ length: ITEMS }, (_, n) => [`items/w${n}.yaml`, itemDoc(`w${n}`, 0)])) }]);
   // The owner has read up to here, and the daemon that wrote it stopped (its reading state is committed at an orderly shutdown).
   const reading = await Store.open(dir);
   reading.setOwner({ cursor: reading.snapshot().head });
   await reading.flushOwner("owner");
+  lap("the board and the seed");
   await appendCommits(dir, history(COMMITS));
+  lap("the history written");
   const files = await folder(t);
 
   // The run before: the walk over every commit after the cursor, which the daemon makes in the background with a budget for it.
   const first = await Store.open(dir), run1 = warmer(first, files);
+  lap("the store opened");
   await run1.warmer.load();
   let started = performance.now();
   await run1.warmer.warm();
@@ -90,13 +97,15 @@ test("after a restart the first request for the unread list is answered from the
   assert.deepEqual(run1.warnings, []);
   const { head: tip, owner } = first.snapshot();
   const before = await unreadSteps(first, owner.cursor, owner.readMarks ?? {}, tip);
-  assert.ok(before.length > 3000 && before.some(step => step.commits.length === 2), `the walk has stops of one and of two commits (${before.length})`);
+  assert.ok(before.length > 1500 && before.some(step => step.commits.length === 2), `the walk has stops of one and of two commits (${before.length})`);
   const written = await stat(join(files, "descriptions.json"));
   t.diagnostic(`the file: ${written.size} bytes`);
   assert.ok(written.size > 0, "and the file is written");
 
   // The restart: a store opened on the same data with nothing in memory, and the file loaded as the daemon does before it serves.
+  lap("the walk and the list");
   const second = await Store.open(dir, { requireBudget: true }), run2 = warmer(second, files);
+  lap("the store opened again");
   await run2.warmer.load();
   assert.match(run2.lines[0]!, /unread descriptions: \d+ loaded/);
   const compared = t.mock.method(second, "comparisonDocuments");
@@ -115,8 +124,10 @@ test("after a restart the first request for the unread list is answered from the
   assert.equal((await stat(join(files, "descriptions.json"))).mtimeMs, kept.mtimeMs);
 
   // Without the file, which is how it was before: a restart reads what a walk reads and a request cannot.
+  lap("the restart checked");
   const third = await Store.open(dir, { requireBudget: true });
   const cold = await (await serve(t, third, SMALL))();
+  lap("the control refused");
   assert.equal(cold.status, 413);
   assert.match(String(cold.data.error), /History budget exceeded: this GET \/api\/unread read .* of board history/);
 });
