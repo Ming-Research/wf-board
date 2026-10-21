@@ -1090,11 +1090,15 @@ stays away longest finds the longest wait.
    finish in the grace period; one for the same head that joined the round's walk (below) ends with it, and one for a newer
    head, whose base walk has ended, walks on from the cursor by itself, outside the signal, as any request does.
 
-Checked in CI (`test/unread-restart.test.ts`), on a board of 11,800 commits after the cursor whose files are 1/32 of the live
-board's, with the budget scaled the same (so a walk reads 3.3 times what a request may, as live). In two runs on hosted
-runners a cold walk took 10,958 and 8,349 ms and made 13,767 descriptions; a store opened on the same data after loading the
-file answered the first `GET /api/unread` in 547 and 475 ms with the same list, reading no document from the history, and
-one that has no file was refused with 413 as the daemon was.
+Checked in CI (`test/unread-restart.test.ts`), on a board of 6,000 commits after the cursor whose files are 1/32 of the live
+board's, with the budget scaled the same (so a walk reads 3.3 times what a request may, as live; once past the fixed part of
+the budget the walk is refused whatever the count, and a first version with 11,800 commits made a test file of 25 seconds,
+which put its shard of the full CI over the time gate). On a hosted runner a cold walk took 3,101 ms and made 7,000
+descriptions; a store opened on the same data after loading the file answered the first `GET /api/unread` in 303 ms with the
+same list, reading no document from the history, and one that has no file was refused with 413 as the daemon was. The
+descriptions file was 548,241 bytes, 78 for each of its 7,000 entries (ids of 3 characters). The first version's three runs
+at 11,800 commits gave a cold walk of 8,349 to 11,574 ms, a first request of 475 to 627 ms and 1,075,673 bytes for 13,767
+entries; that is the run nearest to the live board's 11,725 commits, and its first request is still far under the 10 seconds.
 
 The first deploy that carries this has no file, so its first round is the cold walk, once and in the background (about 80
 seconds on the live board), under a budget for it, not five requests that fail. A request that comes during it of the same
