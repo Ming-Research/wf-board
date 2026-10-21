@@ -101,7 +101,7 @@ test("after a restart the first request for the unread list is answered from the
   const request = await serve(t, second, SMALL);
   const answer = await request();
   t.diagnostic(`first request after the restart: ${Math.round(answer.ms)} ms`);
-  assert.equal(answer.status, 200, answer.data.error);
+  assert.equal(answer.status, 200, String(answer.data.error));
   // The line the board gives a request that reads history is 10 seconds (docs/design.md, section 4, Time limits).
   assert.ok(answer.ms < 10_000, `${Math.round(answer.ms)} ms`);
   assert.deepEqual(answer.data.steps, JSON.parse(JSON.stringify(before)), "the list is the one the run before derived from the history");
