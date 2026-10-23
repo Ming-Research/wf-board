@@ -8,6 +8,7 @@ import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
 import { draftEditable, isPlainPick, noteTextProblem } from "./rules.ts";
 import { unreadSteps, commitsSince, inHistory } from "./history.ts";
+import { stopwatch } from "./log.ts";
 import type { DocKind } from "./store.ts";
 
 export class NotFoundError extends Error {}
@@ -147,7 +148,12 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       // snapshot moves on. A change another session commits meanwhile lies after that head, so it is neither read nor
       // crossed by compaction, and the read need not start over for it.
       const s = store.snapshot(), through = input.through;
+      // Each step of the read is timed and told to the service log once the read ends, so a slow mark names its slow step.
+      const segments: string[] = [];
+      const lap = stopwatch((step, ms) => segments.push(`${step} ${Math.round(ms)} ms`));
+      try {
       if (through && !(await inHistory(store, through, s.head))) throw new OpError("Read mark or cursor must be in board history");
+      lap("check");
       const old = s.owner.cursor;
       async function canAdvance(from: string | undefined, to: string): Promise<boolean> {
         return !from || await inHistory(store, from, to);
@@ -156,6 +162,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
         if (!(await canAdvance(from, to))) throw new OpError("Read mark or cursor must advance from its current ancestor");
       }
       if (through) await advances(old, through);
+      lap("check");
       let cursor = old;
       const readMarks = { ...s.owner.readMarks };
       if ("doc" in input) {
@@ -169,6 +176,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
           readMarks[input.doc] = through;
         } else {
           const unread = await unreadSteps(store, old, readMarks, s.head);
+          lap("unread");
           const latest = unread.filter(step => step.docs.some(doc => doc.kind === kind && doc.id === id)).at(-1);
           if (!latest) return;
           await advances(old, latest.id);
@@ -179,7 +187,9 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       // Compact only the completely read prefix. In a shared commit any unread
       // document keeps that entire commit ahead of the cursor.
       const remaining = await unreadSteps(store, cursor, readMarks, s.head);
+      lap("unread-remaining");
       const history = await commitsSince(store, cursor, s.head);
+      lap("history");
       const firstUnread = remaining[0]?.commits[0];
       const stop = firstUnread ? history.findIndex(commit => commit.commit === firstUnread) : history.length;
       const compacted = stop > 0 ? history[stop - 1]!.commit : cursor;
@@ -190,11 +200,16 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
         const afterCursor = new Set(history.slice(stop).map(c => c.commit));
         for (const [doc, mark] of Object.entries(readMarks)) if (!afterCursor.has(mark)) delete readMarks[doc];
       }
+      lap("compact");
       // Preserve owner state that arrived during the asynchronous history reads.
       const owner = { ...store.snapshot().owner, cursor };
       if (Object.keys(readMarks).length) owner.readMarks = readMarks;
       else delete owner.readMarks;
       store.setOwner(owner);
+      lap("write");
+      } finally {
+        console.info(`read ${"doc" in input ? input.doc : "cursor"}: ${segments.join(", ") || "no step"}`);
+      }
     }),
   };
 }
