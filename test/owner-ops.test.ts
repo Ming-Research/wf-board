@@ -9,6 +9,7 @@ import { formatContext } from "../src/mcp.ts";
 import { unreadSteps } from "../src/history.ts";
 import { OwnerState } from "../src/model.ts";
 import { ownerOps } from "../src/owner-ops.ts";
+import { WriteTrace, withTrace } from "../src/write-trace.ts";
 import { Store } from "../src/store.ts";
 
 test("setDraft replaces and clears duplicate choices in one commit with authoritative results", async t => {
@@ -227,6 +228,21 @@ test("read advances monotonically; unknown, off-history and merged sibling commi
   const reopened = await Store.open(dir), mergedOwner = ownerOps(reopened);
   await assert.rejects(mergedOwner.read({ through: sibling }), /advance/);
   await mergedOwner.read({ through: merged }); assert.equal(reopened.snapshot().owner.cursor, merged);
+});
+
+test("a read's trace names its steps in order, also when it is refused", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  await op.appendLog({ author, id: "a", text: "one" });
+  // Each lap takes one millisecond on this clock, so the steps show as their order.
+  let now = 0;
+  const trace = new WriteTrace(() => now += 1);
+  await withTrace(trace, () => own.read({ through: store.snapshot().head }));
+  // The history reads of the read may lap git steps of their own between the owner's steps, so the steps are matched in order.
+  assert.match(trace.finish(), /^owner queue 1 ms, .*check 1 ms, .*unread-remaining 1 ms, .*history 1 ms, .*compact 1 ms, .*write 1 ms, rest 1 ms$/);
+  const refused = new WriteTrace(() => now += 1);
+  await assert.rejects(withTrace(refused, () => own.read({ doc: "item:missing" })), /Unknown read document/);
+  // A refused read stops at the step that refused it; the steps it reached are told, the rest are not.
+  assert.match(refused.finish(), /^owner queue 1 ms, .*check 1 ms, .*rest 1 ms$/);
 });
 
 test("cursor reads create no commits and ride with the next data write", async t => {

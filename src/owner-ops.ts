@@ -8,6 +8,7 @@ import type { Store } from "./store.ts";
 import { OpError } from "./ops.ts";
 import { draftEditable, isPlainPick, noteTextProblem } from "./rules.ts";
 import { unreadSteps, commitsSince, inHistory } from "./history.ts";
+import { currentTrace } from "./write-trace.ts";
 import type { DocKind } from "./store.ts";
 
 export class NotFoundError extends Error {}
@@ -140,6 +141,9 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       return { sent };
     }),
     read: a => run(async () => {
+      // Where the read's time goes is told in its log line (src/write-trace.ts): the wait for the queue here, then each step.
+      const trace = currentTrace();
+      trace?.lap("owner queue");
       const parsed = ReadInput.safeParse(a);
       if (!parsed.success) throw new OpError(`Invalid read document or full commit id: ${parsed.error.message}`);
       const input = parsed.data;
@@ -156,12 +160,14 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
         if (!(await canAdvance(from, to))) throw new OpError("Read mark or cursor must advance from its current ancestor");
       }
       if (through) await advances(old, through);
+      trace?.lap("check");
       let cursor = old;
       const readMarks = { ...s.owner.readMarks };
       if ("doc" in input) {
         const [kind, id] = input.doc.split(":") as [DocKind, string];
         const collection = kind === "item" ? s.items : kind === "decision" ? s.decisions : s.notes;
         if (!Object.hasOwn(collection, id) && !(await store.log({ kind, id, limit: 1, at: s.head })).length) throw new OpError(`Unknown read document ${input.doc}`);
+        trace?.lap("document");
         // A bounded read can split a coalesced step: use its displayed commit,
         // rather than requiring the current step's final commit to match it.
         if (through) {
@@ -169,6 +175,7 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
           readMarks[input.doc] = through;
         } else {
           const unread = await unreadSteps(store, old, readMarks, s.head);
+          trace?.lap("unread");
           const latest = unread.filter(step => step.docs.some(doc => doc.kind === kind && doc.id === id)).at(-1);
           if (!latest) return;
           await advances(old, latest.id);
@@ -179,7 +186,9 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
       // Compact only the completely read prefix. In a shared commit any unread
       // document keeps that entire commit ahead of the cursor.
       const remaining = await unreadSteps(store, cursor, readMarks, s.head);
+      trace?.lap("unread-remaining");
       const history = await commitsSince(store, cursor, s.head);
+      trace?.lap("history");
       const firstUnread = remaining[0]?.commits[0];
       const stop = firstUnread ? history.findIndex(commit => commit.commit === firstUnread) : history.length;
       const compacted = stop > 0 ? history[stop - 1]!.commit : cursor;
@@ -190,11 +199,13 @@ export function ownerOps(store: Store, now = () => new Date().toISOString()): Ow
         const afterCursor = new Set(history.slice(stop).map(c => c.commit));
         for (const [doc, mark] of Object.entries(readMarks)) if (!afterCursor.has(mark)) delete readMarks[doc];
       }
+      trace?.lap("compact");
       // Preserve owner state that arrived during the asynchronous history reads.
       const owner = { ...store.snapshot().owner, cursor };
       if (Object.keys(readMarks).length) owner.readMarks = readMarks;
       else delete owner.readMarks;
       store.setOwner(owner);
+      trace?.lap("write");
     }),
   };
 }

@@ -317,7 +317,9 @@ write that waits in two queues and runs a handful of git commands is not enough 
 what was slow. A write call (a tool that changes the board, a page request of the write
 class) carries a `WriteTrace` (`src/write-trace.ts`) in its async context, and the places
 it waits or works end a step in it: the wait in the operations' own queue (`ops queue`,
-`src/ops.ts`) and the checks before the commit (`check`); the wait in the store's write
+`src/ops.ts`) and the checks before the commit (`check`); a read mark (`POST /api/read`, which
+ends the same kinds of step) waits in the owner operations' queue (`owner queue`) and then runs
+`check`, `document`, `unread`, `unread-remaining`, `history`, `compact` and `write`; the store's write
 queue (`store queue`, with how many tasks were ahead and the kind of the one it joined
 behind: `write`, `owner state` or `maintenance`); the code before the first git command
 (`validate`), the writing of the files (`files`), each git command by its name (`git add`,
@@ -325,9 +327,10 @@ behind: `write`, `owner state` or `maintenance`); the code before the first git 
 observers of the change (`listeners`) and the rest of the call. The steps are consecutive:
 each is the time since the one before ended, so they add up to the call. When the call took
 500 ms or more (`STEPS_FROM_MS`, a quarter of the write limit, a starting value like the
-limits), its ordinary log line carries them after a semicolon:
+limits), its ordinary log line carries them after a semicolon. An operation with a limit of its
+own (the mark-read, 300 ms) is split into steps too and carries them from that limit on. Example:
 `tool append_log ok 2659 ms; ops queue 165 ms, check 12 ms, git commit 2400 ms, ...`.
-A line under 500 ms stays as it was, and the push to the architect (`slow-op`) is unchanged.
+A line under that threshold stays as it was, and the push to the architect (`slow-op`) is unchanged.
 The maintenance step, which a commit queues from inside its own call, belongs to no call and
 adds nothing to any trace. A second line says when the event loop itself was held: a timer
 due every 100 ms that comes 500 ms or more late (`src/loop-watch.ts`) logs

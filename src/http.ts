@@ -28,7 +28,7 @@ import type { Delivery } from "./merges.ts";
 import { architectTimedWake } from "./timed-wake.ts";
 import type { GithubWatch } from "./watch.ts";
 import type { CiWatch } from "./ci-watch.ts";
-import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams } from "./slow-ops.ts";
+import { SlowOps, pageOperation, pageRoute, pathnameOf, requestParams, tracesSteps } from "./slow-ops.ts";
 import { WriteTrace, withTrace } from "./write-trace.ts";
 import { Budget, BudgetError, REQUEST_LIMITS, withBudget } from "./budget.ts";
 import type { BudgetLimits } from "./budget.ts";
@@ -230,7 +230,7 @@ export function createHttpServer(deps: { store: Store; ops: Ops; ownerOps: Owner
     // Ends when the response has gone out or the connection closed before that (a page that gave up waiting is timed too).
     const operation = pageOperation(req.method ?? "", pathnameOf(req.url)), ended = slow.start(operation);
     // A write's log line says where its time went (src/write-trace.ts).
-    const trace = operation.cls === "write" ? new WriteTrace() : undefined;
+    const trace = tracesSteps(operation) ? new WriteTrace() : undefined;
     res.on("close", () => ended(res.writableFinished ? String(res.statusCode) : "closed", () => requestParams(req.url, req.headers["content-length"]), trace && (() => trace.finish())));
     // A connection that was running a request when the server began to close is idle now: close it, rather than keep it for the grace.
     res.on("finish", () => { if (closing) server.closeIdleConnections(); });
