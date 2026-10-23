@@ -275,7 +275,7 @@ test("every route in the list is served, and a path not in it is refused", async
   const wake = new Wake(), slow = new SlowOps({ wake });
   const { url } = await slowWrites(t, wake, slow, 0);
   const served = async (method: string, path: string) => {
-    const controller = new AbortController(), response = await fetch(url + path, { method, signal: controller.signal, ...(method === "POST" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) }).catch(e => { throw new Error(`DIAG ${method} ${path}: ${e}`); });
+    const controller = new AbortController(), response = await fetch(url + path, { method, signal: controller.signal, ...(method === "POST" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) });
     // A stream has no end to read: its status is the answer.
     const text = response.headers.get("content-type")?.startsWith("text/event-stream") ? "" : await response.text();
     controller.abort();
