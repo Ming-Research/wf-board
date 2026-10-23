@@ -229,6 +229,22 @@ test("read advances monotonically; unknown, off-history and merged sibling commi
   await mergedOwner.read({ through: merged }); assert.equal(reopened.snapshot().owner.cursor, merged);
 });
 
+test("each read logs its steps and the total once, also when it is refused", async t => {
+  const { store, op } = await board(t), own = ownerOps(store, () => later);
+  await op.appendLog({ author, id: "a", text: "one" });
+  const lines: string[] = [];
+  const info = console.info;
+  console.info = (...parts: unknown[]) => { lines.push(parts.join(" ")); };
+  t.after(() => { console.info = info; });
+  await own.read({ through: store.snapshot().head });
+  await assert.rejects(own.read({ doc: "item:missing" }), /Unknown read document/);
+  console.info = info;
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /^read cursor: queue \d+ ms, check \d+ ms, unread-remaining \d+ ms, history \d+ ms, compact \d+ ms, write \d+ ms, total \d+ ms$/);
+  // A refused read stops at the step that refused it: the steps it reached are told, the rest are not.
+  assert.match(lines[1]!, /^read item:missing: queue \d+ ms, check \d+ ms, total \d+ ms$/);
+});
+
 test("cursor reads create no commits and ride with the next data write", async t => {
   const { store, op } = await board(t), own = ownerOps(store, () => later);
   const head = store.snapshot().head;
