@@ -404,3 +404,9 @@ test("every tool that changes the board is a write, and only changes, history an
   assert.equal(classes.get("brief"), "read");
   assert.ok([...classes.values()].every(c => ["read", "write", "history"].includes(c)));
 });
+
+test("an operation with a limit of its own says where its time went from that limit on", async () => {
+  const slow = new SlowOps();
+  const { info } = await logged(() => slow.record({ name: "POST /api/read", cls: "read", ms: 350, result: "200", steps: () => "owner queue 1 ms" }));
+  assert.ok(info.some(line => /^POST \/api\/read 200 350 ms; owner queue 1 ms$/.test(line)), info.join("\n"));
+});

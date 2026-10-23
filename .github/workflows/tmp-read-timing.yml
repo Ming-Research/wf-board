@@ -1,0 +1,16 @@
+name: tmp-read-timing
+# Temporary quick workflow for read-timing-split: type check and the owner-ops tests. Removed before the branch is ready.
+on:
+  push:
+    branches: [read-timing-split]
+permissions:
+  contents: read
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node-modules
+      - run: npm run check
+      - run: node --test test/owner-ops.test.ts

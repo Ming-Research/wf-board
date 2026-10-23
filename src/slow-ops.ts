@@ -9,8 +9,11 @@ export const OPERATION_LIMITS_MS: Readonly<Record<string, number>> = { "POST /ap
 /** How long after telling the architect of an operation that operation is only logged. */
 export const TELL_AGAIN_MS = 60 * 60_000;
 /** From this time on, a write's log line carries where its time went (src/write-trace.ts): a quarter of the write class's limit,
- * so the writes that queued a slow one are in the log too. A starting value, like the limits. */
+ * so the writes that queued a slow one are in the log too. A starting value, like the limits. An operation that keeps a limit of its
+ * own (OPERATION_LIMITS_MS) carries them from that limit on, so its slow lines name their steps too. */
 export const STEPS_FROM_MS = 500;
+/** Whether an operation's time is split into steps (src/write-trace.ts): a write, and an operation with a limit of its own. */
+export const tracesSteps = (operation: Operation): boolean => operation.cls === "write" || OPERATION_LIMITS_MS[operation.name] !== undefined;
 
 /** What is timed: `name` is the operation's identity, which the one-hour rule and the push go by; `cls` its class, or none for
  * an operation held to no limit; `label` what its log line says in place of the name, when that tells more. */
@@ -130,7 +133,7 @@ export class SlowOps {
   record({ name, cls, label = name, ms: exact, result, params, steps }: Timing): void {
     const ms = Math.round(exact);
     let where = "";
-    if (ms >= STEPS_FROM_MS) try { where = steps?.() ?? ""; } catch { /* the steps are a convenience; the line is still worth writing */ }
+    if (ms >= (OPERATION_LIMITS_MS[name] ?? STEPS_FROM_MS)) try { where = steps?.() ?? ""; } catch { /* the steps are a convenience; the line is still worth writing */ }
     console.info(`${label} ${result} ${ms} ms${where ? `; ${where}` : ""}`);
     const limit = OPERATION_LIMITS_MS[name] ?? (cls === undefined ? undefined : this.limits[cls]);
     if (limit === undefined || ms <= limit) return;
