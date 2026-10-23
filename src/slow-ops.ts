@@ -96,7 +96,8 @@ export interface Timing extends Operation {
   result: string;
   /** Its parameters as one line, asked for only when the operation was slow. */
   params?: () => string;
-  /** Where its time went, as one line (`WriteTrace.finish`), asked for only when it took `STEPS_FROM_MS` or more. */
+  /** Where its time went, as one line (`WriteTrace.finish`), asked for only when it took `STEPS_FROM_MS`, or the limit of its own
+   * (`OPERATION_LIMITS_MS`), or more. */
   steps?: () => string;
 }
 export interface SlowOpsOptions {

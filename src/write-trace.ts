@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 /** Where the time of one write call went (docs/design.md, section 4, Time limits): the steps in the order they ran, each with the
  * time since the one before it ended, so the steps add up to the call and nothing is counted twice. The places a write waits or
- * works end a step here (`lap`): the call's queue in src/ops.ts, the store's queue and each git command in src/store.ts. */
+ * works end a step here (`lap`): the call's queue in src/ops.ts, the store's queue and each git command in src/store.ts, and the steps
+ * of a read mark in src/owner-ops.ts. */
 export class WriteTrace {
   private readonly steps: Array<{ name: string; ms: number; note?: string }> = [];
   private readonly clock: () => number;
